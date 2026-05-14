@@ -4,7 +4,11 @@ A macOS desktop app that boots Pioneer DJ's **CDJ-3000** firmware inside QEMU on
 Apple Silicon, surfacing the device's main LCD, jog LCD, jog wheel, faders,
 buttons, and Pro DJ Link network in a native window.
 
-<img src="docs/preview.png" alt="cdj3k-emu screenshot" width="450"/>
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
+  <img src="docs/preview.png" alt="cdj3k-emu screenshot" width="500"/>
+  <img src="docs/preview.gif" alt="Demo animation" style="display: block;"/>
+</div>
+
 
 ## Why this exists
 
@@ -29,13 +33,6 @@ do with real CDJs on a physical LAN when you're on vacation.
 > - A user-space wrapper around QEMU `aarch64-virt` running a vanilla Linux 6.6
 >   kernel and a small set of out-of-tree modules + LD_PRELOAD shim that emulate
 >   the Pioneer-specific hardware:
-> - **virtio_snd** for audio (custom kernel module sized for the EP122 audio
->   callback cadence).
-> - **subucom_virt** for the SPI sub-CPU protocol (buttons, jog encoder,
->   rotary, slider, capacitive sensors).
-> - **ep122_shim** (LD_PRELOAD) that emulates the Rockchip-specific DRM/KMS
->   ABI EP122 expects (jog LCD as DSI-2, vsync_time, etc.) and routes jog-LCD
->   pixels through ivshmem so the host renders them as an egui texture.
 > - **virtio_snd** for audio (custom kernel module sized for the EP122 audio
 >   callback cadence).
 > - **subucom_virt** for the SPI sub-CPU protocol (buttons, jog encoder,
@@ -134,9 +131,7 @@ user's responsibility, by whatever means they are themselves entitled to.
 - Audio latency depends on macOS CoreAudio queue depth - typically 30-80 ms
   end-to-end with the bundled bypass-ring patches. ALC ("Enable ALC") shifts
   the audible / Pro DJ Link broadcast alignment to compensate but adds a
-  bit of jitter; default-off.
-- Headphone monitor, mixer crossfade, and EQ are emulated up to the audio
-  pipeline boundary; FX engine is not.
+  bit of jitter; default-on.
 - Jog wheel feel is "good enough for cueing" — no torque feedback.
   Brake stop-time map matches the device's `jog_adjust` rotary, so
   the _cadence_ of stops is faithful even if the touch isn't.
@@ -193,6 +188,18 @@ cdj3k-emu asks for the macOS admin password in three specific situations,
 All three use the native macOS password dialog (TouchID / Apple Watch eligible)
 via `AuthorizationServices`, not a CLI prompt. None of them grant ongoing
 privileges — every elevation is scoped to one command.
+
+
+## Documentation and reference
+
+- [Audio stack](docs/audio-stack.md)
+- [ALC](docs/alc.md)
+- [Network stack](docs/network.md)
+- [Storage](docs/storage.md)
+- [Firmware install](docs/firmware-install.md)
+- [Firmware compatibility](docs/firmware-compatibility.md)
+- [Firmware decryption](docs/firmware-decryption.md)
+- [Firmware installation](docs/firmware-installation.md)
 
 
 ## Repository layout

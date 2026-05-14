@@ -53,13 +53,10 @@ EP122 (JUCE, SCHED_FIFO 98 on its own pinned core in the guest)
                     │             ▼
                     │       USB / built-in DAC → speaker
                     │
-                    ├── vsnd_drain_timer_cb (BQL, every 2 ms)
-                    │     ├── vsnd_bypass_pending_drain
-                    │     │     → virtqueue_push + virtio_notify (needs BQL)
-                    │     └── periodic xrun-rate logger (1 Hz, gated)
-                    │
-                    ├── ep122_shim_clock (OptFstUdpServer clock shift) ← slave sync
-                    └── ep122_shim_link  (sendto/sendmsg delay-send)   ← master sync
+                    └── vsnd_drain_timer_cb (BQL, every 2 ms)
+                          ├── vsnd_bypass_pending_drain
+                          │     → virtqueue_push + virtio_notify (needs BQL)
+                          └── periodic xrun-rate logger (1 Hz, gated)
 ```
 
 The pipeline activates the bypass for any stereo S32/F32 stream the
@@ -376,66 +373,28 @@ capped, the breakdown shows raw guest + host components.
 | Guest `frames_in_flight` | `submit++` / `tx_done--` in `virtio_snd.c` |
 | Host `pipeline_extra_frames` | HAL `mHostTime` + static device latency, from QEMU config |
 
-The 200 ms cap exists to break runaway feedback in slave mode. When
-raw exceeds 200 ms for ≥ 8 s, the pipeline-depth watchdog fires a
-forced xrun to recover.
+When raw exceeds 200 ms for ≥ 8 s, the pipeline-depth watchdog fires
+a forced xrun to recover. The 200 ms cap on the exported headline is
+sized for ALC's downstream use - see `docs/alc.md` for the consumer
+side.
 
 ---
 
 ## Pro DJ Link sync
 
-Both shims share a single master switch:
+The audio pipeline exposes two sysfs surfaces that the user-facing
+sync feature consumes:
 
-```
-/sys/module/virtio_snd/parameters/audio_sync_enabled
-```
+- `audio_latency_ms` (read-only headline, capped at 200 ms) - the
+  live compensation amount.
+- `audio_sync_enabled` (writable master switch) - `0` makes the
+  consumers fully inert.
 
-`0` = full no-op pipeline; `1` = both compensations active. Default 1
-(the runtime worker pushes it per InstanceSettings on every QEMU
-boot).
-
-### Slave mode - `guest/ep122_shim_clock.c`
-
-LD_PRELOAD `clock_gettime` / `gettimeofday` interceptor. Targets the
-`OptFstUdpServer` thread only (the empirically-found thread whose
-libc clock-shift moves slave playback).
-
-Subtracts `audio_latency_ms` from `OptFstUdpServer`'s view of
-`CLOCK_MONOTONIC` / `CLOCK_REALTIME`. That thread projects the
-master `audio_latency_ms` further along, our deck plays earlier
-internally, and the audio pipeline consumes exactly that
-compensation - so audible playback aligns with master's audible.
-
-Refreshes the sysfs value at most once per wall-clock second using
-the syscall's own returned timestamp (no extra clock call).
-
-Sysfs:
-- `audio_latency_ms` (auto, default source).
-- `link_pos_offset_ms` (manual override; non-zero forces a fixed value).
-
-### Master mode - `guest/ep122_shim_link.c`
-
-LD_PRELOAD `sendto` / `sendmsg` interceptor that delays all outbound
-Pro DJ Link broadcasts (port 50001 / 50002, magic `Qspt1WmJOL`) by
-`audio_latency_ms`. A single worker thread pops a 512-slot ring
-buffer, `clock_nanosleep`s to each packet's deadline, then forwards
-via raw `sendto`.
-
-**Why delay-send (not packet rewrite):** Pioneer slaves use packet
-*arrival time* as the implicit beat-phase reference. Position bytes
-alone aren't enough - the receipt event itself must coincide with
-the master's audible beat. Delaying the entire packet stream aligns
-ABS_POS (waveform), BEAT (beat-sync), and PLAYER_STATUS (phase /
-BPM) consistently with one mechanism.
-
-**Defer-close** handles EP122's socket-per-packet pattern. EP122
-does `socket() → sendto() → close()` for each broadcast; if we delay
-the send, EP122 closes the FD before our worker fires.
-`ep122_link_intercept_close` (called from the `close()` hook in
-`ep122_shim_syscalls.c`) detects when EP122 closes an FD with a
-packet still queued, marks `ep122_wants_close = true` on the queue
-entry, and tells EP122 success without actually closing. The worker
-performs the real close after sendto.
+The consumer side - LD_PRELOAD shims that shift the
+`OptFstUdpServer` clock (slave mode) or delay-send Pro DJ Link
+broadcasts (master mode), the `link_pos_offset_ms` manual override,
+the per-boot push from the runtime worker, and the UI toggle - lives
+in `docs/alc.md`.
 
 ---
 
@@ -444,9 +403,6 @@ performs the real close after sendto.
 | Path | Role |
 |---|---|
 | `guest/modules/virtio_snd/virtio_snd.c` | Kernel driver: timing, pool, defenses, watchdog, prepare-flush, sysfs |
-| `guest/ep122_shim_clock.c` | LD_PRELOAD slave-mode clock shift on OptFstUdpServer |
-| `guest/ep122_shim_link.c` | LD_PRELOAD master-mode delay-send (sendto/sendmsg + defer-close) |
-| `guest/ep122_shim_syscalls.c` | Existing close() hook - calls into link shim's defer-close handler |
 | `qemu/patches/07-coreaudio-bypass.patch` | Host: IOProc lock-free path, samplerate cache, UID binding, listeners, QAPI extension |
 | `qemu/patches/08-virtio-snd-bypass.patch` | Host: bypass ring, writer pthread, resampler, soft-PLL, telemetry |
 | `qemu/patches/09-system-main-qos.patch` | Host: Mach RT on QEMU main loop |

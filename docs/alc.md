@@ -22,6 +22,10 @@ ALC removes this. It shifts either the local clock (slave) or the
 outbound packet stream (master) by the live measured pipeline depth,
 so audible-event timing matches firmware-event timing.
 
+## Demo
+
+![ALC demo](./alc.gif)
+
 ---
 
 ## The two shims
