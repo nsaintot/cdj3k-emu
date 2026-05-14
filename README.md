@@ -36,13 +36,6 @@ do with real CDJs on a physical LAN when you're on vacation.
 > - **ep122_shim** (LD_PRELOAD) that emulates the Rockchip-specific DRM/KMS
 >   ABI EP122 expects (jog LCD as DSI-2, vsync_time, etc.) and routes jog-LCD
 >   pixels through ivshmem so the host renders them as an egui texture.
-> - **virtio_snd** for audio (custom kernel module sized for the EP122 audio
->   callback cadence).
-> - **subucom_virt** for the SPI sub-CPU protocol (buttons, jog encoder,
->   rotary, slider, capacitive sensors).
-> - **ep122_shim** (LD_PRELOAD) that emulates the Rockchip-specific DRM/KMS
->   ABI EP122 expects (jog LCD as DSI-2, vsync_time, etc.) and routes jog-LCD
->   pixels through ivshmem so the host renders them as an egui texture.
 
 > [!CAUTION]
 >
@@ -134,7 +127,7 @@ user's responsibility, by whatever means they are themselves entitled to.
 - Audio latency depends on macOS CoreAudio queue depth - typically 30-80 ms
   end-to-end with the bundled bypass-ring patches. ALC ("Enable ALC") shifts
   the audible / Pro DJ Link broadcast alignment to compensate but adds a
-  bit of jitter; default-off.
+  bit of jitter; default-on.
 - Headphone monitor, mixer crossfade, and EQ are emulated up to the audio
   pipeline boundary; FX engine is not.
 - Jog wheel feel is "good enough for cueing" — no torque feedback.
