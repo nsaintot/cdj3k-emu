@@ -1,0 +1,13 @@
+diff --git a/meson.build b/meson.build
+index 5fbdc75..7a84269 100644
+--- a/meson.build
++++ b/meson.build
+@@ -3269,7 +3269,7 @@ disassemblers = {
+   'loongarch' : ['CONFIG_LOONGARCH_DIS'],
+ }
+ 
+-have_ivshmem = config_host_data.get('CONFIG_EVENTFD')
++have_ivshmem = true  # patched: enable on macOS (ivshmem-plain only uses portable EventNotifier)
+ host_kconfig = \
+   (get_option('fuzzing') ? ['CONFIG_FUZZ=y'] : []) + \
+   (have_tpm ? ['CONFIG_TPM=y'] : []) + \

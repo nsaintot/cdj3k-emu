@@ -1,0 +1,13 @@
+diff --git a/hw/misc/Kconfig b/hw/misc/Kconfig
+index 99bdf09..1496b59 100644
+--- a/hw/misc/Kconfig
++++ b/hw/misc/Kconfig
+@@ -79,7 +79,7 @@ config MACIO
+ config IVSHMEM_DEVICE
+     bool
+     default y if PCI_DEVICES
+-    depends on PCI && LINUX && IVSHMEM && MSI_NONBROKEN
++    depends on PCI && IVSHMEM && MSI_NONBROKEN
+ 
+ config IVSHMEM_FLAT_DEVICE
+     bool

@@ -1,0 +1,1106 @@
+diff --git a/hw/audio/virtio-snd.c b/hw/audio/virtio-snd.c
+index fb5cff3..c284771 100644
+--- a/hw/audio/virtio-snd.c
++++ b/hw/audio/virtio-snd.c
+@@ -36,6 +36,965 @@ static void virtio_snd_process_cmdq(VirtIOSound *s);
+ static void virtio_snd_pcm_flush(VirtIOSoundPCMStream *stream);
+ static void virtio_snd_pcm_in_cb(void *data, int available);
+ static void virtio_snd_unrealize(DeviceState *dev);
++static void virtio_snd_pcm_buffer_free(VirtIOSoundPCMBuffer *buffer);
++
++/* ============= CoreAudio bypass ring (Darwin only) =============
++ * SPSC ring: virtio-snd writes (main loop), CoreAudio IOProc reads (RT).
++ * Bypasses QEMU's hw->buf_emul, eliminating ~15-20ms of mixer latency.
++ * Stereo, F32 or S32 (S32→F32 inline), guest rate must match HAL rate
++ * (no resampling). Falls back to AUD path on mismatch. Output only.
++ */
++
++/* Always declared so pcm_close/pcm_prepare can unconditionally manage
++ * it without an #ifdef wrapper at every call site; only read by the
++ * Darwin-only drain timer below. */
++static VirtIOSound *vsnd_drain_target_dev;
++
++#ifdef CONFIG_DARWIN
++#include <stdatomic.h>
++#include <pthread.h>
++#include <time.h>
++#include <math.h>
++#include <mach/mach.h>
++#include <mach/mach_time.h>
++#include <mach/thread_policy.h>
++
++/* cdj3k-emu: pin the bypass writer thread to a real-time scheduling band
++ * so macOS cannot preempt it during normal scheduling jitter. Without
++ * this, the writer's 1 ms polling wake-up could be delayed 5-15 ms
++ * under load, the bypass ring would drain a few IOProc cycles, and the
++ * IOProc would emit memset 0 - audible as the "little pops" the user
++ * was still seeing after the big-pop / xrun-recovery fix.
++ *
++ * Budget: period=2 ms, computation=0.5 ms, constraint=1 ms,
++ * preemptible=1. The writer's actual work per wake is tens of
++ * microseconds (a few atomic ops + one memcpy chain), so 0.5 ms of
++ * compute budget per 2 ms period is generous. preemptible=1 keeps
++ * CoreAudio's HALC_IOThread (also RT, with stricter timing needs)
++ * able to interrupt us. Safer than the VCPU RT attempt because the
++ * VCPU spends >>1 ms continuously in hv_vcpu_run; the writer's bursts
++ * are well below any contract violation threshold. */
++static void vsnd_writer_thread_set_rt(void)
++{
++    mach_timebase_info_data_t tb;
++    if (mach_timebase_info(&tb) != KERN_SUCCESS) {
++        return;
++    }
++    uint64_t period_ns      = 2ULL * 1000 * 1000;
++    uint64_t computation_ns =       500 * 1000;
++    uint64_t constraint_ns  = 1ULL * 1000 * 1000;
++    struct thread_time_constraint_policy ttcpolicy = {
++        .period      = (uint32_t)(period_ns      * tb.denom / tb.numer),
++        .computation = (uint32_t)(computation_ns * tb.denom / tb.numer),
++        .constraint  = (uint32_t)(constraint_ns  * tb.denom / tb.numer),
++        .preemptible = 1,
++    };
++    kern_return_t kr = thread_policy_set(mach_thread_self(),
++                                         THREAD_TIME_CONSTRAINT_POLICY,
++                                         (thread_policy_t)&ttcpolicy,
++                                         THREAD_TIME_CONSTRAINT_POLICY_COUNT);
++    if (kr != KERN_SUCCESS) {
++        fprintf(stderr,
++                "virtio-snd: WARNING failed to RT-tag writer thread "
++                "(kr=%d); audio refill may still drop frames on host stress\n",
++                (int)kr);
++    } else {
++        fprintf(stderr,
++                "virtio-snd: writer thread bound to Mach RT (0.5 ms / 2 ms)\n");
++    }
++}
++
++/* cdj3k-emu: dedicated writer thread for the bypass ring.
++ *
++ * Previous architecture: the bypass writer ran from a QEMU_CLOCK_REALTIME
++ * timer (every 2 ms) on the QEMU main loop, holding BQL. Any BQL hold by
++ * the main thread (virtio-gpu command processing, qcow2 ops, etc.) or any
++ * macOS preemption of that thread paused the writer. The ring drained
++ * during the pause; on resumption we got a burst of overruns followed by
++ * underruns (the simultaneous-underrun+overrun pattern in xrun reports).
++ * Each gap = audible pop.
++ *
++ * Now: a standalone pthread polls every 1 ms and drains stream->queue
++ * into the bypass ring without touching BQL. virtio_snd_handle_tx_xfer
++ * still runs on BQL (it enqueues into stream->queue, guarded by
++ * stream->queue_mutex) but the producer-to-ring step is independent of
++ * BQL. Main-thread stalls no longer matter for ring refill.
++ *
++ * Things the writer thread does NOT do (still on main thread via
++ * vsnd_drain_timer_cb): completed-buffer release back to the guest via
++ * virtqueue_push + virtio_notify, which would require BQL anyway. The
++ * worker only adds to vsnd_bypass_pending; main thread drain_timer
++ * reaps from that list and does the actual virtqueue_push. */
++static atomic_int      vsnd_writer_run;
++static pthread_t       vsnd_writer_thread;
++static bool            vsnd_writer_started;
++static pthread_mutex_t vsnd_bypass_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
++static _Atomic(VirtIOSound *) vsnd_writer_target;
++
++/* Guest's negotiated PCM rate (e.g. 44100 or 96000). Stored on bypass
++ * activation; the resampler in vsnd_bypass_write_resampled() pairs this
++ * with the live HAL rate to compute the conversion ratio. */
++static _Atomic uint32_t vsnd_bypass_guest_rate;
++
++/* Cubic-Hermite (Catmull-Rom) resampler state, mutated only by the
++ * writer thread (single producer = no concurrency). Persists across
++ * buffers so the resampler doesn't restart its phase on every
++ * guest-buffer hand-off. Reset to zero only on cold bypass activation
++ * (format change).
++ *
++ * Replaces the earlier linear-interpolation version. Linear was
++ * C0-continuous (value continuous, slope discontinuous) - each input
++ * frame boundary produced a slope jump that aliased into the audible
++ * band when the output rate was less than 2x the input rate. On a
++ * 44.1 kHz guest playing into a 48 kHz output device the aliasing
++ * showed up as a dense haze of vertical lines in the iZotope RX
++ * spectrogram. Cubic Hermite with Catmull-Rom tangents is C1
++ * continuous and the residual aliasing is 2-3 orders of magnitude
++ * smaller in the audible band. */
++typedef struct {
++    /* Sliding window of the last four input frames (per channel),
++     * oldest at index 0, newest at index 3. The current output segment
++     * lies between y[1] and y[2]; y[0] supplies the left tangent
++     * neighbor and y[3] the right tangent neighbor. */
++    float  y[4][2];   /* [time index 0..3][channel: 0=L, 1=R] */
++    double frac;      /* [0, 1): fractional output position within segment [y[1], y[2]] */
++
++    /* 2nd-order Butterworth lowpass biquad state (per channel), used
++     * as an anti-alias pre-filter when downsampling. Direct Form II
++     * Transposed - two state vars per channel are sufficient. Reset
++     * on cold start (memset of the whole struct). */
++    float  biq_s1[2]; /* [channel 0=L, 1=R] */
++    float  biq_s2[2];
++} VsndResamplerState;
++static VsndResamplerState vsnd_resampler;
++
++/* Adaptive clock-skew correction (soft-PLL ratio adjustment).
++ *
++ * When the HAL device clock runs slightly slower than the guest's
++ * negotiated rate (typical of Apple Silicon's built-in audio vs. a
++ * pro USB DAC), the writer outpaces the reader and the ring would
++ * fill indefinitely. The earlier "drop a frame when over high-water"
++ * approach worked structurally but each dropped frame was a 1-sample
++ * discontinuity - inaudible per drop, but loud drops landing on a
++ * beat or transient still produced audible clicks (~20 per loop on
++ * the 48 kHz Built-in Headphone case).
++ *
++ * The current approach is a soft PLL: each call computes the ring
++ * depth error vs. a target depth, and applies a tiny proportional
++ * correction to the resampler ratio for that call. Over many calls,
++ * the writer's effective output rate converges on the reader's actual
++ * clock - no discrete drops, no clicks, just an imperceptible pitch
++ * adjustment of at most ±VSND_PLL_MAX_CORRECTION (~0.5%, comfortably
++ * below the audible threshold for music content).
++ *
++ * Target depth is in ms (rate-independent); the byte value is computed
++ * per call from the live HAL rate. 80 ms target keeps us comfortably
++ * below the guest watchdog threshold (~100 ms) while leaving headroom
++ * for host scheduling jitter. */
++#define VSND_BYPASS_HIGH_WATER_MS 80
++/* Integrator step per write call (per-call gain on normalized error).
++ * With ~100 writer calls/sec, 1e-6 means a 100% depth error nudges the
++ * integrator by 1e-4 per second - reaches the ±0.5% clamp in ~50s of
++ * sustained one-direction error. Slow enough to ignore short-term
++ * fluctuations from the writer/reader event cadence (which were
++ * producing audible pitch FM on the proportional-PLL version), fast
++ * enough to track real clock drift before the ring fills/empties. */
++#define VSND_PLL_INTEGRATOR_STEP  1.0e-6
++#define VSND_PLL_MAX_CORRECTION   0.005   /* clamp ratio adjust to ±0.5% */
++
++/* Accumulated PLL ratio correction. Mutated only by the writer thread
++ * (single producer = no concurrency). Reset to 0 only on cold bypass
++ * activation; persists across xrun-recovery prepare cycles so the
++ * pace-match state isn't thrown away on every guest watchdog fire. */
++static double vsnd_pll_integrator;
++
++size_t virtio_snd_bypass_read(void *dst, size_t bytes);
++size_t virtio_snd_bypass_avail(void);
++int    virtio_snd_bypass_is_active(void);
++
++/* SPSC ring between the virtio-snd writer pthread and CoreAudio's
++ * IOProc. Sized to keep ~170 ms of audio at 96 kHz F32 stereo
++ * (8 bytes/frame). Originally added because the writer was BQL-bound
++ * and could be stalled 10-15 ms by virtio-gpu / shm-display work on
++ * the same thread; the writer has since been moved to a dedicated
++ * Mach-RT pthread (vsnd_writer_thread_fn), but a generous ring is
++ * still useful to absorb HAL-side jitter and macOS scheduler
++ * preemption tails on the worker. 128 KB = 96 KB extra resident memory
++ * per QEMU instance, trivial vs. the 1.5 GiB guest RAM. */
++#define VSND_BYPASS_BYTES (128 * 1024)
++static uint8_t  vsnd_bypass_ring[VSND_BYPASS_BYTES];
++static _Atomic uint64_t vsnd_bypass_head;   /* writer (vsnd_writer_thread_fn) */
++static _Atomic uint64_t vsnd_bypass_tail;   /* reader (CoreAudio IOProc) */
++static _Atomic int      vsnd_bypass_active;
++static int              vsnd_bypass_src_fmt; /* AUDIO_FORMAT_F32 or _S32 */
++static _Atomic uint64_t vsnd_bypass_underrun_frames;
++static _Atomic uint64_t vsnd_bypass_overrun_count;
++
++size_t virtio_snd_bypass_read(void *dst, size_t bytes)
++{
++    uint64_t t = atomic_load_explicit(&vsnd_bypass_tail, memory_order_relaxed);
++    uint64_t h = atomic_load_explicit(&vsnd_bypass_head, memory_order_acquire);
++    uint64_t avail = h - t;
++    if (bytes > avail) bytes = avail;
++    uint32_t off = (uint32_t)(t & (VSND_BYPASS_BYTES - 1));
++    size_t first = MIN(bytes, VSND_BYPASS_BYTES - off);
++    memcpy(dst, vsnd_bypass_ring + off, first);
++    if (bytes > first) {
++        memcpy((uint8_t *)dst + first, vsnd_bypass_ring, bytes - first);
++    }
++    atomic_store_explicit(&vsnd_bypass_tail, t + bytes, memory_order_release);
++    return bytes;
++}
++
++size_t virtio_snd_bypass_avail(void)
++{
++    uint64_t t = atomic_load_explicit(&vsnd_bypass_tail, memory_order_relaxed);
++    uint64_t h = atomic_load_explicit(&vsnd_bypass_head, memory_order_acquire);
++    return (size_t)(h - t);
++}
++
++/* Record an underrun: the CoreAudio IOProc found the bypass ring empty
++ * and emitted silence for `frames` of audio. Called from the realtime
++ * audio thread; must be lock-free. The frame count is per-call (not
++ * cumulative within this fn). */
++void virtio_snd_bypass_note_underrun(uint32_t frames);
++void virtio_snd_bypass_note_underrun(uint32_t frames)
++{
++    atomic_fetch_add_explicit(&vsnd_bypass_underrun_frames,
++                              (uint64_t)frames,
++                              memory_order_relaxed);
++}
++
++/* Snapshot the cumulative underrun-frame counter without resetting it.
++ * Exposed so a periodic logger / cfg-sock daemon can compute deltas. */
++uint64_t virtio_snd_bypass_underrun_total_frames(void);
++uint64_t virtio_snd_bypass_underrun_total_frames(void)
++{
++    return atomic_load_explicit(&vsnd_bypass_underrun_frames,
++                                memory_order_relaxed);
++}
++
++/* Same for overruns (writer found the ring full). Useful as a sanity
++ * check: if overruns are rising, the writer is faster than the reader
++ * and we're losing samples *before* the IOProc - typically a wrong-rate
++ * scenario where 96 kHz data is being fed to a 44.1 kHz IOProc. */
++uint64_t virtio_snd_bypass_overrun_total(void);
++uint64_t virtio_snd_bypass_overrun_total(void)
++{
++    return atomic_load_explicit(&vsnd_bypass_overrun_count,
++                                memory_order_relaxed);
++}
++
++extern uint32_t coreaudio_get_pipeline_depth_us(void);
++extern uint32_t coreaudio_get_static_latency_frames(void);
++extern unsigned coreaudio_get_active_samplerate(void);
++
++/* Public accessor: host-side pipeline depth DOWNSTREAM of the bypass ring
++ * - CoreAudio HAL queue + static device latency. Does NOT include the
++ * ring depth (already covered by guest frames_in_flight when deferred
++ * return is in effect). */
++uint32_t virtio_snd_bypass_depth_frames(void)
++{
++    uint32_t hal_us = coreaudio_get_pipeline_depth_us();
++    uint32_t hal_rate = coreaudio_get_active_samplerate();
++    uint32_t hal_frames = 0;
++    if (hal_rate > 0)
++        hal_frames = (uint32_t)(((uint64_t)hal_us * hal_rate) / 1000000ULL);
++    uint32_t static_frames = coreaudio_get_static_latency_frames();
++    return hal_frames + static_frames;
++}
++
++int virtio_snd_bypass_is_active(void)
++{
++    return atomic_load_explicit(&vsnd_bypass_active, memory_order_acquire);
++}
++
++static uint64_t vsnd_bypass_head_value(void)
++{
++    return atomic_load_explicit(&vsnd_bypass_head, memory_order_relaxed);
++}
++
++/* Fast path: rates match (or HAL rate unknown). Convert vsnd_bypass_src_fmt
++ * input into F32 output 1:1 and stream into the ring. Returns bytes
++ * written (== src_bytes) or 0 on ring-full (caller leaves buf in queue). */
++static size_t vsnd_bypass_write_passthrough(const void *src, size_t src_bytes)
++{
++    uint64_t h = atomic_load_explicit(&vsnd_bypass_head, memory_order_relaxed);
++    uint64_t t = atomic_load_explicit(&vsnd_bypass_tail, memory_order_acquire);
++    uint64_t free = VSND_BYPASS_BYTES - (h - t);
++    if (src_bytes > free) {
++        atomic_fetch_add_explicit(&vsnd_bypass_overrun_count, 1,
++                                  memory_order_relaxed);
++        return 0;
++    }
++    uint32_t off = (uint32_t)(h & (VSND_BYPASS_BYTES - 1));
++    if (vsnd_bypass_src_fmt == AUDIO_FORMAT_F32) {
++        size_t first = MIN(src_bytes, VSND_BYPASS_BYTES - off);
++        memcpy(vsnd_bypass_ring + off, src, first);
++        if (src_bytes > first) {
++            memcpy(vsnd_bypass_ring, (const uint8_t *)src + first,
++                   src_bytes - first);
++        }
++    } else {
++        const int32_t *s = src;
++        size_t n = src_bytes / 4;
++        const float scale = 1.0f / 2147483648.0f;
++        for (size_t i = 0; i < n; i++) {
++            float f = (float)s[i] * scale;
++            uint32_t fb;
++            memcpy(&fb, &f, 4);
++            uint32_t pos = (off + (uint32_t)(i * 4)) &
++                           (VSND_BYPASS_BYTES - 1);
++            memcpy(vsnd_bypass_ring + pos, &fb, 4);
++        }
++    }
++    atomic_store_explicit(&vsnd_bypass_head, h + src_bytes,
++                          memory_order_release);
++    return src_bytes;
++}
++
++/* Resampled path: cubic-Hermite (Catmull-Rom) interpolation from
++ * in_rate to out_rate, S32 or F32 input → F32 output. Runs on the
++ * writer thread (single producer), mutates vsnd_resampler state
++ * without locking.
++ *
++ * Cubic Hermite formula for output at fractional position t in [0, 1)
++ * within segment [y1, y2], using Catmull-Rom tangents from y0 and y3:
++ *
++ *   m1 = (y2 - y0) / 2
++ *   m2 = (y3 - y1) / 2
++ *   out = (2t³ - 3t² + 1) y1 + (t³ - 2t² + t) m1
++ *       + (-2t³ + 3t²)    y2 + (t³ - t²)       m2
++ *
++ * Implementation: maintain a 4-sample sliding window per channel.
++ * Each new input shifts the window left and pushes the input on the
++ * right; we emit zero or more output frames covering segment [y1, y2]
++ * while frac < 1, then `frac -= 1` to start the next segment.
++ *
++ * Adaptive clock-skew: at the top of each call we read the ring's
++ * current depth. If it's above the high-water mark, we skip one output
++ * frame this batch (drop_remaining = 1). The state still advances so
++ * the resampler phase stays correct; we just don't write that one
++ * output to the ring. Over many calls this bleeds off the drift that
++ * would otherwise fill the ring and trigger the guest's xrun watchdog.
++ *
++ * Worst-case output size for the up-front ring-space reservation:
++ *   ceil(in_frames * out_rate / in_rate) + 2 frames
++ * (each input can produce up to ceil(out_rate/in_rate) outputs, plus
++ * a tiny slack for fractional-phase rollover). */
++static size_t vsnd_bypass_write_resampled(const void *src, size_t src_bytes,
++                                          uint32_t in_rate, uint32_t out_rate)
++{
++    /* Both S32 stereo and F32 stereo are 8 bytes/frame. */
++    size_t in_frames = src_bytes / 8;
++    if (in_frames == 0 || in_rate == 0 || out_rate == 0) {
++        return 0;
++    }
++
++    size_t max_out_frames =
++        (size_t)(((uint64_t)in_frames * out_rate + (in_rate - 1)) / in_rate) + 2;
++    size_t max_out_bytes = max_out_frames * 8;
++
++    uint64_t h = atomic_load_explicit(&vsnd_bypass_head, memory_order_relaxed);
++    uint64_t t = atomic_load_explicit(&vsnd_bypass_tail, memory_order_acquire);
++    uint64_t depth = h - t;
++    uint64_t free = VSND_BYPASS_BYTES - depth;
++    if (max_out_bytes > free) {
++        atomic_fetch_add_explicit(&vsnd_bypass_overrun_count, 1,
++                                  memory_order_relaxed);
++        return 0;
++    }
++
++    /* Integrator-only PLL for clock-skew correction. The previous
++     * proportional-only version (correction = err * gain) reacted to
++     * the natural ring-depth fluctuation from writer/reader event
++     * cadence (writer pushes ~4KB bursts, reader drains ~2KB per
++     * IOProc fire) and turned those fluctuations into audible pitch
++     * FM artifacts (dense vertical lines in the spectrogram on the
++     * stable-clock 96 kHz SMSL case). An integrator smooths over the
++     * fluctuations: a positive error accumulates slowly until the
++     * resampler's effective rate matches the reader's actual clock,
++     * then sits there. Convergence takes seconds, but the steady
++     * state is wobble-free.
++     *
++     * Sign convention: integrator > 0 means "ring is over target,
++     * resampler should produce fewer outputs per input (larger ratio)
++     * to drain". */
++    int64_t target_bytes =
++        (int64_t)(((uint64_t)out_rate * 8 * VSND_BYPASS_HIGH_WATER_MS) / 1000);
++    int64_t err_bytes = (int64_t)depth - target_bytes;
++    double  err_norm  = target_bytes > 0
++                            ? (double)err_bytes / (double)target_bytes
++                            : 0.0;
++    vsnd_pll_integrator += err_norm * VSND_PLL_INTEGRATOR_STEP;
++    if (vsnd_pll_integrator >  VSND_PLL_MAX_CORRECTION) {
++        vsnd_pll_integrator =  VSND_PLL_MAX_CORRECTION;
++    }
++    if (vsnd_pll_integrator < -VSND_PLL_MAX_CORRECTION) {
++        vsnd_pll_integrator = -VSND_PLL_MAX_CORRECTION;
++    }
++
++    const bool   is_s32        = (vsnd_bypass_src_fmt == AUDIO_FORMAT_S32);
++    const float  scale         = 1.0f / 2147483648.0f;
++    const double nominal_ratio = (double)in_rate / (double)out_rate;
++    const double ratio         = nominal_ratio * (1.0 + vsnd_pll_integrator);
++
++    /* Anti-alias pre-filter for downsample cases (in_rate > out_rate).
++     * Without it, content between the output Nyquist (out_rate/2) and
++     * the input Nyquist (in_rate/2) folds DOWN into the audible band.
++     * For a 96 kHz guest feeding a 48 kHz HAL the relevant 24-48 kHz
++     * zone in the input contains drum transients and DSP harmonics
++     * that fold to 0-24 kHz as ghost frequencies (audible as a haze
++     * of pops in the iZotope RX recording).
++     *
++     * 2nd-order Butterworth lowpass at 0.46 x out_rate kills most of
++     * the foldback (-12 dB/oct above cutoff). Direct Form II
++     * Transposed biquad, state in vsnd_resampler. Coefficients are
++     * cheap to recompute per call - rates rarely change but we don't
++     * cache to keep the code dead simple. */
++    bool  downsample = (in_rate > out_rate);
++    float b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
++    if (downsample) {
++        double fc = 0.46 * (double)out_rate;
++        double w0 = 2.0 * M_PI * fc / (double)in_rate;
++        double cos_w0 = cos(w0);
++        double sin_w0 = sin(w0);
++        double Q = 0.70710678; /* Butterworth */
++        double alpha = sin_w0 / (2.0 * Q);
++        double a0 = 1.0 + alpha;
++        b0 = (float)((1.0 - cos_w0) * 0.5 / a0);
++        b1 = (float)((1.0 - cos_w0)        / a0);
++        b2 = b0;
++        a1 = (float)(-2.0 * cos_w0         / a0);
++        a2 = (float)((1.0 - alpha)         / a0);
++    }
++    /* Pull biquad state into locals so the hot loop stays register-
++     * resident. Saved back at function exit. */
++    float biq_s1_L = vsnd_resampler.biq_s1[0];
++    float biq_s2_L = vsnd_resampler.biq_s2[0];
++    float biq_s1_R = vsnd_resampler.biq_s1[1];
++    float biq_s2_R = vsnd_resampler.biq_s2[1];
++
++    /* Load sliding-window state into locals so the inner loop stays
++     * register-resident. */
++    float y0_L = vsnd_resampler.y[0][0], y1_L = vsnd_resampler.y[1][0],
++          y2_L = vsnd_resampler.y[2][0], y3_L = vsnd_resampler.y[3][0];
++    float y0_R = vsnd_resampler.y[0][1], y1_R = vsnd_resampler.y[1][1],
++          y2_R = vsnd_resampler.y[2][1], y3_R = vsnd_resampler.y[3][1];
++    double frac = vsnd_resampler.frac;
++
++    size_t out_bytes = 0;
++
++    for (size_t i = 0; i < in_frames; i++) {
++        /* Pull next input frame in either source format. */
++        float new_L, new_R;
++        if (is_s32) {
++            const int32_t *isrc = (const int32_t *)src;
++            new_L = (float)isrc[i * 2]     * scale;
++            new_R = (float)isrc[i * 2 + 1] * scale;
++        } else {
++            const float *fsrc = (const float *)src;
++            new_L = fsrc[i * 2];
++            new_R = fsrc[i * 2 + 1];
++        }
++
++        /* Anti-alias lowpass before the resampler sees the sample.
++         * Direct Form II Transposed:
++         *   y  = b0*x + s1
++         *   s1 = b1*x - a1*y + s2
++         *   s2 = b2*x - a2*y                                       */
++        if (downsample) {
++            float y_L = b0 * new_L + biq_s1_L;
++            biq_s1_L  = b1 * new_L - a1 * y_L + biq_s2_L;
++            biq_s2_L  = b2 * new_L - a2 * y_L;
++            new_L = y_L;
++
++            float y_R = b0 * new_R + biq_s1_R;
++            biq_s1_R  = b1 * new_R - a1 * y_R + biq_s2_R;
++            biq_s2_R  = b2 * new_R - a2 * y_R;
++            new_R = y_R;
++        }
++
++        /* Shift window: oldest drops out the left, new sample enters
++         * the right. After this the current output segment [y1, y2]
++         * sits BEHIND the newest input - we always have one input of
++         * lookahead for the cubic's right tangent. */
++        y0_L = y1_L; y1_L = y2_L; y2_L = y3_L; y3_L = new_L;
++        y0_R = y1_R; y1_R = y2_R; y2_R = y3_R; y3_R = new_R;
++
++        /* Emit zero or more output frames covering segment [y1, y2]
++         * (down-sample ratios >1 may emit none for many input frames;
++         * heavy up-sample emits many per input). */
++        while (frac < 1.0) {
++            float t_f = (float)frac;
++            float t2  = t_f * t_f;
++            float t3  = t2  * t_f;
++
++            float m1_L = 0.5f * (y2_L - y0_L);
++            float m2_L = 0.5f * (y3_L - y1_L);
++            float m1_R = 0.5f * (y2_R - y0_R);
++            float m2_R = 0.5f * (y3_R - y1_R);
++
++            float h00 = 2.0f * t3 - 3.0f * t2 + 1.0f;
++            float h10 = t3 - 2.0f * t2 + t_f;
++            float h01 = -2.0f * t3 + 3.0f * t2;
++            float h11 = t3 - t2;
++
++            float out_L = h00 * y1_L + h10 * m1_L + h01 * y2_L + h11 * m2_L;
++            float out_R = h00 * y1_R + h10 * m1_R + h01 * y2_R + h11 * m2_R;
++
++            /* Per-frame ring wrap: L and R each get their own masked
++             * position so the frame can straddle the ring's end
++             * without a partial-frame split. */
++            uint32_t pos_L = (uint32_t)((h + out_bytes) &
++                                        (VSND_BYPASS_BYTES - 1));
++            uint32_t pos_R = (uint32_t)((h + out_bytes + 4) &
++                                        (VSND_BYPASS_BYTES - 1));
++            memcpy(vsnd_bypass_ring + pos_L, &out_L, 4);
++            memcpy(vsnd_bypass_ring + pos_R, &out_R, 4);
++            out_bytes += 8;
++            if (out_bytes + 8 > max_out_bytes) {
++                /* Defensive: max_out_frames math should keep this
++                 * unreachable, but cap any pathological case. */
++                goto done;
++            }
++            frac += ratio;
++        }
++
++        frac -= 1.0;
++    }
++
++done:
++    vsnd_resampler.y[0][0] = y0_L; vsnd_resampler.y[1][0] = y1_L;
++    vsnd_resampler.y[2][0] = y2_L; vsnd_resampler.y[3][0] = y3_L;
++    vsnd_resampler.y[0][1] = y0_R; vsnd_resampler.y[1][1] = y1_R;
++    vsnd_resampler.y[2][1] = y2_R; vsnd_resampler.y[3][1] = y3_R;
++    vsnd_resampler.frac    = frac;
++    vsnd_resampler.biq_s1[0] = biq_s1_L; vsnd_resampler.biq_s2[0] = biq_s2_L;
++    vsnd_resampler.biq_s1[1] = biq_s1_R; vsnd_resampler.biq_s2[1] = biq_s2_R;
++
++    atomic_store_explicit(&vsnd_bypass_head, h + out_bytes,
++                          memory_order_release);
++    return out_bytes;
++}
++
++/* Entry point: dispatches to passthrough or resampled based on the
++ * live HAL rate vs the guest's negotiated rate (both cached as atomics,
++ * so this is lock-free on the hot path). All-or-nothing: returns 0 on
++ * ring-full so caller leaves buf in stream->queue for retry. */
++static size_t vsnd_bypass_write_convert(const void *src, size_t src_bytes)
++{
++    uint32_t hal_rate   = coreaudio_get_active_samplerate();
++    uint32_t guest_rate = atomic_load_explicit(&vsnd_bypass_guest_rate,
++                                               memory_order_relaxed);
++    if (hal_rate == 0 || guest_rate == 0 || hal_rate == guest_rate) {
++        /* No resampling needed (or HAL rate not yet known: in that case
++         * we fall through to passthrough as a best guess, which produces
++         * pitch-shifted audio rather than silence). */
++        return vsnd_bypass_write_passthrough(src, src_bytes);
++    }
++    return vsnd_bypass_write_resampled(src, src_bytes, guest_rate, hal_rate);
++}
++
++/* Deferred TX buffer return: each successful write records end_head;
++ * when IOProc tail crosses end_head the buf is released. */
++typedef struct VsndBypassPending {
++    VirtIOSoundPCMBuffer  *buf;
++    VirtIOSoundPCMStream  *stream;
++    uint64_t               end_head;
++    QSIMPLEQ_ENTRY(VsndBypassPending) entry;
++} VsndBypassPending;
++static QSIMPLEQ_HEAD(VsndBypassPendingHead, VsndBypassPending) vsnd_bypass_pending =
++    QSIMPLEQ_HEAD_INITIALIZER(vsnd_bypass_pending);
++
++static void vsnd_bypass_release_buf(VirtIOSoundPCMStream *stream,
++                                    VirtIOSoundPCMBuffer *buffer)
++{
++    virtio_snd_pcm_status resp = { 0 };
++    resp.status = cpu_to_le32(VIRTIO_SND_S_OK);
++    resp.latency_bytes = cpu_to_le32((uint32_t)buffer->size);
++    iov_from_buf(buffer->elem->in_sg, buffer->elem->in_num, 0,
++                 &resp, sizeof(virtio_snd_pcm_status));
++    virtqueue_push(buffer->vq, buffer->elem,
++                   sizeof(virtio_snd_pcm_status));
++    virtio_notify(VIRTIO_DEVICE(stream->s), buffer->vq);
++    virtio_snd_pcm_buffer_free(buffer);
++}
++
++/* Add a deferred-release record to the pending list. Called from the
++ * writer thread (off-BQL) and from main thread paths in flush; the
++ * mutex serializes both. */
++static void vsnd_bypass_pending_push(VirtIOSoundPCMStream *s,
++                                     VirtIOSoundPCMBuffer *b,
++                                     uint64_t end_head)
++{
++    VsndBypassPending *p = g_new0(VsndBypassPending, 1);
++    p->buf = b;
++    p->stream = s;
++    p->end_head = end_head;
++    pthread_mutex_lock(&vsnd_bypass_pending_mutex);
++    QSIMPLEQ_INSERT_TAIL(&vsnd_bypass_pending, p, entry);
++    pthread_mutex_unlock(&vsnd_bypass_pending_mutex);
++}
++
++/* Drain entries whose audio has already been consumed by the IOProc.
++ * Called from the main thread (drain timer) and from flush. Each entry
++ * release path calls virtio_notify which requires BQL, so this must run
++ * on BQL - we drain into a local list under the mutex, then release
++ * after dropping the mutex. */
++static void vsnd_bypass_pending_drain(void)
++{
++    uint64_t t = atomic_load_explicit(&vsnd_bypass_tail, memory_order_acquire);
++    QSIMPLEQ_HEAD(, VsndBypassPending) local = QSIMPLEQ_HEAD_INITIALIZER(local);
++
++    pthread_mutex_lock(&vsnd_bypass_pending_mutex);
++    while (!QSIMPLEQ_EMPTY(&vsnd_bypass_pending)) {
++        VsndBypassPending *p = QSIMPLEQ_FIRST(&vsnd_bypass_pending);
++        if (p->end_head > t) {
++            break;
++        }
++        QSIMPLEQ_REMOVE_HEAD(&vsnd_bypass_pending, entry);
++        QSIMPLEQ_INSERT_TAIL(&local, p, entry);
++    }
++    pthread_mutex_unlock(&vsnd_bypass_pending_mutex);
++
++    while (!QSIMPLEQ_EMPTY(&local)) {
++        VsndBypassPending *p = QSIMPLEQ_FIRST(&local);
++        QSIMPLEQ_REMOVE_HEAD(&local, entry);
++        vsnd_bypass_release_buf(p->stream, p->buf);
++        g_free(p);
++    }
++}
++
++static void vsnd_bypass_pending_flush(void)
++{
++    QSIMPLEQ_HEAD(, VsndBypassPending) local = QSIMPLEQ_HEAD_INITIALIZER(local);
++
++    pthread_mutex_lock(&vsnd_bypass_pending_mutex);
++    while (!QSIMPLEQ_EMPTY(&vsnd_bypass_pending)) {
++        VsndBypassPending *p = QSIMPLEQ_FIRST(&vsnd_bypass_pending);
++        QSIMPLEQ_REMOVE_HEAD(&vsnd_bypass_pending, entry);
++        QSIMPLEQ_INSERT_TAIL(&local, p, entry);
++    }
++    pthread_mutex_unlock(&vsnd_bypass_pending_mutex);
++
++    while (!QSIMPLEQ_EMPTY(&local)) {
++        VsndBypassPending *p = QSIMPLEQ_FIRST(&local);
++        QSIMPLEQ_REMOVE_HEAD(&local, entry);
++        vsnd_bypass_release_buf(p->stream, p->buf);
++        g_free(p);
++    }
++}
++
++/* Writer-side drain for one stream, callable off-BQL. Writes any
++ * available stream->queue buffers into the bypass ring. Stops on
++ * ring-full (buffer stays in queue for next pass). Does NOT call
++ * virtqueue_push / virtio_notify - those land on the pending list and
++ * the main thread reaps them when the IOProc has consumed the data. */
++static void vsnd_writer_drain_stream(VirtIOSoundPCMStream *stream)
++{
++    WITH_QEMU_LOCK_GUARD(&stream->queue_mutex) {
++        while (!QSIMPLEQ_EMPTY(&stream->queue)) {
++            VirtIOSoundPCMBuffer *buffer = QSIMPLEQ_FIRST(&stream->queue);
++            if (!virtio_queue_ready(buffer->vq)) {
++                return;
++            }
++            if (!stream->active) {
++                /* Stream torn down between enqueue and now. Defer the
++                 * release to the main thread by punting through the
++                 * pending list with end_head=current; main thread sees
++                 * it immediately reapable. */
++                QSIMPLEQ_REMOVE(&stream->queue, buffer,
++                                VirtIOSoundPCMBuffer, entry);
++                vsnd_bypass_pending_push(stream, buffer,
++                                         vsnd_bypass_head_value());
++                continue;
++            }
++            if (!buffer->populated) {
++                iov_to_buf(buffer->elem->out_sg,
++                           buffer->elem->out_num,
++                           sizeof(virtio_snd_pcm_xfer),
++                           buffer->data,
++                           buffer->size);
++                buffer->populated = true;
++            }
++            if (vsnd_bypass_write_convert(buffer->data + buffer->offset,
++                                          buffer->size) == 0) {
++                /* Ring full - leave the buffer in queue, try again next
++                 * worker tick. The IOProc will drain the ring soon. */
++                return;
++            }
++            QSIMPLEQ_REMOVE(&stream->queue, buffer,
++                            VirtIOSoundPCMBuffer, entry);
++            vsnd_bypass_pending_push(stream, buffer,
++                                     vsnd_bypass_head_value());
++        }
++    }
++}
++
++/* Writer thread loop. Polls every 1 ms (no BQL, no AioContext - this
++ * thread is completely independent of QEMU's main event loop). On each
++ * tick, if bypass is active, drains each output stream into the ring.
++ * Termination via vsnd_writer_run = 0 + pthread_join in the cleanup
++ * path. */
++static void *vsnd_writer_thread_fn(void *arg)
++{
++    (void)arg;
++    vsnd_writer_thread_set_rt();
++    const struct timespec tick = { .tv_sec = 0, .tv_nsec = 1000000 };
++    while (atomic_load_explicit(&vsnd_writer_run, memory_order_acquire)) {
++        nanosleep(&tick, NULL);
++        if (!atomic_load_explicit(&vsnd_bypass_active, memory_order_acquire)) {
++            continue;
++        }
++        VirtIOSound *target = atomic_load_explicit(&vsnd_writer_target,
++                                                   memory_order_acquire);
++        if (!target) {
++            continue;
++        }
++        for (uint32_t i = 0; i < target->snd_conf.streams; i++) {
++            VirtIOSoundPCMStream *s = target->pcm.streams[i];
++            if (s && s->info.direction == VIRTIO_SND_D_OUTPUT) {
++                vsnd_writer_drain_stream(s);
++            }
++        }
++    }
++    return NULL;
++}
++
++static void vsnd_writer_thread_start(VirtIOSound *target)
++{
++    atomic_store_explicit(&vsnd_writer_target, target, memory_order_release);
++    if (vsnd_writer_started) {
++        return;
++    }
++    atomic_store_explicit(&vsnd_writer_run, 1, memory_order_release);
++    if (pthread_create(&vsnd_writer_thread, NULL,
++                       vsnd_writer_thread_fn, NULL) == 0) {
++        vsnd_writer_started = true;
++        fprintf(stderr,
++                "virtio-snd: bypass writer thread started\n");
++    } else {
++        atomic_store_explicit(&vsnd_writer_run, 0, memory_order_release);
++        fprintf(stderr,
++                "virtio-snd: WARNING failed to spawn writer thread; "
++                "audio refill stays on BQL main thread\n");
++    }
++}
++
++static void vsnd_writer_thread_stop(void)
++{
++    atomic_store_explicit(&vsnd_writer_target, NULL, memory_order_release);
++    if (!vsnd_writer_started) {
++        return;
++    }
++    atomic_store_explicit(&vsnd_writer_run, 0, memory_order_release);
++    pthread_join(vsnd_writer_thread, NULL);
++    vsnd_writer_started = false;
++}
++
++#define VSND_DRAIN_INTERVAL_MS 2
++static QEMUTimer *vsnd_drain_timer;
++
++/* Periodic xrun logger. Piggybacks on the drain timer (fires every 2 ms)
++ * and emits one stderr line per second iff the cumulative underrun /
++ * overrun counts changed since the last log. Lets the operator correlate
++ * audible pops to ring-empty events without spamming the log on a clean
++ * run. The HAL guest rate is what the IOProc samples at - we derive the
++ * underrun duration from it. */
++static void vsnd_log_xruns_if_due(void)
++{
++    static int64_t last_log_ms;
++    static uint64_t last_underrun_frames;
++    static uint64_t last_overrun_count;
++
++    int64_t now = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
++    if (now - last_log_ms < 1000) {
++        return;
++    }
++    last_log_ms = now;
++
++    uint64_t uf = atomic_load_explicit(&vsnd_bypass_underrun_frames,
++                                       memory_order_relaxed);
++    uint64_t oc = atomic_load_explicit(&vsnd_bypass_overrun_count,
++                                       memory_order_relaxed);
++    uint64_t d_underrun = uf - last_underrun_frames;
++    uint64_t d_overrun = oc - last_overrun_count;
++    last_underrun_frames = uf;
++    last_overrun_count = oc;
++
++    if (d_underrun == 0 && d_overrun == 0) {
++        return;
++    }
++    unsigned rate = coreaudio_get_active_samplerate();
++    if (rate == 0) rate = 96000;
++    uint64_t d_underrun_us = (d_underrun * 1000000ULL) / rate;
++    fprintf(stderr,
++            "virtio-snd: xrun report - underrun frames=%llu (~%llu us "
++            "of silence in last second), overrun count=%llu (writer "
++            "dropped batches)\n",
++            (unsigned long long)d_underrun,
++            (unsigned long long)d_underrun_us,
++            (unsigned long long)d_overrun);
++}
++
++/* Drain timer runs on the QEMU main loop. After the worker-thread
++ * refactor the ring-fill work moved off-BQL, but this timer still
++ * has two jobs that NEED BQL (or are cheap enough not to bother
++ * relocating):
++ *   1. vsnd_bypass_pending_drain - returns completed bufs to the
++ *      guest via virtqueue_push + virtio_notify. Those calls require
++ *      BQL, so the deferred-return reaper must live here.
++ *   2. vsnd_log_xruns_if_due - rate-limited periodic logger.
++ * The per-stream virtio_snd_pcm_out_cb call below is a no-op in
++ * bypass mode (the cb just calls pending_drain again, which is
++ * mutex-protected and idempotent) but stays for the AUD_write
++ * fallback path in case bypass is ever refused (a guest streaming
++ * unsupported format / channel count). */
++static void vsnd_drain_timer_cb(void *opaque)
++{
++    if (!atomic_load_explicit(&vsnd_bypass_active, memory_order_acquire))
++        return;
++
++    vsnd_bypass_pending_drain();
++
++    if (vsnd_drain_target_dev) {
++        for (uint32_t i = 0; i < vsnd_drain_target_dev->snd_conf.streams; i++) {
++            VirtIOSoundPCMStream *s = vsnd_drain_target_dev->pcm.streams[i];
++            if (s && s->info.direction == VIRTIO_SND_D_OUTPUT)
++                virtio_snd_pcm_out_cb(s, INT_MAX);
++        }
++    }
++
++    vsnd_log_xruns_if_due();
++
++    timer_mod(vsnd_drain_timer,
++              qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + VSND_DRAIN_INTERVAL_MS);
++}
++
++/* External signal that the host audio path is no longer valid for the
++ * currently active bypass (HAL rate change, default-device swap, output
++ * device teardown). Atomically flips bypass off; the next out_cb falls back
++ * to the AUD_write resampler path. Called from coreaudio.m HAL listeners,
++ * which run off-BQL - keep the body lock-free. */
++void virtio_snd_bypass_invalidate(const char *reason);
++void virtio_snd_bypass_invalidate(const char *reason)
++{
++    int prev = atomic_exchange_explicit(&vsnd_bypass_active, 0,
++                                        memory_order_acq_rel);
++    if (prev) {
++        fprintf(stderr,
++                "virtio-snd: CoreAudio bypass INVALIDATED - %s "
++                "(falling back to mixer resampler)\n",
++                reason ? reason : "unknown");
++    }
++}
++
++/* Bridge the IOProc's first few reads at bypass activation: the ring
++ * starts empty, the reader fires at HAL cadence (every ~2-5 ms), and
++ * the writer needs several drain-timer cycles to produce its first
++ * burst of guest audio. Without a head-start the IOProc reads silence
++ * and we count multiple warmup underruns. Pre-loading ~20 ms of silence
++ * means the reader has something safe to drain while the writer races
++ * to catch up; cost is 20 ms of leading silence which is inaudible
++ * because bypass activates at QEMU boot, before anything plays.
++ *
++ * 20 ms at 96 kHz F32 stereo = 96000 * 0.020 * 8 = 15360 bytes ≈ 12% of
++ * the 128 KB ring. Comfortably below half-full so the writer has plenty
++ * of room to push its first real data without overruns. */
++#define VSND_BYPASS_PREFILL_BYTES 16384
++
++static void virtio_snd_bypass_set_active(int on, int src_fmt, uint32_t guest_rate)
++{
++    if (on) {
++        /* Decide whether to reset the ring.
++         *
++         * Cold start (src_fmt different from cached, e.g. fmt==0 at boot,
++         * or genuine format change between sessions): old ring contents
++         * are not valid for the new stream interpretation, so we wipe and
++         * pre-fill ~20 ms of zeros to give the IOProc a head-start while
++         * the writer races to produce its first burst of guest audio.
++         *
++         * Warm re-activation (same fmt): triggered by guest sending
++         * VIRTIO_SND_R_PCM_RELEASE followed by VIRTIO_SND_R_PCM_PREPARE
++         * during xrun recovery (the guest watchdog fires once per minute
++         * in steady state). The audio stream is logically continuous; the
++         * existing ring contents are still meaningful PCM and should not
++         * be discarded. Resetting head/tail here was the source of the
++         * "flatline'ish" zero segments visible in iZotope RX waveforms -
++         * every reset injected 46 ms of silence at 44.1 kHz (16384 bytes
++         * / 8 bytes per frame / 44100 Hz) into the audible output. */
++        bool fmt_changed = (vsnd_bypass_src_fmt != src_fmt);
++        vsnd_bypass_src_fmt = src_fmt;
++        atomic_store_explicit(&vsnd_bypass_guest_rate, guest_rate,
++                              memory_order_relaxed);
++        if (fmt_changed) {
++            atomic_store_explicit(&vsnd_bypass_tail, 0, memory_order_relaxed);
++            /* Zero the prefill region first - the ring memory is static
++             * and may hold stale data from a previous bypass session.
++             * Then publish head AFTER the zeros are visible so the
++             * IOProc never reads garbage. */
++            memset(vsnd_bypass_ring, 0, VSND_BYPASS_PREFILL_BYTES);
++            atomic_store_explicit(&vsnd_bypass_head,
++                                  VSND_BYPASS_PREFILL_BYTES,
++                                  memory_order_release);
++            /* Reset cubic-resampler sliding window on cold start - all
++             * four taps go to silence so the first emitted output
++             * interpolates from zero. The prefill zeros above provide
++             * the clean lead-in for the IOProc; by the time the writer
++             * actually produces audio the window has filled with real
++             * input frames and the resampler is operating normally. */
++            memset(&vsnd_resampler, 0, sizeof(vsnd_resampler));
++            /* Reset PLL integrator too - format/rate changed, the old
++             * accumulated correction would be wrong for the new clock
++             * pair. Steady state is reached within seconds anyway. */
++            vsnd_pll_integrator = 0.0;
++        }
++        if (!vsnd_drain_timer) {
++            vsnd_drain_timer = timer_new_ms(QEMU_CLOCK_REALTIME,
++                                             vsnd_drain_timer_cb, NULL);
++        }
++        timer_mod(vsnd_drain_timer,
++                  qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + VSND_DRAIN_INTERVAL_MS);
++        /* Spawn (or re-point) the BQL-independent writer thread now that
++         * the ring is published. */
++        if (vsnd_drain_target_dev) {
++            vsnd_writer_thread_start(vsnd_drain_target_dev);
++        }
++    } else {
++        /* Tear the writer thread down before flushing pending - once it
++         * stops, no new entries can land on the pending list. */
++        vsnd_writer_thread_stop();
++        if (vsnd_drain_timer) {
++            timer_del(vsnd_drain_timer);
++        }
++        vsnd_bypass_pending_flush();
++    }
++    int prev = atomic_exchange_explicit(&vsnd_bypass_active, on,
++                                        memory_order_acq_rel);
++    if (prev != on) {
++        fprintf(stderr, "virtio-snd: CoreAudio bypass %s (fmt=%d)\n",
++                on ? "ENABLED" : "DISABLED", src_fmt);
++    }
++}
++#else
++static inline int virtio_snd_bypass_is_active(void) { return 0; }
++static inline size_t vsnd_bypass_write_convert(const void *s, size_t n) {
++    (void)s; return n;
++}
++static inline void virtio_snd_bypass_set_active(int o, int f, uint32_t r) {
++    (void)o; (void)f; (void)r;
++}
++static inline void virtio_snd_bypass_invalidate(const char *r) { (void)r; }
++static inline void vsnd_bypass_pending_push(void *s, void *b, uint64_t e) {
++    (void)s; (void)b; (void)e;
++}
++static inline void vsnd_bypass_pending_drain(void) {}
++static inline void vsnd_bypass_pending_flush(void) {}
++static inline uint64_t vsnd_bypass_head_value(void) { return 0; }
++static inline uint32_t virtio_snd_bypass_depth_frames(void) { return 0; }
++#endif /* CONFIG_DARWIN */
++/* ============= /CoreAudio bypass ring ============= */
+ 
+ static uint32_t supported_formats = BIT(VIRTIO_SND_PCM_FMT_S8)
+                                   | BIT(VIRTIO_SND_PCM_FMT_U8)
+@@ -103,6 +1062,15 @@ virtio_snd_get_config(VirtIODevice *vdev, uint8_t *config)
+     cpu_to_le32s(&sndconfig->streams);
+     cpu_to_le32s(&sndconfig->chmaps);
+ 
++    /* Extra field at offset sizeof(virtio_snd_config): pipeline_extra_frames.
++     * Frame depth of host pipeline downstream of QEMU virtio queue
++     * (CoreAudio HAL + static device latency). Read by guest's
++     * audio_latency_ms sysfs. */
++    {
++        uint32_t extra = virtio_snd_bypass_depth_frames();
++        uint32_t le = cpu_to_le32(extra);
++        memcpy(config + sizeof(virtio_snd_config), &le, sizeof(le));
++    }
+ }
+ 
+ static void
+@@ -402,6 +1370,8 @@ static void virtio_snd_pcm_close(VirtIOSoundPCMStream *stream)
+     if (stream) {
+         virtio_snd_pcm_flush(stream);
+         if (stream->info.direction == VIRTIO_SND_D_OUTPUT) {
++            vsnd_drain_target_dev = NULL;
++            virtio_snd_bypass_set_active(0, 0, 0);
+             audio_be_close_out(stream->s->audio_be, stream->voice.out);
+             stream->voice.out = NULL;
+         } else if (stream->info.direction == VIRTIO_SND_D_INPUT) {
+@@ -475,6 +1445,24 @@ static uint32_t virtio_snd_pcm_prepare(VirtIOSound *s, uint32_t stream_id)
+                                          virtio_snd_pcm_out_cb,
+                                          &as);
+         audio_be_set_volume_out_lr(s->audio_be, stream->voice.out, 0, 255, 255);
++
++        /* Activate CoreAudio bypass for any S32/F32 stereo guest stream,
++         * regardless of HAL rate. The bypass writer thread resamples
++         * (linear interpolation) when guest_rate != hal_rate, so we no
++         * longer need to refuse on mismatch and fall back to QEMU's
++         * AUD_write mixer (which had its own glitchy resampler). The
++         * resampler runs off-BQL in the writer thread, keeping the
++         * lock-free IOProc path intact. */
++        bool bypass_ok = (as.nchannels == 2 &&
++                          (as.fmt == AUDIO_FORMAT_F32 ||
++                           as.fmt == AUDIO_FORMAT_S32));
++        if (bypass_ok) {
++            vsnd_drain_target_dev = s;
++            virtio_snd_bypass_set_active(1, as.fmt, (uint32_t)as.freq);
++        } else {
++            vsnd_drain_target_dev = NULL;
++            virtio_snd_bypass_set_active(0, 0, 0);
++        }
+     } else {
+         stream->voice.in = audio_be_open_in(s->audio_be,
+                                         stream->voice.in,
+@@ -918,6 +1906,22 @@ tx_err:
+     if (must_empty_invalid_queue) {
+         empty_invalid_queue(vdev, vq);
+     }
++
++    /* cdj3k-emu: drive out_cb synchronously once so the buffers we just
++     * enqueued drain (and ack to the guest) within microseconds instead
++     * of waiting up to ~10ms for the next QEMU mixer timer tick.
++     * Critical for the CoreAudio bypass path with shallow guest TX_BUFS.
++     * The non-bypass audio_be_write path is idempotent under early
++     * invocation, so this is safe to do unconditionally. */
++    {
++        uint32_t i;
++        for (i = 0; i < vsnd->snd_conf.streams; i++) {
++            VirtIOSoundPCMStream *s = vsnd->pcm.streams[i];
++            if (s && s->info.direction == VIRTIO_SND_D_OUTPUT) {
++                virtio_snd_pcm_out_cb(s, INT_MAX);
++            }
++        }
++    }
+ }
+ 
+ /*
+@@ -1068,7 +2072,11 @@ static void virtio_snd_realize(DeviceState *dev, Error **errp)
+     vsnd->pcm.pcm_params =
+         g_new0(virtio_snd_pcm_set_params, vsnd->snd_conf.streams);
+ 
+-    virtio_init(vdev, VIRTIO_ID_SOUND, sizeof(virtio_snd_config));
++    /* Config space layout: standard virtio_snd_config (12 bytes) followed
++     * by 4 extra bytes carrying pipeline_extra_frames - depth of host
++     * audio pipeline invisible to guest's frames_in_flight. The guest's
++     * audio_latency_ms sysfs sums both. */
++    virtio_init(vdev, VIRTIO_ID_SOUND, sizeof(virtio_snd_config) + 4);
+     virtio_add_feature(&vsnd->features, VIRTIO_F_VERSION_1);
+ 
+     /* set default params for all streams */
+@@ -1154,6 +2162,20 @@ static void virtio_snd_pcm_out_cb(void *data, int available)
+     VirtIOSoundPCMBuffer *buffer;
+     size_t size;
+ 
++    /* Bypass path: the dedicated writer thread (vsnd_writer_thread_fn)
++     * pulls bufs from stream->queue and pushes them into the SPSC ring
++     * off-BQL, so main-thread preemption cannot stall the ring refill.
++     * Here on the BQL path we only reap completed bufs (whose audio the
++     * IOProc has already consumed) from the pending list and ack them
++     * back to the guest. virtio_notify requires BQL, so reaping has to
++     * stay on the main thread; the worker only adds to pending, never
++     * touches the virtqueue completion side. */
++    if (virtio_snd_bypass_is_active()) {
++        vsnd_bypass_pending_drain();
++        (void)available;
++        return;
++    }
++
+     WITH_QEMU_LOCK_GUARD(&stream->queue_mutex) {
+         while (!QSIMPLEQ_EMPTY(&stream->queue)) {
+             buffer = QSIMPLEQ_FIRST(&stream->queue);
+@@ -1320,6 +2342,28 @@ static inline void virtio_snd_pcm_flush(VirtIOSoundPCMStream *stream)
+             buffer = QSIMPLEQ_FIRST(&stream->queue);
+             cb(stream, buffer);
+         }
++#ifdef CONFIG_DARWIN
++        /* Flush the pending deferred-return list - the guest sent
++         * RELEASE because its frames_in_flight is too high, and we
++         * MUST ack those bufs so the guest's count comes back down or
++         * it'll keep retrying RELEASE forever.
++         *
++         * NOTE: we deliberately do NOT drain the bypass ring (tail=head)
++         * here, despite an earlier version that did. The ring-drain was
++         * what produced the long flat silence segments visible in the
++         * iZotope RX "big pop" recordings (~170 ms at 96 kHz, ~370 ms
++         * at 44.1 kHz). Leaving the ring full lets the IOProc keep
++         * playing the in-flight audio while the writer is busy
++         * producing the guest's recovered stream behind it; the
++         * transition between old-ring audio and new-writer audio is at
++         * worst a small position jump (typically <0.4 beats of program
++         * material) which is far less audible than an outright silence
++         * gap. The pending bufs are still safely ack'd via
++         * vsnd_bypass_pending_flush above. */
++        if (stream->info.direction == VIRTIO_SND_D_OUTPUT) {
++            vsnd_bypass_pending_flush();
++        }
++#endif
+     }
+ }
+ 

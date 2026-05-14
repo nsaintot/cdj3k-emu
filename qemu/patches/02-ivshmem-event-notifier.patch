@@ -1,0 +1,20 @@
+diff --git a/util/event_notifier-posix.c b/util/event_notifier-posix.c
+index 83fdbb9..263dcbb 100644
+--- a/util/event_notifier-posix.c
++++ b/util/event_notifier-posix.c
+@@ -20,7 +20,6 @@
+ #include <sys/eventfd.h>
+ #endif
+ 
+-#ifdef CONFIG_EVENTFD
+ /*
+  * Initialize @e with existing file descriptor @fd.
+  * @fd must be a genuine eventfd object, emulation with pipe won't do.
+@@ -31,7 +30,6 @@ void event_notifier_init_fd(EventNotifier *e, int fd)
+     e->wfd = fd;
+     e->initialized = true;
+ }
+-#endif
+ 
+ int event_notifier_init(EventNotifier *e, int active)
+ {

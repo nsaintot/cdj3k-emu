@@ -1,0 +1,99 @@
+diff --git a/drivers/gpu/drm/virtio/virtgpu_display.c b/drivers/gpu/drm/virtio/virtgpu_display.c
+index ad924a850..34dd2edbd 100644
+--- a/drivers/gpu/drm/virtio/virtgpu_display.c
++++ b/drivers/gpu/drm/virtio/virtgpu_display.c
+@@ -164,6 +164,22 @@ static int virtio_gpu_conn_get_modes(struct drm_connector *connector)
+ 	struct drm_display_mode *mode = NULL;
+ 	int count, width, height;
+ 
++	/*
++	 * cdj3k-emu: jog LCD (index 1) is a synthetic output.  Return a
++	 * single 1280x240@71Hz preferred mode.  EP122 searches for this mode
++	 * by name via DRM_IOCTL_MODE_GETCONNECTOR directly (not through libdrm),
++	 * so it must be present in the kernel mode list.
++	 */
++	if (output->index == 1) {
++		mode = drm_cvt_mode(connector->dev, 1280, 240, 71,
++				    false, false, false);
++		if (!mode)
++			return 0;
++		mode->type |= DRM_MODE_TYPE_PREFERRED;
++		drm_mode_probed_add(connector, mode);
++		return 1;
++	}
++
+ 	if (output->edid) {
+ 		count = drm_add_edid_modes(connector, output->edid);
+ 		if (count)
+@@ -197,6 +213,12 @@ static enum drm_mode_status virtio_gpu_conn_mode_valid(struct drm_connector *con
+ 		drm_connector_to_virtio_gpu_output(connector);
+ 	int width, height;
+ 
++	/* cdj3k-emu: Jog LCD
++	 *  accept everything — only one mode (1280x240) is ever probed.
++	 */
++	if (output->index == 1)
++		return MODE_OK;
++
+ 	width  = le32_to_cpu(output->info.r.width);
+ 	height = le32_to_cpu(output->info.r.height);
+ 
+@@ -265,6 +287,15 @@ static int vgdev_output_init(struct virtio_gpu_device *vgdev, int index)
+ 		output->info.enabled = cpu_to_le32(true);
+ 		output->info.r.width = cpu_to_le32(XRES_DEF);
+ 		output->info.r.height = cpu_to_le32(YRES_DEF);
++	} else if (index == 1) {
++		/*
++		 * cdj3k-emu: synthetic jog LCD output.  QEMU only has one
++		 * real scanout; this second output is driven entirely by
++		 * ep122_shim via memfd — no QEMU scanout command is sent for it.
++		 * info.enabled=true makes conn_detect return connected so the
++		 * DRM core registers the connector and EP122 can find it.
++		 */
++		output->info.enabled = cpu_to_le32(true);
+ 	}
+ 
+ 	primary = virtio_gpu_plane_init(vgdev, DRM_PLANE_TYPE_PRIMARY, index);
+@@ -283,6 +314,16 @@ static int vgdev_output_init(struct virtio_gpu_device *vgdev, int index)
+ 	if (vgdev->has_edid)
+ 		drm_connector_attach_edid_property(connector);
+ 
++	/*
++	 * cdj3k-emu: EP122's JogLcdDRM searches for a connector with
++	 * connector_type=DRM_MODE_CONNECTOR_DSI (16) and connector_type_id=2.
++	 * Override the defaults set by drm_connector_init above.
++	 */
++	if (index == 1) {
++		connector->connector_type    = DRM_MODE_CONNECTOR_DSI;
++		connector->connector_type_id = 2;
++	}
++
+ 	drm_simple_encoder_init(dev, encoder, DRM_MODE_ENCODER_VIRTUAL);
+ 	drm_encoder_helper_add(encoder, &virtio_gpu_enc_helper_funcs);
+ 	encoder->possible_crtcs = 1 << index;
+@@ -335,6 +376,7 @@ static const struct drm_mode_config_funcs virtio_gpu_mode_funcs = {
+ int virtio_gpu_modeset_init(struct virtio_gpu_device *vgdev)
+ {
+ 	int i, ret;
++	int num_outputs;
+ 
+ 	if (!vgdev->num_scanouts)
+ 		return 0;
+@@ -354,7 +396,16 @@ int virtio_gpu_modeset_init(struct virtio_gpu_device *vgdev)
+ 
+ 	vgdev->ddev->mode_config.fb_modifiers_not_supported = true;
+ 
+-	for (i = 0 ; i < vgdev->num_scanouts; ++i)
++	/*
++	 * cdj3k-emu: always init at least 2 outputs. QEMU is configured
++	 * with max_outputs=1 but EP122 requires a second synthetic output
++	 * (index 1, DSI-2) for the jog LCD.  outputs[] has VIRTIO_GPU_MAX_SCANOUTS
++	 * (16) slots so index 1 is always safe to use.
++	 */
++	num_outputs = (int)vgdev->num_scanouts;
++	if (num_outputs < 2)
++		num_outputs = 2;
++	for (i = 0 ; i < num_outputs; ++i)
+ 		vgdev_output_init(vgdev, i);
+ 
+ 	drm_mode_config_reset(vgdev->ddev);

@@ -1,0 +1,48 @@
+diff --git a/qapi/ui.json b/qapi/ui.json
+index b2c42a7..ec7bdf9 100644
+--- a/qapi/ui.json
++++ b/qapi/ui.json
+@@ -1517,6 +1517,8 @@
+ #
+ # @dbus: Start a D-Bus service for the display.  (Since 7.0)
+ #
++# @shm: Share the display via a shared-memory file.  (Since 10.2)
++#
+ # Since: 2.12
+ ##
+ { 'enum'    : 'DisplayType',
+@@ -1529,10 +1531,23 @@
+     { 'name': 'curses', 'if': 'CONFIG_CURSES' },
+     { 'name': 'cocoa', 'if': 'CONFIG_COCOA' },
+     { 'name': 'spice-app', 'if': 'CONFIG_SPICE' },
+-    { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' }
++    { 'name': 'dbus', 'if': 'CONFIG_DBUS_DISPLAY' },
++    { 'name': 'shm' }
+   ]
+ }
+ 
++##
++# @DisplaySHM:
++#
++# Options for the shared-memory display backend.
++#
++# @path: Path of the shared-memory file to create.
++#
++# Since: 10.2
++##
++{ 'struct': 'DisplaySHM',
++  'data': { 'path': 'str' } }
++
+ ##
+ # @DisplayOptions:
+ #
+@@ -1567,7 +1582,8 @@
+       'egl-headless': { 'type': 'DisplayEGLHeadless',
+                         'if': 'CONFIG_OPENGL' },
+       'dbus': { 'type': 'DisplayDBus', 'if': 'CONFIG_DBUS_DISPLAY' },
+-      'sdl': { 'type': 'DisplaySDL', 'if': 'CONFIG_SDL' }
++      'sdl': { 'type': 'DisplaySDL', 'if': 'CONFIG_SDL' },
++      'shm': { 'type': 'DisplaySHM' }
+   }
+ }
+ 

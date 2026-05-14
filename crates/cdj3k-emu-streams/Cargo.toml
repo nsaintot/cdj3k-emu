@@ -1,0 +1,15 @@
+[package]
+name = "cdj3k-emu-streams"
+description = "Guest-to-host stream readers: main LCD, jog LCD, sub-CPU control, repaint gate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cdj3k-emu-subucom = { path = "../cdj3k-emu-subucom" }
+memmap2 = "0.9"
+egui = "0.29"
+puffin = "0.19"

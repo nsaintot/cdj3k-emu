@@ -1,0 +1,22 @@
+[package]
+name = "cdj3k-emu-platform"
+description = "macOS host integration: AppKit window/menu, CoreAudio enumeration, trackpad haptics, runtime paths."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
+egui = "0.29"
+libc = "0.2"
+raw-window-handle = "0.6"
+muda = "0.15"
+rfd = { version = "0.15", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.5.2", features = ["relax-sign-encoding"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSView", "NSWindow", "NSResponder", "NSOpenPanel", "NSPanel", "NSSavePanel", "NSApplication", "NSRunningApplication"] }
+objc2-foundation = { version = "0.2.2", features = ["NSGeometry", "NSString", "NSThread", "NSURL", "libc"] }

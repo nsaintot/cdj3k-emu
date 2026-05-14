@@ -1,0 +1,22 @@
+---
+# Light defensive checks for the guest C side. Modernize/cppcoreguidelines
+# are deliberately out - the shim and forwarders are written in plain C99
+# against musl/glibc, not C++-style code.
+Checks: >
+  bugprone-*,
+  clang-analyzer-*,
+  misc-*,
+  performance-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -misc-include-cleaner,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity,
+  -readability-braces-around-statements,
+  -readability-isolate-declaration,
+  -readability-implicit-bool-conversion,
+  -readability-else-after-return
+WarningsAsErrors: ''
+HeaderFilterRegex: '^guest/.*\.h$'
+FormatStyle: file

@@ -1,0 +1,71 @@
+diff --git a/drivers/block/virtio_blk.c b/drivers/block/virtio_blk.c
+index 1fe011676..d098cee76 100644
+--- a/drivers/block/virtio_blk.c
++++ b/drivers/block/virtio_blk.c
+@@ -84,6 +84,8 @@ struct virtio_blk {
+ 
+ 	/* For zoned device */
+ 	unsigned int zone_sectors;
++
++	bool disk_registered;
+ };
+ 
+ struct virtblk_req {
+@@ -1002,6 +1004,8 @@ static void virtblk_update_capacity(struct virtio_blk *vblk, bool resize)
+ 	set_capacity_and_notify(vblk->disk, capacity);
+ }
+ 
++static const struct attribute_group *virtblk_attr_groups[];
++
+ static void virtblk_config_changed_work(struct work_struct *work)
+ {
+ 	struct virtio_blk *vblk =
+@@ -1389,10 +1393,26 @@ static int virtblk_probe(struct virtio_device *vdev)
+ 	}
+ 	q = vblk->disk->queue;
+ 
+-	virtblk_name_format("vd", index, vblk->disk->disk_name, DISK_NAME_LEN);
+-
+-	vblk->disk->major = major;
+-	vblk->disk->first_minor = index_to_minor(index);
++	/*
++	 * cdj3k-emu device naming:
++	 *   index 0 → mmcblk1  (eMMC qcow2, major 179 MMC_BLOCK_MAJOR, base minor 8)
++	 *   index 1 → sdb      (virtual USB, major 8 SCSI_DISK0_MAJOR, base minor 16)
++	 *   index N → vdX      (standard virtio-blk fallback)
++	 *   SDCard is not used here but would be mapped as sda in this context
++	 */
++	if (index == 0) {
++		snprintf(vblk->disk->disk_name, DISK_NAME_LEN, "mmcblk1");
++		vblk->disk->major       = 179;
++		vblk->disk->first_minor = 8;
++	} else if (index == 1) {
++		snprintf(vblk->disk->disk_name, DISK_NAME_LEN, "sdb");
++		vblk->disk->major       = 8;
++		vblk->disk->first_minor = 16;
++	} else {
++		virtblk_name_format("vd", index, vblk->disk->disk_name, DISK_NAME_LEN);
++		vblk->disk->major = major;
++		vblk->disk->first_minor = index_to_minor(index);
++	}
+ 	vblk->disk->minors = 1 << PART_BITS;
+ 	vblk->disk->private_data = vblk;
+ 	vblk->disk->fops = &virtblk_fops;
+@@ -1578,6 +1598,7 @@ static int virtblk_probe(struct virtio_device *vdev)
+ 	err = device_add_disk(&vdev->dev, vblk->disk, virtblk_attr_groups);
+ 	if (err)
+ 		goto out_cleanup_disk;
++	vblk->disk_registered = true;
+ 
+ 	return 0;
+ 
+@@ -1603,7 +1624,8 @@ static void virtblk_remove(struct virtio_device *vdev)
+ 	/* Make sure no work handler is accessing the device. */
+ 	flush_work(&vblk->config_work);
+ 
+-	del_gendisk(vblk->disk);
++	if (vblk->disk_registered)
++		del_gendisk(vblk->disk);
+ 	blk_mq_free_tag_set(&vblk->tag_set);
+ 
+ 	mutex_lock(&vblk->vdev_mutex);

@@ -1,0 +1,43 @@
+diff --git a/system/main.c b/system/main.c
+index b8f7157..4255584 100644
+--- a/system/main.c
++++ b/system/main.c
+@@ -41,10 +41,38 @@
+ #include <CoreFoundation/CoreFoundation.h>
+ #endif
+ 
++#ifdef CONFIG_DARWIN
++#include <mach/mach.h>
++#include <mach/mach_time.h>
++#include <mach/thread_policy.h>
++static void set_main_loop_rt(void)
++{
++    mach_timebase_info_data_t tb;
++    if (mach_timebase_info(&tb) != KERN_SUCCESS) return;
++    uint64_t period_ns      = 10ull * 1000 * 1000;
++    uint64_t computation_ns =  1ull * 1000 * 1000;
++    uint64_t constraint_ns  =  5ull * 1000 * 1000;
++    struct thread_time_constraint_policy ttcpolicy = {
++        .period      = (uint32_t)(period_ns      * tb.denom / tb.numer),
++        .computation = (uint32_t)(computation_ns * tb.denom / tb.numer),
++        .constraint  = (uint32_t)(constraint_ns  * tb.denom / tb.numer),
++        .preemptible = 1,
++    };
++    thread_policy_set(mach_thread_self(),
++                      THREAD_TIME_CONSTRAINT_POLICY,
++                      (thread_policy_t)&ttcpolicy,
++                      THREAD_TIME_CONSTRAINT_POLICY_COUNT);
++}
++#endif
++
+ static void *qemu_default_main(void *opaque)
+ {
+     int status;
+ 
++#ifdef CONFIG_DARWIN
++    set_main_loop_rt();
++#endif
++
+     replay_mutex_lock();
+     bql_lock();
+     status = qemu_main_loop();

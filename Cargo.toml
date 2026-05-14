@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/cdj3k-emu-subucom",
+  "crates/cdj3k-emu-streams",
+  "crates/cdj3k-emu-platform",
+  "crates/cdj3k-emu-ui",
+  "crates/cdj3k-emu-runtime",
+  "app/cdj3k-emu",
+  "crates/cdj3k-emu-storage",
+  "crates/cdj3k-emu-firmware",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nsaintot/cdj3k-emu"
+# All workspace members are internal-only — they share types across crate
+# boundaries but aren't designed for crates.io consumption.  Keep them out
+# of any accidental `cargo publish` run.
+publish = false
+

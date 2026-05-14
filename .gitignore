@@ -1,0 +1,29 @@
+Cargo.lock
+# Compiled guest binaries (all outputs land in guest/out/)
+guest/out/
+# Build workspace (includes build/cache/ — see bundle.sh socket_vmnet cache)
+build/
+# macOS metadata
+*.DS_Store
+# Encryption keys
+*.key
+
+# Distribution output
+dist/
+# Rust build output
+target/
+
+# QEMU: ignore the cloned src tree, build artefacts, and install dir.
+# Track only build.sh, the overlay rsync'd onto src, and the shim sources.
+qemu/*
+!qemu/build.sh
+!qemu/patches
+!qemu/shim
+
+# Assets: track only the OTF fonts; everything else (PNGs, PPM captures,
+# Helvetica) is excluded from the repo (kept on disk locally for dev use).
+app/cdj3k-emu/assets/*
+!app/cdj3k-emu/assets/preview.png
+!app/cdj3k-emu/assets/icon*
+!app/cdj3k-emu/assets/*.icns
+!app/cdj3k-emu/assets/*.otf

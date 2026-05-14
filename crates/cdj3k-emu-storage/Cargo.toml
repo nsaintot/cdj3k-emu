@@ -1,0 +1,15 @@
+[package]
+name = "cdj3k-emu-storage"
+description = "Per-instance eMMC qcow2 provisioning, GPT layout, persistent slot settings."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+crc = "3"
+uuid = { version = "1", features = ["v4"] }
+cdj3k-emu-firmware = { path = "../cdj3k-emu-firmware" }
+cdj3k-emu-platform = { path = "../cdj3k-emu-platform" }

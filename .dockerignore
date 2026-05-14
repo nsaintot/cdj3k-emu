@@ -1,0 +1,12 @@
+# Exclude large/irrelevant directories from the Docker build context.
+# Only guest/modules/, guest/*.c, guest/*.h, and docker/ are needed.
+build/
+dist/
+target/
+.git/
+app/
+tools/
+initramfs-patch/
+qemu/
+crates/
+docs/

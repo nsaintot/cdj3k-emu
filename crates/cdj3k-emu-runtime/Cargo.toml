@@ -1,0 +1,21 @@
+[package]
+name = "cdj3k-emu-runtime"
+description = "QEMU instance lifecycle: spawn, QMP control, vmnet/tap bridging, USB pass-through."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = "1"
+libc = "0.2"
+cdj3k-emu-platform = { path = "../cdj3k-emu-platform" }
+
+[build-dependencies]
+# none - build.rs uses only std
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# libcdj3k-emu-qemu.dylib is macOS-only (HVF + Cocoa)
+# On other platforms this crate compiles but cdj3k_emu_qemu_run is unavailable.

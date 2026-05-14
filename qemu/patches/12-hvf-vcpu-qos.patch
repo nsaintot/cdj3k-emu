@@ -1,0 +1,52 @@
+diff --git a/accel/hvf/hvf-accel-ops.c b/accel/hvf/hvf-accel-ops.c
+index b74a577..aaa6182 100644
+--- a/accel/hvf/hvf-accel-ops.c
++++ b/accel/hvf/hvf-accel-ops.c
+@@ -59,6 +59,34 @@
+ #include "system/hvf.h"
+ #include "system/hvf_int.h"
+ #include <mach/mach_time.h>
++#include <pthread.h>
++#include <sys/qos.h>
++
++/* cdj3k-emu: bump HVF VCPU threads to QOS_CLASS_USER_INTERACTIVE.
++ *
++ * Why: even with the guest's audio thread running SCHED_FIFO 98 inside
++ * Linux, the VCPU thread that executes it is a normal QEMU pthread on
++ * the host. Under macOS scheduling pressure (background apps, GPU
++ * work, audio compaction, etc.) the host may preempt the VCPU thread
++ * for tens of ms; while preempted, the guest's wall clock pauses and
++ * JUCE's audio DSP receives "time jumps" on resume that manifest as
++ * audible glitches in the output stream. Our virtualization pipeline
++ * transmits those glitches faithfully (we proved bit-perfect with a
++ * pure-sine test).
++ *
++ * A previous attempt used THREAD_TIME_CONSTRAINT_POLICY (Mach RT)
++ * which assumes a periodic "X compute per Y period" model - VCPU
++ * threads spend long uninterrupted spans inside hv_vcpu_run, which
++ * violates the contract and caused macOS to throttle them (audio
++ * dropped out completely after ~2 min). QoS classes are the right
++ * tool here: USER_INTERACTIVE bumps the thread up the scheduler's
++ * priority ladder without a hard contract, so macOS will prefer the
++ * VCPU over default/utility/background work but won't penalize us
++ * for variable-duration compute. */
++static void set_vcpu_qos(void)
++{
++    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
++}
+ 
+ HVFState *hvf_state;
+ 
+@@ -160,6 +188,12 @@ static void *hvf_cpu_thread_fn(void *arg)
+ 
+     assert(hvf_enabled());
+ 
++    /* cdj3k-emu: hoist this VCPU into the user-interactive QoS band
++     * before any heavy setup so the rest of hvf_init_vcpu (which
++     * holds BQL) also runs at elevated priority. See set_vcpu_qos
++     * comment for rationale. */
++    set_vcpu_qos();
++
+     rcu_register_thread();
+ 
+     bql_lock();

@@ -1,0 +1,559 @@
+diff --git a/audio/coreaudio.m b/audio/coreaudio.m
+index e4ec1df..ca4393b 100644
+--- a/audio/coreaudio.m
++++ b/audio/coreaudio.m
+@@ -24,7 +24,9 @@
+ 
+ #include "qemu/osdep.h"
+ #include <CoreAudio/CoreAudio.h>
++#include <mach/mach_time.h>      /* mach_absolute_time, mach_timebase_info */
+ #include <pthread.h>            /* pthread_X */
++#include <stdatomic.h>           /* _Atomic */
+ 
+ #include "qemu/main-loop.h"
+ #include "qemu/module.h"
+@@ -51,16 +53,91 @@
+     bool enabled;
+ } CoreaudioVoiceOut;
+ 
++/* AudioDeviceID currently bound by init_out_device. Used by the HAL
++ * rate-change listener (handle_rate_change) to query the right device's
++ * nominal sample rate without re-walking the property tree, and by
++ * coreaudio_get_active_samplerate() as the seed handle for the
++ * lock-free cache (see below). kAudioDeviceUnknown when no device is
++ * bound (between init and fini, or before first init). */
++static AudioDeviceID cdj3k_emu_active_output_device = kAudioDeviceUnknown;
++
++/* cdj3k-emu: optional UID of a specific output device to bind to. When NULL,
++ * we fall back to kAudioHardwarePropertyDefaultOutputDevice (system default).
++ * Set per-instance via -audiodev coreaudio,out.device-uid=<UID>. The UI's
++ * per-instance "Output Device" picker resolves a CoreAudio UID and passes it
++ * through QemuConfig → cpdo->out_device_uid → here. */
++static char *cdj3k_emu_preferred_device_uid = NULL;
++
+ static const AudioObjectPropertyAddress voice_out_addr = {
+     kAudioHardwarePropertyDefaultOutputDevice,
+     kAudioObjectPropertyScopeGlobal,
+     kAudioObjectPropertyElementMain
+ };
+ 
++/* Per-device property: nominal sample rate (what the HAL clock runs at).
++ * Used as both the read selector (to seed the cached samplerate) and
++ * the listener selector (to refresh the cache when the HAL rate changes
++ * - e.g. user opens Audio MIDI Setup, Audio Hijack flips the rate
++ * underneath us, Bluetooth renegotiates). The listener does NOT
++ * invalidate the bypass anymore: the writer's resampler tracks
++ * (potentially changing) HAL rates through the soft-PLL, so a brief
++ * rate mismatch becomes a sub-perceptual pitch nudge instead of an
++ * audible mixer-resampler fallback. */
++static const AudioObjectPropertyAddress device_rate_addr = {
++    kAudioDevicePropertyNominalSampleRate,
++    kAudioObjectPropertyScopeGlobal,
++    kAudioObjectPropertyElementMain
++};
++
++/* Resolve a CoreAudio device UID to its AudioDeviceID. Returns
++ * kAudioDeviceUnknown if the UID doesn't match any live device. */
++static AudioDeviceID coreaudio_resolve_uid(const char *uid_cstr)
++{
++    if (!uid_cstr || !uid_cstr[0]) {
++        return kAudioDeviceUnknown;
++    }
++    CFStringRef uid = CFStringCreateWithCString(NULL, uid_cstr,
++                                                kCFStringEncodingUTF8);
++    if (!uid) {
++        return kAudioDeviceUnknown;
++    }
++    AudioObjectPropertyAddress addr = {
++        kAudioHardwarePropertyTranslateUIDToDevice,
++        kAudioObjectPropertyScopeGlobal,
++        kAudioObjectPropertyElementMain
++    };
++    AudioDeviceID resolved = kAudioDeviceUnknown;
++    UInt32 sz = sizeof(resolved);
++    OSStatus st = AudioObjectGetPropertyData(kAudioObjectSystemObject,
++                                             &addr,
++                                             sizeof(uid), &uid,
++                                             &sz, &resolved);
++    CFRelease(uid);
++    if (st != kAudioHardwareNoError) {
++        return kAudioDeviceUnknown;
++    }
++    return resolved;
++}
++
+ static OSStatus coreaudio_get_voice_out(AudioDeviceID *id)
+ {
+     UInt32 size = sizeof(*id);
+ 
++    /* Per-instance device pick wins over system default when its UID
++     * still resolves; otherwise we fall through to the default and log
++     * once so the user knows we couldn't honor their choice. */
++    if (cdj3k_emu_preferred_device_uid) {
++        AudioDeviceID r = coreaudio_resolve_uid(cdj3k_emu_preferred_device_uid);
++        if (r != kAudioDeviceUnknown) {
++            *id = r;
++            return kAudioHardwareNoError;
++        }
++        fprintf(stderr,
++                "coreaudio: preferred device UID '%s' not present - "
++                "falling back to system default output\n",
++                cdj3k_emu_preferred_device_uid);
++    }
++
+     return AudioObjectGetPropertyData(kAudioObjectSystemObject,
+                                       &voice_out_addr,
+                                       0,
+@@ -121,6 +198,76 @@ static OSStatus coreaudio_set_out_framesize(AudioDeviceID id, UInt32 *framesize)
+                                       framesize);
+ }
+ 
++/* HAL output pipeline depth in microseconds. Updated by audioDeviceIOProc
++ * from inOutputTime->mHostTime - mach_absolute_time(). Reflects the time
++ * between when IOProc fills a buffer and when the DAC will play it -
++ * i.e. the CoreAudio HAL output queue depth. Read by virtio-snd to
++ * expose to the guest via config space. */
++static _Atomic uint32_t g_coreaudio_pipeline_depth_us;
++
++uint32_t coreaudio_get_pipeline_depth_us(void);
++uint32_t coreaudio_get_pipeline_depth_us(void)
++{
++    return atomic_load_explicit(&g_coreaudio_pipeline_depth_us,
++                                memory_order_relaxed);
++}
++
++/* Static device latency in frames: kAudioDevicePropertyLatency +
++ * kAudioDevicePropertySafetyOffset. Captures the USB transit + DAC
++ * pipeline (Focusrite, etc.) - typically 10-30ms on USB interfaces.
++ * Added to the dynamic HAL depth to get the full host audio latency. */
++static _Atomic uint32_t g_coreaudio_static_latency_frames;
++
++uint32_t coreaudio_get_static_latency_frames(void);
++uint32_t coreaudio_get_static_latency_frames(void)
++{
++    return atomic_load_explicit(&g_coreaudio_static_latency_frames,
++                                memory_order_relaxed);
++}
++
++/* cdj3k-emu: cached current nominal sample rate of the bound device.
++ * The original implementation issued a synchronous HAL property read on
++ * every call. Because the guest pulls virtio-snd config (and thus this
++ * value, via virtio_snd_bypass_depth_frames) from a sysfs polling loop,
++ * those reads landed on the BQL thread under contention - each one
++ * 100-500 us nominal, occasionally several ms when coreaudiod is busy -
++ * and starved the bypass-ring refill cadence, producing audible pops.
++ * Now this is a single atomic load: the value is seeded by
++ * init_out_device and kept fresh by the rate-change HAL listener
++ * (handle_rate_change), which fires off-BQL. */
++static _Atomic uint32_t g_coreaudio_cached_samplerate;
++
++/* Re-query the device's nominal rate and update the cache. Safe to call
++ * from any thread: AudioObjectGetPropertyData is thread-safe and the
++ * cache write is a single atomic store. Returns the rate it stored, or
++ * 0 if the read failed (in which case the cache is also zeroed). */
++static unsigned coreaudio_refresh_cached_samplerate(AudioDeviceID device_id)
++{
++    if (device_id == kAudioDeviceUnknown) {
++        atomic_store_explicit(&g_coreaudio_cached_samplerate, 0,
++                              memory_order_relaxed);
++        return 0;
++    }
++    Float64 rate = 0;
++    UInt32 size = sizeof(rate);
++    OSStatus status = AudioObjectGetPropertyData(device_id, &device_rate_addr,
++                                                 0, NULL, &size, &rate);
++    unsigned u = (status == kAudioHardwareNoError && rate > 0)
++                     ? (unsigned)rate : 0;
++    atomic_store_explicit(&g_coreaudio_cached_samplerate, u,
++                          memory_order_relaxed);
++    return u;
++}
++
++/* Hot-path accessor. Used by virtio-snd's config-read path (every guest
++ * sysfs poll). Must be lock-free and syscall-free - see comment above. */
++unsigned coreaudio_get_active_samplerate(void);
++unsigned coreaudio_get_active_samplerate(void)
++{
++    return atomic_load_explicit(&g_coreaudio_cached_samplerate,
++                                memory_order_relaxed);
++}
++
+ static OSStatus coreaudio_set_out_streamformat(AudioDeviceID id,
+                                                AudioStreamBasicDescription *d)
+ {
+@@ -315,27 +462,105 @@ static OSStatus out_device_ioproc(
+     CoreaudioVoiceOut *core = hwptr;
+     size_t len;
+ 
++    /* cdj3k-emu: bypass fast-path is LOCK-FREE and runs BEFORE buf_mutex
++     * acquire. The ring is SPSC-atomic and the device_frame_size /
++     * bytes_per_frame / device_id fields are set once at init and never
++     * mutated, so the bypass read needs no synchronization. Hoisting this
++     * above the mutex is critical for stress robustness: QEMU's audio
++     * frontend periodically calls our `audio_generic_*` wrappers (each
++     * grabs buf_mutex) on the main thread; if the main thread is
++     * preempted while holding the mutex, the IOProc blocks for the full
++     * preemption window, the DAC underruns, and CoreAudio plays whatever
++     * stale data was left in `out` - audible as "plastic pops" or, under
++     * sustained main-thread preemption, sample-uncorrelated white noise.
++     * The fix is to never block in the IOProc when the bypass owns the
++     * stream. */
++    frame_size = core->device_frame_size;
++    len = frame_size * hw->info.bytes_per_frame;
++
++    extern int virtio_snd_bypass_is_active(void) __attribute__((weak_import));
++    extern size_t virtio_snd_bypass_avail(void) __attribute__((weak_import));
++    extern size_t virtio_snd_bypass_read(void *dst, size_t bytes)
++        __attribute__((weak_import));
++    extern void virtio_snd_bypass_note_underrun(uint32_t frames)
++        __attribute__((weak_import));
++    if (&virtio_snd_bypass_is_active && virtio_snd_bypass_is_active()
++        && inDevice == core->device_id && len > 0) {
++        /* HAL pipeline-depth measurement: cheap atomic store, safe
++         * lock-free. virtio-snd reads it lock-free via atomic load. */
++        if (inOutputTime && (inOutputTime->mFlags & kAudioTimeStampHostTimeValid)) {
++            static mach_timebase_info_data_t s_tb;
++            if (s_tb.denom == 0) mach_timebase_info(&s_tb);
++            uint64_t now = mach_absolute_time();
++            uint64_t fut = inOutputTime->mHostTime;
++            uint64_t ticks = (fut > now) ? (fut - now) : 0;
++            uint64_t us = (ticks * s_tb.numer) / ((uint64_t)s_tb.denom * 1000ULL);
++            if (us > 1000000) us = 1000000;
++            atomic_store_explicit(&g_coreaudio_pipeline_depth_us,
++                                  (uint32_t)us, memory_order_relaxed);
++        }
++
++        if (virtio_snd_bypass_avail() < len) {
++            /* Ring underrun: emit silence (still better than stale data).
++             * Record so the periodic logger sees real ring-empty events. */
++            memset(out, 0, len);
++            if (&virtio_snd_bypass_note_underrun) {
++                virtio_snd_bypass_note_underrun(frame_size);
++            }
++            return 0;
++        }
++        virtio_snd_bypass_read(out, len);
++        return 0;
++    }
++
++    /* AUD_write fallback path (no bypass active, or bypass refused).
++     * Touches hw->buf_emul / pos_emul / pending_emul which ARE protected
++     * by buf_mutex - safe to acquire here.
++     *
++     * CRITICAL: every early-return below MUST first fill `out` with
++     * silence. The IOProc's `out` buffer is owned by CoreAudio and is
++     * NOT zeroed between fires - returning without writing leaves
++     * whatever was already there (typically the previous fire's audio)
++     * for the DAC to play again. That produces sample-and-hold
++     * "plateau" artifacts in the recorded output: the audio appears to
++     * freeze at one level for a few frames, then cut over to fresh
++     * audio. The iZotope RX waveforms showing cliff→flat→cliff→flat
++     * patterns are exactly this. The only safe non-fill exit is the
++     * bypass path above (which writes via bypass_read or memset). */
+     if (coreaudio_voice_out_buf_lock(core, "out_device_ioproc")) {
+         inInputTime = 0;
++        memset(out, 0, len);
+         return 0;
+     }
+ 
+     if (inDevice != core->device_id) {
++        memset(out, 0, len);
+         coreaudio_voice_out_buf_unlock(core, "out_device_ioproc(old device)");
+         return 0;
+     }
+ 
+-    frame_size = core->device_frame_size;
++    if (inOutputTime && (inOutputTime->mFlags & kAudioTimeStampHostTimeValid)) {
++        static mach_timebase_info_data_t s_tb;
++        if (s_tb.denom == 0) mach_timebase_info(&s_tb);
++        uint64_t now = mach_absolute_time();
++        uint64_t fut = inOutputTime->mHostTime;
++        uint64_t ticks = (fut > now) ? (fut - now) : 0;
++        uint64_t us = (ticks * s_tb.numer) / ((uint64_t)s_tb.denom * 1000ULL);
++        if (us > 1000000) us = 1000000;
++        atomic_store_explicit(&g_coreaudio_pipeline_depth_us,
++                              (uint32_t)us, memory_order_relaxed);
++    }
++
+     pending_frames = hw->pending_emul / hw->info.bytes_per_frame;
+ 
+-    /* if there are not enough samples, set signal and return */
++    /* if there are not enough samples, set signal and emit silence */
+     if (pending_frames < frame_size) {
+         inInputTime = 0;
++        memset(out, 0, len);
+         coreaudio_voice_out_buf_unlock(core, "out_device_ioproc(empty)");
+         return 0;
+     }
+ 
+-    len = frame_size * hw->info.bytes_per_frame;
+     while (len) {
+         size_t write_len, start;
+ 
+@@ -355,6 +580,45 @@ static OSStatus out_device_ioproc(
+     return 0;
+ }
+ 
++/* Invalidate virtio-snd's bypass flag (forces the slow AUD_write path).
++ * Resolved weakly so test-audio (which doesn't link virtio-snd) still
++ * links - when unresolved we're a no-op. */
++static void coreaudio_invalidate_bypass(const char *reason)
++{
++    extern void virtio_snd_bypass_invalidate(const char *) __attribute__((weak_import));
++    if (&virtio_snd_bypass_invalidate) {
++        virtio_snd_bypass_invalidate(reason);
++    }
++}
++
++/* HAL listener: device's nominal rate changed under us (user opened AMS,
++ * another app bumped it - notably Audio Hijack forces 44100 Hz when
++ * starting a session - BT renegotiated, etc.).
++ *
++ * We deliberately do NOT invalidate the bypass here anymore. Earlier
++ * versions did, but in practice the auto-invalidate is harmful: the
++ * AUD_write fallback's resampler glitches audibly ("prrt prrt prrt" on
++ * each transient) whereas the bypass path running with a mildly wrong
++ * rate just produces a continuous pitch shift, which is way less
++ * obtrusive AND lets the user successfully record through recording
++ * tools that flip the device rate. The next virtio-snd PCM prepare
++ * will re-gate bypass with the fresh cached rate; until then,
++ * continuous-if-slightly-off audio is the right tradeoff.
++ *
++ * We still refresh the cached samplerate so virtio_snd_bypass_depth_frames
++ * (and thus the guest's audio_latency_ms sysfs) stays accurate. */
++static OSStatus handle_rate_change(AudioObjectID in_object_id,
++                                   UInt32 in_number_addresses,
++                                   const AudioObjectPropertyAddress *in_addresses,
++                                   void *in_client_data)
++{
++    (void)in_number_addresses;
++    (void)in_addresses;
++    (void)in_client_data;
++    coreaudio_refresh_cached_samplerate(in_object_id);
++    return noErr;
++}
++
+ static OSStatus init_out_device(CoreaudioVoiceOut *core)
+ {
+     AudioDeviceID device_id;
+@@ -386,6 +650,47 @@ static OSStatus init_out_device(CoreaudioVoiceOut *core)
+         return status;
+     }
+ 
++    /* cdj3k-emu: publish device id so virtio-snd can query the HAL rate at
++     * bypass-activation time. */
++    cdj3k_emu_active_output_device = device_id;
++
++    /* cdj3k-emu: seed the samplerate cache once, on the BQL thread, before
++     * the guest starts polling virtio-snd config. From here on the cache
++     * is kept fresh exclusively by the rate-change listener installed
++     * later in this function. */
++    coreaudio_refresh_cached_samplerate(device_id);
++
++    /* Query static device latency: kAudioDevicePropertyLatency +
++     * kAudioDevicePropertySafetyOffset (USB transit + DAC pipeline). */
++    {
++        UInt32 dev_latency = 0, safety_offset = 0;
++        UInt32 sz = sizeof(UInt32);
++        AudioObjectPropertyAddress addr_lat = {
++            kAudioDevicePropertyLatency,
++            kAudioDevicePropertyScopeOutput,
++            kAudioObjectPropertyElementMain,
++        };
++        AudioObjectPropertyAddress addr_safe = {
++            kAudioDevicePropertySafetyOffset,
++            kAudioDevicePropertyScopeOutput,
++            kAudioObjectPropertyElementMain,
++        };
++        OSStatus s1 = AudioObjectGetPropertyData(device_id, &addr_lat, 0,
++                                                  NULL, &sz, &dev_latency);
++        sz = sizeof(UInt32);
++        OSStatus s2 = AudioObjectGetPropertyData(device_id, &addr_safe, 0,
++                                                  NULL, &sz, &safety_offset);
++        uint32_t total = 0;
++        if (s1 == noErr) total += dev_latency;
++        if (s2 == noErr) total += safety_offset;
++        atomic_store_explicit(&g_coreaudio_static_latency_frames, total,
++                              memory_order_relaxed);
++        fprintf(stderr,
++                "coreaudio: static device latency = %u frames "
++                "(latency=%u safety=%u)\n",
++                total, dev_latency, safety_offset);
++    }
++
+     /* get minimum and maximum buffer frame sizes */
+     status = coreaudio_get_out_framesizerange(device_id, &value_range);
+     if (status == kAudioHardwareBadObjectError) {
+@@ -432,6 +737,24 @@ static OSStatus init_out_device(CoreaudioVoiceOut *core)
+         return status;
+     }
+ 
++    /* Set the IOProc's stream sample-rate to the device's current
++     * nominal rate. We deliberately do NOT force a particular rate via
++     * SetProperty(NominalSampleRate): on several macOS devices the set
++     * is silently rolled back the moment CreateIOProcID/AudioDeviceStart
++     * runs, clobbering whatever we asked for. The writer-side resampler
++     * handles any guest-vs-HAL rate mismatch instead, so this just
++     * tells CoreAudio "treat the bytes I hand you as data at the
++     * device's current clock rate". */
++    {
++        Float64 current_rate = 0;
++        UInt32 sz = sizeof(current_rate);
++        if (AudioObjectGetPropertyData(device_id, &device_rate_addr, 0,
++                                       NULL, &sz, &current_rate)
++                == kAudioHardwareNoError && current_rate > 0) {
++            stream_basic_description.mSampleRate = current_rate;
++        }
++    }
++
+     /* set Samplerate */
+     status = coreaudio_set_out_streamformat(device_id,
+                                             &stream_basic_description);
+@@ -474,6 +797,40 @@ static OSStatus init_out_device(CoreaudioVoiceOut *core)
+     audio_generic_initialize_buffer_out(&core->hw);
+     core->ioprocid = ioprocid;
+ 
++    /* Subscribe to nominal-rate changes on the bound device. If the
++     * user opens AMS, Audio Hijack flips the device rate, or BT
++     * renegotiates, the listener fires on a HAL thread and refreshes
++     * our cached samplerate so virtio-snd's writer-side resampler picks
++     * up the new ratio on its next call. We deliberately don't
++     * invalidate the bypass on these events anymore (we used to) - the
++     * resampler handles arbitrary rate pairs continuously, so the
++     * smoother behavior is "track the new rate" rather than "fall back
++     * to QEMU's glitchy mixer". */
++    {
++        OSStatus lst = AudioObjectAddPropertyListener(device_id,
++                                                     &device_rate_addr,
++                                                     handle_rate_change,
++                                                     core);
++        if (lst != kAudioHardwareNoError) {
++            coreaudio_playback_logerr(lst,
++                                      "Could not listen for nominal rate changes "
++                                      "(cached samplerate may go stale on HAL rate flips)");
++        }
++    }
++
++    /* cdj3k-emu: start the device once and leave it running until fini.
++     * AudioDeviceStart/Stop blocks the BQL main loop for ~1s inside
++     * CoreAudio's HAL mutex; we avoid toggling it on guest pause/resume
++     * (see coreaudio_enable_out NOOP). The IOProc returns silence when
++     * the bypass ring is empty, so leaving it running is harmless. */
++    core->enabled = true;
++    status = AudioDeviceStart(core->device_id, core->ioprocid);
++    if (status != kAudioHardwareNoError &&
++        status != kAudioHardwareBadDeviceError) {
++        coreaudio_playback_logerr(status,
++                                  "Could not start playback at init\n");
++    }
++
+     return 0;
+ }
+ 
+@@ -482,6 +839,24 @@ static void fini_out_device(CoreaudioVoiceOut *core)
+     OSStatus status;
+     UInt32 isrunning;
+ 
++    /* cdj3k-emu: detach the rate-change listener before tearing the device
++     * down. Errors here are diagnostic only - the device id is about to be
++     * invalidated either way. */
++    if (core->device_id != kAudioDeviceUnknown) {
++        OSStatus lst = AudioObjectRemovePropertyListener(core->device_id,
++                                                        &device_rate_addr,
++                                                        handle_rate_change,
++                                                        core);
++        if (lst != kAudioHardwareNoError
++            && lst != kAudioHardwareBadObjectError) {
++            coreaudio_logerr(lst,
++                             "Could not remove nominal-rate listener");
++        }
++    }
++
++    /* And invalidate any bypass that was riding on this device. */
++    coreaudio_invalidate_bypass("output device teardown");
++
+     /* stop playback */
+     status = coreaudio_get_out_isrunning(core->device_id, &isrunning);
+     if (status != kAudioHardwareBadObjectError) {
+@@ -505,6 +880,11 @@ static void fini_out_device(CoreaudioVoiceOut *core)
+         coreaudio_logerr(status, "Could not remove IOProc");
+     }
+     core->device_id = kAudioDeviceUnknown;
++    /* Zero the samplerate cache so any virtio-snd read in the gap before
++     * the next init_out_device sees 0 (which makes the bypass gate refuse
++     * cleanly rather than miscomparing against a stale rate). */
++    atomic_store_explicit(&g_coreaudio_cached_samplerate, 0,
++                          memory_order_relaxed);
+ }
+ 
+ static void update_out_device_playback_state(CoreaudioVoiceOut *core)
+@@ -551,6 +931,14 @@ static OSStatus handle_voice_out_change(
+ {
+     CoreaudioVoiceOut *core = in_client_data;
+ 
++    /* cdj3k-emu: the default-output device just changed (e.g. user moved
++     * audio in Sound Preferences, BT headset connected/disconnected). The
++     * IOProc is about to migrate via fini/init_out_device - meanwhile
++     * invalidate the bypass so virtio-snd doesn't keep feeding the old
++     * device. The fresh init will install a new rate listener and pick
++     * the right rate; the next PCM prepare will re-gate the bypass. */
++    coreaudio_invalidate_bypass("default output device changed");
++
+     bql_lock();
+ 
+     if (core->device_id) {
+@@ -593,6 +981,17 @@ static int coreaudio_init_out(HWVoiceOut *hw, struct audsettings *as)
+ 
+     core->buffer_count = cpdo->has_buffer_count ? cpdo->buffer_count : 4;
+ 
++    /* cdj3k-emu: capture the per-instance device UID (if the user picked one
++     * via the Audio → Output Device menu). Stored process-globally so the
++     * default-device-change listener path also honors it. Empty string means
++     * "use system default" - clear the global so a stale value from a prior
++     * config doesn't leak across audiodev recreations. */
++    g_free(cdj3k_emu_preferred_device_uid);
++    cdj3k_emu_preferred_device_uid = NULL;
++    if (cpdo->device_uid && cpdo->device_uid[0]) {
++        cdj3k_emu_preferred_device_uid = g_strdup(cpdo->device_uid);
++    }
++
+     status = AudioObjectAddPropertyListener(kAudioObjectSystemObject,
+                                             &voice_out_addr,
+                                             handle_voice_out_change,
+@@ -647,7 +1046,12 @@ static void coreaudio_enable_out(HWVoiceOut *hw, bool enable)
+     CoreaudioVoiceOut *core = (CoreaudioVoiceOut *)hw;
+ 
+     core->enabled = enable;
+-    update_out_device_playback_state(core);
++    /* cdj3k-emu: don't toggle the CoreAudio device on guest pause/resume -
++     * AudioDeviceStart/Stop blocks the BQL main loop for ~1s inside
++     * CoreAudio's HAL mutex, freezing every other emulated device. The
++     * IOProc returns silence when the bypass ring is empty, so leaving
++     * the device running is harmless. We start once at end of
++     * init_out_device. */
+ }
+ 
+ static void audio_coreaudio_class_init(ObjectClass *klass, const void *data)
+diff --git a/qapi/audio.json b/qapi/audio.json
+index 2df87b9..38eb796 100644
+--- a/qapi/audio.json
++++ b/qapi/audio.json
+@@ -158,12 +158,17 @@
+ #
+ # @buffer-count: number of buffers
+ #
++# @device-uid: bind this stream to a CoreAudio device by UID
++#     (kAudioDevicePropertyDeviceUID).  Unset = follow system default.
++#     Output direction only today.  cdj3k-emu extension.
++#
+ # Since: 4.0
+ ##
+ { 'struct': 'AudiodevCoreaudioPerDirectionOptions',
+   'base': 'AudiodevPerDirectionOptions',
+   'data': {
+-    '*buffer-count': 'uint32' } }
++    '*buffer-count': 'uint32',
++    '*device-uid': 'str' } }
+ 
+ ##
+ # @AudiodevCoreaudioOptions:

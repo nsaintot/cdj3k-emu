@@ -1,0 +1,19 @@
+[package]
+name = "cdj3k-emu-subucom"
+description = "CDJ-3000 SPI sub-CPU protocol: MOSI/MISO frame layout, CRC, direction encoding."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# `egui` is pulled in only for the `Color32` helper used by `mosi_frame::led_color`.
+# Gated behind a default-on feature so consumers that don't render the LED frame
+# can drop the egui dep entirely with `default-features = false`.
+egui = { version = "0.29", optional = true }
+
+[features]
+default = ["egui-color"]
+egui-color = ["dep:egui"]

@@ -1,0 +1,39 @@
+diff --git a/ui/console-vc.c b/ui/console-vc.c
+index 6163e21..69941c4 100644
+--- a/ui/console-vc.c
++++ b/ui/console-vc.c
+@@ -1045,20 +1045,20 @@ static int vc_chr_write(Chardev *chr, const uint8_t *buf, int len)
+ 
+ void vt100_update_cursor(void)
+ {
+-    QemuVT100 *vt;
+-
+-    cursor_visible_phase = !cursor_visible_phase;
+-
+-    if (QTAILQ_EMPTY(&vt100s)) {
+-        return;
+-    }
+-
+-    QTAILQ_FOREACH(vt, &vt100s, list) {
+-        vt100_refresh(vt);
+-    }
+-
+-    timer_mod(cursor_timer,
+-        qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + CONSOLE_CURSOR_PERIOD / 2);
++    /* cdj3k-emu: we never display the VT100 character console (the GUI
++     * uses -display shm exclusively), but QEMU's default monitor/parallel
++     * chardev allocation still creates a hidden QemuTextConsole. The
++     * cursor blink timer self-rearms at CONSOLE_CURSOR_PERIOD/2 (~250ms),
++     * each tick calls vt100_refresh -> vt100_putcharxy ->
++     * qemu_pixman_glyph_render -> pixman_image_create_solid_fill +
++     * malloc/free, all under BQL. On two-instance setups this was
++     * ~0.4-0.7% of the BQL main thread per instance, eating headroom
++     * that virtio-snd needs for the bypass-ring refill cadence. Since
++     * the rendered glyphs are never displayed, this is pure waste -
++     * short-circuit before any of that runs. The timer is left dormant
++     * (no rearm) so it never fires again until something forces a write
++     * path through vt100_show_cursor (which has its own cursor handling). */
++    return;
+ }
+ 
+ static void

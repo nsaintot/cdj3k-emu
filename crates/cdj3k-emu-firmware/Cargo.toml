@@ -1,0 +1,25 @@
+[package]
+name = "cdj3k-emu-firmware"
+description = "User-supplied firmware unpack: LUKS1/2 container, ISO extraction, initramfs assembly."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# LUKS1/2 decryption: AES-XTS + PBKDF2/Argon2
+aes = "0.8"
+cbc = "0.1"
+xts-mode = "0.5"
+pbkdf2 = { version = "0.12", features = ["hmac"] }
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+flate2 = "1"
+lz4_flex = { version = "0.11", default-features = false, features = ["safe-decode", "std"] }
+tar = "0.4"
+md5 = "0.7"

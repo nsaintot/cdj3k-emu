@@ -1,0 +1,119 @@
+cdj3k-emu
+=========
+
+Copyright 2026 The cdj3k-emu authors.
+
+All original work in this repository is dual-licensed at your option under
+either of:
+
+  * Apache License, Version 2.0  (see LICENSE-APACHE)
+  * MIT License                  (see LICENSE-MIT)
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in cdj3k-emu, as defined in the Apache-2.0 license,
+shall be dual-licensed as above without any additional terms or conditions.
+
+The dual-license above covers all original work in this repository EXCEPT
+the GPL-2.0 carve-outs and bundled third-party components listed below.
+
+----------------------------------------------------------------------
+GPL-2.0 carve-outs (original work in this repository)
+----------------------------------------------------------------------
+
+The following directories contain modifications to, or out-of-tree
+extensions of, GPL-2.0 upstream projects.  They inherit GPL-2.0-or-later
+from their upstreams and are NOT covered by the MIT/Apache-2.0 dual
+license above:
+
+  * guest/modules/**             - out-of-tree Linux kernel modules
+                                   (subucom_virt, virtio_snd, udev_usb1)
+  * guest/kernel-patches/**      - patches to upstream Linux 6.6 LTS
+  * qemu/patches/**              - patches to upstream QEMU
+  * qemu/shim/cdj3k_emu_shim.c   - statically linked into qemu-system-aarch64
+
+----------------------------------------------------------------------
+Third-party firmware (NOT redistributed by this project)
+----------------------------------------------------------------------
+
+cdj3k-emu emulates Pioneer DJ's CDJ-3000 hardware.  It requires the user to
+supply their own copy of a Pioneer CDJ-3000 firmware update file (.UPD) on
+first launch.  The in-app wizard decrypts the update locally, extracts the
+kernel + rootfs onto a per-user qcow2 disk image under
+"~/Library/Application Support/com.cdj3k.emu/", and never transmits it
+elsewhere.
+
+  * Pioneer DJ, "CDJ", "rekordbox", "Pro DJ Link", and related marks are
+    trademarks of their respective owners.  cdj3k-emu is not affiliated
+    with, endorsed by, or sponsored by AlphaTheta Corporation or Pioneer DJ.
+  * No Pioneer-owned source code, binaries, firmware images, fonts, or
+    artwork are present in this repository or in the distributed
+    .app / .dmg bundle.
+  * Distributing this project together with a Pioneer firmware image is
+    the redistributor's responsibility and is not authorised by this notice.
+
+----------------------------------------------------------------------
+Bundled and dynamically loaded third-party components
+----------------------------------------------------------------------
+
+The build pipeline and the final .app bundle include or invoke the
+following projects.  Each retains its upstream license; the names below
+identify the SPDX expression that governs the redistributed copy.
+
+  * QEMU                  https://www.qemu.org/                  GPL-2.0-or-later
+    Built from upstream source; our patches in qemu/patches/ and the
+    embedding shim in qemu/shim/ are GPL-2.0-or-later derivatives.
+
+  * Linux kernel          https://kernel.org/                    GPL-2.0
+    Built from upstream 6.6 LTS source (see docker/Dockerfile for the
+    pinned tag).  Our patches in guest/kernel-patches/ and the
+    out-of-tree modules in guest/modules/ are GPL-2.0-or-later.
+
+  * socket_vmnet          https://github.com/lima-vm/socket_vmnet
+                                                                 Apache-2.0
+    Fetched at bundle time by bundle.sh (pinned by version + SHA-256).
+    Bundled inside Contents/MacOS/ of the distributed .app.
+
+  * BusyBox               https://busybox.net/                   GPL-2.0-only
+    Present inside the guest rootfs.  Source available from the upstream
+    project; the firmware wizard relies on the BusyBox already present in
+    the user-supplied Pioneer firmware and does not bundle a separate copy.
+
+  * dropbear              https://matt.ucc.asn.au/dropbear/      MIT-style
+    Present inside the guest rootfs.  Configured by the initramfs patch
+    scripts under initramfs-patch/patch-rootfs.d/ when ENABLE_SSH=1 (off
+    by default).  No private keys are committed; keys are generated at
+    first boot when SSH is enabled.
+
+  * LZ4                   https://github.com/lz4/lz4             BSD-2-Clause
+    Linked statically into the guest kernel image (LZ4 ramdisk decompression)
+    and used by guest user-space tools for stream framing.  Inherited from
+    upstream Linux.
+
+  * glibc, libdrm, ALSA, Xorg, and other Linux user-space components inside
+    the guest rootfs retain their upstream licenses (LGPL-2.1+, MIT, MIT,
+    MIT respectively, among others).  Sources are obtainable from the
+    upstream projects; docker/Dockerfile documents the exact versions.
+
+  * xserver-xorg-video-dummy   Debian/Ubuntu source package      MIT
+    Repackaged from the upstream Ubuntu 20.04 (focal) arm64 .deb.  Used to
+    provide the Xorg dummy video driver ABI 24.0 inside the guest.
+
+  * Nimbus Sans L,        URW++ Type Foundry                    AGPL-3.0-or-later
+    Nimbus Sans T           with font exception (URW Nimbus core)
+    https://www.urwtype.com/
+    Bundled as .otf in app/cdj3k-emu/assets/.  Distributed under the GPL
+    font exception, which permits embedding in documents and applications
+    without imposing the GPL on those works.  The .otf files are the
+    unmodified URW++ release.
+
+  * Apple Hypervisor.framework, AuthorizationServices, vmnet.framework,
+    CoreAudio, AppKit and other macOS APIs are linked dynamically at runtime
+    and governed by Apple's macOS SDK License.
+
+----------------------------------------------------------------------
+Reporting issues
+----------------------------------------------------------------------
+
+If you believe any content in this repository or in a distributed bundle
+infringes a third party's rights, please open an issue at the project's
+public repository so it can be reviewed and removed.

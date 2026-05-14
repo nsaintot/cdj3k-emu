@@ -1,0 +1,14 @@
+diff --git a/drivers/gpu/drm/virtio/virtgpu_kms.c b/drivers/gpu/drm/virtio/virtgpu_kms.c
+index 5a3b5aaed..fb7d11506 100644
+--- a/drivers/gpu/drm/virtio/virtgpu_kms.c
++++ b/drivers/gpu/drm/virtio/virtgpu_kms.c
+@@ -127,9 +127,6 @@ int virtio_gpu_init(struct virtio_device *vdev, struct drm_device *dev)
+ 	u32 num_scanouts, num_capsets;
+ 	int ret = 0;
+ 
+-	if (!virtio_has_feature(vdev, VIRTIO_F_VERSION_1))
+-		return -ENODEV;
+-
+ 	vgdev = drmm_kzalloc(dev, sizeof(struct virtio_gpu_device), GFP_KERNEL);
+ 	if (!vgdev)
+ 		return -ENOMEM;

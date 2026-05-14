@@ -1,0 +1,9 @@
+diff --git a/ui/meson.build b/ui/meson.build
+index ceaf110..faf7d95 100644
+--- a/ui/meson.build
++++ b/ui/meson.build
+@@ -1,3 +1,4 @@
++system_ss.add(files('shm-display.c'))
+ system_ss.add(pixman)
+ system_ss.add(png)
+ system_ss.add(files(

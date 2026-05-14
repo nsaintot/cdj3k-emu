@@ -1,0 +1,273 @@
+diff --git a/ui/shm-display.c b/ui/shm-display.c
+new file mode 100644
+index 0000000..c3b7e60
+--- /dev/null
++++ b/ui/shm-display.c
+@@ -0,0 +1,267 @@
++/*
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ *
++ * QEMU shared-memory display backend  (-display shm,path=FILE)
++ *
++ * Maps the guest framebuffer into a regular file (MAP_SHARED) so an external
++ * process can mmap it and read pixel data with a single memcpy per dirty rect.
++ *
++ * Header layout (little-endian, offset in bytes):
++ *
++ *   [0]   u32  magic       0x514D5348  ("QMS\x00")
++ *   [4]   u32  generation  atomic; incremented after every dirty blit
++ *   [8]   u32  width
++ *   [12]  u32  height
++ *   [16]  u32  stride      bytes per row
++ *   [20]  u32  format      1 = RGBA8888  (QEMU converts XRGB→RGBA on its side)
++ *   [24]  u32  dirty_x   \
++ *   [28]  u32  dirty_y    | bounding box of the last update
++ *   [32]  u32  dirty_w    |
++ *   [36]  u32  dirty_h   /
++ *   [40]  u8[] _pad       pad to offset 64
++ *   [64]  u8[] pixels     stride × height bytes
++ *
++ * The reader spins on `generation` with an ACQUIRE load.  When it changes,
++ * dirty_x/y/w/h and the pixel data are fully coherent.
++ *
++ * Usage:
++ *   -display shm,path=/tmp/cdj3k-0/main.shm
++ */
++
++#include "qemu/osdep.h"
++#include "ui/console.h"
++#include "qapi/error.h"
++#include "qapi/qapi-types-ui.h"
++#include "qemu/module.h"
++#include "qemu/error-report.h"
++
++#include <sys/mman.h>
++#include <fcntl.h>
++
++/* ------------------------------------------------------------------ */
++/* constants & types                                                    */
++/* ------------------------------------------------------------------ */
++
++#define SHM_MAGIC           UINT32_C(0x514D5348)  /* "QMS\x00" */
++#define SHM_PIXELS_OFFSET   UINT32_C(64)
++#define SHM_FORMAT_XRGB8888 UINT32_C(0)
++#define SHM_FORMAT_RGBA8888 UINT32_C(1)  /* R,G,B,A byte order - no swap needed by reader */
++
++typedef struct ShmHdr {
++    uint32_t magic;
++    uint32_t generation;   /* reader polls this with ACQUIRE */
++    uint32_t width;
++    uint32_t height;
++    uint32_t stride;       /* bytes per row */
++    uint32_t format;       /* SHM_FORMAT_* */
++    uint32_t dirty_x;
++    uint32_t dirty_y;
++    uint32_t dirty_w;
++    uint32_t dirty_h;
++    uint8_t  _pad[SHM_PIXELS_OFFSET - 40];
++} ShmHdr;
++
++typedef struct ShmDisplay {
++    DisplayChangeListener  dcl;
++    DisplaySurface        *surface;
++    char                  *path;
++    ShmHdr                *hdr;       /* MAP_SHARED base; NULL until first switch */
++    size_t                 map_size;
++} ShmDisplay;
++
++/* ------------------------------------------------------------------ */
++/* shm file management                                                  */
++/* ------------------------------------------------------------------ */
++
++static int shm_remap(ShmDisplay *s, uint32_t width, uint32_t height,
++                     uint32_t stride)
++{
++    size_t sz = SHM_PIXELS_OFFSET + (size_t)stride * height;
++
++    if (s->hdr && s->map_size == sz)
++        return 0; /* already correct size */
++
++    if (s->hdr) {
++        munmap(s->hdr, s->map_size);
++        s->hdr = NULL;
++    }
++
++    /*
++     * Open without O_TRUNC - never shrink the file.
++     * Readers (cdj-ui) may have a live MAP_SHARED mmap; truncating to 0
++     * would give them SIGBUS on the next access.  Growing with ftruncate
++     * is safe because the new pages are zero-filled and the old mapping
++     * remains valid.  The header is zeroed explicitly below, so readers
++     * always see a consistent state guarded by the generation counter.
++     */
++    int fd = open(s->path, O_RDWR | O_CREAT, 0600);
++    if (fd < 0) {
++        error_report("shm-display: open '%s': %s", s->path, strerror(errno));
++        return -1;
++    }
++    struct stat st;
++    if (fstat(fd, &st) < 0 || (size_t)st.st_size < sz) {
++        if (ftruncate(fd, (off_t)sz) < 0) {
++            error_report("shm-display: ftruncate: %s", strerror(errno));
++            close(fd);
++            return -1;
++        }
++    }
++
++    void *m = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
++    close(fd);
++    if (m == MAP_FAILED) {
++        error_report("shm-display: mmap: %s", strerror(errno));
++        return -1;
++    }
++
++    s->hdr      = (ShmHdr *)m;
++    s->map_size = sz;
++
++    /* Zero header, set static fields - do this before any RELEASE store. */
++    memset(s->hdr, 0, SHM_PIXELS_OFFSET);
++    s->hdr->magic  = SHM_MAGIC;
++    s->hdr->width  = width;
++    s->hdr->height = height;
++    s->hdr->stride = stride;
++    s->hdr->format = SHM_FORMAT_RGBA8888;
++    return 0;
++}
++
++/* ------------------------------------------------------------------ */
++/* DisplayChangeListener callbacks                                      */
++/* ------------------------------------------------------------------ */
++
++static void shm_gfx_update(DisplayChangeListener *dcl,
++                            int x, int y, int w, int h)
++{
++    ShmDisplay     *s   = container_of(dcl, ShmDisplay, dcl);
++    DisplaySurface *sur = s->surface;
++
++    if (!s->hdr || !sur || w <= 0 || h <= 0)
++        return;
++
++    int      bpp     = surface_bytes_per_pixel(sur);
++    int      sstride = surface_stride(sur);
++    uint8_t *src     = surface_data(sur)
++                       + (size_t)y * sstride + (size_t)x * bpp;
++    uint8_t *dst     = (uint8_t *)s->hdr + SHM_PIXELS_OFFSET
++                       + (size_t)y * s->hdr->stride + (size_t)x * bpp;
++
++    /* Convert XRGB8888 (B,G,R,X in memory) → RGBA8888 (R,G,B,A in memory).
++     *
++     * Per-byte version (previous) sat at 4-5% of the QEMU main thread on a
++     * 1280x720 full-frame refresh at 60 Hz because the compiler couldn't
++     * vectorize through the col*4 indexing pattern. Word-aligned u32 loads
++     * + bit shuffles are friendly to NEON auto-vectorization (vqtbl /
++     * vshl-vorr) and cut the per-pixel cost by ~4x. Holding BQL less time
++     * here directly relieves the virtio-snd bypass refill cadence: every
++     * millisecond saved is a millisecond the audio ring has to refill
++     * before the IOProc next drains.
++     *
++     * Per pixel as u32 LE on the wire:
++     *   src = X<<24 | R<<16 | G<<8 | B          (memory order B,G,R,X)
++     *   dst = 0xFF<<24 | B<<16 | G<<8 | R       (memory order R,G,B,A)
++     */
++    for (int row = 0; row < h; row++, src += sstride, dst += s->hdr->stride) {
++        const uint32_t *s32 = (const uint32_t *)src;
++        uint32_t       *d32 = (uint32_t *)dst;
++        for (int col = 0; col < w; col++) {
++            uint32_t p = s32[col];
++            d32[col] = 0xFF000000u
++                     | ((p << 16) & 0x00FF0000u)   /* B → bits 16..23 */
++                     | (p & 0x0000FF00u)           /* G stays         */
++                     | ((p >> 16) & 0x000000FFu);  /* R → bits 0..7   */
++        }
++    }
++
++    s->hdr->dirty_x = (uint32_t)x;
++    s->hdr->dirty_y = (uint32_t)y;
++    s->hdr->dirty_w = (uint32_t)w;
++    s->hdr->dirty_h = (uint32_t)h;
++
++    /* RELEASE - reader sees coherent dirty rect + pixels after this */
++    __atomic_fetch_add(&s->hdr->generation, 1u, __ATOMIC_RELEASE);
++}
++
++static void shm_gfx_switch(DisplayChangeListener *dcl, DisplaySurface *surface)
++{
++    ShmDisplay *s = container_of(dcl, ShmDisplay, dcl);
++    s->surface = surface;
++
++    if (!surface)
++        return;
++
++    uint32_t w      = (uint32_t)surface_width(surface);
++    uint32_t h      = (uint32_t)surface_height(surface);
++    uint32_t stride = (uint32_t)surface_stride(surface);
++
++    if (shm_remap(s, w, h, stride) < 0)
++        return;
++
++    /* Paint the initial full frame so the reader never sees garbage. */
++    shm_gfx_update(dcl, 0, 0, (int)w, (int)h);
++}
++
++static void shm_refresh(DisplayChangeListener *dcl)
++{
++    graphic_hw_update(dcl->con);
++}
++
++static const DisplayChangeListenerOps shm_ops = {
++    .dpy_name       = "shm",
++    .dpy_gfx_update = shm_gfx_update,
++    .dpy_gfx_switch = shm_gfx_switch,
++    .dpy_refresh    = shm_refresh,
++};
++
++/* ------------------------------------------------------------------ */
++/* init & registration                                                  */
++/* ------------------------------------------------------------------ */
++
++static void shm_display_init(DisplayState *ds, DisplayOptions *opts)
++{
++    DisplaySHM *o = &opts->u.shm;
++    ShmDisplay *s = g_new0(ShmDisplay, 1);
++
++    s->path    = g_strdup(o->path);
++    s->dcl.ops = &shm_ops;
++
++    /*
++     * In QEMU 10.x, registering with dcl->con = NULL delivers a 640×480
++     * placeholder surface and never routes the virtio-gpu console updates.
++     * Devices are fully initialised before qemu_display_init(), so we can
++     * scan for the first graphic console and attach directly to it.
++     */
++    for (unsigned i = 0; ; i++) {
++        QemuConsole *con = qemu_console_lookup_by_index(i);
++        if (!con) {
++            break;
++        }
++        if (qemu_console_is_graphic(con)) {
++            s->dcl.con = con;
++            break;
++        }
++    }
++
++    if (!s->dcl.con) {
++        fprintf(stderr, "shm-display: no graphic console found; "
++                        "framebuffer will not be captured\n");
++    }
++
++    register_displaychangelistener(&s->dcl);
++    fprintf(stderr, "shm-display: sharing framebuffer at %s (console %d)\n",
++            s->path, qemu_console_get_index(s->dcl.con));
++}
++
++static QemuDisplay qemu_display_shm = {
++    .type = DISPLAY_TYPE_SHM,
++    .init = shm_display_init,
++};
++
++static void shm_display_register(void)
++{
++    qemu_display_register(&qemu_display_shm);
++}
++
++type_init(shm_display_register);
