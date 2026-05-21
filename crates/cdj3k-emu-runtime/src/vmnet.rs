@@ -79,7 +79,37 @@ impl SocketVmnet {
         }
 
         let bin = find_binary()?;
-        launch_elevated(&bin, iface, &socket_path)?;
+        launch_elevated(&bin, Some(iface), &socket_path)?;
+
+        Ok(Self {
+            socket_path,
+            owns_daemon: true,
+        })
+    }
+
+    /// Start socket_vmnet in host-only mode, or reuse an already-running daemon.
+    /// Apple's vmnet.framework creates a host-side bridge interface (e.g.
+    /// `bridge100`) and runs a DHCP server on it (192.168.x.0/24 by default).
+    /// All QEMU instances connecting to this socket share the same L2 fabric
+    /// and see each other via standard broadcast / unicast - and the host
+    /// bridge interface is sniffable in Wireshark / tcpdump with no
+    /// encapsulation, which is the reason this mode exists.
+    pub fn start_host() -> io::Result<Self> {
+        cdj3k_emu_platform::runtime_paths::ensure_runtime_base_dir()?;
+        let socket_path = socket_path_for("host");
+
+        if socket_accepts(&socket_path) {
+            return Ok(Self {
+                socket_path,
+                owns_daemon: false,
+            });
+        }
+        if socket_path.exists() {
+            let _ = std::fs::remove_file(&socket_path);
+        }
+
+        let bin = find_binary()?;
+        launch_elevated(&bin, None, &socket_path)?;
 
         Ok(Self {
             socket_path,
@@ -183,7 +213,7 @@ fn find_binary() -> io::Result<String> {
     ))
 }
 
-fn launch_elevated(bin: &str, iface: &str, socket_path: &Path) -> io::Result<()> {
+fn launch_elevated(bin: &str, iface: Option<&str>, socket_path: &Path) -> io::Result<()> {
     // The elevated shell does two things, both backgrounded:
     //   1. Spawn socket_vmnet itself.
     //   2. Spawn a watchdog subshell that polls the cdj3k-emu PID and the
@@ -195,12 +225,22 @@ fn launch_elevated(bin: &str, iface: &str, socket_path: &Path) -> io::Result<()>
     // The watchdog also outlives this shell: `( ... ) &` forks a subshell,
     // and AuthorizationExecuteWithPrivileges spawns us without a controlling
     // tty, so there's no SIGHUP source.  `trap '' HUP` belt-and-suspenders.
+    //
+    // `iface = Some(name)` selects bridged mode on that physical interface;
+    // `iface = None` selects host-only mode (Apple creates a fresh `bridge*`
+    // for the isolated network).
     let bin_q = sh_quote(bin);
-    let iface_q = sh_quote(iface);
+    let mode_args = match iface {
+        Some(name) => format!(
+            "--vmnet-mode bridged --vmnet-interface {}",
+            sh_quote(name)
+        ),
+        None => "--vmnet-mode host".to_string(),
+    };
     let sock_q = sh_quote(&socket_path.to_string_lossy());
     let parent_pid = std::process::id();
     let cmd = format!(
-        r#"nohup {bin} --vmnet-mode bridged --vmnet-interface {iface} {sock} >/dev/null 2>&1 &
+        r#"nohup {bin} {mode_args} {sock} >/dev/null 2>&1 &
 SV_PID=$!
 ( trap '' HUP
   i=0
@@ -213,7 +253,7 @@ SV_PID=$!
 ) </dev/null >/dev/null 2>&1 &
 "#,
         bin = bin_q,
-        iface = iface_q,
+        mode_args = mode_args,
         sock = sock_q,
         ppid = parent_pid,
     );

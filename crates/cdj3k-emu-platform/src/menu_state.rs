@@ -26,6 +26,24 @@ pub const MAX_INSTANCES: u32 = 4;
 /// without an `Option`.
 pub const NO_USB_MOUNTED: i32 = -1;
 
+/// Sentinel value for [`AppState::selected_interface`] meaning "no network
+/// interface picked" (QEMU runs with user-mode NAT, the menu's "None (NAT)"
+/// entry).
+pub const NET_SEL_NONE: u32 = u32::MAX;
+
+/// Sentinel value for [`AppState::selected_interface`] meaning "vmnet host-only
+/// network" (menu's "Host-only (vmnet)" entry). All instances selecting this
+/// attach to the same `socket_vmnet --vmnet-mode=host` daemon, sharing a
+/// host-side `bridgeN` interface that vmnet.framework creates. Pure L2,
+/// host-sniffable in Wireshark with no encapsulation, vmnet's built-in DHCP
+/// hands out 192.168.x.y addresses to the guests.
+pub const NET_SEL_VMNET_HOST: u32 = u32::MAX - 1;
+
+/// Token written to `InstanceSettings::net_iface` to persist the vmnet-host
+/// mode across launches. Not a valid BSD ifname, so it can never collide with
+/// a real interface returned by `getifaddrs`.
+pub const NET_IFACE_VMNET_HOST_TOKEN: &str = "__vmnet_host__";
+
 /// Latched on shutdown.  **Async-signal-safe** so the SIGTERM/SIGINT handler
 /// can set it without taking the mutex (which would deadlock if a signal
 /// arrives while another thread already holds `AppState`).  Every other
@@ -142,7 +160,7 @@ pub struct AppState {
     pub latency_packed: u64,
 
     // ── Network ─────────────────────────────────────────────────────────────
-    /// Index into [`net_ifaces`], or `u32::MAX` for "none".
+    /// Index into [`net_ifaces`], or one of [`NET_SEL_NONE`] / [`NET_SEL_MCAST`].
     pub selected_interface: u32,
     /// Cached interface list; updated by [`refresh_net_interfaces`].
     pub net_ifaces: Vec<NetIf>,
@@ -207,7 +225,7 @@ impl AppState {
             haptic_enabled: true,
             haptic_toggle_requested: false,
             latency_packed: u64::MAX,
-            selected_interface: u32::MAX,
+            selected_interface: NET_SEL_NONE,
             net_ifaces: Vec::new(),
             net_list_version: 0,
             net_error_message: None,

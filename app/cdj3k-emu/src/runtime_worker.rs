@@ -275,7 +275,26 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
             config.net_tap_iface = None;
             config.net_tap_fd = None;
 
-            if req.selected_iface != u32::MAX {
+            if req.selected_iface == menu_state::NET_SEL_VMNET_HOST {
+                match SocketVmnet::start_host() {
+                    Ok(sv) => {
+                        eprintln!(
+                            "cdj3k-emu: vmnet host-only up  socket={}",
+                            sv.socket_path().display()
+                        );
+                        config.net_socket_vmnet = Some(sv.socket_path().to_path_buf());
+                        _active_vmnet = Some(sv);
+                    }
+                    Err(e) => {
+                        let msg = format!("vmnet host-only start failed: {e}");
+                        eprintln!("cdj3k-emu: {msg}");
+                        let mut s = menu_state::lock();
+                        s.selected_interface = menu_state::NET_SEL_NONE;
+                        s.net_error_message = Some(msg);
+                        prev_net_idx = menu_state::NET_SEL_NONE;
+                    }
+                }
+            } else if req.selected_iface != menu_state::NET_SEL_NONE {
                 let iface_name = menu_state::lock()
                     .net_ifaces
                     .get(req.selected_iface as usize)
@@ -292,9 +311,9 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                                 let msg = format!("tapbridge setup failed: {e}");
                                 eprintln!("cdj3k-emu: {msg}");
                                 let mut s = menu_state::lock();
-                                s.selected_interface = u32::MAX;
+                                s.selected_interface = menu_state::NET_SEL_NONE;
                                 s.net_error_message = Some(msg);
-                                prev_net_idx = u32::MAX;
+                                prev_net_idx = menu_state::NET_SEL_NONE;
                             }
                         }
                     } else {
@@ -312,9 +331,9 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                                 let msg = format!("vmnet start failed: {e}");
                                 eprintln!("cdj3k-emu: {msg}");
                                 let mut s = menu_state::lock();
-                                s.selected_interface = u32::MAX;
+                                s.selected_interface = menu_state::NET_SEL_NONE;
                                 s.net_error_message = Some(msg);
-                                prev_net_idx = u32::MAX;
+                                prev_net_idx = menu_state::NET_SEL_NONE;
                             }
                         }
                     }
@@ -336,15 +355,16 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                 menu_state::lock().shade_forced = false;
             }
 
-            // Persist the resulting iface name (or None on auto-revert / "none").
+            // Persist the resulting iface name (or None on auto-revert / "none"),
+            // or the vmnet-host token when host-only mode is selected.
             let final_name = {
                 let s = menu_state::lock();
-                if s.selected_interface == u32::MAX {
-                    None
-                } else {
-                    s.net_ifaces
-                        .get(s.selected_interface as usize)
-                        .map(|i| i.name.clone())
+                match s.selected_interface {
+                    menu_state::NET_SEL_NONE => None,
+                    menu_state::NET_SEL_VMNET_HOST => {
+                        Some(menu_state::NET_IFACE_VMNET_HOST_TOKEN.to_string())
+                    }
+                    idx => s.net_ifaces.get(idx as usize).map(|i| i.name.clone()),
                 }
             };
             persist_inst(config.instance_id, |s| s.net_iface = final_name);

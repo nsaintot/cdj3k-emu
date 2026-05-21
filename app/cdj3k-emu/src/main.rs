@@ -194,11 +194,14 @@ fn main() {
         // Restore network interface selection (best effort).  If the saved
         // ifname is no longer present, leave selected_interface at "none" -
         // the saved value stays on disk and binds again when the iface
-        // returns.
+        // returns. The vmnet-host mode round-trips via a reserved token
+        // (not a valid BSD ifname) so it can never collide with a real iface.
         cdj3k_emu_platform::menu_state::refresh_net_interfaces();
         if let Some(saved_name) = &inst_settings.net_iface {
             let mut s = cdj3k_emu_platform::menu_state::lock();
-            if let Some(idx) = s.net_ifaces.iter().position(|i| &i.name == saved_name) {
+            if saved_name == cdj3k_emu_platform::menu_state::NET_IFACE_VMNET_HOST_TOKEN {
+                s.selected_interface = cdj3k_emu_platform::menu_state::NET_SEL_VMNET_HOST;
+            } else if let Some(idx) = s.net_ifaces.iter().position(|i| &i.name == saved_name) {
                 s.selected_interface = idx as u32;
             }
         }
@@ -234,18 +237,36 @@ fn main() {
         let mut prebuilt_net = runtime_worker::PrebuiltNet {
             tap_bridge: None,
             vmnet: None,
-            initial_net_idx: u32::MAX,
+            initial_net_idx: cdj3k_emu_platform::menu_state::NET_SEL_NONE,
         };
         let (initial_net_idx, iface_name) = {
             let s = cdj3k_emu_platform::menu_state::lock();
             let idx = s.selected_interface;
-            let name = if idx != u32::MAX {
-                s.net_ifaces.get(idx as usize).map(|i| i.name.clone())
-            } else {
-                None
+            let name = match idx {
+                cdj3k_emu_platform::menu_state::NET_SEL_NONE
+                | cdj3k_emu_platform::menu_state::NET_SEL_VMNET_HOST => None,
+                n => s.net_ifaces.get(n as usize).map(|i| i.name.clone()),
             };
             (idx, name)
         };
+        if initial_net_idx == cdj3k_emu_platform::menu_state::NET_SEL_VMNET_HOST {
+            match SocketVmnet::start_host() {
+                Ok(sv) => {
+                    eprintln!(
+                        "cdj3k-emu: vmnet host-only up  socket={}",
+                        sv.socket_path().display()
+                    );
+                    config.net_socket_vmnet = Some(sv.socket_path().to_path_buf());
+                    prebuilt_net.vmnet = Some(sv);
+                    prebuilt_net.initial_net_idx = initial_net_idx;
+                }
+                Err(e) => {
+                    eprintln!("cdj3k-emu: initial vmnet host-only start failed: {e}");
+                    cdj3k_emu_platform::menu_state::lock().selected_interface =
+                        cdj3k_emu_platform::menu_state::NET_SEL_NONE;
+                }
+            }
+        }
         if let Some(name) = iface_name {
             if name.starts_with("tap") {
                 match TapBridge::setup(&name, config.instance_id) {
@@ -257,7 +278,8 @@ fn main() {
                     }
                     Err(e) => {
                         eprintln!("cdj3k-emu: initial tapbridge setup failed: {e}");
-                        cdj3k_emu_platform::menu_state::lock().selected_interface = u32::MAX;
+                        cdj3k_emu_platform::menu_state::lock().selected_interface =
+                            cdj3k_emu_platform::menu_state::NET_SEL_NONE;
                     }
                 }
             } else {
@@ -274,7 +296,8 @@ fn main() {
                     }
                     Err(e) => {
                         eprintln!("cdj3k-emu: initial vmnet start failed: {e}");
-                        cdj3k_emu_platform::menu_state::lock().selected_interface = u32::MAX;
+                        cdj3k_emu_platform::menu_state::lock().selected_interface =
+                            cdj3k_emu_platform::menu_state::NET_SEL_NONE;
                     }
                 }
             }
