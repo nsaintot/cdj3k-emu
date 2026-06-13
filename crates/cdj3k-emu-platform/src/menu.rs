@@ -441,10 +441,16 @@ fn handle_event(id: &str, pending_create: &mut bool, pending_mount: &mut bool) {
         "main_screen" => s.main_screen_popped = !s.main_screen_popped,
         "debug_screen" => s.debug_screen_popped = !s.debug_screen_popped,
         "net_none" => {
-            if s.selected_interface != u32::MAX {
+            if s.selected_interface != menu_state::NET_SEL_NONE {
                 s.shade_forced = true;
             }
-            s.selected_interface = u32::MAX;
+            s.selected_interface = menu_state::NET_SEL_NONE;
+        }
+        "net_vmnet_host" => {
+            if s.selected_interface != menu_state::NET_SEL_VMNET_HOST {
+                s.shade_forced = true;
+            }
+            s.selected_interface = menu_state::NET_SEL_VMNET_HOST;
         }
         "create_virtual_usb" => {
             *pending_create = true;
@@ -505,8 +511,11 @@ fn handle_event(id: &str, pending_create: &mut bool, pending_mount: &mut bool) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn build_net_submenu(submenu: &Submenu) {
-    let none_item = CheckMenuItem::with_id("net_none", "None (Shared)", true, true, None);
+    let none_item = CheckMenuItem::with_id("net_none", "Default (NAT)", true, true, None);
+    let host_item =
+        CheckMenuItem::with_id("net_vmnet_host", "Host-only (vmnet)", true, false, None);
     submenu.append(&none_item).ok();
+    submenu.append(&host_item).ok();
 
     // Clone the iface list out under the lock so we don't hold it across muda calls.
     let ifaces: Vec<menu_state::NetIf> = menu_state::lock().net_ifaces.clone();
@@ -528,7 +537,9 @@ fn sync_net_checkmarks(submenu: &Submenu) {
         };
         let id = check.id().0.as_str();
         let is_selected = if id == "net_none" {
-            sel_idx == u32::MAX
+            sel_idx == menu_state::NET_SEL_NONE
+        } else if id == "net_vmnet_host" {
+            sel_idx == menu_state::NET_SEL_VMNET_HOST
         } else if let Some(rest) = id.strip_prefix("net_if_") {
             rest.parse::<u32>().map(|n| n == sel_idx).unwrap_or(false)
         } else {
