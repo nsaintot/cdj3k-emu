@@ -61,7 +61,7 @@ impl SocketVmnet {
                 format!("invalid interface name: {iface:?}"),
             ));
         }
-        cdj3k_emu_platform::runtime_paths::ensure_runtime_base_dir()?;
+        cdj3k_emu_platform::runtime_paths::ensure_djpl_net_dir()?;
         let socket_path = socket_path_for(iface);
 
         // If the daemon is already live, reuse it - no elevation, no restart.
@@ -95,7 +95,7 @@ impl SocketVmnet {
     /// bridge interface is sniffable in Wireshark / tcpdump with no
     /// encapsulation, which is the reason this mode exists.
     pub fn start_host() -> io::Result<Self> {
-        cdj3k_emu_platform::runtime_paths::ensure_runtime_base_dir()?;
+        cdj3k_emu_platform::runtime_paths::ensure_djpl_net_dir()?;
         let socket_path = socket_path_for("host");
 
         if socket_accepts(&socket_path) {

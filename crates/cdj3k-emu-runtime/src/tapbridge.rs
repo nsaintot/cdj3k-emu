@@ -4,9 +4,9 @@
 //!
 //! vmnet.framework cannot bridge to TAP interfaces, so we do it at the OS level:
 //!
-//!   host_tap (e.g. tap0)  ──┐
-//!                            ├── macOS bridge (bridgeN) ── qemu_tap (tapM)  ── QEMU guest
-//!   (optional: other ifaces)─┘
+//!    host_tap (e.g. tap0)──┐
+//!                          ├── macOS bridge (bridgeN) ── qemu_tap (tapM)  ── QEMU guest
+//! (optional: other ifaces)─┘
 //!
 //! An elevated watcher script (run as root via Authorization Services) creates
 //! the bridge and the QEMU-side TAP, then loops on a heartbeat file.  When
@@ -30,6 +30,15 @@ fn tapbridge_base(instance_id: u32) -> String {
         .join("tapbridge")
         .to_string_lossy()
         .into_owned()
+}
+
+/// The fixed macOS bridge interface shared with djx-emu so both emulators' TAPs
+/// land on the same L2 (DJ-Link). macOS bridges must be named `bridge<N>`;
+/// override with `DJPL_BRIDGE` (set identically in both apps). Both apps
+/// create-or-reuse this one bridge instead of an ephemeral `ifconfig bridge
+/// create`.
+fn djpl_bridge() -> String {
+    std::env::var("DJPL_BRIDGE").unwrap_or_else(|_| "bridge99".to_string())
 }
 
 /// A live macOS bridge + QEMU TAP pair managed by an elevated watcher process.
@@ -75,7 +84,8 @@ impl TapBridge {
         let _ = fs::remove_file(&names_file);
 
         // Write the watcher script.
-        let script = build_watcher_script(&heartbeat, host_tap, &names_file, app_pid);
+        let script =
+            build_watcher_script(&heartbeat, host_tap, &names_file, app_pid, &djpl_bridge());
         fs::write(&script_path, &script).map_err(|e| {
             io::Error::new(e.kind(), format!("failed to write watcher script: {e}"))
         })?;
@@ -143,6 +153,7 @@ fn build_watcher_script(
     host_tap: &str,
     names_file: &Path,
     app_pid: u32,
+    bridge: &str,
 ) -> String {
     format!(
         r#"#!/bin/sh
@@ -151,6 +162,7 @@ HEARTBEAT={heartbeat}
 HOST_TAP={host_tap}
 NAMES_FILE={names_file}
 APP_PID={app_pid}
+BRIDGE={bridge}
 
 # tuntap kext: tap devices only appear in ifconfig after /dev/tapN is opened.
 # Claim the first free one by opening its device file on fd 3.
@@ -170,11 +182,16 @@ for n in $(seq 0 15); do
 done
 [ -z "$TAP_QEMU" ] && {{ echo "tapbridge: no free tap device found" >&2; exit 1; }}
 
-BRIDGE=$(ifconfig bridge create 2>/dev/null) || exit 1
+# Create-or-reuse the SHARED fixed bridge (shared with djx-emu). If it already
+# exists (another emulator made it), reuse it; otherwise create it by name.
+ifconfig "$BRIDGE" >/dev/null 2>&1 || ifconfig "$BRIDGE" create >/dev/null 2>&1 \
+    || {{ echo "tapbridge: cannot create $BRIDGE" >&2; exit 1; }}
 
-# Bridge tap0 immediately with STP off.
-ifconfig "$BRIDGE" addm "$HOST_TAP" 2>/dev/null || true
-ifconfig "$BRIDGE" -stp "$HOST_TAP" 2>/dev/null || true
+# Add the host tap to the shared bridge once (skip if already a member).
+if ! ifconfig "$BRIDGE" 2>/dev/null | grep -q "member: $HOST_TAP"; then
+    ifconfig "$BRIDGE" addm "$HOST_TAP" 2>/dev/null || true
+    ifconfig "$BRIDGE" -stp "$HOST_TAP" 2>/dev/null || true
+fi
 ifconfig "$BRIDGE" up               2>/dev/null || true
 
 # Open tap1 briefly: creates the interface, brings it up, sets permissions.
@@ -205,16 +222,23 @@ while [ -f "$HEARTBEAT" ] && kill -0 "$APP_PID" 2>/dev/null; do
     sleep 0.5
 done
 
-# Tear down.
+# Tear down. The bridge is SHARED, so only remove OUR qemu tap; destroy the
+# bridge itself only when no other emulator's tap remains on it (last one out).
 chmod 0600 "/dev/$TAP_QEMU" 2>/dev/null || true
+ifconfig "$BRIDGE"   deletem "$TAP_QEMU" 2>/dev/null || true
 ifconfig "$TAP_QEMU" down    2>/dev/null || true
-ifconfig "$BRIDGE"   destroy 2>/dev/null || true
+REMAIN=$(ifconfig "$BRIDGE" 2>/dev/null | awk '/member: tap/ {{print $2}}' | grep -v "^$HOST_TAP$" | grep -c . || true)
+if [ "$REMAIN" = "0" ]; then
+    ifconfig "$BRIDGE" deletem "$HOST_TAP" 2>/dev/null || true
+    ifconfig "$BRIDGE" destroy 2>/dev/null || true
+fi
 rm -f "$NAMES_FILE" "$HEARTBEAT" {script_self}
 "#,
         heartbeat = sh_quote(&heartbeat.to_string_lossy()),
         host_tap = sh_quote(host_tap),
         names_file = sh_quote(&names_file.to_string_lossy()),
         app_pid = app_pid,
+        bridge = sh_quote(bridge),
         script_self = sh_quote(&heartbeat.with_extension("sh").to_string_lossy()),
     )
 }
@@ -266,10 +290,10 @@ fn cleanup_stale(instance_id: u32) {
     );
 
     let cmd = format!(
-        "ifconfig {} destroy 2>/dev/null; ifconfig {} destroy 2>/dev/null; rm -f {}",
-        sh_quote(tap),
-        sh_quote(bridge),
-        sh_quote(&names_file.to_string_lossy()),
+        "ifconfig {br} deletem {tap} 2>/dev/null; ifconfig {tap} destroy 2>/dev/null; rm -f {nf}",
+        br = sh_quote(bridge),
+        tap = sh_quote(tap),
+        nf = sh_quote(&names_file.to_string_lossy()),
     );
     // Best-effort - ignore elevation cancellation.
     let _ = run_elevated(&cmd);

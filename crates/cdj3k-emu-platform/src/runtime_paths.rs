@@ -42,10 +42,35 @@ pub fn instance_dir(id: u32) -> PathBuf {
     runtime_base_dir().join(format!("instance-{id}"))
 }
 
-/// `/tmp/cdj3k-emu-<UID>/vmnet-{iface}.sock` — socket_vmnet daemon socket for
-/// host iface `iface` (shared by every instance bound to that iface).
+/// Shared **DJPL** runtime socket dir (`/tmp/djpl-<UID>`, mode 0700). A
+/// product-NEUTRAL namespace shared with djx-emu so both emulators connect to
+/// the *same* socket_vmnet daemon → one DJ-Link L2 (players ↔ mixer see each
+/// other). Override with `DJPL_NET_DIR` (set identically in both apps). Distinct
+/// from [`runtime_base_dir`] (which stays per-app for instance/eMMC state).
+pub fn djpl_net_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("DJPL_NET_DIR") {
+        return PathBuf::from(d);
+    }
+    PathBuf::from(format!("/tmp/djpl-{}", current_uid()))
+}
+
+/// `/tmp/djpl-<UID>/vmnet-{iface}.sock` — socket_vmnet daemon socket for host
+/// iface `iface`, shared across every emulator bound to that iface (the naming
+/// MUST match djx-emu's `net_vmnet`).
 pub fn vmnet_sock(iface: &str) -> PathBuf {
-    runtime_base_dir().join(format!("vmnet-{iface}.sock"))
+    djpl_net_dir().join(format!("vmnet-{iface}.sock"))
+}
+
+/// Ensure the shared DJPL net dir exists with mode 0700. Idempotent.
+pub fn ensure_djpl_net_dir() -> io::Result<PathBuf> {
+    let base = djpl_net_dir();
+    std::fs::create_dir_all(&base)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(base)
 }
 
 /// Helper for callers that already have an `&Path` to an instance dir and
