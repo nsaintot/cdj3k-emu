@@ -4,7 +4,6 @@
 /* ------------------------------------------------------------------ */
 
 #include "ep122_shim.h"
-#include "mods/core/cdj3k_mods.h"
 
 static int do_open(const char *pathname, int flags, mode_t mode) {
     if (pathname) {
@@ -129,13 +128,7 @@ static int do_open(const char *pathname, int flags, mode_t mode) {
         }
     }
     {
-        int fd = sys_openat(pathname, flags, mode);
-
-        /* Tell the library watcher, which cares about exactly one family of
-         * paths and returns immediately for everything else. See mods/db/. */
-        if (fd >= 0 && pathname)
-            db_watch_open(pathname, fd, flags);
-        return fd;
+        return sys_openat(pathname, flags, mode);
     }
 }
 
@@ -238,7 +231,6 @@ int faccessat(int dirfd, const char *path, int mode, int flags) {
 extern int ep122_link_intercept_close(int fd);
 
 int close(int fd) {
-    db_watch_close(fd);
     if (is_drm_fd(fd)) {
         remove_drm_fd(fd);
         flip_slot_free(fd);  /* release per-fd flip event state */

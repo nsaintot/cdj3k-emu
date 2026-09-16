@@ -7,14 +7,13 @@
 #   Image              - kernel image (PL011 console, virtio built-in)
 #   modules/           - out-of-tree kernel modules (.ko)
 #   ep122_shim.so      - LD_PRELOAD shim (glibc 2.17-compatible)
-#   subucom_forwarder_aarch64  subucom_live_aarch64  cfgd_aarch64
-#   stemd_client_aarch64 - static tools
+#   subucom_forwarder_aarch64  subucom_live_aarch64  cfgd_aarch64 - static tools
 #   dummy_drv.so       - Xorg Video Driver ABI 24.0 for headless mode
 #
 # Single source of truth for guest user-space build flags is `guest/Makefile`.
 # Two stages invoke it with different toolchains:
 #   builder       (alpine, musl gcc)  → static tools (subucom_*, cfgd, ...) + kernel + modules
-#   shim-builder  (ubuntu, glibc gcc) → ep122_shim.so + the cdj3k-mods it links
+#   shim-builder  (ubuntu, glibc gcc) → ep122_shim.so
 #                                       (must be glibc-linked for LD_PRELOAD
 #                                       into EP122; gated by `make abi-check`)
 
@@ -124,7 +123,6 @@ RUN mkdir -p /out/modules && \
     cp /tmp/guest/out/subucom_forwarder_aarch64                      /out/ && \
     cp /tmp/guest/out/subucom_live_aarch64                           /out/ && \
     cp /tmp/guest/out/cfgd_aarch64                                   /out/ && \
-    cp /tmp/guest/out/stemd_client_aarch64                           /out/ && \
     cp /tmp/guest/out/pc_link_bridge_aarch64                         /out/ && \
     echo "=== /out/ ===" && ls -la /out/ && echo "=== /out/modules/ ===" && ls -la /out/modules/
 

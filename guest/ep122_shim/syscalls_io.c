@@ -6,7 +6,6 @@
  */
 
 #include "ep122_shim.h"
-#include "mods/core/cdj3k_mods.h"
 
 int ioctl(int fd, unsigned long request, ...) {
     va_list ap; va_start(ap, request);
@@ -82,16 +81,4 @@ ssize_t read(int fd, void *buf, size_t count) {
 
     /* --- All other fds (including subucom_virt.ko): passthrough --- */
     return sys_read(fd, buf, count);
-}
-
-/* ------------------------------------------------------------------ */
-/* write - passthrough, with a db_watch tap                           */
-/* ------------------------------------------------------------------ */
-/* HIDG and seq writes reach the real f_hid / f_midi char devices,    */
-/* which fan out as USB input reports / MIDI events on the gadget bus.*/
-ssize_t write(int fd, const void *buf, size_t count) {
-    /* The caller, not just the fact. A return address is what turns "the
-     * library file changed" into "this code changed it". */
-    db_watch_write(fd, count, (uintptr_t)__builtin_return_address(0));
-    return sys_write(fd, buf, count);
 }

@@ -26,7 +26,6 @@ struct MenuState {
 
     // Emulation
     service_item: CheckMenuItem,
-    mods_item: CheckMenuItem,
     haptic_item: CheckMenuItem,
     pc_link_item: CheckMenuItem,
 
@@ -83,11 +82,6 @@ pub fn setup_menu() {
     let fw_item = MenuItem::with_id("install_firmware", "Install Firmware…", true, None);
     let restart_item = MenuItem::with_id("restart", "Restart Emulation", true, None);
     let service_item = CheckMenuItem::with_id("service_mode", "Service Mode", true, false, None);
-    // "EP122 Mods" gates the cdj3k-mods that ride inside ep122_shim.so.  Off
-    // by default: a stock EP122 with only the emulation plumbing preloaded.
-    // On installs the mods (each feature still ships OFF in the deck's MOD
-    // SETTINGS).  sync_menu() re-applies the persisted value.
-    let mods_item = CheckMenuItem::with_id("mods", "EP122 Mods", true, false, None);
     // Initial checked state is the runtime default (true); sync_menu() will
     // re-apply the persisted value once the UI has loaded InstanceSettings.
     let haptic_item = CheckMenuItem::with_id("haptic", "Jog Haptics", true, true, None);
@@ -105,7 +99,6 @@ pub fn setup_menu() {
             &PredefinedMenuItem::separator(),
             &restart_item,
             &service_item,
-            &mods_item,
             &haptic_item,
             &pc_link_item,
             &PredefinedMenuItem::separator(),
@@ -221,7 +214,6 @@ pub fn setup_menu() {
         *cell.borrow_mut() = Some(MenuState {
             _menu: menu,
             service_item,
-            mods_item,
             haptic_item,
             pc_link_item,
             latency_item,
@@ -300,7 +292,6 @@ pub fn sync_menu() {
             main_screen_popped: s.main_screen_popped,
             debug_screen_popped: s.debug_screen_popped,
             service_mode: s.service_mode,
-            mods_enabled: s.mods_enabled,
             audio_enabled: s.audio_enabled,
             alc_enabled: s.alc_enabled,
             haptic_enabled: s.haptic_enabled,
@@ -326,7 +317,6 @@ pub fn sync_menu() {
 
         // Emulation.
         state.service_item.set_checked(snap.service_mode);
-        state.mods_item.set_checked(snap.mods_enabled);
         state.haptic_item.set_checked(snap.haptic_enabled);
         state.pc_link_item.set_checked(snap.pc_link_enabled);
         state.audio_item.set_checked(snap.audio_enabled);
@@ -415,7 +405,6 @@ struct MenuSnap {
     main_screen_popped: bool,
     debug_screen_popped: bool,
     service_mode: bool,
-    mods_enabled: bool,
     audio_enabled: bool,
     alc_enabled: bool,
     haptic_enabled: bool,
@@ -442,14 +431,6 @@ fn handle_event(id: &str, pending_create: &mut bool, pending_mount: &mut bool) {
         }
         "service_mode" => {
             s.service_mode = !s.service_mode;
-            s.shade_forced = true;
-            s.restart_requested = true;
-        }
-        "mods" => {
-            // Needs a QEMU restart to re-pass the kernel cmdline; the runtime
-            // worker persists the new value to InstanceSettings.
-            s.mods_enabled = !s.mods_enabled;
-            s.mods_toggle_requested = true;
             s.shade_forced = true;
             s.restart_requested = true;
         }

@@ -275,11 +275,10 @@ fi
 
 # tools/   - aarch64 guest ELFs + ep122_shim.so.  The firmware provisioner
 # installs everything here into the rootfs's /usr/bin (ep122_shim.so goes to
-# /home/root); stemd_client is the STEMS sidecar that 30-stemd-client.sh
-# turns into a service.
+# /home/root).
 RES_TOOLS="$RES_DIR/tools"
 mkdir -p "$RES_TOOLS"
-for tool in subucom_live subucom_forwarder stemd_client; do
+for tool in subucom_live subucom_forwarder; do
     src="$REPO_ROOT/guest/out/${tool}_aarch64"
     if [[ -f "$src" ]]; then
         cp "$src" "$RES_TOOLS/$tool"

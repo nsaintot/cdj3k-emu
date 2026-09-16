@@ -13,10 +13,8 @@
 #
 # Layout (one directory per binary; sources live next to the binary they ship):
 #   ep122_shim/    → the emulator half of the shim: time-shift, jog, DRM and
-#                    the syscall interposers. Links against the mods below.
-#   ep122_shim/cdj3k-mods/  → submodule: the feature mods and the STEMS
-#                    sidecar. Its package/deck/mods.mk carries their sources,
-#                    flags and gates, and this Makefile includes it.
+#                    the syscall interposers. Self-contained; the cdj3k-mods
+#                    ship as their own package and are not built here.
 #   subucom/       → subucom_forwarder_aarch64, subucom_live_aarch64
 #   cfgd/          → cfgd_aarch64        (cdj3k.cfg virtio-serial bridge)
 #
@@ -37,7 +35,7 @@ NO_OUTLINE_ATOMICS := $(shell printf 'int main(void){return 0;}\n' \
     | $(CC) -x c -mno-outline-atomics -c -o /dev/null - 2>/dev/null \
     && echo -mno-outline-atomics)
 
-# Version stamp, in the two forms mods/version.h documents. Overridable from the
+# Version stamp, in the two forms the shim reports. Overridable from the
 # command line: .dockerignore keeps .git out of the build context, so the `docker`
 # target below passes the host's values in. No git checkout gives "unknown".
 GIT_DESCRIBE := $(shell git -C $(CURDIR) describe --tags --always --dirty 2>/dev/null)
@@ -48,10 +46,12 @@ MOD_VERSION  ?= $(if $(GIT_TAG),$(GIT_TAG)$(if $(filter $(GIT_TAG),$(GIT_DESCRIB
 OUT        := out
 EP122_SHIM := $(OUT)/ep122_shim.so
 
-# The mods: sources, flags, purity/test manifests and the ABI gate. Shared with
-# the cdj3k-mods package build, so neither states them twice.
-MODS_DIR := ep122_shim/cdj3k-mods/package/deck
-include $(MODS_DIR)/mods.mk
+# The deck runs glibc 2.17 and carries exactly these libraries. abi-check
+# asserts both against the linked shim.
+GLIBC_MAX := 2.17
+DECK_LIBS := libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 librt.so.1 \
+             ld-linux-aarch64.so.1
+READELF   ?= $(CC:gcc=readelf)
 
 # -static-libgcc: link the libgcc helpers (incl. outline-atomics dispatchers
 #   on GCC 10+) into the .so so it doesn't need libgcc_s at runtime against
@@ -66,25 +66,20 @@ EP122_SHIM_CFLAGS := -O2 -Wall -Wextra -Wno-missing-field-initializers \
                      -finput-charset=utf-8 -fexec-charset=utf-8 \
                      -DEP122_MOD_VERSION='"$(MOD_VERSION)"' \
                      -DEP122_MOD_BUILD='"$(MOD_BUILD)"' \
-                     -Iep122_shim $(MODS_CFLAGS)
-
-# mods.mk builds its gates with these two.
-MODS_BUILD_CFLAGS := $(EP122_SHIM_CFLAGS)
-MODS_ABI_TARGET   := $(EP122_SHIM)
+                     -Iep122_shim
 
 # The emulator half: time-shift, jog, DRM and the syscall interposers. One
-# level, and it never reaches into the mods except through mods/cdj3k_mods.h.
+# level, and self-contained.
 SHIM_CORE_SRCS := $(wildcard ep122_shim/*.c)
 SHIM_CORE_OBJS := $(SHIM_CORE_SRCS:%.c=$(OUT)/%.o)
 SHIM_CORE_HDRS := $(wildcard ep122_shim/*.h)
 
 # Static tools: fully self-contained binaries
-TOOL_CFLAGS := -O2 -Wall -Wextra -static -I$(MODS_DIR)/shared
+TOOL_CFLAGS := -O2 -Wall -Wextra -static
 
 TOOL_TARGETS := $(OUT)/subucom_forwarder_aarch64 \
                 $(OUT)/subucom_live_aarch64 \
                 $(OUT)/cfgd_aarch64 \
-                $(OUT)/stemd_client_aarch64 \
                 $(OUT)/pc_link_bridge_aarch64
 
 # --- host tests ---
@@ -97,15 +92,12 @@ HOST_QUIET := $(shell printf 'int main(void){return 0;}\n' \
     && echo -Wno-nullability-completeness -Wno-deprecated-declarations)
 HOST_CFLAGS := -O1 -g -Wall -Wextra -Wno-missing-field-initializers $(HOST_QUIET) \
                -DEP122_MOD_VERSION='"$(MOD_VERSION)"' \
-               -DEP122_MOD_BUILD='"$(MOD_BUILD)"' \
-               $(MODS_INCLUDES)
-
-TEST_BINS := $(MODS_TEST_SRCS:$(MODS_DIR)/tests/%.c=$(OUT)/tests/%)
+               -DEP122_MOD_BUILD='"$(MOD_BUILD)"'
 
 CDJ_IP ?= 10.10.50.246
 DEPLOY := /home/root/ep122_shim.so
 
-.PHONY: all shim tools clean deploy docker purity check abi-check
+.PHONY: all shim tools clean deploy docker abi-check
 
 all: $(OUT) $(EP122_SHIM) $(TOOL_TARGETS)
 
@@ -130,20 +122,19 @@ $(OUT):
 # Hence the guard rather than a comment: the default CC here IS the musl cross
 # compiler, because that is the right one for the static tools. `make docker`
 # builds this in the ubuntu:18.04 stage against glibc 2.27.
-$(EP122_SHIM): $(SHIM_CORE_OBJS) $(MODS_OBJS)
+$(EP122_SHIM): $(SHIM_CORE_OBJS)
 	@case '$(CC)' in *musl*) \
 	  echo "ERROR: $(CC) links the shim against musl (NEEDED: libc.so)."; \
 	  echo "       The deck is glibc 2.17 and its ld.so will refuse it,"; \
 	  echo "       taking EP122 and /bin/sh down with it. Use: make docker"; \
 	  exit 1;; esac
-	$(CC) $(EP122_SHIM_CFLAGS) $(MODS_LDFLAGS) -o $@ $^ $(MODS_LDLIBS)
+	$(CC) $(EP122_SHIM_CFLAGS) -o $@ $^
 	@echo "Built: $@"
 	@command -v file >/dev/null && file $@ || true
 
-# mods.mk carries the mod compile rules. The core files are the opposite case --
-# open, read, clock_gettime and drmSetMaster ARE the shim -- so they link with
+# open, read, clock_gettime and drmSetMaster ARE the shim, so they link with
 # default visibility and no prototype warning.
-$(OUT)/%.o: %.c $(SHIM_CORE_HDRS) $(MODS_HDRS) | $(OUT)
+$(OUT)/%.o: %.c $(SHIM_CORE_HDRS) | $(OUT)
 	@mkdir -p $(dir $@)
 	$(CC) $(EP122_SHIM_CFLAGS) -c -o $@ $<
 
@@ -157,16 +148,12 @@ $(OUT)/subucom_live_aarch64: subucom/live.c | $(OUT)
 $(OUT)/cfgd_aarch64: cfgd/cfgd.c | $(OUT)
 	$(CC) $(TOOL_CFLAGS) -o $@ $<
 
-$(OUT)/stemd_client_aarch64: $(MODS_STEMD_SRCS) $(MODS_STEMD_HDRS) | $(OUT)
-	$(CC) $(TOOL_CFLAGS) -o $@ $(MODS_STEMD_SRCS)
 
 PC_LINK_SRCS := $(wildcard pc_link_bridge/*.c)
 $(OUT)/pc_link_bridge_aarch64: $(PC_LINK_SRCS) pc_link_bridge/bridge.h | $(OUT)
 	$(CC) $(TOOL_CFLAGS) -o $@ $(PC_LINK_SRCS)
 
 # --- gates ---
-purity:    mods-purity
-
 # The musl cross compiler cannot link the shim (guard above), so under it the
 # gate inspects the .so that `make docker` left in out/ rather than relinking.
 # READELF derives from CC, and the musl readelf reads a glibc .so fine.
@@ -181,17 +168,33 @@ shim-artifact:
 	@echo "abi-check: inspecting the Docker-built $(EP122_SHIM)" \
 	  "(`date -r $(EP122_SHIM) '+%Y-%m-%d %H:%M'`); 'make docker' to rebuild."
 endif
-abi-check: mods-abi-check
-
-$(OUT)/tests/%: $(MODS_DIR)/tests/%.c $(MODS_DIR)/tests/test.h $(MODS_TEST_STUBS) \
-                $(MODS_PURE_SRCS) $(MODS_TEST_DEPS) $(MODS_HDRS)
-	@mkdir -p $(dir $@)
-	$(HOST_CC) $(HOST_CFLAGS) -o $@ $< $(MODS_TEST_STUBS) \
-	    $(MODS_PURE_SRCS) $(MODS_TEST_DEPS) -lm
-
-check: $(TEST_BINS)
-	@fail=0; for t in $(TEST_BINS); do "$$t" || fail=1; done; \
-	[ $$fail -eq 0 ] || { echo "check: FAILED"; exit 1; }
+# The shim is LD_PRELOADed into every process apl_start.sh starts, all of them
+# glibc 2.17: assert the version ceiling, the libc flavour, and that every
+# NEEDED library is one the deck actually carries. Failing any of them leaves
+# the deck with no application.
+abi-check:
+	@fail=0; \
+	echo "== ABI check: $(EP122_SHIM) against glibc $(GLIBC_MAX) =="; \
+	vers=`$(READELF) --dyn-syms -W $(EP122_SHIM) \
+	      | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -uV`; \
+	echo "   glibc versions required: `echo $$vers | tr '\n' ' '`"; \
+	for v in $$vers; do \
+	  n=$${v#GLIBC_}; \
+	  if [ "`printf '%s\n%s\n' "$$n" "$(GLIBC_MAX)" | sort -V | tail -1`" != "$(GLIBC_MAX)" ]; then \
+	    echo "   FAIL: needs $$v, deck has $(GLIBC_MAX) - ld.so would refuse the preload"; fail=1; \
+	    $(READELF) --dyn-syms -W $(EP122_SHIM) | grep "$$v" | awk '{print "         " $$8}' | sort -u; \
+	  fi; \
+	done; \
+	needed=`$(READELF) -d $(EP122_SHIM) | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p'`; \
+	echo "   NEEDED: `echo $$needed | tr '\n' ' '`"; \
+	case "$$needed" in *libc.so.6*) ;; \
+	  *) echo "   FAIL: no libc.so.6 in NEEDED (musl build? the deck is glibc)"; fail=1;; esac; \
+	for l in $$needed; do \
+	  case " $(DECK_LIBS) " in *" $$l "*) ;; \
+	    *) echo "   FAIL: NEEDED $$l is not on the deck"; fail=1;; esac; \
+	done; \
+	[ $$fail -eq 0 ] || { echo "abi-check: FAILED"; exit 1; }; \
+	echo "   ok: loadable on glibc $(GLIBC_MAX)"
 
 clean:
 	rm -rf $(OUT)
@@ -226,6 +229,5 @@ docker:
 	cp $(DOCKER_OUT)/subucom_forwarder_aarch64 $(OUT)/
 	cp $(DOCKER_OUT)/subucom_live_aarch64      $(OUT)/
 	cp $(DOCKER_OUT)/cfgd_aarch64              $(OUT)/
-	cp $(DOCKER_OUT)/stemd_client_aarch64      $(OUT)/
 	cp $(DOCKER_OUT)/pc_link_bridge_aarch64    $(OUT)/
 	@echo "Built via Docker: $(OUT)/"

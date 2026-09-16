@@ -111,13 +111,6 @@ pub struct InstanceSettings {
     /// Defaults to **true**; users on hardware without an actuator see no
     /// change either way (the platform layer no-ops silently).
     pub haptic_enabled: bool,
-    /// "EP122 Mods" toggle.  When false the emulator puts `ep122_no_mods` on
-    /// the kernel cmdline and the guest exports `EP122_NO_MODS=1` into
-    /// EP122's environment, so the cdj3k-mods linked into ep122_shim.so stay
-    /// out of the process (the shim's own emulation plumbing still loads).
-    /// Defaults to **false**: a fresh instance boots a stock EP122 and the
-    /// user opts in from the menu.  Applied at the next QEMU (re)start.
-    pub mods_enabled: bool,
     /// "PC Link (USB-B cable)" toggle.  When true, the runtime brings up
     /// the host-side virtual CoreMIDI + HID endpoints and starts the
     /// in-guest `cdj3k-pc-link-bridge.service`.  Off by default; the
@@ -179,11 +172,6 @@ impl InstanceSettings {
             .get("haptic_enabled")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(true);
-        // Mods default: OFF - opt-in from Emulation > EP122 Mods.
-        let mods_enabled = map
-            .get("mods_enabled")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
         // PC link default: OFF - emulated cable starts unplugged.
         let pc_link_enabled = map
             .get("pc_link_enabled")
@@ -204,7 +192,6 @@ impl InstanceSettings {
             audio_device_uid,
             alc_enabled,
             haptic_enabled,
-            mods_enabled,
             pc_link_enabled,
             net_iface,
             usb_virtual_path,
@@ -231,10 +218,6 @@ impl InstanceSettings {
         map.insert(
             "haptic_enabled".into(),
             (if self.haptic_enabled { "1" } else { "0" }).to_string(),
-        );
-        map.insert(
-            "mods_enabled".into(),
-            (if self.mods_enabled { "1" } else { "0" }).to_string(),
         );
         map.insert(
             "pc_link_enabled".into(),

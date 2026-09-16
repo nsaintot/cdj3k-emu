@@ -120,16 +120,6 @@ pub struct AppState {
     pub power_off_stimuli_requested: bool,
     pub service_mode: bool,
 
-    /// "EP122 Mods" toggle - whether the cdj3k-mods linked into
-    /// ep122_shim.so install themselves inside EP122.  Off puts
-    /// `ep122_no_mods` on the kernel cmdline (guest patch 13 turns it into
-    /// `EP122_NO_MODS=1` in EP122's environment).  Persisted in
-    /// InstanceSettings; a QEMU restart applies it.
-    pub mods_enabled: bool,
-    /// One-shot: set when the user toggles the menu item; the runtime worker
-    /// persists `mods_enabled` to InstanceSettings.
-    pub mods_toggle_requested: bool,
-
     // ── Audio toggles ───────────────────────────────────────────────────────
     /// Mirror of the per-instance `audio_enabled` setting. Toggled by the
     /// "Enable audio" menu item; `audio_toggle_requested` fires the runtime
@@ -235,8 +225,6 @@ impl AppState {
             shade_forced: false,
             power_off_stimuli_requested: false,
             service_mode: false,
-            mods_enabled: false,
-            mods_toggle_requested: false,
             audio_enabled: false,
             audio_toggle_requested: false,
             audio_device_uid: None,

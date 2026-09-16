@@ -164,19 +164,11 @@ This lets you, for example, keep `Search Forward` held down while moving the jog
 
 ## EP122 mods
 
-The LD_PRELOAD shim also carries the [cdj3k-mods](https://github.com/nsaintot/cdj3k-mods)
-feature set (Gate Cue, MOD SETTINGS, Themes, STEMS, X-PAD), pulled in as the
-git submodule at `guest/ep122_shim/cdj3k-mods` and linked into `ep122_shim.so`
-by `guest/Makefile`. It's gated by **Emulation → EP122 Mods**, off by default.
-Until it is checked the instance boots with `ep122_no_mods` on the kernel
-cmdline; the guest turns that into `EP122_NO_MODS=1` in EP122's environment and
-the mods stay out of the process entirely. Checking it restarts the instance
-with the mods installed. The setting is persisted per instance. `cdj3k-emu
---no-mods` forces the gate off for one launch without touching the saved value.
-
-STEMS needs a [stemd](https://github.com/nsaintot/stemd) server on the LAN; the
-guest-side `stemd_client` sidecar (`stemd-client.service`) discovers it over
-mDNS or takes an address from MOD SETTINGS.
+The [cdj3k-mods](https://github.com/nsaintot/cdj3k-mods) feature set (Gate Cue,
+MOD SETTINGS, Themes, STEMS, X-PAD) is its own repository and its own package.
+The emulator neither builds nor ships it: the shim here carries only the
+emulation plumbing. To run the mods, build them from that repository and
+preload them alongside the shim.
 
 ## Building
 
@@ -205,9 +197,6 @@ git clone --recurse-submodules https://github.com/nsaintot/cdj3k-emu
 xcrun notarytool store-credentials cdj3k-emu-notarization --apple-id <APPLE_ID> --team-id <TEAM_ID>
 ./bundle.sh --sign "Developer ID Application" --dmg --notarize
 ```
-
-`scripts/sync-mods.sh [branch]` moves the submodule to the tip of a cdj3k-mods
-branch; commit the new pin afterwards.
 
 ## First-run privilege prompts
 
@@ -246,14 +235,13 @@ crates/cdj3k-emu-*   Rust workspace: subucom, streams, platform, ui,
 guest/               C sources built for the guest:
   cfgd/                cdj3k-cfgd  - virtio-serial config daemon
   ep122_shim/          ep122_shim.so - LD_PRELOAD shim (emulation half)
-    cdj3k-mods/        submodule: the EP122 mods + stemd_client sidecar
   subucom/             subucom_forwarder, subucom_live
   modules/             out-of-tree kernel modules (subucom_virt, virtio_snd, udev_usb1)
   kernel-patches/      vanilla 6.6 patches + the guest kernel .config
 qemu/                upstream QEMU source + our overlay patches
 docker/              Alpine + Ubuntu build pipeline for guest artefacts
 initramfs-patch/     numbered rootfs patch scripts (concatenated by bundle.sh)
-scripts/             bundle-dylibs.sh (self-contained .app), sync-mods.sh
+scripts/             bundle-dylibs.sh (self-contained .app)
 ```
 
 ## License
