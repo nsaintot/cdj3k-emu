@@ -11,7 +11,7 @@
 #   subucom_virt.ko    - virtual /dev/subucom_spi1.0
 #   virtio_snd.ko      - custom virtio-sound PCM
 #   dummy_drv.so       - Xorg dummy video driver (headless mode)
-#   ep122_shim.so      - LD_PRELOAD shim for EP122
+#   deck_shim.so       - LD_PRELOAD shim (core/ + per-model)
 #   subucom_forwarder_aarch64 / subucom_live_aarch64 / cfgd_aarch64
 #
 # Outputs:
@@ -59,16 +59,6 @@ DOCKER_OUT="$REPO_ROOT/build/docker-out"
 # --cache-to type=local.
 DOCKER_CACHE="$REPO_ROOT/build/docker-cache"
 DOCKER_BUILDER="$("$REPO_ROOT/docker/ensure-buildx-builder.sh")"
-# Version stamp the shim reports. .dockerignore keeps .git out
-# of the build context, so the values are computed here and passed in; the
-# same expressions live in guest/Makefile for a direct `make -C guest docker`.
-MOD_BUILD="$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo unknown)"
-MOD_TAG="$(git -C "$REPO_ROOT" describe --tags --abbrev=0 2>/dev/null || true)"
-if [[ -n "$MOD_TAG" ]]; then
-    MOD_VERSION="$MOD_TAG"; [[ "$MOD_TAG" == "$MOD_BUILD" ]] || MOD_VERSION="$MOD_TAG+"
-else
-    MOD_VERSION="unknown"
-fi
 WORKDIR="$REPO_ROOT/build/work"
 ROOTFS_DIR="$WORKDIR/rootfs"
 ROOTFS_MODULES="$ROOTFS_DIR/lib/modules"
@@ -96,8 +86,6 @@ docker buildx build \
     --target artifacts \
     --cache-from "type=local,src=$DOCKER_CACHE" \
     --cache-to "type=local,dest=$DOCKER_CACHE,mode=max" \
-    --build-arg "MOD_VERSION=$MOD_VERSION" \
-    --build-arg "MOD_BUILD=$MOD_BUILD" \
     --output "type=local,dest=$DOCKER_OUT" \
     -f "$REPO_ROOT/docker/Dockerfile" \
     "$REPO_ROOT"
@@ -141,10 +129,9 @@ for tool in subucom_live subucom_forwarder; do
     chmod 755 "$ROOTFS_DIR/usr/bin/$tool"
 done
 
-
 mkdir -p "$ROOTFS_DIR/home/root"
-cp "$DOCKER_OUT/ep122_shim.so" "$ROOTFS_DIR/home/root/ep122_shim.so"
-chmod 755 "$ROOTFS_DIR/home/root/ep122_shim.so"
+cp "$DOCKER_OUT/deck_shim.so" "$ROOTFS_DIR/home/root/deck_shim.so"
+chmod 755 "$ROOTFS_DIR/home/root/deck_shim.so"
 
 # Save tools to guest/out/ for bundle.sh
 mkdir -p "$REPO_ROOT/guest/out"
@@ -152,7 +139,7 @@ mkdir -p "$REPO_ROOT/guest/out"
 # pc_link_bridge, and the patch scripts abort the rootfs provision when a tool
 # they install is missing - long after a silently incomplete build looked fine
 # here.
-for bin in ep122_shim.so subucom_forwarder_aarch64 subucom_live_aarch64 cfgd_aarch64 \
+for bin in deck_shim.so subucom_forwarder_aarch64 subucom_live_aarch64 cfgd_aarch64 \
            pc_link_bridge_aarch64; do
     cp "$DOCKER_OUT/$bin" "$REPO_ROOT/guest/out/$bin"
 done

@@ -30,9 +30,6 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-pub const LCD_W: usize = 1280;
-pub const LCD_H: usize = 720;
-
 const SHM_MAGIC: u32 = 0x514D_5348;
 /// Byte offset where pixel data begins in the shm file (public for the GL upload path).
 pub const SHM_PIXELS_OFFSET: usize = 64;
@@ -172,7 +169,8 @@ fn poll_loop(
     // (e.g. "erase old cursor" fires between two polls - without
     // accumulation the stale cursor pixels would never be uploaded).
     let mut acc: Option<(usize, usize, usize, usize)> = None;
-    // Track surface dimensions to detect switches (640×480 → 1280×720).
+    // Track surface dimensions to detect switches (640×480 console → the X
+    // server's mode).
     let mut last_w: usize = 0;
     let mut last_h: usize = 0;
 
@@ -196,7 +194,8 @@ fn poll_loop(
         frames_seen.fetch_add(1, Ordering::Relaxed);
 
         // Re-read dimensions on every frame - the surface can switch
-        // mid-session (e.g. initial 640×480 QEMU console → 1280×720 Xorg).
+        // mid-session (the initial 640×480 QEMU console → Xorg at the model's
+        // main LCD mode).
         let width = read_u32(mmap, 8) as usize;
         let height = read_u32(mmap, 12) as usize;
         let stride = read_u32(mmap, 16) as usize;

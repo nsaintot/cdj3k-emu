@@ -6,7 +6,9 @@ use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2};
 use crate::app::ui::{draw_cache::ShapeList, COL_BTN};
 
 mod buttons;
+mod glyphs;
 pub(in crate::app) use buttons::*;
+pub(in crate::app) use glyphs::*;
 
 /// Width and color for stroked outlines (rect borders, ring strokes, etc.).
 #[derive(Clone, Copy, Debug)]

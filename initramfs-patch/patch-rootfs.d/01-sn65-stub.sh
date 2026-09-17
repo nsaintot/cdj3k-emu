@@ -6,7 +6,7 @@
 # In QEMU there is no I2C bus 3, so i2cget hangs. Stub the result to 0x00 (pass).
 # aplay silence.wav uses plughw:0,1 (card 0, device 1) which does not exist in QEMU.
 # The chime uses plughw:0,1 which doesn't exist (virtio_snd is device 0 only). Skip it.
-# ep122_shim.so is loaded via LD_PRELOAD in EP122.service.d/10-qemu.conf (patch 13).
+# deck_shim.so is loaded via LD_PRELOAD in EP122.service.d/10-qemu.conf (patch 13).
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 

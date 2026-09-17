@@ -1,10 +1,15 @@
 use std::path::PathBuf;
 
-/// Configuration for a single QEMU CDJ-3000 instance.
+use cdj3k_emu_panel::Model;
+
+/// Configuration for a single QEMU player instance.
 #[derive(Clone, Debug)]
 pub struct QemuConfig {
     /// Instance index - selects /tmp/cdj3k-emu/instance-{id}/ socket directory.
     pub instance_id: u32,
+
+    /// The player model this instance boots: sets the main LCD scanout mode.
+    pub model: Model,
 
     /// aarch64 kernel image.
     pub kernel: PathBuf,
@@ -62,12 +67,25 @@ pub struct QemuConfig {
     /// to the deterministic `0a:00:00:00:00:{instance_id}`.
     pub mac: Option<String>,
 
+    /// SoC serial the guest publishes as the `Serial` line of `/proc/cpuinfo`,
+    /// passed as `cdj3k.serial=` on the kernel cmdline and picked up by guest
+    /// patch 12.  `None` leaves the line absent, and `genkey_pr` cannot derive
+    /// the `cabinet.img` key.
+    pub soc_serial: Option<String>,
+
     /// When `true`, QEMU writes the guest serial console to
     /// `{sock_dir}/serial.log`. Disabled by default in release builds - the
     /// file grows unbounded over a long session and is only useful when
     /// debugging boot / kernel panics. Enable from the CLI with `--serial-log`
     /// or by setting `CDJ3K_SERIAL_LOG=1`.
     pub serial_log: bool,
+}
+
+/// `CDJ3K_SERIAL_SOCKET=1`: put the guest console on a unix socket rather than
+/// a log file. A guest built with `ENABLE_SSH=1` autologins root on it, so it
+/// is a scriptable shell.
+fn serial_is_socket() -> bool {
+    std::env::var_os("CDJ3K_SERIAL_SOCKET").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
 impl QemuConfig {
@@ -77,6 +95,7 @@ impl QemuConfig {
     pub fn new(kernel: PathBuf, initramfs: PathBuf) -> Self {
         Self {
             instance_id: 0,
+            model: Model::Cdj3k,
             kernel,
             initramfs,
             // CDJ3K_EMU_TCG=1 in the environment selects TCG instead of HVF.
@@ -93,6 +112,7 @@ impl QemuConfig {
             gdb_port: 1235,
             ssh_port: 2222,
             mac: None,
+            soc_serial: None,
             serial_log: false,
         }
     }
@@ -154,7 +174,12 @@ impl QemuConfig {
             args.extend(["-cpu".into(), "cortex-a72".into()]);
         }
 
-        args.extend(["-smp".into(), "4".into()]);
+        // The RK3399 has 6 cores (2x A72 + 4x A53) and the player app pins
+        // work to specific ones: cryptsetup to core 4 (genkey_pr | initoptenv,
+        // which opens cabinet.img), the X server to core 5. Fewer cores make
+        // those `taskset -c 4/5` calls fail, so the cabinet never unlocks and
+        // Device Library Plus cannot read its keys.
+        args.extend(["-smp".into(), "6".into()]);
 
         args.extend(["-kernel".into(), self.kernel.display().to_string()]);
         args.extend(["-initrd".into(), self.initramfs.display().to_string()]);
@@ -164,13 +189,22 @@ impl QemuConfig {
                 .to_string();
         // PL011 UART console works on vanilla 6.6 - always wire it up.
         kcmd.push_str(" console=ttyAMA0,115200");
-        // Forward journal to console so EP122 crash details appear in the serial log.
-        kcmd.push_str(" systemd.journald.forward_to_console=1");
+        // Forward journal to console so app crash details appear in the serial
+        // log - except when the console is the interactive shell, where the
+        // forwarded stream drowns the prompt and anything typed at it.
+        if !serial_is_socket() {
+            kcmd.push_str(" systemd.journald.forward_to_console=1");
+        }
         // virtio_gpu_init() requires VIRTIO_F_VERSION_1; force-legacy=off on the
         // MMIO transport ensures that bit is negotiated.
         kcmd.push_str(" virtio_gpu.modeset=1");
         if self.service_mode {
             kcmd.push_str(" subucom_testmode");
+        }
+        // Guest patch 12 turns this into the `Serial` line of /proc/cpuinfo,
+        // which genkey_pr hashes with the model to key cabinet.img.
+        if let Some(serial) = &self.soc_serial {
+            kcmd.push_str(&format!(" cdj3k.serial={}", serial));
         }
         // snd-dummy is built-in (CONFIG_SND_DUMMY=y) so its card always
         // auto-registers first - and JUCE picks card 0. When the real
@@ -179,11 +213,31 @@ impl QemuConfig {
         if self.audio {
             kcmd.push_str(" snd-dummy.enable=0");
         }
+        // `CDJ3K_KCMD_EXTRA`: append to the kernel cmdline. Lets a dev boot
+        // hold a unit back (`systemd.mask=EP145.service`) so the console shell
+        // is ready before the app starts, which is the only way to instrument
+        // its startup without racing the getty.
+        if let Some(extra) = std::env::var_os("CDJ3K_KCMD_EXTRA") {
+            let extra = extra.to_string_lossy();
+            if !extra.trim().is_empty() {
+                kcmd.push(' ');
+                kcmd.push_str(extra.trim());
+            }
+        }
         args.extend(["-append".into(), kcmd]);
 
         if self.serial_log {
-            let serial_log = self.sock_dir().join("serial.log").display().to_string();
-            args.extend(["-serial".into(), format!("file:{}", serial_log)]);
+            // `CDJ3K_SERIAL_SOCKET=1` puts the console on a unix socket instead
+            // of a file. A guest built with `ENABLE_SSH=1` autologins root on
+            // ttyAMA0, so connecting to it is a shell - which is how the guest
+            // gets traced without a debugger or an sshd.
+            let sink = if serial_is_socket() {
+                let sock = self.sock_dir().join("serial.sock").display().to_string();
+                format!("unix:{},server=on,wait=off", sock)
+            } else {
+                format!("file:{}", self.sock_dir().join("serial.log").display())
+            };
+            args.extend(["-serial".into(), sink]);
         } else {
             // No serial sink: also suppress QEMU's default monitor and
             // parallel chardevs. Otherwise the default-monitor allocator
@@ -295,17 +349,18 @@ impl QemuConfig {
 
         args.extend(["-device".into(), "virtio-serial-device,max_ports=8".into()]);
         for (name, nr) in &[
-            ("ctrl", None::<u32>),   // bidirectional: subucom_forwarder bridges subucom_ctrl ↔ host
-            ("cfg", None),           // bidirectional: cdj3k-cfgd ↔ host runtime
-                                     //   host→guest: usb attach|detach, set/get sysfs params
-                                     //   guest→host: usb_state, param values, latency every 3s
-            ("usb-link", None),      // bidirectional: pc-link-bridge in guest ↔ cdj3k-emu-runtime
-                                     // on host.  Carries HID (/dev/hidraw0) + MIDI
-                                     // (/dev/snd/midiC1D0) frames for the
-                                     // dummy_hcd-attached gadget.  Host side surfaces
-                                     // HID as an IOHIDUserDevice and MIDI as a
-                                     // CoreMIDI virtual endpoint.
-                                     // Idle until the pc_link toggle goes on.
+            // Bidirectional: subucom_forwarder bridges subucom_ctrl ↔ host.
+            ("ctrl", None::<u32>),
+            // Bidirectional: cdj3k-cfgd ↔ host runtime.
+            //   host→guest: usb attach|detach, set/get sysfs params
+            //   guest→host: usb_state, param values, latency every 3s
+            ("cfg", None),
+            // Bidirectional: pc-link-bridge in the guest ↔ cdj3k-emu-runtime.
+            // Carries HID (/dev/hidraw0) and MIDI (/dev/snd/midiC1D0) frames
+            // for the dummy_hcd-attached gadget; the host surfaces HID as an
+            // IOHIDUserDevice and MIDI as a CoreMIDI endpoint. Idle until the
+            // pc_link toggle goes on.
+            ("usb-link", None),
         ] {
             let sock_path = sock.join(format!("{}.sock", name));
             args.extend([
@@ -327,7 +382,7 @@ impl QemuConfig {
         }
 
         // ivshmem-plain (jog LCD zero-copy frame buffer). The guest's
-        // ep122_shim.so writes extracted 320×240 XRGB pixels directly into
+        // deck_shim.so writes extracted 320×240 XRGB pixels directly into
         // BAR2; the host mmaps `jog.shm` and polls the seqlock counter.
         args.extend([
             "-object".into(),
@@ -374,9 +429,10 @@ impl QemuConfig {
             ]);
         }
 
+        let (lcd_w, lcd_h) = self.model.main_lcd();
         args.extend([
             "-device".into(),
-            "virtio-gpu-device,id=virtio-gpu0,xres=1280,yres=720,max_outputs=1".into(),
+            format!("virtio-gpu-device,id=virtio-gpu0,xres={lcd_w},yres={lcd_h},max_outputs=1"),
         ]);
 
         args.extend(["-no-reboot".into()]);

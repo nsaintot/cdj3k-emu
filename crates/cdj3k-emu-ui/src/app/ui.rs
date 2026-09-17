@@ -1,25 +1,35 @@
+//! Panel UI: a shared control toolkit + per-model slates.
+//!
+//! The SHARED toolkit lives at this root: the colour palette, [`UiScale`]
+//! (reference-canvas to screen mapping), the button/rotary primitives
+//! ([`draw_primitives`]), the shape caches ([`draw_cache`]) and the jog-wheel
+//! assembly ([`draw_jog`]). Each [`slate`] composes the toolkit into the full
+//! panel of one model.
+
 pub(super) mod draw_cache;
-mod draw_chassis;
+pub(super) mod draw_direction;
 mod draw_jog;
-mod draw_left;
 mod draw_primitives;
-mod draw_right;
-pub(crate) use draw_right::{NAV_DETENT_COUNT, NAV_SCROLL_PX_PER_TICK};
-mod draw_top;
-pub(crate) mod layout;
+pub(super) mod draw_vinyl_speed;
+pub(super) mod slate;
+
+pub(super) use draw_jog::JogChrome;
 
 use egui::{Color32, Pos2, Rect, Vec2};
 
 use super::CdjApp;
 
-pub(in crate::app) use cdj3k_emu_platform::app_meta::DEVICE_NAME;
+/// Navigation rotary: detent positions per full revolution.
+pub(in crate::app) const NAV_DETENT_COUNT: f32 = 18.0;
+/// Navigation rotary: pixels of smooth scroll per detent (LCD scroll + rotary).
+pub(in crate::app) const NAV_SCROLL_PX_PER_TICK: f32 = 50.0;
 
 pub(super) const COL_BLACK: Color32 = Color32::from_rgb(20, 20, 26);
 pub(super) const COL_DARK: Color32 = Color32::from_rgb(30, 30, 36);
 pub(super) const COL_BTN: Color32 = Color32::from_rgb(48, 48, 55);
 pub(super) const COL_BLUE: Color32 = Color32::from_rgb(0, 102, 255);
 pub(super) const COL_GREEN: Color32 = Color32::from_rgb(140, 200, 0);
-pub(super) const COL_AMBER: Color32 = Color32::from_rgb(220, 200, 0);
+pub(super) const COL_AMBER: Color32 = Color32::from_rgb(249, 182, 42);
 pub(super) const COL_SILVER: Color32 = Color32::from_rgb(100, 100, 110);
 pub(super) const COL_YELLOW: Color32 = Color32::from_rgb(255, 240, 44);
 pub(super) const COL_RED: Color32 = Color32::from_rgb(238, 69, 85);
@@ -46,13 +56,11 @@ pub(super) fn panel_bg() -> Color32 {
 
 pub(super) use draw_primitives::{
     collect_arc_quad_button, collect_back_double_circle_border, collect_bordered_rect_section,
-    collect_button, collect_circle_button, draw_bordered_rect_section, draw_rotary_control,
-    draw_rotary_control_collect, paint_double_circle_ring, paint_double_circle_ring_collect,
-    ArcDecorSpec, ArcNotchSpec, ButtonType, DoubleBorderSpec, RotaryControlSpec, RotaryGearSpec,
-    RotaryIndicatorSpec, RotaryTickSpec, StrokeSpec,
+    collect_button, collect_circle_button, collect_computer_glyph, draw_bordered_rect_section,
+    draw_rotary_control, draw_rotary_control_collect, paint_double_circle_ring,
+    paint_double_circle_ring_collect, ArcDecorSpec, ArcNotchSpec, ButtonType, DoubleBorderSpec,
+    RotaryControlSpec, RotaryGearSpec, RotaryIndicatorSpec, RotaryTickSpec, StrokeSpec,
 };
-
-pub(super) use cdj3k_emu_platform::desktop::{LAYOUT_REF_H, LAYOUT_REF_W};
 
 pub(super) struct UiScale {
     ox: f32,
@@ -61,10 +69,49 @@ pub(super) struct UiScale {
 }
 
 impl UiScale {
+    /// Letterbox a `ref_w` x `ref_h` reference canvas into `avail`, centred.
+    pub(super) fn fit(avail: Rect, ref_w: f32, ref_h: f32) -> Self {
+        let scale = (avail.width() / ref_w).min(avail.height() / ref_h);
+        let ox = avail.left() + (avail.width() - ref_w * scale) * 0.5;
+        let oy = avail.top() + (avail.height() - ref_h * scale) * 0.5;
+        Self { ox, oy, scale }
+    }
+
     /// Returns the `(ox, oy, scale)` triple used as a cache invalidation key.
     pub(super) fn cache_key(&self) -> (f32, f32, f32) {
         (self.ox, self.oy, self.scale)
     }
+}
+
+/// `CDJ3K_DEBUG_ALIGN=1` on a debug build: a red square at each corner of the
+/// reference canvas, so a letterboxing or aspect regression is visible at a
+/// glance. Read once - the panel asks on every frame.
+#[cfg(debug_assertions)]
+fn debug_align_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var_os("CDJ3K_DEBUG_ALIGN").is_some_and(|v| v != "0" && !v.is_empty())
+    })
+}
+
+#[cfg(debug_assertions)]
+pub(super) fn debug_align_squares(p: &egui::Painter, layout: &UiScale, ref_w: f32, ref_h: f32) {
+    if !debug_align_enabled() {
+        return;
+    }
+    let s = DEBUG_ALIGN_SQUARE_SIZE_PX;
+    for (x, y) in [
+        (0.0, 0.0),
+        (ref_w - s, 0.0),
+        (0.0, ref_h - s),
+        (ref_w - s, ref_h - s),
+    ] {
+        p.rect_filled(layout.sr(x, y, s, s), 0.0, DEBUG_ALIGN_SQUARE_COLOR);
+    }
+}
+
+#[cfg(not(debug_assertions))]
+pub(super) fn debug_align_squares(_p: &egui::Painter, _layout: &UiScale, _ref_w: f32, _ref_h: f32) {
 }
 
 impl UiScale {
@@ -156,7 +203,7 @@ pub struct DebugSnapshot {
     pub main_shape_count: u64,
     pub jog_dbg_lines: [String; 3],
     pub lcd_touch: Option<(u16, u16)>,
-    pub last_miso: [u8; cdj3k_emu_subucom::miso_frame::MISO_SIZE],
+    pub last_miso: [u8; cdj3k_emu_panel::miso_frame::MISO_SIZE],
     pub led_frame: [u8; 64],
 }
 
@@ -168,7 +215,7 @@ impl Default for DebugSnapshot {
             main_shape_count: 0,
             jog_dbg_lines: [String::new(), String::new(), String::new()],
             lcd_touch: None,
-            last_miso: [0u8; cdj3k_emu_subucom::miso_frame::MISO_SIZE],
+            last_miso: [0u8; cdj3k_emu_panel::miso_frame::MISO_SIZE],
             led_frame: [0u8; 64],
         }
     }
@@ -200,7 +247,7 @@ pub(super) fn draw_debug_content(ui: &mut egui::Ui, snap: &DebugSnapshot, local_
     // ---- LCD touch ----
     ui.label(egui::RichText::new("lcd touch").font(mono.clone()).strong());
     let touch_str = match snap.lcd_touch {
-        Some((x, y)) => format!("x={:4}  y={:4}", x, y),
+        Some((x, y)) => format!("x={:4}  y={:4}", x & !cdj3k_emu_panel::TOUCH_DOWN, y),
         None => "none".to_string(),
     };
     ui.label(egui::RichText::new(touch_str).font(mono.clone()));
@@ -292,59 +339,6 @@ impl CdjApp {
     pub(super) fn draw_ui(&mut self, ui: &mut egui::Ui) {
         puffin::profile_function!();
         self.frame_shape_count = 0;
-        let avail = ui.clip_rect().shrink(2.0);
-        let scale = (avail.width() / LAYOUT_REF_W).min(avail.height() / LAYOUT_REF_H);
-        let ox = avail.left() + (avail.width() - LAYOUT_REF_W * scale) * 0.5;
-        let oy = avail.top() + (avail.height() - LAYOUT_REF_H * scale) * 0.5;
-        let layout = UiScale { ox, oy, scale };
-        let p = ui.painter().clone();
-
-        // Chassis - fully static, rebuilt only on resize.
-        let ppp = ui.ctx().pixels_per_point();
-        let bg_shapes = self
-            .chassis_bg_cache
-            .get_or_build(ox, oy, scale, ppp, |list| {
-                draw_chassis::collect_chassis(list, &layout);
-            });
-        self.frame_shape_count += bg_shapes.len() as u64;
-        p.extend(bg_shapes.iter().cloned());
-        // LCD overlay on top of all sections - fully static, rebuilt only on resize.
-        let overlay_shapes =
-            self.chassis_lcd_overlay_cache
-                .get_or_build(ox, oy, scale, ppp, |list| {
-                    draw_chassis::collect_chassis_lcd_overlay(list, &layout);
-                });
-        self.frame_shape_count += overlay_shapes.len() as u64;
-        p.extend(overlay_shapes.iter().cloned());
-
-        {
-            puffin::profile_scope!("draw_top");
-            self.draw_top_section(ui, &p, &layout);
-        }
-        {
-            puffin::profile_scope!("draw_left");
-            self.draw_left_section(ui, &p, &layout);
-        }
-        {
-            puffin::profile_scope!("draw_jog");
-            self.draw_jog_wheel_section(ui, &p, &layout);
-        }
-        {
-            puffin::profile_scope!("draw_right");
-            self.draw_right_sections(ui, &p, &layout);
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            let s = DEBUG_ALIGN_SQUARE_SIZE_PX;
-            for (x, y) in [
-                (0.0, 0.0),
-                (LAYOUT_REF_W - s, 0.0),
-                (0.0, LAYOUT_REF_H - s),
-                (LAYOUT_REF_W - s, LAYOUT_REF_H - s),
-            ] {
-                p.rect_filled(layout.sr(x, y, s, s), 0.0, DEBUG_ALIGN_SQUARE_COLOR);
-            }
-        }
+        (slate::for_model(self.model).draw_panel)(self, ui);
     }
 }

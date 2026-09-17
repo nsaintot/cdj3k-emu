@@ -19,6 +19,7 @@
 #   staged by build-initramfs.sh and copied by bundle.sh.
 
 set -eu
+: "${APP_UNIT:?APP_UNIT must be set by dispatcher}"
 
 # ── 1. Replace /lib/modules with only vanilla out-of-tree modules ─────────────
 echo "  [22] cleaning Pioneer 4.4 modules from /lib/modules ..."
@@ -48,7 +49,7 @@ for SVC in virtio-gpu virtio-console virtio-blk virtio-rng; do
 Description=${SVC} driver built-in - no-op on vanilla 6.6 kernel
 DefaultDependencies=no
 Before=x11-only.service
-Before=EP122.service
+Before=${APP_UNIT}
 Before=multi-user.target
 
 [Service]

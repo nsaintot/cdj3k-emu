@@ -1,9 +1,11 @@
+mod launch;
 mod runtime_worker;
 
 use std::path::PathBuf;
 
 use egui::{FontData, FontDefinitions, FontFamily, FontTweak};
 
+use cdj3k_emu_panel::Model;
 use cdj3k_emu_platform::fonts::{NIMBUS_SANS, NIMBUS_SANS_BOLD, NIMBUS_SANS_CONDENSED};
 
 fn configure_helvetica_medium(ctx: &egui::Context) {
@@ -98,6 +100,12 @@ fn main() {
     // via `--instance N` (the "Instances" menu launches us with `open -n`).
     let mut instance: u32 = 1;
 
+    // `--model <3000|3000x>` / `CDJ3K_MODEL`: skip the picker and boot this
+    // model right away (headless captures, dev loops, launch scripts).
+    let mut initial_model: Option<Model> = std::env::var("CDJ3K_MODEL")
+        .ok()
+        .and_then(|v| Model::parse(&v));
+
     let mut kernel: Option<PathBuf> = None;
     let mut initramfs: Option<PathBuf> = None;
     let mut no_emmc = false;
@@ -113,6 +121,18 @@ fn main() {
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(false);
 
+    // `--service-mode` boots straight into the sub-CPU test mode (the
+    // "Service Mode" menu item, which otherwise needs a restart).
+    let mut service_mode = false;
+    // `--provision <.UPD|.iso> [--key <file>]`: run the Install Firmware
+    // pipeline for `--instance` / `--model` without a window, then exit.
+    let mut provision_path: Option<PathBuf> = None;
+    let mut key_path: Option<PathBuf> = None;
+    // `--no-spawn` / `CDJ3K_NO_SPAWN=1`: chassis only - no runtime worker, no
+    // QEMU, no boot shade. For layout work and `CDJ3K_SCREENSHOT` captures.
+    let mut no_spawn = std::env::var_os("CDJ3K_NO_SPAWN")
+        .map(|v| v != "0" && !v.is_empty())
+        .unwrap_or(false);
 
     let mut i = 1;
     while i < args.len() {
@@ -121,6 +141,18 @@ fn main() {
                 i += 1;
                 if i < args.len() {
                     instance = args[i].parse().unwrap_or(0);
+                }
+            }
+            "--model" => {
+                i += 1;
+                if i < args.len() {
+                    match Model::parse(&args[i]) {
+                        Some(m) => initial_model = Some(m),
+                        None => eprintln!(
+                            "cdj3k-emu: unknown --model {:?} (cdj3k | cdj3kx) - showing the picker",
+                            args[i]
+                        ),
+                    }
                 }
             }
             "--kernel" => {
@@ -144,46 +176,57 @@ fn main() {
             "--profile" => {
                 profile = true;
             }
+            "--service-mode" => {
+                service_mode = true;
+            }
+            "--provision" => {
+                i += 1;
+                if i < args.len() {
+                    provision_path = Some(PathBuf::from(&args[i]));
+                }
+            }
+            "--key" => {
+                i += 1;
+                if i < args.len() {
+                    key_path = Some(PathBuf::from(&args[i]));
+                }
+            }
+            "--no-spawn" => {
+                no_spawn = true;
+            }
             _ => {}
         }
         i += 1;
     }
 
-    cdj3k_emu_platform::menu_state::lock().current_instance_id = instance;
+    {
+        let mut s = cdj3k_emu_platform::menu_state::lock();
+        s.current_instance_id = instance;
+        s.ui_only = no_spawn;
+    }
+
+    // What the Instances menu writes beside a slot number. The menu lives a
+    // crate below the settings, so it asks through this.
+    cdj3k_emu_platform::menu_state::set_slot_note_fn(|n| {
+        cdj3k_emu_storage::slot_summary(n).map(|(model, release)| match release {
+            Some(rel) => format!("{} {rel}", model.title()),
+            None => model.title().to_string(),
+        })
+    });
 
     let socket_dir = cdj3k_emu_platform::runtime_paths::instance_dir(instance)
         .to_string_lossy()
         .into_owned();
 
-    // ── QEMU lifecycle ────────────────────────────────────────────────────
-    // Two modes:
-    //   --kernel/--initramfs  dev: explicit path override (boot immediately)
-    //   .app default          resolve from App Support; boot only when all
-    //                         three files exist (wizard provisions them first)
-    #[cfg(target_os = "macos")]
-    {
-        use cdj3k_emu_runtime::{QemuConfig, QemuInstance, TapBridge, VmnetMode};
-
-        let instance_dir = cdj3k_emu_storage::emmc::default_path(instance)
-            .parent()
-            .unwrap()
-            .to_path_buf();
-        let resolved_kernel = kernel.unwrap_or_else(|| instance_dir.join("Image"));
-        let resolved_initramfs =
-            initramfs.unwrap_or_else(|| instance_dir.join("initramfs-patched.cpio.gz"));
-        let emmc_path = cdj3k_emu_storage::emmc::default_path(instance);
-
-        let emmc_img = if no_emmc {
-            None
-        } else {
-            Some(emmc_path.clone())
-        };
-
+    // ── Slot settings → menu mirrors ──────────────────────────────────────
+    // Seeded once here so the Audio/ALC/... checkboxes show the correct
+    // initial state on the picker and the panel alike. The runtime worker
+    // re-reads `audio_enabled` on every restart via apply_menu_to_config and
+    // pushes `alc_enabled` to the guest cfg daemon once per QEMU boot (see
+    // runtime_worker::run). Booting itself happens when a model is chosen
+    // (`launch::Host`).
+    if !no_spawn {
         let inst_settings = cdj3k_emu_storage::InstanceSettings::load_or_init(instance);
-        // Seed the menu mirrors so the Audio/ALC checkboxes show the correct
-        // initial state.  The runtime worker re-reads `audio_enabled` on every
-        // restart via apply_menu_to_config and pushes `alc_enabled` to the
-        // guest cfg daemon once per QEMU boot (see runtime_worker::run).
         {
             let mut s = cdj3k_emu_platform::menu_state::lock();
             s.audio_enabled = inst_settings.audio_enabled;
@@ -191,6 +234,7 @@ fn main() {
             s.alc_enabled = inst_settings.alc_enabled;
             s.haptic_enabled = inst_settings.haptic_enabled;
             s.pc_link_enabled = inst_settings.pc_link_enabled;
+            s.service_mode = service_mode;
         }
 
         // Restore network interface selection (best effort).  If the saved
@@ -218,90 +262,43 @@ fn main() {
                 cdj3k_emu_platform::menu_state::lock().usb_virtual_img = Some(path.clone());
             }
         }
+    }
 
-        let mut config = QemuConfig::new(resolved_kernel.clone(), resolved_initramfs.clone());
-        config.instance_id = instance;
-        config.ssh_port = 2222 + instance as u16;
-        config.qmp_port = 4445 + instance as u16;
-        config.gdb_port = 1235 + instance as u16;
-        config.emmc_img = emmc_img;
-        config.audio = inst_settings.audio_enabled;
-        config.audio_device_uid = inst_settings.audio_device_uid.clone();
-        config.mac = Some(inst_settings.mac);
-        config.serial_log = serial_log;
-
-        // ── Pre-build network backend ────────────────────────────────────────
-        // If a saved network interface is available, select the vmnet mode or
-        // set up the TAP bridge before the very first QEMU spawn so the initial
-        // process already has the right -netdev and we don't have to restart
-        // immediately.  prev_net_idx in the worker is seeded from this value
-        // so the first poll iteration is a no-op for network setup.
-        let mut prebuilt_net = runtime_worker::PrebuiltNet {
-            tap_bridge: None,
-            initial_net_idx: cdj3k_emu_platform::menu_state::NET_SEL_NONE,
+    // A slot remembers the model it last booted: open on it directly and
+    // show the picker only for a fresh slot or after "Switch Emulation".
+    // `--model` / `CDJ3K_MODEL` override it for this launch; `--no-spawn`
+    // ignores it so chassis work can always reach the picker.
+    if let Some(upd) = provision_path {
+        let Some(model) = initial_model else {
+            eprintln!("cdj3k-emu: --provision needs --model (cdj3k | cdj3kx)");
+            std::process::exit(2);
         };
-        let (initial_net_idx, iface_name) = {
-            let s = cdj3k_emu_platform::menu_state::lock();
-            let idx = s.selected_interface;
-            let name = match idx {
-                cdj3k_emu_platform::menu_state::NET_SEL_NONE
-                | cdj3k_emu_platform::menu_state::NET_SEL_VMNET_HOST => None,
-                n => s.net_ifaces.get(n as usize).map(|i| i.name.clone()),
-            };
-            (idx, name)
-        };
-        if initial_net_idx == cdj3k_emu_platform::menu_state::NET_SEL_VMNET_HOST {
-            eprintln!("cdj3k-emu: vmnet host-only selected");
-            config.net_vmnet = Some(VmnetMode::Host);
-            prebuilt_net.initial_net_idx = initial_net_idx;
-        }
-        if let Some(name) = iface_name {
-            if name.starts_with("tap") {
-                match TapBridge::setup(&name, config.instance_id) {
-                    Ok(tb) => {
-                        config.net_tap_iface = Some(tb.qemu_tap.clone());
-                        config.net_tap_fd = Some(tb.qemu_tap_fd);
-                        prebuilt_net.tap_bridge = Some(tb);
-                        prebuilt_net.initial_net_idx = initial_net_idx;
-                    }
-                    Err(e) => {
-                        eprintln!("cdj3k-emu: initial tapbridge setup failed: {e}");
-                        cdj3k_emu_platform::menu_state::lock().selected_interface =
-                            cdj3k_emu_platform::menu_state::NET_SEL_NONE;
-                    }
-                }
-            } else if let Some(mode) = VmnetMode::bridged(&name) {
-                eprintln!("cdj3k-emu: vmnet bridged on {name}");
-                config.net_vmnet = Some(mode);
-                prebuilt_net.initial_net_idx = initial_net_idx;
-            } else {
-                eprintln!("cdj3k-emu: invalid saved interface name: {name:?}");
-                cdj3k_emu_platform::menu_state::lock().selected_interface =
-                    cdj3k_emu_platform::menu_state::NET_SEL_NONE;
+        match cdj3k_emu_ui::provision_blocking(upd, key_path.as_deref(), instance, model) {
+            Ok(()) => {
+                eprintln!("cdj3k-emu: {model} firmware provisioned in slot {instance}");
+                std::process::exit(0);
             }
-        }
-
-        let can_boot = resolved_kernel.exists()
-            && resolved_initramfs.exists()
-            && (no_emmc || emmc_path.exists());
-
-        if can_boot {
-            match QemuInstance::spawn(config.clone()) {
-                Ok(inst) => {
-                    eprintln!("cdj3k-emu: QEMU subprocess started");
-                    runtime_worker::spawn(Some(inst), config, prebuilt_net);
-                }
-                Err(e) => {
-                    eprintln!("cdj3k-emu: QEMU start failed: {e:?}");
-                    runtime_worker::spawn(None, config, prebuilt_net);
-                }
+            Err(e) => {
+                eprintln!("cdj3k-emu: provisioning failed: {e}");
+                std::process::exit(1);
             }
-        } else {
-            eprintln!("cdj3k-emu: firmware not provisioned - opening Install Firmware wizard");
-            cdj3k_emu_platform::menu_state::lock().firmware_wizard_requested = true;
-            runtime_worker::spawn(None, config, prebuilt_net);
         }
     }
+
+    cdj3k_emu_storage::adopt_unrecorded_slot(instance);
+
+    if initial_model.is_none() && !no_spawn {
+        initial_model = cdj3k_emu_storage::InstanceSettings::saved_model(instance);
+    }
+
+    let host = launch::Host {
+        instance,
+        kernel,
+        initramfs,
+        no_emmc,
+        serial_log,
+        ui_only: no_spawn,
+    };
 
     // ── UI ────────────────────────────────────────────────────────────────
     let mut options = cdj3k_emu_platform::desktop::native_options(instance);
@@ -316,7 +313,7 @@ fn main() {
     options.viewport = std::mem::take(&mut options.viewport).with_icon(egui::IconData::default());
 
     // Register the sock dir for shutdown cleanup. Three exit paths:
-    //   - window-X / Cmd-Q  → eframe::App::on_exit (handled in CdjApp)
+    //   - window-X / Cmd-Q  → eframe::App::on_exit (CdjShell → CdjApp)
     //   - Ctrl-C, SIGTERM   → signal handler below (calls cleanup inline,
     //                         then _exit; doesn't rely on atexit, which on
     //                         macOS is unreliable across NSApplication quit)
@@ -350,16 +347,22 @@ fn main() {
     );
     cdj3k_emu_platform::desktop::set_app_name(&app_name);
 
+    let mut host = Some(host);
     eframe::run_native(
         &app_name,
         options,
         Box::new(move |cc| {
             configure_helvetica_medium(&cc.egui_ctx);
-            cdj3k_emu_platform::desktop::on_creation_context(cc, instance);
-            Ok(Box::new(cdj3k_emu_ui::app::CdjApp::new(
-                socket_dir.clone(),
-                cc.egui_ctx.clone(),
-                profile,
+            cdj3k_emu_platform::desktop::on_creation_context(cc);
+            Ok(Box::new(cdj3k_emu_ui::CdjShell::new(
+                cc,
+                cdj3k_emu_ui::ShellConfig {
+                    instance,
+                    socket_dir: socket_dir.clone(),
+                    profile,
+                    initial_model,
+                    host: Box::new(host.take().expect("app created once")),
+                },
             )))
         }),
     )

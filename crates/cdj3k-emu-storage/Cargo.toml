@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+cdj3k-emu-panel = { path = "../cdj3k-emu-panel", default-features = false }
 crc = "3"
 uuid = { version = "1", features = ["v4"] }
 cdj3k-emu-firmware = { path = "../cdj3k-emu-firmware" }

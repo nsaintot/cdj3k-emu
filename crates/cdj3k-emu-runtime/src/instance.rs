@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 /// Written by `QemuInstance::spawn`, cleared by `stop()` / `Drop`.
 pub static QEMU_CHILD_PID: AtomicI32 = AtomicI32::new(-1);
 
-/// How long EP122's sub-CPU takes to unmount USB after a power-off stimulus.
-/// Mirrors the countdown on real hardware.
-const EP122_CLEANUP_WAIT: Duration = Duration::from_secs(8);
+/// How long the player's sub-CPU takes to unmount USB after a power-off
+/// stimulus. Mirrors the countdown on real hardware.
+const APP_CLEANUP_WAIT: Duration = Duration::from_secs(8);
 /// How long systemd needs to walk the unit graph for ACPI shutdown.
 const ACPI_SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
 /// Window between sending QMP `quit` and SIGKILL-ing the QEMU child.
@@ -254,7 +254,7 @@ impl QemuInstance {
         }
         menu_state::lock().power_off_stimuli_requested = true;
         // Give EP122 ~8 s to unmount USB (mirrors the real sub-CPU countdown).
-        wait_or_kill(&self.running, self.inner.pid, EP122_CLEANUP_WAIT);
+        wait_or_kill(&self.running, self.inner.pid, APP_CLEANUP_WAIT);
         if self.running.load(Ordering::Acquire) {
             // EP122 cleanup done; trigger clean Linux shutdown via ACPI.
             let _ = self.inner.qmp.system_powerdown();

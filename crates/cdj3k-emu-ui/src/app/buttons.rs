@@ -2,6 +2,7 @@
 //! buttons. Each computes interaction state, maintains the shape cache,
 //! and drives MISO press/release encoding via [`CdjApp::handle_btn_interaction`].
 
+use cdj3k_emu_panel::Btn;
 use egui::{Color32, Pos2, Rect};
 use std::hash::Hash;
 
@@ -18,6 +19,13 @@ fn color_to_u32(c: Color32) -> u32 {
 }
 
 impl CdjApp {
+    /// Where `btn` sits in the frame of the player on screen, or `None` if
+    /// that player has no such button - which is how a slate stays honest
+    /// about a control its player does not carry.
+    pub(super) fn button(&self, btn: Btn) -> Option<(usize, u8)> {
+        cdj3k_emu_panel::miso_frame::button(self.model, btn)
+    }
+
     /// Shared button press/release logic with optional ctrl-latch.
     ///
     /// On press edge: sets `held_btn` and injects.
@@ -56,14 +64,14 @@ impl CdjApp {
         border_override: Option<ui::DoubleBorderSpec>,
         font_family: egui::FontFamily,
         id_src: impl Hash,
-        btn: (usize, u8),
+        btn: Btn,
     ) {
         let border = border_override.unwrap_or_else(|| ui::default_rect_btn_border(layout));
         let id = ui.id().with(&id_src);
         let response = ui.interact(rect, id, egui::Sense::click_and_drag());
         let is_down = response.is_pointer_button_down_on();
-        let latched = self.latched_btns.contains(&btn);
-        let is_pressed = is_down || latched;
+        let bit = self.button(btn);
+        let is_pressed = is_down || bit.is_some_and(|b| self.latched_btns.contains(&b));
 
         // State key: mix all LED-driven colors so any change invalidates the cache.
         let nudge_u32 = label_nudge
@@ -99,7 +107,9 @@ impl CdjApp {
         self.frame_shape_count += shapes.len() as u64;
         painter.extend(shapes.iter().cloned());
         let ctrl = ui.input(|i| i.modifiers.ctrl);
-        self.handle_btn_interaction(is_down, ctrl, btn);
+        if let Some(bit) = bit {
+            self.handle_btn_interaction(is_down, ctrl, bit);
+        }
     }
 
     /// Draw a circle button; inject on press edge, clear on release edge.
@@ -119,14 +129,14 @@ impl CdjApp {
         btn_label_nudge: Option<egui::Vec2>,
         btn_border: Option<ui::DoubleBorderSpec>,
         id_src: impl Hash,
-        btn: (usize, u8),
+        btn: Btn,
     ) {
         let id = ui.id().with(&id_src);
         let rect = Rect::from_center_size(center, egui::Vec2::splat(radius * 2.0));
         let response = ui.interact(rect, id, egui::Sense::click_and_drag());
         let is_down = response.is_pointer_button_down_on();
-        let latched = self.latched_btns.contains(&btn);
-        let is_pressed = is_down || latched;
+        let bit = self.button(btn);
+        let is_pressed = is_down || bit.is_some_and(|b| self.latched_btns.contains(&b));
         let border = btn_border.unwrap_or_else(|| ui::default_circle_btn_border(layout));
 
         let state = btn_label_color.map_or(0u32, color_to_u32)
@@ -156,7 +166,9 @@ impl CdjApp {
         self.frame_shape_count += shapes.len() as u64;
         painter.extend(shapes.iter().cloned());
         let ctrl = ui.input(|i| i.modifiers.ctrl);
-        self.handle_btn_interaction(is_down, ctrl, btn);
+        if let Some(bit) = bit {
+            self.handle_btn_interaction(is_down, ctrl, bit);
+        }
     }
 
     /// Draw an arc-shaped button; inject on press edge, clear on release.
@@ -181,14 +193,14 @@ impl CdjApp {
         dec_arc: Option<ui::ArcDecorSpec>,
         notch_arc: Option<ui::ArcNotchSpec>,
         id_src: impl Hash,
-        btn: (usize, u8),
+        btn: Btn,
     ) {
         let interact_rect = arc_quad_bounding_rect(center, inner_r, outer_r, a_start, a_end);
         let id = ui.id().with(&id_src);
         let response = ui.interact(interact_rect, id, egui::Sense::click_and_drag());
         let is_down = response.is_pointer_button_down_on();
-        let latched = self.latched_btns.contains(&btn);
-        let is_pressed = is_down || latched;
+        let bit = self.button(btn);
+        let is_pressed = is_down || bit.is_some_and(|b| self.latched_btns.contains(&b));
 
         let state = color_to_u32(fill);
         let cache_key = ui::draw_cache::BtnCacheKey::new(
@@ -225,7 +237,9 @@ impl CdjApp {
         self.frame_shape_count += shapes.len() as u64;
         painter.extend(shapes.iter().cloned());
         let ctrl = ui.input(|i| i.modifiers.ctrl);
-        self.handle_btn_interaction(is_down, ctrl, btn);
+        if let Some(bit) = bit {
+            self.handle_btn_interaction(is_down, ctrl, bit);
+        }
     }
 }
 

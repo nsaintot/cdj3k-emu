@@ -2,10 +2,8 @@
 //! and apply to the per-frame MISO state (touch coords, navigation rotary,
 //! ctrl-latched touch).
 
-use cdj3k_emu_subucom::miso_frame;
-
-use super::frame_inject::LCD_TOUCH_RANGE;
 use super::CdjApp;
+use cdj3k_emu_panel::Btn;
 
 /// Raw LCD touch input captured from a viewport frame, applied via
 /// [`CdjApp::apply_lcd_touch`].
@@ -25,6 +23,11 @@ impl CdjApp {
     pub(crate) fn apply_lcd_touch(&mut self, cap: LcdTouchCapture) {
         use super::ui::{NAV_DETENT_COUNT, NAV_SCROLL_PX_PER_TICK};
 
+        // A scripted touch owns the coordinate until it is released.
+        if self.script_touch {
+            return;
+        }
+
         if cap.hovered {
             if cap.scroll_y != 0.0 {
                 self.consume_lcd_scroll(cap.scroll_y, NAV_DETENT_COUNT, NAV_SCROLL_PX_PER_TICK);
@@ -35,8 +38,12 @@ impl CdjApp {
         }
 
         if self.lcd_nav_mode {
-            self.handle_btn_interaction(cap.is_down, cap.ctrl, miso_frame::BTN_ROTARY_PRESS);
-            self.handle_btn_interaction(cap.right_down, false, miso_frame::BTN_BACK);
+            if let Some(bit) = self.button(Btn::RotaryPress) {
+                self.handle_btn_interaction(cap.is_down, cap.ctrl, bit);
+            }
+            if let Some(bit) = self.button(Btn::Back) {
+                self.handle_btn_interaction(cap.right_down, false, bit);
+            }
             return;
         }
 
@@ -79,12 +86,11 @@ impl CdjApp {
             return;
         }
         if let Some(pos) = cap.interact_pos {
-            // X is mirrored: the device's origin is at the right edge.
-            let nx = (LCD_TOUCH_RANGE
-                - (pos.x - cap.display_rect.left()) / cap.display_rect.width() * LCD_TOUCH_RANGE)
-                as u16;
-            let ny = ((pos.y - cap.display_rect.top()) / cap.display_rect.height()
-                * LCD_TOUCH_RANGE) as u16;
+            // Fractions of the display; the model decides what units its app
+            // reads them in.
+            let fx = (pos.x - cap.display_rect.left()) / cap.display_rect.width();
+            let fy = (pos.y - cap.display_rect.top()) / cap.display_rect.height();
+            let (nx, ny) = self.model.touch_units(fx, fy);
             if self.lcd_touch != Some((nx, ny)) {
                 self.lcd_touch = Some((nx, ny));
                 self.inject_touch(nx, ny);

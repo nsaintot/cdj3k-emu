@@ -366,10 +366,10 @@ if [[ "$USE_PATCHED" -eq 1 ]]; then
             #   output 1 (1280×240) → CRTC 32 (jog LCD / DSI-2)
             # With max_outputs=1 (old default), the Pioneer kernel's SETCRTC for CRTC 32
             # fails silently → EP122TestMode detects the failure and stops rendering to
-            # the jog framebuffer → ep122_shim.so captures only zeros.
+            # the jog framebuffer → deck_shim.so captures only zeros.
             # max_outputs=1: Xorg only sees CRTC 29 (main LCD). CRTC 32 (jog LCD) is
-            # intercepted by ep122_shim.so which fakes SETCRTC success so EP122TestMode
-            # renders into the GEM buffer; ep122_shim then copies it to the memfd.
+            # intercepted by deck_shim.so which fakes SETCRTC success so EP122TestMode
+            # renders into the GEM buffer; deck_shim then copies it to the memfd.
             # max_outputs=2 caused Pioneer _pw_dc to crash inside Xorg's dumb alloc.
             GPU_DEVICE_ARGS=(-device "virtio-gpu-device,id=virtio-gpu0,xres=1280,yres=720,max_outputs=1")
             if [[ -x "${PATCHED_QEMU}" ]]; then

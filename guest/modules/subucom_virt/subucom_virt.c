@@ -37,6 +37,7 @@
 #include <linux/device.h>
 #include <linux/uaccess.h>
 #include <linux/slab.h>
+#include <linux/string.h>  /* strcmp */
 #include <linux/wait.h>
 #include <linux/spinlock.h>
 #include <linux/delay.h>   /* usleep_range */
@@ -86,7 +87,7 @@ static const u8 miso_idle[MISO_SIZE] = {
     0x00, 0x00, 0x01, 0x04, 0x03,
     /* b05-b11: button bitmasks */
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    /* b12-b15: device state + rotary encoder */
+    /* b12-b15: device state + rotary encoder (rest = ROTARY_IDLE) */
     0x81, 0x00, 0xff, 0xff,
     /* b16-b19: LCD touch */
     0x00, 0x00, 0x00, 0x00,
@@ -150,11 +151,33 @@ static u32 rx_bytes      = MISO_SIZE;
 static u32 interval_us   = INTERVAL_US;
 
 /* ------------------------------------------------------------------ */
+/* Model                                                              */
+/*                                                                    */
+/* model=cdj3k (CDJ-3000, default) or cdj3kx (CDJ-3000X). The         */
+/* CDJ-3000X's sub-CPU frame is the CDJ-3000 frame 4 bytes further    */
+/* on, behind a u16 format version (which it requires non-zero) and   */
+/* 2 pad bytes. The CDJ-3000's SD-cover bit (byte 16 bit 0 there) is  */
+/* a button on the CDJ-3000X.                                         */
+/* ------------------------------------------------------------------ */
+
+static char *model = "cdj3k";
+module_param(model, charp, 0444);
+MODULE_PARM_DESC(model, "Player: cdj3k = CDJ-3000 (default), cdj3kx = CDJ-3000X");
+
+/* Resolved once at init; the parameter is read-only afterwards. */
+static bool model_is_x;
+
+/* The idle frame for the loaded model (miso_idle adjusted at init). */
+static u8 miso_idle_model[MISO_SIZE];
+
+/* ------------------------------------------------------------------ */
 /* Testmode boot injection                                            */
 /*                                                                    */
-/* inject_testmode=1 pre-presses BTN_CALL_PREV + BTN_TEMPO_RANGE for  */
-/* ~5 seconds so subucom_read sees the service-mode combo during boot.*/
-/* A delayed_work automatically clears the injection before EP122     */
+/* inject_testmode=1 pre-presses the service-mode combo for ~5 s so   */
+/* subucom_read sees it during boot: CDJ-3000 = BTN_CALL_PREV +       */
+/* BTN_TEMPO_RANGE (byte 6 == 0x04, byte 8 == 0x08); CDJ-3000X =      */
+/* byte 10 == 0x04 and byte 12 == 0x01 (its subucom_read compares the */
+/* whole bytes). A delayed_work clears the injection before the app   */
 /* starts its 850 Hz polling loop.                                    */
 /* ------------------------------------------------------------------ */
 
@@ -222,7 +245,7 @@ static ssize_t spi_read(struct file *filp, char __user *buf,
         /* has_inject stays 1 - injected frame is sticky until ctrl_write()
          * replaces it with a new frame (e.g. idle on button release). */
     } else {
-        memcpy(frame, miso_idle, MISO_SIZE);
+        memcpy(frame, miso_idle_model, MISO_SIZE);
     }
     spin_unlock_irqrestore(&miso_lock, flags);
 
@@ -447,14 +470,33 @@ static int __init subucom_virt_init(void)
 
     init_waitqueue_head(&mosi_wq);
 
-    /* Testmode boot injection: pre-press BTN_CALL_PREV + BTN_TEMPO_RANGE */
+    model_is_x = model && strcmp(model, "cdj3kx") == 0;
+
+    if (model_is_x) {
+        /* Format version 1 (u16 LE), pad, the CDJ-3000 frame at +4. */
+        memset(miso_idle_model, 0, MISO_SIZE);
+        miso_idle_model[0] = 0x01;
+        memcpy(miso_idle_model + 4, miso_idle, MISO_SIZE - 2 - 4);
+        miso_idle_model[16] &= ~0x01;
+    } else {
+        memcpy(miso_idle_model, miso_idle, MISO_SIZE);
+    }
+
+    /* Testmode boot injection: pre-press the model's service-mode combo */
     if (inject_testmode) {
         unsigned long flags;
-        memcpy(inject_pending, miso_idle, MISO_SIZE);
-        /* BTN_TEMPO_RANGE: byte 6, mask 0x04 */
-        inject_pending[6] |= 0x04;
-        /* BTN_CALL_PREV: byte 8, mask 0x08 */
-        inject_pending[8] |= 0x08;
+        memcpy(inject_pending, miso_idle_model, MISO_SIZE);
+        if (model_is_x) {
+            /* TEMPO RANGE: byte 10, mask 0x04 */
+            inject_pending[10] |= 0x04;
+            /* MEMORY: byte 12, mask 0x01 */
+            inject_pending[12] |= 0x01;
+        } else {
+            /* BTN_TEMPO_RANGE: byte 6, mask 0x04 */
+            inject_pending[6] |= 0x04;
+            /* BTN_CALL_PREV: byte 8, mask 0x08 */
+            inject_pending[8] |= 0x08;
+        }
         spin_lock_irqsave(&miso_lock, flags);
         has_inject = 1;
         spin_unlock_irqrestore(&miso_lock, flags);

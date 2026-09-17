@@ -15,7 +15,10 @@
 #        - card0 present  → exec X :0  (modesetting via 20-modesetting.conf)
 #        - no card0       → exec X :0 -configdir /etc/x11-headless-conf
 #      This makes both --gl (card0 from virtio_gpu.ko) and headless modes work
-#      without rebuilding the initramfs.
+#      without rebuilding the initramfs.  The stock CPU pin (taskset) is kept
+#      only when the guest has that CPU: the CDJ-3000X firmware pins Xorg to CPU 5
+#      of the RK3399's six cores, and on a guest with fewer cores
+#      `taskset -c 5` fails and Xorg never starts.  The emulator boots six.
 #
 # Note: the dummy_drv.so binary (Xorg ABI 24.0, Ubuntu 20.04 arm64) is deployed
 # to /usr/lib/xorg/modules/drivers/ by build-initramfs.sh.
@@ -64,12 +67,15 @@ fi
 
 cat > "$X11_SH" << SHEOF
 #!/bin/sh
-# card0 present = virtio_gpu loaded (--gl mode); absent = headless
+# card0 present = virtio_gpu loaded (--gl mode); absent = headless.
+# The CPU pin applies only when the guest has CPU ${TASKSET_CPU}.
+PIN=""
+[ -d /sys/devices/system/cpu/cpu${TASKSET_CPU} ] && PIN="taskset -c ${TASKSET_CPU}"
 if [ -e /dev/dri/card0 ]; then
-    exec taskset -c ${TASKSET_CPU} X :0
+    exec \$PIN X :0
 else
-    exec taskset -c ${TASKSET_CPU} X :0 -configdir /etc/x11-headless-conf
+    exec \$PIN X :0 -configdir /etc/x11-headless-conf
 fi
 SHEOF
 chmod 755 "$X11_SH"
-echo "  -> $X11_SH rewritten: card0 detection (modesetting vs dummy)"
+echo "  -> $X11_SH rewritten: card0 detection (modesetting vs dummy), CPU ${TASKSET_CPU} pin guarded"

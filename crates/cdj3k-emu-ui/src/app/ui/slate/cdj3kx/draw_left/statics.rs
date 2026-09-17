@@ -1,0 +1,432 @@
+//! Static labels and chrome for the left (transport) section. Cached and
+//! rebuilt only when the window scale or layout changes.
+
+use egui::{FontId, Pos2, Rect, Stroke, Vec2};
+
+use super::super::draw_cache::ShapeList;
+use super::super::{
+    collect_back_double_circle_border, collect_bordered_rect_section, collect_computer_glyph,
+    DoubleBorderSpec, StrokeSpec, UiScale, COL_BLACK, COL_BTN_OUTLINED_WHITE, COL_BTN_TEXT,
+    COL_DARK, COL_SILVER,
+};
+use super::*;
+use crate::app::ui::draw_direction::DIRECTION_BORDER_ROUNDING;
+
+pub(super) fn collect_left_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
+    use egui::Align2;
+
+    // ── USB 1 slot labels: name and rating above the casing, STOP below ────
+    // The X has no trident logo here; the slot reads as a vertical stack with
+    // the STOP button at its foot, and the host-link glyph beside the legend.
+    {
+        let col = PERF_TRANSPORT_COL_REF;
+        let cx_ref = col.left() + col.width() * PERF_U_USB_MOUNT;
+
+        list.text(
+            ctx,
+            layout.sp(cx_ref, col.top() + col.height() * PERF_V_USB_NAME),
+            Align2::CENTER_CENTER,
+            "USB 1",
+            FontId::proportional(layout.sc(PERF_USB_NAME_FONT_SIZE)),
+            COL_BTN_TEXT,
+        );
+        collect_computer_glyph(
+            list,
+            layout.sp_in_rect(col, PERF_U_USB_LINK_GLYPH, PERF_V_USB_LINK_GLYPH),
+            layout.sc(PERF_USB_LINK_GLYPH_W),
+            COL_BTN_TEXT,
+            true,
+        );
+        // "5 V <dc> 1 A". The DC symbol is drawn rather than typed: the UI font
+        // has no U+2393 and renders it as a missing-glyph box.
+        {
+            let rating_cy = col.top() + col.height() * PERF_V_USB_RATING;
+            let font = FontId::proportional(layout.sc(PERF_USB_RATING_FONT_SIZE));
+            list.text(
+                ctx,
+                layout.sp(cx_ref - PERF_USB_DC_GAP, rating_cy),
+                Align2::RIGHT_CENTER,
+                "5 V",
+                font.clone(),
+                COL_BTN_TEXT,
+            );
+            list.text(
+                ctx,
+                layout.sp(cx_ref + PERF_USB_DC_GAP, rating_cy),
+                Align2::LEFT_CENTER,
+                "1 A",
+                font,
+                COL_BTN_TEXT,
+            );
+            let half = PERF_USB_DC_W * 0.5;
+            let stroke = Stroke::new(layout.sc(PERF_USB_DC_STROKE), COL_BTN_TEXT);
+            // Solid bar over a broken one - the IEC direct-current mark.
+            list.line_segment(
+                [
+                    layout.sp(cx_ref - half, rating_cy - PERF_USB_DC_SPLIT),
+                    layout.sp(cx_ref + half, rating_cy - PERF_USB_DC_SPLIT),
+                ],
+                stroke,
+            );
+            let seg = PERF_USB_DC_W / 5.0;
+            for k in 0..3 {
+                let x0 = cx_ref - half + (k as f32) * seg * 2.0;
+                list.line_segment(
+                    [
+                        layout.sp(x0, rating_cy + PERF_USB_DC_SPLIT),
+                        layout.sp(x0 + seg, rating_cy + PERF_USB_DC_SPLIT),
+                    ],
+                    stroke,
+                );
+            }
+        }
+
+        // Notch tab, then "STOP", under the light band.
+        let stop_cy_ref = col.top() + col.height() * PERF_V_USB_STOP_LABEL;
+        let tab_rect = Rect::from_center_size(
+            layout.sp(cx_ref - PERF_USB_STOP_TAB_OFF_X, stop_cy_ref),
+            Vec2::new(layout.sc(LEGEND_TAB_W), layout.sc(LEGEND_TAB_H)),
+        );
+        list.rect_filled(tab_rect, 0.0, COL_BTN_TEXT);
+        list.text(
+            ctx,
+            layout.sp(cx_ref + PERF_USB_STOP_LABEL_OFF_X, stop_cy_ref),
+            Align2::LEFT_CENTER,
+            "STOP",
+            FontId::proportional(layout.sc(PERF_USB_STOP_LABEL_FONT_SIZE)),
+            COL_BTN_TEXT,
+        );
+    }
+
+    list.text(
+        ctx,
+        layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.580, PERF_V_BEAT_JUMP_LABEL),
+        Align2::CENTER_CENTER,
+        "BEAT\nJUMP",
+        FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+        COL_BTN_TEXT,
+    );
+    list.text(
+        ctx,
+        layout.sp_in_rect(
+            PERF_TRANSPORT_COL_REF,
+            PERF_PAIR_LABEL_U,
+            PERF_V_TRACK_SEARCH_LABEL,
+        ),
+        Align2::CENTER_CENTER,
+        "TRACK SEARCH",
+        FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+        COL_BTN_TEXT,
+    );
+    // Back-capsule border behind TRACK SEARCH paired buttons.
+    {
+        let tl = layout.sp_in_rect(
+            PERF_TRANSPORT_COL_REF,
+            PERF_PAIR_U_MID - PERF_PAIR_U_OFF_FRAC,
+            PERF_V_TRACK_SEARCH_CTRLS,
+        );
+        let tr = layout.sp_in_rect(
+            PERF_TRANSPORT_COL_REF,
+            PERF_PAIR_U_MID + PERF_PAIR_U_OFF_FRAC,
+            PERF_V_TRACK_SEARCH_CTRLS,
+        );
+        collect_back_double_circle_border(
+            list,
+            tl,
+            tr,
+            layout.sc(PERF_DOUBLE_CIRCLE_RING_R),
+            layout.sc(PERF_DOUBLE_CIRCLE_RING_STROKE),
+            COL_DARK,
+            COL_SILVER,
+        );
+    }
+    list.text(
+        ctx,
+        layout.sp_in_rect(
+            PERF_TRANSPORT_COL_REF,
+            PERF_PAIR_LABEL_U,
+            PERF_V_SEARCH_LABEL,
+        ),
+        Align2::CENTER_CENTER,
+        "SEARCH",
+        FontId::proportional(layout.sc(PERF_DOUBLE_CIRCLE_LABEL_FONT_SIZE)),
+        COL_BTN_TEXT,
+    );
+    // Back-capsule border behind SEARCH paired buttons.
+    {
+        let sl = layout.sp_in_rect(
+            PERF_TRANSPORT_COL_REF,
+            PERF_PAIR_U_MID - PERF_PAIR_U_OFF_FRAC,
+            PERF_V_SEARCH_CTRLS,
+        );
+        let sr = layout.sp_in_rect(
+            PERF_TRANSPORT_COL_REF,
+            PERF_PAIR_U_MID + PERF_PAIR_U_OFF_FRAC,
+            PERF_V_SEARCH_CTRLS,
+        );
+        collect_back_double_circle_border(
+            list,
+            sl,
+            sr,
+            layout.sc(PERF_DOUBLE_CIRCLE_RING_R),
+            layout.sc(PERF_DOUBLE_CIRCLE_RING_STROKE),
+            COL_DARK,
+            COL_SILVER,
+        );
+    }
+
+    // ── CALL / DELETE chrome + labels ────────────────────────────────────────
+    {
+        let col = PERF_TRANSPORT_COL_REF;
+        let cy_ref = col.top() + col.height() * PERF_V_CALL_DELETE;
+        let btn_cx_ref = col.left() + col.width() * PERF_CALL_DELETE_BTN_U;
+
+        // Outer bordered container.
+        let outer_ref = Rect::from_center_size(
+            Pos2::new(btn_cx_ref, cy_ref),
+            Vec2::new(PERF_CALL_DELETE_OUTER_W, PERF_CALL_DELETE_OUTER_H),
+        );
+        let outer_screen = Rect::from_min_max(
+            layout.sp(outer_ref.left(), outer_ref.top()),
+            layout.sp(outer_ref.right(), outer_ref.bottom()),
+        );
+        collect_bordered_rect_section(
+            list,
+            outer_screen,
+            Some(layout.sc(PERF_CALL_DELETE_OUTER_ROUNDING)),
+            Some(COL_BLACK),
+            DoubleBorderSpec::from_strokes_with_gap(
+                StrokeSpec {
+                    width: layout.sc(PERF_CALL_DELETE_BTN_INNER_STROKE),
+                    color: COL_SILVER,
+                },
+                StrokeSpec {
+                    width: layout.sc(PERF_CALL_DELETE_BTN_OUTER_STROKE),
+                    color: COL_DARK,
+                },
+                layout.sc(2.0),
+            ),
+        );
+
+        let label_y_ref = cy_ref - PERF_CALL_DELETE_LABEL_NUDGE_Y;
+
+        // "▪ CALL/" label.
+        list.text(
+            ctx,
+            layout.sp(
+                col.left() + col.width() * PERF_CALL_DELETE_LEFT_LABEL_U,
+                label_y_ref,
+            ),
+            Align2::CENTER_CENTER,
+            "▪ CALL/",
+            FontId::proportional(layout.sc(PERF_LABEL_DELETE_FONT_SIZE)),
+            COL_BTN_TEXT,
+        );
+
+        // "DELETE" white-pill sublabel.
+        let del_center = layout.sp(
+            col.left() + col.width() * PERF_CALL_DELETE_RIGHT_LABEL_U,
+            label_y_ref,
+        );
+        let del_sublabel_size = Vec2::new(
+            layout.sc(PERF_CALL_DELETE_SUBLABEL_W),
+            layout.sc(PERF_CALL_DELETE_SUBLABEL_H),
+        );
+        list.rect_filled(
+            Rect::from_center_size(del_center, del_sublabel_size),
+            layout.sc(PERF_CALL_DELETE_SUBLABEL_ROUNDING),
+            COL_BTN_OUTLINED_WHITE,
+        );
+        list.text(
+            ctx,
+            del_center,
+            Align2::CENTER_CENTER,
+            "DELETE",
+            FontId::proportional(layout.sc(PERF_LABEL_DELETE_FONT_SIZE)),
+            COL_BLACK,
+        );
+
+        // Segment to the right of the DELETE label.
+        let seg_start = layout.sp(
+            col.left() + col.width() * PERF_CALL_DELETE_SEGMENT_U,
+            cy_ref,
+        );
+        let seg_end = Pos2::new(
+            seg_start.x + layout.sc(PERF_CALL_DELETE_SEGMENT_LENGTH),
+            seg_start.y,
+        );
+        list.line_segment(
+            [seg_start, seg_end],
+            Stroke::new(layout.sc(PERF_CALL_DELETE_SEGMENT_THICKNESS), COL_BTN_TEXT),
+        );
+    }
+
+    // ── Loop row: "IN/CUE" / "OUT" / "RELOOP/EXIT" labels + 3 separator lines ─
+    {
+        list.text(
+            ctx,
+            layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.332, PERF_V_LOOP_IN_OUT_LABEL),
+            Align2::CENTER_CENTER,
+            "IN/CUE",
+            FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+            COL_BTN_TEXT,
+        );
+        list.text(
+            ctx,
+            layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.814, PERF_V_LOOP_IN_OUT_LABEL),
+            Align2::CENTER_CENTER,
+            "OUT",
+            FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+            COL_BTN_TEXT,
+        );
+        list.text(
+            ctx,
+            layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 1.392, PERF_V_LOOP_IN_OUT_LABEL),
+            Align2::CENTER_CENTER,
+            "RELOOP/EXIT",
+            FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+            COL_BTN_TEXT,
+        );
+
+        let line_stroke = Stroke::new(layout.sc(PERF_LOOP_LINE_THICKNESS), COL_BTN_TEXT);
+        for &(u, len) in &[
+            (0.528_f32, PERF_LOOP_LINE_1_LENGTH),
+            (1.010, PERF_LOOP_LINE_2_LENGTH),
+            (1.577, PERF_LOOP_LINE_3_LENGTH),
+        ] {
+            let s = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, u, PERF_V_LOOP_LINE);
+            let e = Pos2::new(s.x + layout.sc(len), s.y);
+            list.line_segment([s, e], line_stroke);
+        }
+    }
+
+    // ── "LOOP" + IN/OUT ADJUST sublabels ─────────────────────────────────────
+    {
+        list.text(
+            ctx,
+            layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 2.041, PERF_V_LOOP_LABEL),
+            Align2::CENTER_CENTER,
+            "LOOP",
+            FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+            COL_BTN_TEXT,
+        );
+
+        let in_adj = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.328, PERF_V_LOOP_SUBLABEL);
+        let out_adj = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.810, PERF_V_LOOP_SUBLABEL);
+        let in_size = Vec2::new(
+            layout.sc(PERF_LOOP_SUBLABEL_IN_W),
+            layout.sc(PERF_LOOP_SUBLABEL_H),
+        );
+        let out_size = Vec2::new(
+            layout.sc(PERF_LOOP_SUBLABEL_OUT_W),
+            layout.sc(PERF_LOOP_SUBLABEL_H),
+        );
+        let rounding = layout.sc(PERF_LOOP_SUBLABEL_ROUNDING);
+
+        list.rect_filled(
+            Rect::from_center_size(in_adj, in_size),
+            rounding,
+            COL_BTN_OUTLINED_WHITE,
+        );
+        list.rect_filled(
+            Rect::from_center_size(out_adj, out_size),
+            rounding,
+            COL_BTN_OUTLINED_WHITE,
+        );
+        list.text(
+            ctx,
+            in_adj,
+            Align2::CENTER_CENTER,
+            "IN ADJUST",
+            FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+            COL_BLACK,
+        );
+        list.text(
+            ctx,
+            out_adj,
+            Align2::CENTER_CENTER,
+            "OUT ADJUST",
+            FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+            COL_BLACK,
+        );
+    }
+
+    // ── BEAT LOOP separator lines + label + 1/2X / 2X sublabels ──────────────
+    {
+        let line_stroke = Stroke::new(layout.sc(PERF_BEAT_LOOP_LINE_THICKNESS), COL_BTN_TEXT);
+        for &u in &[0.463_f32, 0.953] {
+            let s = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, u, PERF_V_BEAT_LOOP_LINE);
+            let e = Pos2::new(s.x + layout.sc(PERF_BEAT_LOOP_LINE_LENGTH), s.y);
+            list.line_segment([s, e], line_stroke);
+        }
+
+        list.text(
+            ctx,
+            layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 1.392, PERF_V_BEAT_LOOP_LABEL),
+            Align2::CENTER_CENTER,
+            "BEAT LOOP",
+            FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+            COL_BTN_TEXT,
+        );
+
+        let half = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.335, PERF_V_BEAT_LOOP_SUBLABEL);
+        let twox = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.818, PERF_V_BEAT_LOOP_SUBLABEL);
+        let size = Vec2::new(
+            layout.sc(PERF_BEAT_LOOP_SUBLABEL_W),
+            layout.sc(PERF_BEAT_LOOP_SUBLABEL_H),
+        );
+        let rounding = layout.sc(PERF_BEAT_LOOP_SUBLABEL_ROUNDING);
+        list.rect_filled(
+            Rect::from_center_size(half, size),
+            rounding,
+            COL_BTN_OUTLINED_WHITE,
+        );
+        list.rect_filled(
+            Rect::from_center_size(twox, size),
+            rounding,
+            COL_BTN_OUTLINED_WHITE,
+        );
+        list.text(
+            ctx,
+            half,
+            Align2::CENTER_CENTER,
+            "1/2X",
+            FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+            COL_BLACK,
+        );
+        list.text(
+            ctx,
+            twox,
+            Align2::CENTER_CENTER,
+            "2X",
+            FontId::proportional(layout.sc(PERF_LABEL_FONT_SIZE)),
+            COL_BLACK,
+        );
+    }
+
+    // ── DIRECTION combo bordered container ───────────────────────────────────
+    {
+        let combo_ref = DIRECTION_PLACE.combo_ref();
+
+        let combo_screen = Rect::from_min_max(
+            layout.sp(combo_ref.left(), combo_ref.top()),
+            layout.sp(combo_ref.right(), combo_ref.bottom()),
+        );
+        collect_bordered_rect_section(
+            list,
+            combo_screen,
+            Some(layout.sc(DIRECTION_BORDER_ROUNDING)),
+            Some(COL_BLACK),
+            DoubleBorderSpec::from_strokes(
+                StrokeSpec {
+                    width: layout.sc(3.0),
+                    color: COL_SILVER,
+                },
+                StrokeSpec {
+                    width: layout.sc(2.0),
+                    color: COL_SILVER,
+                },
+            ),
+        );
+    }
+}

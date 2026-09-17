@@ -9,7 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-cdj3k-emu-subucom = { path = "../cdj3k-emu-subucom" }
+cdj3k-emu-panel = { path = "../cdj3k-emu-panel" }
 memmap2 = "0.9"
 egui = "0.29"
 puffin = "0.19"

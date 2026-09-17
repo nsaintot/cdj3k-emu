@@ -95,6 +95,12 @@ pub struct AppState {
     // ── Instance ────────────────────────────────────────────────────────────
     /// 1..=MAX_INSTANCES. Set once at startup from main.rs (`--instance N`).
     pub current_instance_id: u32,
+    /// `--no-spawn`: the window runs without any runtime worker or QEMU
+    /// (chassis/layout work). The boot shade stays down and nothing waits
+    /// for a guest.
+    pub ui_only: bool,
+    /// The model of the panel on screen; `None` while the picker is up.
+    pub model: Option<cdj3k_emu_panel::Model>,
 
     // ── View ────────────────────────────────────────────────────────────────
     pub jog_screen_popped: bool,
@@ -106,18 +112,26 @@ pub struct AppState {
     pub stop_requested: bool,
     /// Set to `true` while QEMU is running; updated by the runtime worker.
     pub qemu_running: bool,
-    /// Fires once to open the firmware install wizard.
-    pub firmware_wizard_requested: bool,
     /// Fires once after provisioning completes to (re)start QEMU.
     pub qemu_boot_requested: bool,
     /// Fires once to stop and immediately restart QEMU.
     pub restart_requested: bool,
+    /// Fires once to open the setup window - the one place a slot's emulation
+    /// is chosen and its firmware installed.
+    pub manage_emulation_requested: bool,
+    /// Fires once to retire the runtime worker (stop QEMU, exit its loop)
+    /// without shutting the app down; a later launch spawns a fresh worker.
+    pub worker_exit_requested: bool,
     /// Set by menu actions that require a restart so the boot shade engages
     /// immediately. Cleared by the runtime worker once QEMU has respawned.
     pub shade_forced: bool,
     /// Set by the runtime on graceful shutdown; UI injects a `set_power(false)`
     /// MISO stimuli and clears.
     pub power_off_stimuli_requested: bool,
+    /// Draw the LCD larger than the deck's own, over the decoration around
+    /// it. The panel reproduces the real form factor, which leaves the
+    /// touchscreen small to read on a desktop display.
+    pub screen_extended: bool,
     pub service_mode: bool,
 
     // ── Audio toggles ───────────────────────────────────────────────────────
@@ -210,20 +224,30 @@ pub struct AppState {
     pub midi_driver_replaced: bool,
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AppState {
     pub const fn new() -> Self {
         Self {
             current_instance_id: 1,
+            ui_only: false,
+            model: None,
             jog_screen_popped: false,
             main_screen_popped: false,
             debug_screen_popped: false,
             stop_requested: false,
             qemu_running: false,
-            firmware_wizard_requested: false,
             qemu_boot_requested: false,
             restart_requested: false,
+            manage_emulation_requested: false,
+            worker_exit_requested: false,
             shade_forced: false,
             power_off_stimuli_requested: false,
+            screen_extended: false,
             service_mode: false,
             audio_enabled: false,
             audio_toggle_requested: false,
@@ -256,6 +280,29 @@ impl AppState {
             midi_driver_replaced: false,
         }
     }
+}
+
+/// How the Instances menu names a slot: the deck installed in it and the
+/// firmware release on it, e.g. `"CDJ-3000 3.20"`.
+///
+/// The slot settings live in `cdj3k-emu-storage`, which depends on this
+/// crate, so the app registers a reader here rather than the menu reaching
+/// for the files itself.
+pub type SlotNoteFn = fn(u32) -> Option<String>;
+
+static SLOT_NOTE_FN: Mutex<Option<SlotNoteFn>> = Mutex::new(None);
+
+/// Register the reader the Instances menu asks for slot notes. Called once at
+/// startup; the menu shows bare slot numbers until it is.
+pub fn set_slot_note_fn(f: SlotNoteFn) {
+    *SLOT_NOTE_FN.lock().unwrap() = Some(f);
+}
+
+/// What slot `n` holds, or `None` for an empty slot - and for every slot
+/// until [`set_slot_note_fn`] has run.
+pub fn slot_note(n: u32) -> Option<String> {
+    let f = *SLOT_NOTE_FN.lock().unwrap();
+    f.and_then(|read| read(n))
 }
 
 static APP_STATE: Mutex<AppState> = Mutex::new(AppState::new());

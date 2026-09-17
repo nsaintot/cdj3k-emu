@@ -1,11 +1,16 @@
 mod bloom;
 mod boot_overlay;
 mod buttons;
-mod firmware_wizard;
+pub(crate) mod firmware_wizard;
 mod frame_inject;
 mod jog_physics;
 mod lcd_texture;
 mod lcd_touch;
+mod picker;
+mod screenshot;
+mod script;
+pub mod shell;
+mod theme;
 mod ui;
 mod viewports;
 
@@ -15,14 +20,14 @@ use std::time::Duration;
 
 use egui::Color32;
 
+use cdj3k_emu_panel::miso_frame::{self};
+use cdj3k_emu_panel::Model;
 use cdj3k_emu_platform::menu_state;
 use cdj3k_emu_streams::ctrl_stream::{CtrlStream, LedState};
 use cdj3k_emu_streams::jog_stream::JogLcdStream;
 use cdj3k_emu_streams::main_stream::MainLcdStream;
 use cdj3k_emu_streams::RepaintGate;
-use cdj3k_emu_subucom::miso_frame::{self};
 
-use firmware_wizard::FirmwareWizard;
 use jog_physics::JOG_OMEGA_MOVING_THRESHOLD;
 use viewports::DebugViewportState;
 
@@ -61,8 +66,15 @@ const SHADE_FADE_SPEED: f32 = 1.0;
 /// `jog_vel` neutral-position encoding (inverse: max u16 = stopped).
 const JOG_VEL_INIT: u16 = 0xffff;
 
-/// `rotary` neutral-position encoding (LE: +1 = 0x0000, −1 = 0xfeff).
-const ROTARY_NEUTRAL: u16 = 0xffff;
+/// How long the host leaves the guest's service-mode combo injection alone.
+/// The guest module holds it for 5 s and its subucom_read samples about half a
+/// second into boot, so this only has to outlast that read.
+const SERVICE_COMBO_HOLD: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// `rotary` at rest. Must equal the value the guest reads while nothing turns
+/// ([`cdj3k_emu_panel::miso_frame::ROTARY_IDLE`]), or the first injected
+/// frame reads as one detent.
+const ROTARY_NEUTRAL: u16 = cdj3k_emu_panel::miso_frame::ROTARY_IDLE;
 
 /// Initial tempo slider position (0.0 = full minus, 0.5 = centre, 1.0 = full plus).
 const TEMPO_INIT: f32 = 0.5;
@@ -72,6 +84,9 @@ const TEMPO_INIT: f32 = 0.5;
 const PUFFIN_SERVER_ADDR: &str = "127.0.0.1:8585";
 
 pub struct CdjApp {
+    /// The model whose slate is drawn (selects layout + control set).
+    model: Model,
+
     jog_pos: u16,
     /// Inverse encoding: `0xffff` = stopped, `0x0000` = max speed.
     jog_vel: u16,
@@ -122,9 +137,13 @@ pub struct CdjApp {
     /// `0.0..=1.0`, piecewise-mapped to `0x0000..=0xFFFF` (centre → `TEMPO_CENTER`).
     tempo: f32,
     vinyl_speed: u8,
-    direction: cdj3k_emu_subucom::Direction,
+    direction: cdj3k_emu_panel::Direction,
 
     lcd_touch: Option<(u16, u16)>,
+    /// `true` while `CDJ3K_SCRIPT` holds a touch: the slate and popout report
+    /// their own pointer state every frame, which would otherwise overwrite
+    /// the scripted coordinate before the guest ever samples it.
+    script_touch: bool,
     /// `true` while a Ctrl+click latch is active: touch coordinate is frozen until Ctrl is released.
     lcd_touch_ctrl_latched: bool,
     /// `true` after scrolling on the LCD: next click fires the rotary press instead of a touch.
@@ -149,6 +168,15 @@ pub struct CdjApp {
     display_gl_tex: Option<glow::Texture>,
     /// egui TextureId returned by `register_native_glow_texture` - used with `painter.image`.
     display_tex_id: Option<egui::TextureId>,
+    /// Set by a model switch whose main LCD size differs; the next upload
+    /// re-specifies the texture storage.
+    display_tex_stale: bool,
+    /// Frame bits the input script forces low (`clear`), applied last when a
+    /// frame is built.
+    cleared_bits: Vec<(usize, u8)>,
+    /// Whether the control channel was up on the previous frame; a rising
+    /// edge injects the current frame.
+    ctrl_was_ready: bool,
 
     jog_stream: JogLcdStream,
     /// GL texture for the jog LCD - owned by us (not egui's tex_manager). Created once with
@@ -165,6 +193,8 @@ pub struct CdjApp {
     bloom: Option<bloom::SharedBloom>,
     /// LCD screen rects captured each frame (egui coords, Y-down) - fed to the bloom exclusion mask.
     bloom_excludes: Vec<egui::Rect>,
+    /// When this panel came up, for the startup-only service-combo hold.
+    started_at: std::time::Instant,
 
     status: String,
 
@@ -200,8 +230,6 @@ pub struct CdjApp {
     /// Rendered above the MISO dump (3 centred lines).
     jog_dbg_lines: [String; 3],
 
-    wizard: FirmwareWizard,
-
     /// Frame count from `MainLcdStream` at the moment QEMU was last seen
     /// transitioning to running. The boot overlay clears once
     /// `frames_seen() - frame_baseline_at_boot >= BOOT_FRAMES_THRESHOLD`.
@@ -224,12 +252,6 @@ pub struct CdjApp {
     debug_viewport_state: Arc<Mutex<DebugViewportState>>,
     /// Set by the deferred debug viewport when its window's × is clicked.
     debug_wants_close: Arc<std::sync::atomic::AtomicBool>,
-    /// `true` once the user has triggered a close (red button / Cmd-Q / menu).
-    /// While set, we cancel the actual window close each frame and keep
-    /// painting so the boot shade can fade in over the going-away UI; we
-    /// re-issue the close once the runtime worker has finished its graceful
-    /// stop, at which point `on_exit` runs without a multi-second freeze.
-    shutdown_in_progress: bool,
 }
 
 /// Owns the puffin HTTP server for the life of the process when profiling is
@@ -244,7 +266,7 @@ impl CdjApp {
     /// localhost TCP listener for `puffin_viewer` to connect to.  When
     /// false (shipping default), every `puffin::profile_*` macro becomes
     /// a single relaxed-atomic load and no TCP port is opened.
-    pub fn new(socket_dir: String, egui_ctx: egui::Context, profile: bool) -> Self {
+    pub fn new(model: Model, socket_dir: String, egui_ctx: egui::Context, profile: bool) -> Self {
         if profile {
             if let Ok(server) = puffin_http::Server::new(PUFFIN_SERVER_ADDR) {
                 let _ = PUFFIN_SERVER.set(server);
@@ -264,8 +286,14 @@ impl CdjApp {
         egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         egui_ctx.set_zoom_factor(1.0);
         let app_settings = cdj3k_emu_storage::AppSettings::load();
+        // A viewing preference the menu owns, restored before the first frame.
+        cdj3k_emu_platform::menu_state::lock().screen_extended = app_settings.screen_extended;
         let repaint_gate = RepaintGate::new(egui_ctx.clone(), MIN_FRAME_INTERVAL);
+        // `--no-spawn` never shows the boot shade, so it must not fade in from
+        // opaque either (keeps chassis captures deterministic frame to frame).
+        let ui_only = menu_state::lock().ui_only;
         Self {
+            model,
             jog_pos: 0,
             jog_vel: JOG_VEL_INIT,
             jog_touch: 0x00,
@@ -287,8 +315,9 @@ impl CdjApp {
             rotary: ROTARY_NEUTRAL,
             tempo: TEMPO_INIT,
             vinyl_speed: app_settings.vinyl_speed,
-            direction: cdj3k_emu_subucom::Direction::Forward,
+            direction: cdj3k_emu_panel::Direction::Forward,
             lcd_touch: None,
+            script_touch: false,
             lcd_touch_ctrl_latched: false,
             lcd_nav_mode: false,
             held_btn: None,
@@ -301,6 +330,9 @@ impl CdjApp {
             display_stream: MainLcdStream::new(&socket_dir, repaint_gate.clone()),
             display_gl_tex: None,
             display_tex_id: None,
+            display_tex_stale: false,
+            cleared_bits: Vec::new(),
+            ctrl_was_ready: false,
             jog_stream: JogLcdStream::new(&socket_dir, repaint_gate.clone()),
             jog_gl_tex: None,
             jog_tex_id: None,
@@ -308,6 +340,7 @@ impl CdjApp {
             led_state: LedState::default(),
             bloom: None,
             bloom_excludes: Vec::new(),
+            started_at: std::time::Instant::now(),
             status: "Starting...".to_owned(),
             jog_static_cache: None,
             btn_cache: ui::draw_cache::BtnShapeCache::new(),
@@ -330,16 +363,56 @@ impl CdjApp {
             jog_dbg_last_dt: 0.0,
             jog_dbg_last_omega_sample: 0.0,
             jog_dbg_lines: [String::new(), String::new(), String::new()],
-            wizard: FirmwareWizard::new(),
             frame_baseline_at_boot: 0,
             qemu_was_running: false,
-            shade_alpha: 1.0,
-            lcds_blanked: true,
+            shade_alpha: if ui_only { 0.0 } else { 1.0 },
+            lcds_blanked: !ui_only,
             lcd_textures_need_blank: false,
             debug_snapshot: Arc::new(Mutex::new(ui::DebugSnapshot::default())),
             debug_viewport_state: Arc::new(Mutex::new(DebugViewportState::default())),
             debug_wants_close: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            shutdown_in_progress: false,
+        }
+    }
+
+    pub fn model(&self) -> Model {
+        self.model
+    }
+
+    /// Re-target the panel at another model. The streams, GL textures and
+    /// jog physics carry over; every shape cache is dropped because the
+    /// caches key on the window scale only, not on the slate.
+    pub fn switch_model(&mut self, model: Model) {
+        if model.main_lcd() != self.model.main_lcd() {
+            self.display_tex_stale = true;
+        }
+        self.model = model;
+        self.on_leave_panel();
+        self.jog_static_cache = None;
+        self.btn_cache = ui::draw_cache::BtnShapeCache::new();
+        self.chassis_bg_cache = ui::draw_cache::StaticShapeCache::new();
+        self.chassis_lcd_overlay_cache = ui::draw_cache::StaticShapeCache::new();
+        self.top_statics_cache = ui::draw_cache::StaticShapeCache::new();
+        self.left_statics_cache = ui::draw_cache::StaticShapeCache::new();
+        self.right_statics_cache = ui::draw_cache::StaticShapeCache::new();
+        self.jog_statics_cache = ui::draw_cache::StaticShapeCache::new();
+        self.jog_ring_lights_cache = ui::draw_cache::ShapeCache::new();
+        self.jog_corner_labels_cache = ui::draw_cache::ShapeCache::new();
+        self.grip_cache = ui::draw_cache::ShapeCache::new();
+        // The window is re-shaped for the new canvas; let the aspect snap
+        // re-evaluate from scratch.
+        self.last_inner_size = egui::Vec2::ZERO;
+        self.stable_frames = 0;
+    }
+
+    /// The panel is hidden (picker shown): release any held or latched
+    /// control so the guest never sees a button stuck down.
+    pub(crate) fn on_leave_panel(&mut self) {
+        if self.held_btn.is_some() || !self.latched_btns.is_empty() || self.lcd_touch.is_some() {
+            self.held_btn = None;
+            self.latched_btns.clear();
+            self.lcd_touch = None;
+            self.lcd_touch_ctrl_latched = false;
+            self.inject(self.build_current_frame().finalize());
         }
     }
 
@@ -347,6 +420,14 @@ impl CdjApp {
     /// current frame. The bloom pipeline reuses its cached blur texture when
     /// this key is unchanged from the previous frame, skipping the GL work
     /// (blit + threshold + 9-tap separable blur).
+    /// True while the guest's own service-combo injection must be left in
+    /// place. The module holds the combo for 5 s from load; the guest reads it
+    /// well inside that, so a second is ample and the panel is idle anyway.
+    fn service_mode_hold(&self) -> bool {
+        cdj3k_emu_platform::menu_state::lock().service_mode
+            && self.started_at.elapsed() < SERVICE_COMBO_HOLD
+    }
+
     pub(super) fn bloom_scene_key(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -370,10 +451,11 @@ impl CdjApp {
     }
 }
 
-static MENU_SETUP: std::sync::Once = std::sync::Once::new();
-
-impl eframe::App for CdjApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+impl CdjApp {
+    /// One panel frame: ingest the LCD/LED streams, tick the jog physics,
+    /// draw the slate, the boot shade and the pop-out viewports. Driven by
+    /// the shell while the panel screen is up.
+    pub fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // No sleep here. With vsync disabled in NativeOptions, eframe only
         // paints when something requested a repaint - the gate's metronome
         // thread paces those requests so this `update()` runs at most ~60 Hz.
@@ -384,39 +466,13 @@ impl eframe::App for CdjApp {
             puffin::GlobalProfiler::lock().new_frame();
         }
 
-        // Graceful close: instead of blocking inside `on_exit` for the full
-        // runtime-stop budget (which freezes the window for 1-2 s), defer
-        // the actual close until the worker has finished.  On the first
-        // close request we set APP_SHUTDOWN + shade_forced, cancel the
-        // close so egui keeps painting (letting the shade fade in over the
-        // going-away UI), and re-issue the close once the worker is done.
-        if ctx.input(|i| i.viewport().close_requested()) {
-            if !self.shutdown_in_progress {
-                self.shutdown_in_progress = true;
-                cdj3k_emu_platform::menu_state::APP_SHUTDOWN
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                cdj3k_emu_platform::menu_state::lock().shade_forced = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            } else if !cdj3k_emu_runtime::worker_is_finished() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            }
-            // else: worker is done - let the close proceed into on_exit.
-        }
-
-        if self.shutdown_in_progress {
-            if cdj3k_emu_runtime::worker_is_finished() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            } else {
-                ctx.request_repaint();
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        cdj3k_emu_platform::desktop::apply_macos_resize_constraints_from_frame(frame);
+        cdj3k_emu_platform::desktop::apply_macos_resize_constraints_from_frame(
+            frame,
+            Some(self.ref_canvas()),
+        );
 
         self.snap_window_aspect(ctx);
 
-        MENU_SETUP.call_once(cdj3k_emu_platform::menu::setup_menu);
         self.poll_menu_state();
 
         // Blank LCD textures after a QEMU exit so popouts go black instead
@@ -463,6 +519,22 @@ impl eframe::App for CdjApp {
             self.jog_tex_id.is_some(),
             "jog",
         );
+
+        // The guest's sub-CPU module serves its own idle frame until the
+        // host's first one arrives: send the model's frame as soon as the
+        // control channel is up.
+        //
+        // Except in service mode. The module pre-presses the service combo at
+        // load and holds it ~5 s, but its injected frame is a single sticky
+        // slot - the first frame from here replaces it, and the guest's
+        // subucom_read samples about half a second later, so it reads no combo
+        // and the app boots normally. Leave the combo alone until the guest
+        // has read it; nothing on the panel has been touched yet anyway.
+        let ctrl_ready = self.ctrl_stream.is_ready();
+        if ctrl_ready && !self.ctrl_was_ready && !self.service_mode_hold() {
+            self.inject(self.build_current_frame().finalize());
+        }
+        self.ctrl_was_ready = ctrl_ready;
 
         if let Some(ls) = {
             puffin::profile_scope!("ctrl_take");
@@ -535,11 +607,6 @@ impl eframe::App for CdjApp {
             *g = self.debug_snapshot();
         }
 
-        // The wizard is exempt from the shade gate - it's the tool that
-        // provisions firmware, so it must be reachable precisely when QEMU
-        // isn't running.
-        self.wizard.show(ctx);
-
         // Secondary viewports: stay hidden until the shade is fully gone -
         // they aren't covered by the shade overlay.
         if self.shade_alpha == 0.0 && target_alpha == 0.0 {
@@ -558,14 +625,14 @@ impl eframe::App for CdjApp {
             s.debug_screen_popped = self.debug_screen_popped;
         }
 
-        cdj3k_emu_platform::menu::sync_menu();
-
         // Bloom composite - fires last; thresholds + blurs scene_tex, writes
         // to screen.
         self.queue_bloom_pass(ctx);
     }
 
-    fn on_exit(&mut self, gl: Option<&glow::Context>) {
+    /// App teardown: power the guest off, stop the runtime worker, persist
+    /// the GUI-side settings and release the runtime files.
+    pub fn on_exit(&mut self, gl: Option<&glow::Context>) {
         // Inject the power-off MISO frame directly: on app exit the egui loop
         // is already stopped, so `poll_menu_state` will never consume
         // POWER_OFF_STIMULI_REQUESTED. Without this, instance.stop()'s 8 s
@@ -586,6 +653,7 @@ impl eframe::App for CdjApp {
             bloom.lock().unwrap().destroy(gl);
         }
         let _ = cdj3k_emu_storage::AppSettings {
+            screen_extended: cdj3k_emu_platform::menu_state::lock().screen_extended,
             jog_adjust: self.jog_adjust,
             vinyl_speed: self.vinyl_speed,
         }
@@ -615,12 +683,17 @@ impl eframe::App for CdjApp {
 const SHUTDOWN_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(35);
 
 impl CdjApp {
+    /// Reference canvas of the active slate (the window is aspect-locked to it).
+    pub fn ref_canvas(&self) -> (f32, f32) {
+        ui::slate::for_model(self.model).ref_canvas
+    }
+
     /// Snap the inner window aspect to the layout reference once a resize
     /// has settled. `setContentAspectRatio` only constrains *future*
     /// resizes; if the window comes up at the wrong aspect (e.g. autosaved
     /// from a prior layout), it stays letterboxed without this.
     fn snap_window_aspect(&mut self, ctx: &egui::Context) {
-        use cdj3k_emu_platform::desktop::{LAYOUT_REF_H, LAYOUT_REF_W};
+        let (ref_w, ref_h) = self.ref_canvas();
         let size = ctx.screen_rect().size();
         if (size - self.last_inner_size).length_sq() < STABLE_SIZE_TOL_SQ {
             self.stable_frames = self.stable_frames.saturating_add(1);
@@ -631,7 +704,7 @@ impl CdjApp {
         if self.stable_frames < STABLE_FRAMES_REQUIRED {
             return;
         }
-        let target_aspect = LAYOUT_REF_W / LAYOUT_REF_H;
+        let target_aspect = ref_w / ref_h;
         let current_aspect = size.x / size.y;
         if (current_aspect - target_aspect).abs() > ASPECT_SNAP_TOL {
             let new_w = size.y * target_aspect;
@@ -642,25 +715,21 @@ impl CdjApp {
         }
     }
 
-    /// Pull menu state (set by the native macOS menu or the egui menu).
-    /// Also handles power-off and wizard-open requests.
+    /// Pull menu state (set by the native macOS menu or the egui menu):
+    /// the pop-out toggles and power-off requests.
     fn poll_menu_state(&mut self) {
-        let (jog, main, debug, want_wizard, want_poweroff) = {
+        let (jog, main, debug, want_poweroff) = {
             let mut s = menu_state::lock();
             (
                 s.jog_screen_popped,
                 s.main_screen_popped,
                 s.debug_screen_popped,
-                std::mem::take(&mut s.firmware_wizard_requested),
                 std::mem::take(&mut s.power_off_stimuli_requested),
             )
         };
         self.jog_screen_popped = jog;
         self.main_screen_popped = main;
         self.debug_screen_popped = debug;
-        if want_wizard {
-            self.wizard.open = true;
-        }
         if want_poweroff {
             let mut f = self.build_current_frame();
             f.set_power(false);
@@ -671,9 +740,9 @@ impl CdjApp {
     /// Step the boot/idle shade alpha toward its target. Returns `(booting,
     /// target_alpha)` for downstream gating.
     fn tick_boot_shade(&mut self, ctx: &egui::Context) -> (bool, f32) {
-        let (qemu_running, shade_forced) = {
+        let (qemu_running, shade_forced, ui_only) = {
             let s = menu_state::lock();
-            (s.qemu_running, s.shade_forced)
+            (s.qemu_running, s.shade_forced, s.ui_only)
         };
         if qemu_running && !self.qemu_was_running {
             self.frame_baseline_at_boot = self.display_stream.frames_seen();
@@ -690,7 +759,14 @@ impl CdjApp {
             .frames_seen()
             .saturating_sub(self.frame_baseline_at_boot);
         let booting = (qemu_running && frames_since_boot < BOOT_FRAMES_THRESHOLD) || shade_forced;
-        let target_alpha: f32 = if !qemu_running || booting { 1.0 } else { 0.0 };
+        // `--no-spawn` has no guest to wait for: keep the chassis unshaded.
+        let target_alpha: f32 = if ui_only {
+            0.0
+        } else if !qemu_running || booting {
+            1.0
+        } else {
+            0.0
+        };
 
         // Linear ramp toward target (configurable speed).
         let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);

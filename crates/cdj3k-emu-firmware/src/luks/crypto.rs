@@ -1,4 +1,5 @@
-//! Block-cipher and KDF helpers for LUKS1 decryption.
+//! Block-cipher and KDF helpers for LUKS1 keyslots and payload: the KDF, the
+//! Anti-Forensic split/merge pair, and payload decryption.
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -63,6 +64,34 @@ pub(super) fn af_merge(src: &[u8], key_bytes: usize, stripes: usize, hash_spec: 
         *a ^= b;
     }
     d
+}
+
+/// LUKS1 Anti-Forensic split - the inverse of [`af_merge`].
+///
+/// `stripes - 1` random blocks, then a final block chosen so that merging the
+/// lot reproduces `key`.
+pub(super) fn af_split(key: &[u8], stripes: usize, hash_spec: &str) -> Vec<u8> {
+    let bs = key.len();
+    let mut out = random_bytes(bs * (stripes - 1));
+    let mut d = vec![0u8; bs];
+    for i in 0..stripes - 1 {
+        for (a, b) in d.iter_mut().zip(&out[i * bs..(i + 1) * bs]) {
+            *a ^= b;
+        }
+        d = diffuse(&d, hash_spec);
+    }
+    for (a, b) in d.iter_mut().zip(key) {
+        *a ^= b;
+    }
+    out.extend_from_slice(&d);
+    out
+}
+
+/// `n` bytes from the OS random source.
+pub(super) fn random_bytes(n: usize) -> Vec<u8> {
+    let mut out = vec![0u8; n];
+    getrandom::fill(&mut out).expect("the OS random source is unavailable");
+    out
 }
 
 /// cryptsetup diffuse(): hash each hash_len-byte block independently.
@@ -245,4 +274,19 @@ pub(super) fn essiv_iv(essiv_key: &[u8; 32], sector: u64) -> [u8; 16] {
     let mut block = aes::Block::clone_from_slice(&iv);
     cipher.encrypt_block(&mut block);
     block.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{af_merge, af_split};
+
+    /// Splitting and merging are inverses, which is what makes a written
+    /// keyslot's material decrypt back to the master key.
+    #[test]
+    fn af_split_inverts_af_merge() {
+        let key: Vec<u8> = (0..64u32).map(|i| (i * 7 % 251) as u8).collect();
+        let split = af_split(&key, 64, "sha256");
+        assert_eq!(split.len(), 64 * 64);
+        assert_eq!(af_merge(&split, 64, 64, "sha256"), key);
+    }
 }

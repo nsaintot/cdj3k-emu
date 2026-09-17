@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+cdj3k-emu-panel = { path = "../cdj3k-emu-panel", default-features = false }
 serde_json = "1"
 libc = "0.2"
 cdj3k-emu-platform = { path = "../cdj3k-emu-platform" }

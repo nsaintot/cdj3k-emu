@@ -97,8 +97,9 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
     let mut phys_restore_attempted = saved_phys_bsd.is_none();
 
     loop {
-        // ── App-exit gate: graceful shutdown ─────────────────────────────────
-        if APP_SHUTDOWN.load(Ordering::Relaxed) {
+        // ── Exit gates: app shutdown, or the setup window retiring this worker ─
+        let retire = std::mem::take(&mut menu_state::lock().worker_exit_requested);
+        if APP_SHUTDOWN.load(Ordering::Relaxed) || retire {
             // Drop PcLink first so its threads exit while the socket is still
             // valid; otherwise the reader thread blocks on a half-closed fd.
             // `take()` triggers Drop on the inner value; we ignore the
@@ -211,16 +212,9 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
         // the new -audio config.
         let mut restart_pending = req.restart;
         if req.audio_toggle {
-            let mut settings =
-                cdj3k_emu_storage::InstanceSettings::load_or_init(config.instance_id);
-            settings.audio_enabled = req.audio_enabled;
-            if let Err(e) = settings.save(config.instance_id) {
-                eprintln!("cdj3k-emu: persisting audio_enabled failed: {e}");
-            }
+            persist_inst(config.instance_id, |s| s.audio_enabled = req.audio_enabled);
             restart_pending = true;
         }
-
-        // ── EP122 Mods toggle ────────────────────────────────────────────────
 
         // ── Audio output device selection ────────────────────────────────────
         // Same shape as audio_toggle: persist and trigger a restart so the
@@ -292,7 +286,7 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                 Err(e) => eprintln!("cdj3k-emu: pc_link cfg send failed: {e}"),
             }
             last_pc_link_cfg = Instant::now();
-        } else if failures == PC_LINK_CFG_MAX_FAILURES && !pc_link_gave_up {
+        } else if failures >= PC_LINK_CFG_MAX_FAILURES && !pc_link_gave_up {
             pc_link_gave_up = true;
             eprintln!(
                 "cdj3k-emu: guest refused pc_link {} {} times; not reissuing",
@@ -636,12 +630,12 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                 // appeared. We must compute the index against the fresh list
                 // we just published (not the old guard).
                 let restore = (!phys_restore_attempted)
-                    .then(|| saved_phys_bsd.as_ref())
+                    .then_some(saved_phys_bsd.as_ref())
                     .flatten()
                     .and_then(|name| fresh.iter().position(|d| &d.bsd_name == name))
                     .map(|idx| idx as i32);
-                if restore.is_some() {
-                    s.usb_phys_toggle_idx = restore.unwrap();
+                if let Some(idx) = restore {
+                    s.usb_phys_toggle_idx = idx;
                 }
                 restore.is_some()
             };
@@ -705,15 +699,14 @@ fn mark_virtual_mounted(instance_id: u32, path: &std::path::Path) {
     });
 }
 
-/// Load, mutate, and re-save InstanceSettings.  Errors are logged and
-/// swallowed - persistence is best-effort and should never break runtime flow.
+/// Load, mutate, and re-save InstanceSettings under the settings lock.
+/// Errors are logged and swallowed - persistence is best-effort and should
+/// never break runtime flow.
 fn persist_inst<F>(instance_id: u32, mutate: F)
 where
     F: FnOnce(&mut cdj3k_emu_storage::InstanceSettings),
 {
-    let mut s = cdj3k_emu_storage::InstanceSettings::load_or_init(instance_id);
-    mutate(&mut s);
-    if let Err(e) = s.save(instance_id) {
+    if let Err(e) = cdj3k_emu_storage::InstanceSettings::update(instance_id, mutate) {
         eprintln!("cdj3k-emu: persisting instance settings failed: {e}");
     }
 }

@@ -1,6 +1,6 @@
 # cdj3k-emu - subucom Protocol
 
-> Reference for the sub-CPU (subucom) SPI protocol the EP122 firmware uses
+> Reference for the sub-CPU (subucom) SPI protocol the CDJ-3000 firmware uses
 > to talk to the deck's input hardware, and how cdj3k-emu emulates it
 > end-to-end through a virtual char device, a guest forwarder, and a host
 > `ctrl.sock` peer.
@@ -82,12 +82,17 @@ Both directions are **64 bytes, fixed length**.
 | `[0..2]` | reserved / zero (frame-type header, always `0x0000`) |
 | `[2..5]` | constant magic `0x01 0x04 0x03` |
 | `[5..62]` | payload (LED PWM for MOSI, input state for MISO) |
-| `[62..64]` | **CRC-16/X-25** over bytes `[2..62]`, stored little-endian |
+| `[62..64]` | **CRC-16/X-25** over bytes `[0..62]`, stored little-endian |
 
 The CRC is poly `0x8408` (reflected `0x1021`), init `0xFFFF`, final XOR
-`0xFFFF`. Implementation: `crates/cdj3k-emu-subucom/src/crc.rs` (Rust)
-and `guest/modules/subucom_virt/subucom_virt.c:120` (kernel). The first
-two bytes are deliberately outside the CRC window.
+`0xFFFF`. Implementation: `crates/cdj3k-emu-panel/src/crc.rs` (Rust)
+and `guest/modules/subucom_virt/subucom_virt.c` (kernel).
+
+On the CDJ-3000X (EP145) both frames are this one shifted. The MISO frame
+sits behind a u16 format version (non-zero, or EP145 drops the frame) with
+the same CRC window; the MOSI frame moves the LED bitfield and the RGB lamps
+and adds lamps of its own. `MisoMap` and `MosiMap` in `cdj3kx.rs` carry the
+shifts.
 
 ### MOSI payload (LED state)
 
@@ -102,13 +107,14 @@ EP122 writes **linear-light PWM bytes**. Three LED classes coexist:
 - **RGB groups** - eight hot-cue pads at `[12..36]`, plus SD, USB-LIGHT,
   ON-AIR at `[36..45]`, each a raw `(R, G, B)` PWM triple.
 
-The host converts raw PWM → display colour in `mosi_frame.rs:50`
-(`led_color`): apply `1/LED_GAMMA` (`2.2`) per channel, then normalise
-so the dominant channel reaches `LED_PEAK` (`220`). This preserves hue
-at any drive level; `led_drive_factor` is exposed for callers that want
-to dim the visual to match drive.
+The host converts raw PWM → display colour in `mosi_frame.rs`
+(`led_color`): apply `1/LED_GAMMA` per channel, then normalise so the
+dominant channel reaches `LED_PEAK`. This preserves hue at any drive level;
+`led_drive_factor` is exposed for callers that want to dim the visual to
+match drive.
 
-> Canonical LED → byte/mask map: `crates/cdj3k-emu-subucom/src/mosi_frame.rs`.
+> Canonical LED → byte/mask map: `crates/cdj3k-emu-panel/src/mosi_frame.rs`
+> (CDJ-3000 coordinates), shifted per model by `MosiMap` in `cdj3k.rs` / `cdj3kx.rs`.
 
 ### MISO payload (input state)
 
@@ -130,13 +136,14 @@ Mostly bitmasks plus a handful of scalar fields. By region:
 - **Device state** `b12` - `0x80`=power-on, `0x01`=SD-cover-closed.
   High nibble carries the sub-CPU power-off timer (see *forwarder*).
 
-A pre-baked `IDLE_PAYLOAD` (`miso_frame.rs:13`) holds the "nothing
-pressed" baseline. `MisoFrame::idle()` clones it; per-gesture setters
+A pre-baked `IDLE` per model (`cdj3k.rs`, `cdj3kx.rs`) holds the "nothing
+pressed" baseline. `MisoFrame::idle(model)` copies it; per-gesture setters
 (`set_btn`, `set_jog`, `set_touch`, `set_tempo`, `set_vinyl`,
 `set_rotary`, `set_direction`, `set_power`) patch individual fields.
 `finalize()` stamps the CRC and returns the 64-byte wire frame.
 
-> Canonical map: `crates/cdj3k-emu-subucom/src/miso_frame.rs`.
+> Canonical map: `crates/cdj3k-emu-panel/src/miso_frame.rs`
+> (CDJ-3000 coordinates), shifted per model by `MisoMap` in `cdj3k.rs` / `cdj3kx.rs`.
 
 ---
 
@@ -166,7 +173,7 @@ hrtimer** - the read blocks on `schedule_timeout_interruptible` for one
 poll interval (`interval_us`, default `1176 µs`), then returns either
 the latest host-injected frame (`inject_pending`) or the baked-in
 `miso_idle` template; either way it stamps a fresh CRC-16/X-25 before
-copy-out (`subucom_virt.c:215-237`). Throttling in the caller's
+copy-out (`subucom_virt.c`). Throttling in the caller's
 context (instead of via hrtimer→waitqueue) was a deliberate fix for a
 QEMU/HVF wake-up race.
 
@@ -176,7 +183,7 @@ write, so the host doesn't need to spin re-injecting the same frame at
 850 Hz. Writing zero bytes clears the injection and the module falls
 back to idle. `epoll` on `subucom_spi1.0` always reports `POLLIN` -
 EP122 throttles itself via `read()` rather than waiting on poll
-(`subucom_virt.c:307`).
+(`subucom_virt.c`).
 
 A module-param `inject_testmode=1` pre-presses `BTN_CALL_PREV +
 BTN_TEMPO_RANGE` for 5 s on insmod via a `delayed_work` so the boot
@@ -187,7 +194,7 @@ sequence enters service mode without host interaction.
 `guest/subucom/forwarder.c`. Single static aarch64 binary, two
 directions:
 
-- **LED thread** (`led_thread`, `forwarder.c:121`): blocking
+- **LED thread** (`led_thread`, `forwarder.c`): blocking
   `read(ctrl_rfd, 64)` on `/dev/subucom_ctrl`, then `write(vport_fd, …)`
   to the `cdj3k.ctrl` virtio-serial port. One frame per syscall pair.
 - **Main loop**: blocking `read(vport_fd, 64)` from the host, then
@@ -205,7 +212,7 @@ guest reboot.)
 
 Locating the vport: `/sys/class/virtio-ports/*/name` is scanned for
 literal `"cdj3k.ctrl"`, then the corresponding `/dev/vportNpM` is
-opened (`forwarder.c:34-69`).
+opened (`forwarder.c`).
 
 ### 3. Host side - `CtrlStream`
 
@@ -224,15 +231,16 @@ Two snapshot mechanisms coexist:
 - `take()` - repaint-gated: only stored when bytes changed since the
   last gate-trigger. EP122 retransmits visually-identical frames at
   ~100 Hz; gating keeps the main viewport asleep when no LED actually
-  changed (`ctrl_stream.rs:160-200`).
+  changed (`ctrl_stream.rs`).
 
-### 4. Decoders - `cdj3k-emu-subucom` crate
+### 4. Decoders - `cdj3k-emu-panel` crate
 
-`MosiFrame::from_bytes` and `MisoFrame::idle()` give name-based
-accessors (`led_bit`, `step_led`, `pad_rgb`, `sd_rgb`, `set_btn`,
-`set_jog`, …) so the UI never indexes raw bytes. The `egui-color`
-feature exposes `led_color(r,g,b) -> Color32` directly, performing the
-gamma + peak-normalise conversion in one call.
+`MosiFrame::new(bytes, model)` and `MisoFrame::idle(model)` give
+name-based accessors (`led_bit`, `step_led`, `pad_rgb`, `slot_1_rgb`,
+`set_btn`, `set_jog`, …) read through the model's frame map, so the UI
+never indexes raw bytes. The `egui-color` feature exposes
+`led_color(r, g, b) -> Option<Color32>`, performing the gamma +
+peak-normalise conversion in one call.
 
 ---
 

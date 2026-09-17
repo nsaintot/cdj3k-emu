@@ -1,13 +1,12 @@
 # G2M (Renesas R-Car) - what it is, why we don't support it
 
-This emulator targets the **CDJ-3000 RK3399** (Rockchip aarch64) build of Pioneer
-firmware. Older Pioneer UPDs - and a sibling/prototype build pipeline - contain
+This emulator targets the **RK3399** (Rockchip aarch64) builds of Pioneer's
+CDJ-3000 and CDJ-3000X firmware. Older Pioneer UPDs - and a sibling/prototype build pipeline - contain
 a different aarch64 kernel that targets the **Renesas R-Car M3-W (r8a7796)** SoC
 on the "Salvator-X" reference board. Internally Pioneer calls this build path
-**G2M** (after the R-Car generation, *Gen3 M3-W*), and the application product
-codename is **EP122**.
+**G2M** (after the R-Car generation, *Gen3 M3-W*).
 
-The firmware extractor (`cdj3k_emu_firmware::extract_kernel`) now rejects G2M
+The firmware extractor (`cdj3k_emu_firmware::extract_kernel`) rejects G2M
 payloads with `ExtractError::UnsupportedG2M`. This document records what we
 learned while investigating G2M, so a future contributor who wants to revive it
 doesn't have to re-do the archaeology.
@@ -142,7 +141,7 @@ Roughly, in increasing order of scope:
    from a Poky 2.1.3 image archive.
 3. **LD_PRELOAD shim** that intercepts `drmOpen("rcar-du", ...)` and translates
    `DRM_IOCTL_RCAR_DU_PAGE_FLIP` → `DRM_IOCTL_MODE_PAGE_FLIP` against
-   virtio-gpu. Fits the existing `ep122_shim.so` pattern (patch 13).
+   virtio-gpu. Fits the existing `deck_shim.so` pattern (patch 13).
 4. **Whatever EP122 itself expects.** This is the unknown - the application
    binary almost certainly speaks to the kernel through more Renesas-specific
    ioctls (display, audio, GPIO) than the fbdev driver alone exposes.

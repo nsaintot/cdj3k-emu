@@ -39,7 +39,7 @@
 #   - qemu/install/lib/libcdj3k-emu-qemu.dylib  (from qemu/build.sh)
 #   - qemu/install/bin/qemu-img             (from qemu/build.sh)
 #   - build/initramfs-work/rootfs/lib/modules/*.ko  (from build.sh)
-#   - guest/out/*_aarch64, guest/out/ep122_shim.so  (from build.sh)
+#   - guest/out/*_aarch64, guest/out/deck_shim.so  (from build.sh)
 #
 # The script:
 #   1. Builds tools/cdj3k-emu with cargo
@@ -177,7 +177,7 @@ echo "     bundled qemu-img"
 #
 # Prerequisites: build.sh must have been run first so that:
 #   build/initramfs-work/rootfs/lib/modules/*.ko  - pre-built kernel modules
-#   tools/*_aarch64, guest/out/ep122_shim.so            - pre-built guest tools
+#   tools/*_aarch64, guest/out/deck_shim.so            - pre-built guest tools
 echo "==> Assembling Contents/Resources"
 
 ROOTFS_MODULES="$REPO_ROOT/build/initramfs-work/rootfs/lib/modules"
@@ -213,12 +213,22 @@ set -euo pipefail
 ROOTFS="${1:?Usage: $0 <initramfs-root>}"
 export ROOTFS
 export PATCH_ASSETS_DIR="$(cd "$(dirname "$0")" && pwd)"
+# The player application's unit, detected from the rootfs: EP122.service on
+# the CDJ-3000, EP145.service on the CDJ-3000X.
+APP_UNIT="$(cd "$ROOTFS/etc/systemd/system" 2>/dev/null && ls EP1[0-9][0-9].service 2>/dev/null | head -n1 || true)"
+export APP_UNIT="${APP_UNIT:-EP122.service}"
+export APP_NAME="${APP_UNIT%.service}"
+# The slug the emulator names this player by, from the unit the rootfs carries.
+case "$APP_UNIT" in
+    EP145.service) export APP_SLUG="cdj3kx" ;;
+    *)             export APP_SLUG="cdj3k" ;;
+esac
 # SSH is off by default in shipped builds (no passwordless root in the wild),
 # but respect an explicit ENABLE_SSH=1 from the caller's environment so a
 # developer can `ENABLE_SSH=1 open dist/CDJ3K\ Emulator.app` (or launch via
 # the CLI binary directly) without rebuilding.
 export ENABLE_SSH="${ENABLE_SSH:-0}"
-echo "=== Patching initramfs rootfs at: $ROOTFS ==="
+echo "=== Patching initramfs rootfs at: $ROOTFS (app unit: $APP_UNIT) ==="
 HDR
     for step in "${PATCH_STEPS[@]}"; do
         name=$(basename "$step")
@@ -273,8 +283,8 @@ else
     echo "WARNING: build/docker-out/dummy_drv.so not found - run ./build.sh first"
 fi
 
-# tools/   - aarch64 guest ELFs + ep122_shim.so.  The firmware provisioner
-# installs everything here into the rootfs's /usr/bin (ep122_shim.so goes to
+# tools/   - aarch64 guest ELFs + deck_shim.so.  The firmware provisioner
+# installs everything here into the rootfs's /usr/bin (deck_shim.so goes to
 # /home/root).
 RES_TOOLS="$RES_DIR/tools"
 mkdir -p "$RES_TOOLS"
@@ -288,11 +298,11 @@ for tool in subucom_live subucom_forwarder; do
         echo "WARNING: guest tool not found: $src  (run: ./build.sh --modules-only)"
     fi
 done
-if [[ -f "$REPO_ROOT/guest/out/ep122_shim.so" ]]; then
-    cp "$REPO_ROOT/guest/out/ep122_shim.so" "$RES_TOOLS/ep122_shim.so"
-    echo "     bundled ep122_shim.so"
+if [[ -f "$REPO_ROOT/guest/out/deck_shim.so" ]]; then
+    cp "$REPO_ROOT/guest/out/deck_shim.so" "$RES_TOOLS/deck_shim.so"
+    echo "     bundled deck_shim.so"
 else
-    echo "WARNING: guest/out/ep122_shim.so not found - run: make -C guest"
+    echo "WARNING: guest/out/deck_shim.so not found - run: make -C guest"
 fi
 
 

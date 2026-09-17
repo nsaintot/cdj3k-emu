@@ -43,29 +43,125 @@ fn ns_window_for_handle(
 /// `setFrameUsingName:` applies any previously-saved frame for that name.
 /// Off-screen-recovery (e.g. a monitor was unplugged) is handled by AppKit.
 /// Use a per-instance name so multiple emulator instances keep separate frames.
+/// Returns whether a previously saved frame was applied.
 #[cfg(target_os = "macos")]
 pub fn set_window_autosave_name(
     handle: &impl raw_window_handle::HasWindowHandle,
     name: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     use objc2_foundation::{MainThreadMarker, NSString};
 
     MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
 
     let window = ns_window_for_handle(handle)?;
     let ns_name = NSString::from_str(name);
-    unsafe {
+    let restored: bool = unsafe {
         // Restore first (if a saved frame exists), then enable autosave going forward.
-        let _: bool = objc2::msg_send![&*window, setFrameUsingName: &*ns_name];
+        let restored: bool = objc2::msg_send![&*window, setFrameUsingName: &*ns_name];
         let _: bool = objc2::msg_send![&*window, setFrameAutosaveName: &*ns_name];
-    }
-    Ok(())
+        restored
+    };
+    Ok(restored)
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_window_autosave_name(
     _handle: &impl raw_window_handle::HasWindowHandle,
     _name: &str,
+) -> Result<bool, String> {
+    Ok(false)
+}
+
+/// Stop AppKit frame persistence for this window (an empty autosave name).
+/// The frame saved so far stays in `NSUserDefaults` for the next
+/// [`set_window_autosave_name`].
+#[cfg(target_os = "macos")]
+pub fn clear_window_autosave_name(
+    handle: &impl raw_window_handle::HasWindowHandle,
+) -> Result<(), String> {
+    use objc2_foundation::{MainThreadMarker, NSString};
+
+    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+
+    let window = ns_window_for_handle(handle)?;
+    let empty = NSString::from_str("");
+    unsafe {
+        let _: bool = objc2::msg_send![&*window, setFrameAutosaveName: &*empty];
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn clear_window_autosave_name(
+    _handle: &impl raw_window_handle::HasWindowHandle,
+) -> Result<(), String> {
+    Ok(())
+}
+
+/// Toggle `NSWindowStyleMaskResizable` (user resizing via the window edges).
+#[cfg(target_os = "macos")]
+pub fn set_window_resizable(
+    handle: &impl raw_window_handle::HasWindowHandle,
+    resizable: bool,
+) -> Result<(), String> {
+    use objc2_foundation::MainThreadMarker;
+
+    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+
+    const NS_WINDOW_STYLE_MASK_RESIZABLE: usize = 1 << 3;
+    let window = ns_window_for_handle(handle)?;
+    unsafe {
+        let mask: usize = objc2::msg_send![&*window, styleMask];
+        let mask = if resizable {
+            mask | NS_WINDOW_STYLE_MASK_RESIZABLE
+        } else {
+            mask & !NS_WINDOW_STYLE_MASK_RESIZABLE
+        };
+        let _: () = objc2::msg_send![&*window, setStyleMask: mask];
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_window_resizable(
+    _handle: &impl raw_window_handle::HasWindowHandle,
+    _resizable: bool,
+) -> Result<(), String> {
+    Ok(())
+}
+
+/// Resize the content area to `w` x `h` points, keeping the window centre
+/// where it is (the frame grows/shrinks around it).
+#[cfg(target_os = "macos")]
+pub fn set_window_content_size_centered(
+    handle: &impl raw_window_handle::HasWindowHandle,
+    w: f64,
+    h: f64,
+) -> Result<(), String> {
+    use objc2_foundation::{MainThreadMarker, NSRect, NSSize};
+
+    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+
+    let window = ns_window_for_handle(handle)?;
+    unsafe {
+        let frame: NSRect = objc2::msg_send![&*window, frame];
+        let cx = frame.origin.x + frame.size.width * 0.5;
+        let cy = frame.origin.y + frame.size.height * 0.5;
+        let content: NSRect = objc2::msg_send![&*window, contentRectForFrameRect: frame];
+        let wanted = NSRect::new(content.origin, NSSize::new(w, h));
+        let mut new_frame: NSRect = objc2::msg_send![&*window, frameRectForContentRect: wanted];
+        new_frame.origin.x = cx - new_frame.size.width * 0.5;
+        new_frame.origin.y = cy - new_frame.size.height * 0.5;
+        let _: () = objc2::msg_send![&*window, setFrame: new_frame, display: true];
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_window_content_size_centered(
+    _handle: &impl raw_window_handle::HasWindowHandle,
+    _w: f64,
+    _h: f64,
 ) -> Result<(), String> {
     Ok(())
 }

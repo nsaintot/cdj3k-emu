@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Patch 14: usb-drive-mount.service - mount loop-backed USB image and notify EP122
+# Patch 14: usb-drive-mount.service - mount loop-backed USB image and notify the app
 #
 # virtio_blk.ko crashes on the Pioneer kernel (struct ABI mismatch in add_disk()).
 # QEMU's USB host controllers are PCI-only; -machine virt has no PCI bus.
@@ -22,6 +22,7 @@
 # "USB Error. Remove the device." - the mount event alone is sufficient.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
+: "${APP_UNIT:?APP_UNIT must be set by dispatcher}"
 
 SERVICE_DIR="$ROOTFS/etc/systemd/system"
 mkdir -p "$SERVICE_DIR"
@@ -65,15 +66,15 @@ chmod 755 "$ROOTFS/usr/sbin/usb-drive-mount.sh"
 echo "  -> /usr/sbin/usb-drive-mount.sh installed"
 
 # ---- usb-drive-mount.service ----
-cat > "$SERVICE_DIR/usb-drive-mount.service" << 'SVCEOF'
+cat > "$SERVICE_DIR/usb-drive-mount.service" << SVCEOF
 [Unit]
-Description=Mount loop-backed USB image (/opt/usb.img) and notify EP122 via /proc/udev_usb1
+Description=Mount loop-backed USB image (/opt/usb.img) and notify ${APP_NAME} via /proc/udev_usb1
 DefaultDependencies=no
 # Loop device is built-in (CONFIG_BLK_DEV_LOOP=y); no module load needed.
 # Use insmod-virtio-rng.service as ordering anchor (it's an early oneshot service).
 After=insmod-virtio-rng.service
-# Must complete before EP122 reads /proc/udev_usb1
-Before=EP122.service
+# Must complete before ${APP_NAME} reads /proc/udev_usb1
+Before=${APP_UNIT}
 Before=multi-user.target
 
 [Service]

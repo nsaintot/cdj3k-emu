@@ -1,7 +1,7 @@
 //! JogLcdStream - receives jog LCD frames from the guest via ivshmem.
 //!
 //! Transport (zero-copy, polling):
-//!   * The guest's `ep122_shim.so` extracts the visible 320×240 region from
+//!   * The guest's `deck_shim.so` extracts the visible 320×240 region from
 //!     EP122's 1280×240 stretched DRM framebuffer on every flip and writes the
 //!     XRGB8888 pixels directly into an ivshmem BAR. The same memory is
 //!     visible on the host as the file at `{socket_dir}/jog.shm` (mapped here
@@ -219,20 +219,19 @@ fn stream_loop(
                 continue;
             }
 
-            let img: &mut egui::ColorImage = loop {
-                if Arc::get_mut(&mut bufs[next_idx]).is_some() {
-                    break Arc::get_mut(&mut bufs[next_idx]).unwrap();
-                }
+            // Write into a buffer no reader still holds: this one, the other,
+            // or a fresh one in place of the other.
+            if Arc::get_mut(&mut bufs[next_idx]).is_none() {
                 next_idx ^= 1;
-                if Arc::get_mut(&mut bufs[next_idx]).is_some() {
-                    break Arc::get_mut(&mut bufs[next_idx]).unwrap();
+                if Arc::get_mut(&mut bufs[next_idx]).is_none() {
+                    bufs[next_idx] = Arc::new(egui::ColorImage::new(
+                        [JOG_FB_W, JOG_FB_H],
+                        egui::Color32::BLACK,
+                    ));
                 }
-                bufs[next_idx] = Arc::new(egui::ColorImage::new(
-                    [JOG_FB_W, JOG_FB_H],
-                    egui::Color32::BLACK,
-                ));
-                break Arc::get_mut(&mut bufs[next_idx]).unwrap();
-            };
+            }
+            let img: &mut egui::ColorImage =
+                Arc::get_mut(&mut bufs[next_idx]).expect("buffer is unshared");
             let canvas = color_image_bytes_mut(img);
 
             let mut got_seq: Option<u32> = None;

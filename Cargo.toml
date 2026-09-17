@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/cdj3k-emu-subucom",
+  "crates/cdj3k-emu-panel",
   "crates/cdj3k-emu-streams",
   "crates/cdj3k-emu-platform",
   "crates/cdj3k-emu-ui",
@@ -11,14 +11,25 @@ members = [
   "crates/cdj3k-emu-firmware",
 ]
 
+# Dependencies are optimised in dev builds; the workspace crates stay at
+# opt-level 0 so they remain debuggable. Unoptimised, the crypto and
+# compression crates dominate a firmware install: the CDJ-3000X .UPD decrypt
+# takes 364 s against 16.8 s, and the rootfs gzip 65.7 s against 10.9 s.
+[profile.dev.package."*"]
+opt-level = 2
+
+# The glob covers dependencies only; the .UPD decrypt and the LUKS work are in
+# this crate, and unoptimised they add minutes to a debug provision.
+[profile.dev.package.cdj3k-emu-firmware]
+opt-level = 2
+
 [workspace.package]
 version = "0.1.2"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nsaintot/cdj3k-emu"
 # All workspace members are internal-only — they share types across crate
 # boundaries but aren't designed for crates.io consumption.  Keep them out
 # of any accidental `cargo publish` run.
 publish = false
-

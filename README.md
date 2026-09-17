@@ -1,14 +1,20 @@
-# cdj3k-emu
+![cdj3k-emu hero](docs/hero.png)
 
-A macOS desktop app that boots Pioneer DJ's **CDJ-3000** firmware inside QEMU on
-Apple Silicon, surfacing the device's main LCD, jog LCD, jog wheel, faders,
-buttons, and Pro DJ Link network in a native window.
+A macOS desktop app that boots CDJ's firmware inside QEMU on Apple Silicon,
+surfacing the device's main LCD, jog LCD, jog wheel, faders, buttons, USB, PC-Link, and Pro DJ Link network in a native window.
 
-<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px;">
-  <img src="docs/preview.png" alt="cdj3k-emu screenshot" width="500"/>
-  <img src="docs/preview.gif" alt="Demo animation" style="display: block;"/>
-</div>
-
+<table>
+<tr>
+<td valign="top" width="50%">
+<img src="docs/preview.png" alt="cdj3k-emu slate" width="100%">
+<sub><em>Preview of the main emulation window</em></sub>
+</td>
+<td valign="middle" align="center" width="50%">
+  <img src="docs/preview.gif" alt="Demo animation" width="100%">
+  <sub><em>Interacting with the firmware and controls</em></sub>
+</td>
+</tr>
+</table>
 
 ## Why this exists
 
@@ -37,7 +43,7 @@ do with real CDJs on a physical LAN when you're on vacation.
 >   callback cadence).
 > - **subucom_virt** for the SPI sub-CPU protocol (buttons, jog encoder,
 >   rotary, slider, capacitive sensors).
-> - **ep122_shim** (LD_PRELOAD) that emulates the Rockchip-specific DRM/KMS
+> - **deck_shim** (LD_PRELOAD) that emulates the Rockchip-specific DRM/KMS
 >   ABI EP122 expects (jog LCD as DSI-2, vsync_time, etc.) and routes jog-LCD
 >   pixels through ivshmem so the host renders them as an egui texture.
 
@@ -46,7 +52,7 @@ do with real CDJs on a physical LAN when you're on vacation.
 > ## What it is **not**
 >
 > - **It does not ship Pioneer firmware.** You need to supply your own copy
->   of a CDJ-3000 update file (`.UPD`) and decryption key at first launch.
+>   of the deck's firmware update file (`.UPD`) and decryption key at first launch.
 >   The in-app **Install Firmware** wizard decrypts it locally and provisions
 >   a per-instance eMMC qcow2 disk image under `~/Library/Application Support/com.cdj3k.emu/`.
 >   Nothing Pioneer-owned is in this repository or the distributed bundle.
@@ -54,7 +60,7 @@ do with real CDJs on a physical LAN when you're on vacation.
 >   Pioneer DJ. CDJ, rekordbox, and Pro DJ Link are trademarks of their
 >   respective owners.
 > - Not a frame-accurate hardware simulator. Pixel output and SPI timings are
->   faithful enough to drive EP122 (the stock firmware), but the goal is a
+>   faithful enough to drive EP122 / EP145 (the stock firmware), but the goal is a
 >   daily-driver emulator, not a forensic recreation.
 > - Not a turntable replacement. Jog wheel and rotary feel are reproduced via
 >   pointer drag + scroll wheel; there's no support for an external MIDI
@@ -62,12 +68,14 @@ do with real CDJs on a physical LAN when you're on vacation.
 > - Not currently portable. Apple Silicon macOS only (HVF, vmnet.framework,
 >   AppKit window/menu, CoreAudio). Linux/Windows are out of scope for v0.1.
 > - **Not compatible with pre-3.00 firmware.** See _Firmware compatibility_
->   below — only CDJ-3000 firmware 3.00 and newer are accepted.
+>   below — on the CDJ-3000, only firmware 3.00 and newer is accepted.
 
 ## Firmware compatibility
 
 > [!IMPORTANT]  
-> cdj3k-emu accepts **CDJ-3000 firmware version 3.00 or newer** only.
+> On the CDJ-3000, cdj3k-emu accepts **firmware version 3.00 or newer** only.
+>
+> All CDJ-3000X firmwares are supported.
 
 Pioneer shipped two different system-on-chip families across the CDJ-3000's
 lifetime:
@@ -77,19 +85,31 @@ lifetime:
   does **not** support this hardware target.
 - **Rockchip RK3399** — used in firmware **3.00 and newer**. This is the
   target cdj3k-emu emulates: vanilla Linux 6.6 aarch64 kernel, the
-  `ep122_shim` LD_PRELOAD, the `subucom_virt` SPI emulation, the
+  `deck_shim` LD_PRELOAD, the `subucom_virt` SPI emulation, the
   `virtio_snd` audio pipeline are all written against the RK3399 userspace
   that the 3.00+ firmware ships.
 
 If your `.UPD` decrypts to a Renesas-G2M kernel + rootfs the firmware wizard
 will reject it before provisioning the eMMC image. Use a 3.00+ update file.
 
+## Emulated models
+
+`--model cdj3k` / `--model cdj3kx` (or `CDJ3K_MODEL`) names the model to
+launch. A slot holds one installation, and its model is persisted in the
+slot's settings (see [Storage](docs/storage.md)).
+
+| Model         | Board / kernel             | Panel             | Status                    |
+| ------------- | -------------------------- | ----------------- | ------------------------- |
+| **CDJ-3000**  | RK3399, vanilla 6.6 kernel | 9-inch display    | Boots, Plays, Pro DJ Link |
+| **CDJ-3000X** | RK3399, vanilla 6.6 kernel | 10.1-inch display | Boots, Plays, Pro DJ Link |
+
+([Models and slates](docs/models.md)).
+
 ## About the decryption key
 
-Pioneer ships CDJ-3000 firmware updates as `.UPD` files whose payload is
-LUKS-encrypted. The "decryption key" the firmware wizard asks for is the LUKS
-keyfile that unwraps that payload so we can mount it and extract the kernel +
-rootfs.
+Pioneer ships firmware updates as `.UPD` files whose payload are LUKS-encrypted.
+The "decryption key" the firmware wizard asks for is the LUKS keyfile
+that unwraps that payload so we can mount it and extract the kernel + rootfs.
 
 This repository does **not** ship that key, for the same reason it doesn't
 ship the `.UPD` itself: it is Pioneer-controlled material and we have no right
@@ -100,8 +120,6 @@ user's responsibility, by whatever means they are themselves entitled to.
 ## System requirements
 
 - **macOS 13 (Ventura) or newer**, Apple Silicon (M1/M2/M3/M4).
-  HVF needs the `com.apple.security.hypervisor` entitlement; `bundle.sh`
-  signs the binary with it.
 - **macOS 15 (Sequoia) is strongly recommended.** cdj3k-emu auto-detects
   the host version at every spawn:
   - 15+ → QEMU uses Apple's **in-kernel ARM vGIC** (`hv_gic_create`).
@@ -113,7 +131,7 @@ user's responsibility, by whatever means they are themselves entitled to.
     instance; you'll feel it most when running multiple slots at once.
 - Roughly 8 GB free RAM if you plan to run two instances at once
   (1.5 GB guest each + host overhead).
-- A copy of a Pioneer CDJ-3000 firmware update file and its decryption key.
+- A copy of a supported model firmware update file and its decryption key (if needed).
 
 ## Known limitations
 
@@ -135,10 +153,9 @@ user's responsibility, by whatever means they are themselves entitled to.
 - Jog wheel feel is "good enough for cueing" — no torque feedback.
   Brake stop-time map matches the device's `jog_adjust` rotary, so
   the _cadence_ of stops is faithful even if the touch isn't.
-- Service mode (EP122TestMode) is reachable via the Emulation menu but some
-  test routines that touch hardware-only registers (e.g. fan-RPM read) return
-  fixed values.
-- LINK MODE (rekordbox <-> Emulation) is half-working.
+- Service Mode (**Emulation → Service Mode**, or `--service-mode`) boots the sub-CPU test mode through an injected button sequence, and is flaky if the emulation speed isn't adequate.  
+  Some test routines that touch hardware-only registers (e.g. fan-RPM read) return fixed values.
+- LINK MODE (Rekordbox ← network → Emulation) is not working.
 - PC Link (USB-B) **Rekordbox is gated** by its real HID probing and won't
   connect. USB audio (UAC2) is **not supported**.
 
@@ -162,25 +179,25 @@ On a real CDJ, you can hold a button or touch the screen while doing something e
 
 This lets you, for example, keep `Search Forward` held down while moving the jog wheel to search faster, just like on real hardware.
 
-## EP122 mods
+## Deck mods
 
 The [cdj3k-mods](https://github.com/nsaintot/cdj3k-mods) feature set (Gate Cue,
-MOD SETTINGS, Themes, STEMS, X-PAD) is its own repository and its own package.
-The emulator neither builds nor ships it: the shim here carries only the
-emulation plumbing. To run the mods, build them from that repository and
-preload them alongside the shim.
+MOD SETTINGS, Themes, STEMS, X-PAD) is not built here and the emulator installs
+none of it. The mods ship as their own LD_PRELOADed object from that project's
+releases, loaded alongside `deck_shim.so` — `LD_PRELOAD` takes a
+colon-separated list.
+
+STEMS needs a [stemd](https://github.com/nsaintot/stemd) server on the LAN.
 
 ## Building
 
 ```bash
-# 0. The mods are a submodule.
-git clone --recurse-submodules https://github.com/nsaintot/cdj3k-emu
-#    (or, in an existing checkout:)  git submodule update --init
+git clone https://github.com/nsaintot/cdj3k-emu
 
 # 1. Build QEMU (clones upstream, applies our shm-display patch, ~10 min).
 ./qemu/build.sh
 
-# 2. Build the aarch64 kernel, out-of-tree modules, shim + mods, and guest
+# 2. Build the aarch64 kernel, out-of-tree modules, the shim, and guest
 #    tools (Docker). `make abi-check` gates the shim against the deck's glibc.
 ./build.sh
 
@@ -203,16 +220,15 @@ xcrun notarytool store-credentials cdj3k-emu-notarization --apple-id <APPLE_ID> 
 cdj3k-emu asks for the macOS admin password in three specific situations,
 **only when you ask it to**:
 
-| Action                                                          | Why it elevates                                                                                                                                                                                                        |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bridging a TAP interface (OpenVPN-style) for Pro DJ Link | Creates a macOS kernel bridge with `ifconfig`, which is root-only. vmnet modes need no prompt: QEMU opens the interface itself under the app's `com.apple.developer.networking.vmnet` entitlement. |
-| Selecting a TAP interface (OpenVPN etc.)                        | Creates a macOS `bridge` device + assigns a `tap` device to QEMU via Authorization Services. Torn down automatically when the app exits.                                                                               |
-| Attaching a physical USB drive in pass-through mode             | `chmod 660` on `/dev/diskN` so QEMU can open it `O_RDWR`. The exact device path is validated against `/dev/disk[0-9]+(s[0-9]+)?` before elevation — see `crates/cdj3k-emu-runtime/src/usb.rs::is_valid_bsd_disk_path`. |
+| Action                                                   | Why it elevates                                                                                                                                                                                                        |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bridging a TAP interface (OpenVPN-style) for Pro DJ Link | Creates a macOS kernel bridge with `ifconfig`, which is root-only. vmnet modes need no prompt: QEMU opens the interface itself under the app's `com.apple.developer.networking.vmnet` entitlement.                     |
+| Selecting a TAP interface (OpenVPN etc.)                 | Creates a macOS `bridge` device + assigns a `tap` device to QEMU via Authorization Services. Torn down automatically when the app exits.                                                                               |
+| Attaching a physical USB drive in pass-through mode      | `chmod 660` on `/dev/diskN` so QEMU can open it `O_RDWR`. The exact device path is validated against `/dev/disk[0-9]+(s[0-9]+)?` before elevation — see `crates/cdj3k-emu-runtime/src/usb.rs::is_valid_bsd_disk_path`. |
 
 All three use the native macOS password dialog (TouchID / Apple Watch eligible)
 via `AuthorizationServices`, not a CLI prompt. None of them grant ongoing
 privileges — every elevation is scoped to one command.
-
 
 ## Documentation and reference
 
@@ -221,21 +237,23 @@ privileges — every elevation is scoped to one command.
 - [Network stack](docs/network.md)
 - [Storage](docs/storage.md)
 - [PC-Link](docs/pc-link.md)
+- [Models and slates](docs/models.md)
 - [Host/guest stream transports](docs/stream-transports.md)
 - [subucom SPI protocol](docs/subucom.md)
 - [G2M (Renesas) — unsupported target](docs/g2m-renesas.md)
-
 
 ## Repository layout
 
 ```
 app/cdj3k-emu/       binary (eframe egui app + runtime worker)
-crates/cdj3k-emu-*   Rust workspace: subucom, streams, platform, ui,
+crates/cdj3k-emu-*   Rust workspace: panel, streams, platform, ui,
                      runtime, storage, firmware
+  ui/src/app/ui/       shared control toolkit + slate/{cdj3k,cdj3kx}
 guest/               C sources built for the guest:
   cfgd/                cdj3k-cfgd  - virtio-serial config daemon
-  ep122_shim/          ep122_shim.so - LD_PRELOAD shim (emulation half)
+  deck_shim/           deck_shim.so - LD_PRELOAD shim (core/ + per-model)
   subucom/             subucom_forwarder, subucom_live
+  pc_link_bridge/      cdj3k-pc-link-bridge - USB-B gadget <-> host bridge
   modules/             out-of-tree kernel modules (subucom_virt, virtio_snd, udev_usb1)
   kernel-patches/      vanilla 6.6 patches + the guest kernel .config
 qemu/                upstream QEMU source + our overlay patches
@@ -248,18 +266,18 @@ scripts/             bundle-dylibs.sh (self-contained .app)
 
 cdj3k-emu's original sources are dual-licensed at your option under either of:
 
-- **Apache License, Version 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE))
-- **MIT License** ([`LICENSE-MIT`](LICENSE-MIT))
+- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE))
+- **MIT License** ([LICENSE-MIT](LICENSE-MIT))
 
 Linux kernel modules in `guest/modules/`, kernel patches in
 `guest/kernel-patches/`, the QEMU embedding shim in `qemu/shim/`, and QEMU
 patches in `qemu/patches/` are derivatives of GPL-2.0 upstreams and retain
-**GPL-2.0-or-later**. See [`NOTICE`](NOTICE) for a full inventory of bundled
+**GPL-2.0-or-later**. See [NOTICE](NOTICE) for a full inventory of bundled
 third-party components and the firmware-acquisition expectation.
 
 ## Contributing
 
 Issues and pull requests welcome. By submitting a contribution you agree it
-is dual-licensed Apache-2.0 / MIT per [`LICENSE-APACHE`](LICENSE-APACHE) and
-[`LICENSE-MIT`](LICENSE-MIT), except for contributions inside the GPL-2.0
-carve-outs listed in [`NOTICE`](NOTICE), which remain GPL-2.0-or-later.
+is dual-licensed Apache-2.0 / MIT per [LICENSE-APACHE](LICENSE-APACHE) and
+[LICENSE-MIT](LICENSE-MIT), except for contributions inside the GPL-2.0
+carve-outs listed in [NOTICE](NOTICE), which remain GPL-2.0-or-later.

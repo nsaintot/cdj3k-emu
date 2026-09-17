@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /* usbg.c: the /tmp/usbg1 FIFO.
  *
- * EP122's UsbHostPcConnectDetector polls /proc/udev_usbg1 (the ep122_shim
+ * EP122's UsbHostPcConnectDetector polls /proc/udev_usbg1 (the deck_shim
  * open() interposer redirects it here) and reads one event per poll:
  * "connect"/"disconnect" raise the SOURCE CONTROL MODE row, anything else is
  * ignored.  It has no edge detection, so a FIFO (one token per read) is used,
