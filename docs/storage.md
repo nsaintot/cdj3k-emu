@@ -14,7 +14,7 @@ Three classes of persistent storage:
 |---|---|---|---|
 | eMMC qcow2 | One per instance (1..4) | qcow2 file under app data | No (boot-time) |
 | USB drive slot | One per instance | virtual `.img` or physical `/dev/diskN` | Yes (QMP) |
-| Settings | App-wide + per-instance | plain `key=value` text | n/a |
+| Settings | Per-instance | plain `key=value` text | n/a |
 
 Nothing Pioneer-owned is stored or shipped - the firmware install pipeline
 runs locally and writes only into the user's app-data directory.
@@ -260,18 +260,27 @@ Plain text, one `key=value` per line. No serde dependency - the value
 space is tiny and the files are human-editable for debugging.
 Implementation: `crates/cdj3k-emu-storage/src/settings.rs`.
 
-### Forward-compat
+### Key registries
 
 `save()` re-reads the file into a `BTreeMap`, overwrites only the keys it
-knows about, then writes the whole map back. Unknown keys are preserved -
-downgrading or running a side-build does not drop newer fields.
+knows about, then writes the whole map back.
+
+Each file has a registry of the keys it may hold - `SLOT_KEYS` for a slot's,
+`APP_KEYS` for the app-wide one - and `write_kv` drops everything else, so a
+key a release retires leaves the file at the next save. A registry belongs to
+a file, not to a struct: `InstanceSettings` and `PanelSettings` share the slot
+file, and either one pruning to its own keys would delete the other's - losing
+`soc_serial` that way would lock the slot's `cabinet.img` out for good. The
+cost of the registry is that a new field must be listed in it or it will not
+survive its own save; the `the_slot_registry_covers_every_key_written` test
+fails if one is missed.
 
 ### Concurrent writers
 
 The UI, the menu thread and the runtime worker all persist per-instance
 settings. Every write is atomic (temp file + `rename`, so a reader never
 sees an empty file - an empty read would mint a new MAC) and every
-load-modify-save - `InstanceSettings::update` - holds
+load-modify-save - `InstanceSettings::update`, `PanelSettings::save` - holds
 one process-wide lock across the read and the write so two threads cannot
 lose each other's fields.
 
@@ -293,6 +302,9 @@ lose each other's fields.
 | `net_iface` | `en0` etc. or empty | empty | Selected Pro DJ Link interface |
 | `usb_virtual_path` | path or empty | empty | Last attached virtual USB image |
 | `usb_physical_bsd` | `disk2` etc. or empty | empty | Last attached physical USB disk |
+| `screen_extended` | `0` / `1` | `0` | Draw the LCD over the decoration around it |
+| `jog_adjust` | `f32` ∈ [0, 1] | `0.5` | JOG ADJUST rotary; picks the brake stop time |
+| `vinyl_speed` | `u8` | `0` | VINYL SPEED ADJUST rotary; rides every MISO frame |
 
 ### SoC serial
 
@@ -313,18 +325,21 @@ install locks `cabinet.img` out. It is minted once per install
 `InstanceSettings::regenerate_soc_serial` when the wizard recreates the eMMC -
 or pinned to a real deck's with `CDJ3K_SOC_SERIAL`.
 
-### App-wide keys
+`screen_extended`, `jog_adjust` and `vinyl_speed` are a deck's own panel
+state, so they belong to the slot the deck runs in: two slots side by side
+keep separate knob positions. They are
+written by `PanelSettings`, which owns only those keys and leaves the rest of
+the file to `InstanceSettings`.
 
-`~/Library/Application Support/com.cdj3k.emu/settings.txt`
+A slot carrying none of these three takes the defaults and writes them on its
+next save.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `jog_adjust` | `f32` ∈ [0, 1] | `0.5` | Brake stop-time slider |
-| `vinyl_speed` | `u8` | `0` | Vinyl-mode start/stop speed index |
+The app-wide `~/Library/Application Support/com.cdj3k.emu/settings.txt` holds
+no keys: `APP_KEYS` is empty and nothing reads it. `prune_app_file()` empties
+it at startup of any key it still carries.
 
-(See `AppSettings`, `settings.rs`.) Firmware metadata captured from
-the .UPD ISO is not stored here - it goes into the U-Boot env block
-inside the eMMC image at provisioning time (`emmc.rs`).
+Firmware metadata captured from the .UPD ISO is stored in neither file - it
+goes into the U-Boot env block inside the eMMC image at provisioning time.
 
 ---
 
@@ -379,7 +394,7 @@ Nothing is committed to the repo or bundled in the `.dmg`.
 | `crates/cdj3k-emu-storage/src/lib.rs` | `app_data_dir`, public re-exports |
 | `crates/cdj3k-emu-storage/src/emmc.rs` | Provisioning, partition layout, U-Boot env |
 | `crates/cdj3k-emu-storage/src/gpt.rs` | Pure-Rust GPT writer (protective MBR + primary + backup) |
-| `crates/cdj3k-emu-storage/src/settings.rs` | `AppSettings`, `InstanceSettings` |
+| `crates/cdj3k-emu-storage/src/settings.rs` | `InstanceSettings`, `PanelSettings` |
 | `crates/cdj3k-emu-runtime/src/usb.rs` | `UsbManager` hot-swap, virtual + physical attach |
 | `crates/cdj3k-emu-runtime/src/macos_disk.rs` | `list_removable`, `unmount_disk`, `mount_disk` |
 | `crates/cdj3k-emu-runtime/src/config.rs` | `-drive` argv lines (USB then eMMC) |

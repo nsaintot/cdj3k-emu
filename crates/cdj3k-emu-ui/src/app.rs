@@ -285,9 +285,10 @@ impl CdjApp {
         // Prevent resizing the window with the keyboard.
         egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         egui_ctx.set_zoom_factor(1.0);
-        let app_settings = cdj3k_emu_storage::AppSettings::load();
-        // A viewing preference the menu owns, restored before the first frame.
-        cdj3k_emu_platform::menu_state::lock().screen_extended = app_settings.screen_extended;
+        let instance_id = cdj3k_emu_platform::menu_state::lock().current_instance_id;
+        let panel = cdj3k_emu_storage::PanelSettings::load(instance_id);
+        // The menu owns the screen-extend flag; restored before the first frame.
+        cdj3k_emu_platform::menu_state::lock().screen_extended = panel.screen_extended;
         let repaint_gate = RepaintGate::new(egui_ctx.clone(), MIN_FRAME_INTERVAL);
         // `--no-spawn` never shows the boot shade, so it must not fade in from
         // opaque either (keeps chassis captures deterministic frame to frame).
@@ -308,13 +309,13 @@ impl CdjApp {
             jog_release_touch_pulse_remaining_sec: 0.0,
             jog_scroll_hold_sec: 0.0,
             jog_touch_active: false,
-            jog_adjust: app_settings.jog_adjust,
+            jog_adjust: panel.jog_adjust,
             jog_screen_popped: false,
             main_screen_popped: false,
             debug_screen_popped: false,
             rotary: ROTARY_NEUTRAL,
             tempo: TEMPO_INIT,
-            vinyl_speed: app_settings.vinyl_speed,
+            vinyl_speed: panel.vinyl_speed,
             direction: cdj3k_emu_panel::Direction::Forward,
             lcd_touch: None,
             script_touch: false,
@@ -652,12 +653,18 @@ impl CdjApp {
         if let (Some(gl), Some(bloom)) = (gl, &self.bloom) {
             bloom.lock().unwrap().destroy(gl);
         }
-        let _ = cdj3k_emu_storage::AppSettings {
-            screen_extended: cdj3k_emu_platform::menu_state::lock().screen_extended,
+        // One borrow of the menu state: taking it twice in one expression
+        // would deadlock on its own mutex.
+        let (screen_extended, instance_id) = {
+            let s = cdj3k_emu_platform::menu_state::lock();
+            (s.screen_extended, s.current_instance_id)
+        };
+        let _ = cdj3k_emu_storage::PanelSettings {
+            screen_extended,
             jog_adjust: self.jog_adjust,
             vinyl_speed: self.vinyl_speed,
         }
-        .save();
+        .save(instance_id);
 
         // Wait for the worker to finish its graceful QEMU stop. Total budget
         // matches `instance.stop()` (8 s EP122 cleanup + 20 s ACPI shutdown +

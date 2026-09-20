@@ -4,7 +4,7 @@ mod qcow2;
 pub mod settings;
 
 pub use emmc::{default_path, provision_emmc, EmmcConfig, FirmwareInfo};
-pub use settings::{AppSettings, InstanceSettings};
+pub use settings::{prune_app_file, InstanceSettings, PanelSettings};
 
 use std::path::PathBuf;
 

@@ -27,17 +27,15 @@ fn configure_helvetica_medium(ctx: &egui::Context) {
 
     fonts.font_data.insert(
         NIMBUS_SANS.to_owned(),
-        FontData::from_static(NIMBUS_SANS_DATA).tweak(tweak).into(),
+        FontData::from_static(NIMBUS_SANS_DATA).tweak(tweak),
     );
     fonts.font_data.insert(
         NIMBUS_SANS_BOLD.to_owned(),
-        FontData::from_static(NIMBUS_BOLD_DATA).tweak(tweak).into(),
+        FontData::from_static(NIMBUS_BOLD_DATA).tweak(tweak),
     );
     fonts.font_data.insert(
         NIMBUS_SANS_CONDENSED.to_owned(),
-        FontData::from_static(NIMBUS_CONDENSED_DATA)
-            .tweak(tweak_condensed)
-            .into(),
+        FontData::from_static(NIMBUS_CONDENSED_DATA).tweak(tweak_condensed),
     );
 
     if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {
@@ -205,6 +203,10 @@ fn main() {
         s.ui_only = no_spawn;
     }
 
+    // Every setting is per slot, so the app-wide settings file holds no keys
+    // and nothing else writes it.
+    cdj3k_emu_storage::prune_app_file();
+
     // What the Instances menu writes beside a slot number. The menu lives a
     // crate below the settings, so it asks through this.
     cdj3k_emu_platform::menu_state::set_slot_note_fn(|n| {
@@ -265,7 +267,7 @@ fn main() {
     }
 
     // A slot remembers the model it last booted: open on it directly and
-    // show the picker only for a fresh slot or after "Switch Emulation".
+    // show the picker only for a fresh slot or from "Manage Emulation".
     // `--model` / `CDJ3K_MODEL` override it for this launch; `--no-spawn`
     // ignores it so chassis work can always reach the picker.
     if let Some(upd) = provision_path {
