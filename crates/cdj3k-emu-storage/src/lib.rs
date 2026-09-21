@@ -134,13 +134,35 @@ pub fn adopt_unrecorded_slot(instance_id: u32) {
     }
 }
 
-/// Serialises the tests that point `HOME` at a scratch directory: the paths
-/// here are all derived from it, so two of them running at once would read
-/// each other's slots.
+/// A throwaway `HOME` for a test that reads or writes the app data dir.
+///
+/// Every path here derives from `HOME`, so the guard also serialises the
+/// tests that use one: two at once would read each other's slots. The
+/// directory goes when it drops.
 #[cfg(test)]
-pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+pub(crate) struct TestHome {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    path: PathBuf,
+}
+
+#[cfg(test)]
+impl TestHome {
+    pub(crate) fn new(tag: &str) -> Self {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let path = std::env::temp_dir().join(format!("cdj3k-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        std::env::set_var("HOME", &path);
+        Self { _lock: lock, path }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 #[cfg(test)]
@@ -151,11 +173,7 @@ mod tests {
     /// one stays unrecorded.
     #[test]
     fn an_unrecorded_slot_is_a_cdj3000() {
-        let _env = test_env_lock();
-        let home = std::env::temp_dir().join(format!("cdj3k-adopt-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).unwrap();
-        std::env::set_var("HOME", &home);
+        let _home = TestHome::new("adopt");
         let root = instance_dir(1);
         std::fs::create_dir_all(&root).unwrap();
         for name in FIRMWARE_FILES {
@@ -168,6 +186,5 @@ mod tests {
         );
         adopt_unrecorded_slot(2);
         assert_eq!(settings::InstanceSettings::saved_model(2), None);
-        let _ = std::fs::remove_dir_all(&home);
     }
 }

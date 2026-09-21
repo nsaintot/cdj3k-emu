@@ -411,7 +411,7 @@ in `docs/alc.md`.
 | `crates/cdj3k-emu-runtime/src/config.rs` | `-audiodev coreaudio,out.buffer-length=5000,out.device-uid=…` |
 | `crates/cdj3k-emu-platform/src/audio_devices.rs` | HAL output device enumeration for the UI picker |
 | `crates/cdj3k-emu-platform/src/menu.rs` | Audio → Output Device submenu, 5 s refresh |
-| `crates/cdj3k-emu-storage/src/settings.rs` | Per-instance `audio_device_uid` persistence |
+| `crates/cdj3k-emu-storage/src/settings/instance.rs` | Per-instance `audio_device_uid` persistence |
 
 ---
 

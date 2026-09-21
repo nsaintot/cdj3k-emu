@@ -215,9 +215,8 @@ remounts it on macOS.
 
 User picks a `.img` file (or runs "Create blank USB" which makes an
 exFAT-formatted raw image via macOS `hdiutil attach -nomount` +
-`diskutil eraseDisk ExFAT REKORDBOX MBR`, `usb.rs`). The path is
-persisted as `usb_virtual_path` in the per-instance `settings.txt`
-(`settings.rs`).
+`diskutil eraseDisk ExFAT REKORDBOX MBR`). The path is persisted as
+`usb_virtual_path` in the per-instance `settings.txt`.
 
 ### Physical mode
 
@@ -258,7 +257,7 @@ that race (see the comment in `runtime/src/config.rs`).
 
 Plain text, one `key=value` per line. No serde dependency - the value
 space is tiny and the files are human-editable for debugging.
-Implementation: `crates/cdj3k-emu-storage/src/settings.rs`.
+Implementation: `crates/cdj3k-emu-storage/src/settings/`.
 
 ### Key registries
 
@@ -394,7 +393,10 @@ Nothing is committed to the repo or bundled in the `.dmg`.
 | `crates/cdj3k-emu-storage/src/lib.rs` | `app_data_dir`, public re-exports |
 | `crates/cdj3k-emu-storage/src/emmc.rs` | Provisioning, partition layout, U-Boot env |
 | `crates/cdj3k-emu-storage/src/gpt.rs` | Pure-Rust GPT writer (protective MBR + primary + backup) |
-| `crates/cdj3k-emu-storage/src/settings.rs` | `InstanceSettings`, `PanelSettings` |
+| `crates/cdj3k-emu-storage/src/settings/kv.rs` | the `key=value` file layer, `SLOT_KEYS` / `APP_KEYS`, `prune_app_file` |
+| `crates/cdj3k-emu-storage/src/settings/instance.rs` | `InstanceSettings` |
+| `crates/cdj3k-emu-storage/src/settings/panel.rs` | `PanelSettings` |
+| `crates/cdj3k-emu-storage/src/settings/identity.rs` | MAC and SoC-serial minting and validation |
 | `crates/cdj3k-emu-runtime/src/usb.rs` | `UsbManager` hot-swap, virtual + physical attach |
 | `crates/cdj3k-emu-runtime/src/macos_disk.rs` | `list_removable`, `unmount_disk`, `mount_disk` |
 | `crates/cdj3k-emu-runtime/src/config.rs` | `-drive` argv lines (USB then eMMC) |

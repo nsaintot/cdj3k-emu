@@ -153,7 +153,7 @@ The persisted MAC lives in `instance-N/settings.txt` under key `mac`
 and is generated on first launch via `uuid::Uuid::new_v4()` with the
 first byte forced to `02|LAA`:
 
-> `crates/cdj3k-emu-storage/src/settings.rs:237-248` - `generate_mac()`
+> `crates/cdj3k-emu-storage/src/settings/identity.rs:44` - `generate_mac()`
 
 The runtime substitutes a fallback `0a:00:00:00:00:<id&0xff>` if no
 persisted MAC is set (`config.rs:270-273`).
@@ -281,7 +281,7 @@ the unlink-to-shutdown signal exploits exactly that asymmetry.
 | `crates/cdj3k-emu-runtime/src/config.rs`                   | `-netdev` / `-device` selection                   |
 | `crates/cdj3k-emu-runtime/src/vmnet.rs`                    | `VmnetMode` -> `-netdev` argument, network UUID    |
 | `crates/cdj3k-emu-runtime/src/tapbridge.rs`                | bridgeN + tapM watcher, stale cleanup, elevation  |
-| `crates/cdj3k-emu-storage/src/settings.rs`                 | persisted `mac`, `net_iface`, MAC generator       |
+| `crates/cdj3k-emu-storage/src/settings/`                   | persisted `mac`, `net_iface`, MAC generator       |
 | `crates/cdj3k-emu-platform/src/runtime_paths.rs`           | socket / instance-dir layout                      |
 | `qemu/build.sh`                                            | QEMU build (unrelated to runtime networking)      |
 | `initramfs-patch/patch-rootfs.d/03-dropbear-enable.sh`     | enables in-guest SSH for both modes               |
