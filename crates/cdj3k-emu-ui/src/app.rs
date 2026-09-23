@@ -174,6 +174,10 @@ pub struct CdjApp {
     /// Frame bits the input script forces low (`clear`), applied last when a
     /// frame is built.
     cleared_bits: Vec<(usize, u8)>,
+    /// Buttons the input script holds down (`press`), set in every frame
+    /// until the script releases them. Kept apart from `held_btn`, which the
+    /// slate's widgets clear on the next frame the pointer is not on them.
+    scripted_btns: Vec<(usize, u8)>,
     /// Whether the control channel was up on the previous frame; a rising
     /// edge injects the current frame.
     ctrl_was_ready: bool,
@@ -335,6 +339,7 @@ impl CdjApp {
             display_tex_id: None,
             display_tex_stale: false,
             cleared_bits: Vec::new(),
+            scripted_btns: Vec::new(),
             ctrl_was_ready: false,
             jog_stream: JogLcdStream::new(&socket_dir, repaint_gate.clone()),
             jog_gl_tex: None,
@@ -391,6 +396,11 @@ impl CdjApp {
         }
         self.model = model;
         self.on_leave_panel();
+        // Frame bits and LEDs are positions in the previous model's frames.
+        self.cleared_bits.clear();
+        self.scripted_btns.clear();
+        self.last_miso = [0u8; miso_frame::MISO_SIZE];
+        self.led_state = LedState::default();
         self.jog_static_cache = None;
         self.btn_cache = ui::draw_cache::BtnShapeCache::new();
         self.chassis_bg_cache = ui::draw_cache::StaticShapeCache::new();
@@ -420,18 +430,18 @@ impl CdjApp {
         }
     }
 
-    /// Hash of every input that influences bloom-relevant pixels for the
-    /// current frame. The bloom pipeline reuses its cached blur texture when
-    /// this key is unchanged from the previous frame, skipping the GL work
-    /// (blit + threshold + 9-tap separable blur).
     /// True while the guest's own service-combo injection must be left in
-    /// place. The module holds the combo for 5 s from load; the guest reads it
-    /// well inside that, so a second is ample and the panel is idle anyway.
+    /// place: in Service Mode, for [`SERVICE_COMBO_HOLD`] after the panel
+    /// starts.
     fn service_mode_hold(&self) -> bool {
         cdj3k_emu_platform::menu_state::lock().service_mode
             && self.started_at.elapsed() < SERVICE_COMBO_HOLD
     }
 
+    /// Hash of every input that influences bloom-relevant pixels for the
+    /// current frame. The bloom pipeline reuses its cached blur texture when
+    /// this key is unchanged from the previous frame, skipping the GL work
+    /// (blit + threshold + 9-tap separable blur).
     pub(super) fn bloom_scene_key(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();

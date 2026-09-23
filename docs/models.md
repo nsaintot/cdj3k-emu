@@ -19,7 +19,9 @@ spec, a `Model` variant and a slate.
 `cdj3k_emu_ui::CdjShell` (`app/shell.rs`) hosts the picker, the setup window
 (`SetupStep`) and the panel, and boots through the binary's `RuntimeHost`
 (`app/cdj3k-emu/src/launch.rs`). The panel, `CdjApp`, outlives a model switch;
-`CdjApp::switch_model` drops the shape caches.
+`CdjApp::switch_model` drops the shape caches and resets the scripted presses,
+cleared bits, last input frame and LED state, which are offsets in the
+previous model's frames.
 
 Each slot is its own process and holds one installation; its model is
 `model=` in the slot's `settings.txt`. How an install reaches the slot is in

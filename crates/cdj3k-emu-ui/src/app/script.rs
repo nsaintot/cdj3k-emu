@@ -85,7 +85,7 @@ impl ScriptDriver {
         while i < self.releases.len() {
             if self.releases[i].0 <= now {
                 match self.releases.swap_remove(i).1 {
-                    Release::Btn(btn) => app.handle_btn_interaction(false, false, btn),
+                    Release::Btn(btn) => app.set_btn_scripted(btn, false),
                     Release::Cleared(bit) => app.set_bit_cleared(bit, false),
                     Release::Touch => {
                         app.script_touch = false;
@@ -116,7 +116,7 @@ impl ScriptDriver {
                         "cdj3k-emu: script {t}s press {name} = {}:{:#04x}",
                         btn.0, btn.1
                     );
-                    app.handle_btn_interaction(true, false, btn);
+                    app.set_btn_scripted(btn, true);
                     self.releases.push((now + hold, Release::Btn(btn)));
                 }
                 Action::Clear { bit: name, hold } => {

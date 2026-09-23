@@ -21,8 +21,6 @@ pub(super) const TEMPO_CENTER: u16 = 0x7F50;
 /// Tempo span: full u16 range mapped from `tempo` ∈ [0, 1].
 const TEMPO_SPAN: f32 = 0xFFFF as f32;
 
-/// LCD touch coordinate normalisation range: `[0, 1000]` for both axes.
-
 impl CdjApp {
     pub(super) fn inject(&mut self, frame_bytes: [u8; miso_frame::MISO_SIZE]) {
         puffin::profile_function!();
@@ -31,13 +29,13 @@ impl CdjApp {
     }
 
     /// Build a MISO frame that reflects the full current control state.
-    /// All inject paths must use this instead of `MisoFrame::idle()`.
+    /// All inject paths must use this instead of `MisoFrame::idle`.
     pub(super) fn build_current_frame(&self) -> MisoFrame {
         let mut f = MisoFrame::idle(self.model);
         if let Some(btn) = self.held_btn {
             f.set_btn(btn, true);
         }
-        for &btn in &self.latched_btns {
+        for &btn in self.latched_btns.iter().chain(&self.scripted_btns) {
             f.set_btn(btn, true);
         }
         f.set_direction(self.direction);
@@ -87,6 +85,15 @@ impl CdjApp {
         self.cleared_bits.retain(|b| *b != bit);
         if on {
             self.cleared_bits.push(bit);
+        }
+        self.inject(self.build_current_frame().finalize());
+    }
+
+    /// Hold `btn` down in every frame (`on`) or release it, and inject.
+    pub(super) fn set_btn_scripted(&mut self, btn: (usize, u8), on: bool) {
+        self.scripted_btns.retain(|b| *b != btn);
+        if on {
+            self.scripted_btns.push(btn);
         }
         self.inject(self.build_current_frame().finalize());
     }
