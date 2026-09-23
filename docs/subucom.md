@@ -108,8 +108,10 @@ EP122 writes **linear-light PWM bytes**. Three LED classes coexist:
   ON-AIR at `[36..45]`, each a raw `(R, G, B)` PWM triple.
 
 The host converts raw PWM → display colour in `mosi_frame.rs`
-(`led_color`): apply `1/LED_GAMMA` per channel, then normalise so the
-dominant channel reaches `LED_PEAK`. This preserves hue at any drive level;
+(`led_color`): the part's `LedProfile` turns the PWM duty into light
+(`led_linear`: its dies, gamma and white gains), then the dominant channel
+is normalised to `LED_PEAK` for a saturated colour, rising to 255 as the
+colour nears white. This preserves hue at any drive level;
 `led_drive_factor` is exposed for callers that want to dim the visual to
 match drive.
 
@@ -239,8 +241,9 @@ Two snapshot mechanisms coexist:
 name-based accessors (`led_bit`, `step_led`, `pad_rgb`, `slot_1_rgb`,
 `set_btn`, `set_jog`, …) read through the model's frame map, so the UI
 never indexes raw bytes. The `egui-color` feature exposes
-`led_color(r, g, b) -> Option<Color32>`, performing the gamma +
-peak-normalise conversion in one call.
+`MosiFrame::led_color(part, r, g, b) -> Option<Color32>`, performing the
+gamma + peak-normalise conversion through the part's `LedProfile` in one
+call.
 
 ---
 

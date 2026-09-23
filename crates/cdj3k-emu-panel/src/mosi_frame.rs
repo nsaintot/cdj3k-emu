@@ -25,46 +25,223 @@ pub const LED_GAMMA: f32 = 2.2;
 /// 255 = fully saturated / maximum brightness; we lower it to reduce intensity.
 pub const LED_PEAK: f32 = 220.0;
 
-#[inline]
-fn led_expanded_rgb(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
-    let expand = |v: u8| (v as f32 / 255.0).powf(1.0 / LED_GAMMA) * 255.0;
-    (expand(r), expand(g), expand(b))
-}
+/// Exponent that lifts [`led_drive_factor`]: a dim LED reads brighter than its
+/// duty cycle.
+pub const LED_DIM_LIFT: f32 = 0.4;
 
-/// Linear-light peak (0..1) from raw PWM after per-channel gamma expand,
-/// before [`LED_PEAK`] scaling. `None` when the LED is off (all channels 0).
-///
-/// [`led_color`] normalises the dominant channel to [`LED_PEAK`], so hue
-/// reads correctly at any drive level but overall intensity is lost.
-/// Multiply glow alpha or use [`egui::Color32::gamma_multiply`] with this
-/// factor so dim hardware PWM appears dimmer on screen. Callers that just
-/// need an alpha multiplier can `.unwrap_or(0.0)`.
+/// How bright a lamp is driven, 0..1: the dies' summed duty, gamma-encoded
+/// and lifted by [`LED_DIM_LIFT`]. [`led_color`] is always full brightness;
+/// callers dim it by this. `None` when the LED is off.
 #[inline]
 pub fn led_drive_factor(r: u8, g: u8, b: u8) -> Option<f32> {
     if r | g | b == 0 {
         return None;
     }
-    let (rf, gf, bf) = led_expanded_rgb(r, g, b);
-    Some((rf.max(gf).max(bf) / 255.0).clamp(0.0, 1.0))
+    let duty = (r as f32 + g as f32 + b as f32) / 255.0;
+    Some(duty.min(1.0).powf(LED_DIM_LIFT / LED_GAMMA))
 }
 
-/// Convert a raw LED `(R, G, B)` triple to an egui `Color32`.
-/// Applies gamma expansion then normalises so the dominant channel reaches
-/// [`LED_PEAK`], preserving hue and saturation regardless of the raw PWM level.
-/// Returns `None` when all channels are zero (LED off / unassigned).
-#[cfg(feature = "egui-color")]
-#[inline]
-pub fn led_color(r: u8, g: u8, b: u8) -> Option<egui::Color32> {
+/// Which LED part a lamp is built from. A model's [`LedProfiles`] gives each
+/// its [`LedProfile`].
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum LedPart {
+    /// Hot cue pads.
+    Pad,
+    /// Media slot indicators.
+    Slot,
+    /// The rotary selector ring.
+    Ring,
+    OnAir,
+    PlayRim,
+    CueRim,
+}
+
+/// How one LED part turns PWM into the colour it shows through the panel.
+#[derive(Copy, Clone, Debug)]
+pub struct LedProfile {
+    /// The red, green and blue dies at full drive, in linear sRGB.
+    pub dies: [[f32; 3]; 3],
+    /// Light out per unit of PWM duty is `duty^gamma`.
+    pub gamma: f32,
+    /// The drive the deck uses for white. Per-die gains make it neutral.
+    pub white: [u8; 3],
+    /// Apply those gains only to drives that light all three dies, leaving
+    /// saturated colours on the bare dies.
+    pub balance_whites_only: bool,
+}
+
+/// A model's LED parts.
+#[derive(Copy, Clone, Debug)]
+pub struct LedProfiles {
+    pub pad: LedProfile,
+    pub slot: LedProfile,
+    pub ring: LedProfile,
+    pub on_air: LedProfile,
+    pub play_rim: LedProfile,
+    pub cue_rim: LedProfile,
+}
+
+impl LedProfiles {
+    /// Every part the same.
+    pub const fn uniform(p: LedProfile) -> Self {
+        Self {
+            pad: p,
+            slot: p,
+            ring: p,
+            on_air: p,
+            play_rim: p,
+            cue_rim: p,
+        }
+    }
+
+    pub fn get(&self, part: LedPart) -> &LedProfile {
+        match part {
+            LedPart::Pad => &self.pad,
+            LedPart::Slot => &self.slot,
+            LedPart::Ring => &self.ring,
+            LedPart::OnAir => &self.on_air,
+            LedPart::PlayRim => &self.play_rim,
+            LedPart::CueRim => &self.cue_rim,
+        }
+    }
+}
+
+/// Dies that show as the sRGB primaries.
+pub const PRIMARY_DIES: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+/// The blue die as `#3E7AFF` in linear light: an azure washed out by the
+/// diffuser.
+pub const AZURE_BLUE_DIES: [[f32; 3]; 3] =
+    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0446, 0.1975, 1.0]];
+/// A bluish green whose red lies outside sRGB, with the azure blue.
+pub const TEAL_GREEN_DIES: [[f32; 3]; 3] = [
+    [1.0, 0.0, 0.0],
+    [-0.0846, 1.0, 0.2176],
+    [0.0446, 0.1975, 1.0],
+];
+
+/// A drive whose weakest channel is at least this share of its strongest
+/// takes the full white balance of a `balance_whites_only` profile; one at
+/// [`WHITE_BALANCE_FROM`] or under takes none.
+const WHITE_BALANCE_FROM: f32 = 0.15;
+const WHITE_BALANCE_FULL: f32 = 0.45;
+
+impl LedProfile {
+    fn light(&self, duty: f32) -> f32 {
+        duty.powf(self.gamma)
+    }
+
+    /// Per-die gains that make [`Self::white`] come out neutral.
+    fn white_gains(&self) -> [f32; 3] {
+        let d = self.dies;
+        let w = self.white.map(|v| self.light(v as f32 / 255.0));
+        // Solve sum_i d[i][ch] * w[i] * k[i] = 1 for every channel.
+        let m = [0, 1, 2].map(|ch| [0, 1, 2].map(|i| d[i][ch] * w[i]));
+        let det = |m: [[f32; 3]; 3]| {
+            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+        };
+        let full = det(m);
+        let k = [0, 1, 2].map(|i| {
+            let mut mi = m;
+            for row in mi.iter_mut() {
+                row[i] = 1.0;
+            }
+            det(mi) / full
+        });
+        let top = k[0].max(k[1]).max(k[2]);
+        k.map(|v| v / top)
+    }
+}
+
+/// Colour a lamp shows for raw PWM `(R, G, B)`, in linear light with its
+/// brightest channel at 1. `None` when the LED is off.
+///
+/// Each die contributes its column of [`LedProfile::dies`] in proportion to
+/// the light its duty gives, scaled by the gains that make the part's white
+/// neutral. A mix outside sRGB is pulled toward the grey of the same
+/// luminance until no channel is negative.
+pub fn led_linear(profile: &LedProfile, r: u8, g: u8, b: u8) -> Option<[f32; 3]> {
     if r | g | b == 0 {
         return None;
     }
-    let (rf, gf, bf) = led_expanded_rgb(r, g, b);
-    let scale = LED_PEAK / rf.max(gf).max(bf);
-    Some(egui::Color32::from_rgb(
-        (rf * scale).min(255.0) as u8,
-        (gf * scale).min(255.0) as u8,
-        (bf * scale).min(255.0) as u8,
-    ))
+    let pwm = [r, g, b].map(|v| v as f32 / 255.0);
+    let whiteness = if profile.balance_whites_only {
+        let strongest = pwm[0].max(pwm[1]).max(pwm[2]);
+        let weakest = pwm[0].min(pwm[1]).min(pwm[2]);
+        let t = ((weakest / strongest - WHITE_BALANCE_FROM)
+            / (WHITE_BALANCE_FULL - WHITE_BALANCE_FROM))
+            .clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    } else {
+        1.0
+    };
+    let gains = profile.white_gains().map(|k| 1.0 + (k - 1.0) * whiteness);
+    let mut c = [0.0f32; 3];
+    for ((die, duty), gain) in profile.dies.iter().zip(pwm).zip(gains) {
+        let light = profile.light(duty) * gain;
+        for (ch, emitted) in c.iter_mut().zip(die) {
+            *ch += emitted * light;
+        }
+    }
+    let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let min = c[0].min(c[1]).min(c[2]);
+    if min < 0.0 && luma > 0.0 {
+        let t = luma / (luma - min);
+        c = c.map(|v| luma + t * (v - luma));
+    }
+    let peak = c[0].max(c[1]).max(c[2]);
+    if peak <= 0.0 {
+        return None;
+    }
+    Some(c.map(|v| (v / peak).max(0.0)))
+}
+
+/// Convert a raw LED `(R, G, B)` triple to an egui `Color32`: the lamp's
+/// colour from [`led_linear`], gamma-encoded with the brightest channel at
+/// [`LED_PEAK`] for a saturated colour and at 255 for white. `None` when the
+/// LED is off.
+#[cfg(feature = "egui-color")]
+#[inline]
+pub fn led_color(profile: &LedProfile, r: u8, g: u8, b: u8) -> Option<egui::Color32> {
+    let c = led_linear(profile, r, g, b)?;
+    let whiteness = c[0].min(c[1]).min(c[2]);
+    let peak = LED_PEAK + (255.0 - LED_PEAK) * whiteness;
+    let [r, g, b] = c.map(|v| (v.powf(1.0 / LED_GAMMA) * peak).round().min(255.0) as u8);
+    Some(egui::Color32::from_rgb(r, g, b))
+}
+
+/// Share of a channel's overshoot that spills into the other channels in
+/// [`led_color_hot`].
+pub const LED_SPILL: f32 = 0.5;
+
+/// How an overshoot divides between the channels it spills into: the square
+/// roots of the Rec. 709 luminance weights.
+#[cfg(feature = "egui-color")]
+const SPILL_WEIGHT: [f32; 3] = [0.4611, 0.8457, 0.2687];
+
+/// The emitter itself: [`led_linear`] scaled by `exposure`, with what passes
+/// full scale spilling into the other channels by luminance. Brightest
+/// channel at 255.
+#[cfg(feature = "egui-color")]
+pub fn led_color_hot(
+    profile: &LedProfile,
+    r: u8,
+    g: u8,
+    b: u8,
+    exposure: f32,
+) -> Option<egui::Color32> {
+    let c = led_linear(profile, r, g, b)?.map(|v| v * exposure);
+    let mut out = c.map(|v| v.min(1.0));
+    for (i, v) in c.iter().enumerate() {
+        let excess = (v - 1.0).max(0.0) * LED_SPILL;
+        let others: f32 = (0..3).filter(|&j| j != i).map(|j| SPILL_WEIGHT[j]).sum();
+        for j in (0..3).filter(|&j| j != i) {
+            out[j] += excess * SPILL_WEIGHT[j] / others;
+        }
+    }
+    let [r, g, b] = out.map(|v| (v.min(1.0).powf(1.0 / LED_GAMMA) * 255.0).round() as u8);
+    Some(egui::Color32::from_rgb(r, g, b))
 }
 
 /// Single-bit LED location: `(byte_offset, bitmask)`.
@@ -139,6 +316,7 @@ pub const LED_REV: LedBit = (9, 0x10);
 pub struct MosiFrame {
     bytes: [u8; MOSI_SIZE],
     map: &'static MosiMap,
+    leds: &'static LedProfiles,
 }
 
 impl MosiFrame {
@@ -146,7 +324,32 @@ impl MosiFrame {
         Self {
             bytes,
             map: &model.spec().mosi,
+            leds: &model.spec().leds,
         }
+    }
+
+    /// How this player's `part` shows a colour.
+    pub fn led_profile(&self, part: LedPart) -> &'static LedProfile {
+        self.leds.get(part)
+    }
+
+    /// [`led_color`] through this player's `part`.
+    #[cfg(feature = "egui-color")]
+    pub fn led_color(&self, part: LedPart, r: u8, g: u8, b: u8) -> Option<egui::Color32> {
+        led_color(self.led_profile(part), r, g, b)
+    }
+
+    /// [`led_color_hot`] through this player's `part`.
+    #[cfg(feature = "egui-color")]
+    pub fn led_color_hot(
+        &self,
+        part: LedPart,
+        r: u8,
+        g: u8,
+        b: u8,
+        exposure: f32,
+    ) -> Option<egui::Color32> {
+        led_color_hot(self.led_profile(part), r, g, b, exposure)
     }
 
     /// The frame byte holding shared bitfield byte `byte`.
@@ -239,6 +442,58 @@ mod tests {
 
     fn frame(raw: [u8; MOSI_SIZE], model: Model) -> MosiFrame {
         MosiFrame::new(raw, model)
+    }
+
+    fn encoded(profile: &LedProfile, r: u8, g: u8, b: u8) -> [u8; 3] {
+        led_linear(profile, r, g, b)
+            .unwrap()
+            .map(|v| (v.powf(1.0 / LED_GAMMA) * 255.0).round() as u8)
+    }
+
+    fn neutral([r, g, b]: [u8; 3]) -> bool {
+        r.min(g).min(b) >= 0xf6
+    }
+
+    /// Red and green keep the plain gamma mapping; blue is the azure.
+    #[test]
+    fn the_cdj3000_blue_is_desaturated_and_warm_colours_are_not() {
+        let pad = &cdj3k::SPEC.leds.pad;
+        assert_eq!(encoded(pad, 0xff, 0, 0), [255, 0, 0]);
+        assert_eq!(encoded(pad, 0, 0xff, 0), [0, 255, 0]);
+        assert_eq!(encoded(pad, 0xff, 0x2c, 0)[2], 0);
+        assert_eq!(encoded(pad, 0, 0, 0xff), [0x3e, 0x7a, 0xff]);
+        assert!(led_linear(pad, 0, 0, 0).is_none());
+    }
+
+    /// Each deck's white is neutral on its part, and fully driven.
+    #[test]
+    fn each_decks_white_is_neutral() {
+        let k = &cdj3k::SPEC.leds;
+        let x = &cdj3kx::SPEC.leds;
+        for (profile, raw) in [
+            (&k.pad, [0x44, 0x78, 0x7f]),
+            (&k.pad, [0x88, 0xf0, 0xff]),
+            (&x.slot, [0xcd, 0xa5, 0x8c]),
+            (&x.ring, [0x4a, 0x57, 0x39]),
+            (&x.play_rim, [0xb9, 0x7f, 0x49]),
+        ] {
+            let out = encoded(profile, raw[0], raw[1], raw[2]);
+            assert!(neutral(out), "{raw:x?} -> {out:x?}");
+        }
+        assert_eq!(led_drive_factor(0x44, 0x78, 0x7f), Some(1.0));
+        let dim = led_drive_factor(0x0a, 0x0f, 0x0f).unwrap();
+        assert!((0.5..0.8).contains(&dim), "dim white drive {dim}");
+    }
+
+    /// The CDJ-3000X's aqua renders cyan, not green, on its slot and ring.
+    #[test]
+    fn the_cdj3000x_aqua_is_not_green() {
+        let x = &cdj3kx::SPEC.leds;
+        for (profile, raw) in [(&x.slot, [0x00, 0xff, 0xa7]), (&x.ring, [0x00, 0xff, 0x3f])] {
+            let [_, g, b] = encoded(profile, raw[0], raw[1], raw[2]);
+            assert!(b as f32 >= 0.75 * g as f32, "{raw:x?} -> g {g:x} b {b:x}");
+        }
+        assert_eq!(encoded(&x.slot, 0, 0xff, 0), [0, 255, 0]);
     }
 
     /// Every lamp read has to go through the map: reading a CDJ-3000 offset

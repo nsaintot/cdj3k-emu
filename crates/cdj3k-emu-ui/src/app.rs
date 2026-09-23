@@ -193,6 +193,8 @@ pub struct CdjApp {
     bloom: Option<bloom::SharedBloom>,
     /// LCD screen rects captured each frame (egui coords, Y-down) - fed to the bloom exclusion mask.
     bloom_excludes: Vec<egui::Rect>,
+    /// Controls drawn over the screens in [`Self::bloom_excludes`].
+    bloom_keeps: Vec<bloom::BloomKeep>,
     /// When this panel came up, for the startup-only service-combo hold.
     started_at: std::time::Instant,
 
@@ -341,6 +343,7 @@ impl CdjApp {
             led_state: LedState::default(),
             bloom: None,
             bloom_excludes: Vec::new(),
+            bloom_keeps: Vec::new(),
             started_at: std::time::Instant::now(),
             status: "Starting...".to_owned(),
             jog_static_cache: None,
@@ -587,6 +590,7 @@ impl CdjApp {
         // egui is immediate-mode: shapes must be re-submitted each update to
         // stay visible. The shape caches make this cheap when nothing changes.
         self.bloom_excludes.clear();
+        self.bloom_keeps.clear();
         {
             puffin::profile_scope!("draw_chrome");
             egui::CentralPanel::default()
@@ -796,7 +800,10 @@ impl CdjApp {
         let Some(bloom_arc) = self.bloom.clone() else {
             return;
         };
-        let excludes = self.bloom_excludes.clone();
+        let mask = bloom::BloomMask {
+            excludes: self.bloom_excludes.clone(),
+            keeps: self.bloom_keeps.clone(),
+        };
         let scene_key = self.bloom_scene_key();
         let cb = eframe::egui_glow::CallbackFn::new(move |info, painter| {
             puffin::profile_scope!("bloom_gl");
@@ -812,7 +819,7 @@ impl CdjApp {
                 w as i32,
                 h as i32,
                 info.pixels_per_point,
-                &excludes,
+                &mask,
                 scene_key,
             );
         });

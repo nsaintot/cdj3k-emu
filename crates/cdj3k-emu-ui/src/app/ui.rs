@@ -57,9 +57,10 @@ pub(super) fn panel_bg() -> Color32 {
 pub(super) use draw_primitives::{
     collect_arc_quad_button, collect_back_double_circle_border, collect_bordered_rect_section,
     collect_button, collect_circle_button, collect_computer_glyph, draw_bordered_rect_section,
-    draw_rotary_control, draw_rotary_control_collect, paint_double_circle_ring,
+    draw_rotary_control, draw_rotary_control_collect, draw_usb_tray, paint_double_circle_ring,
     paint_double_circle_ring_collect, ArcDecorSpec, ArcNotchSpec, ButtonType, DoubleBorderSpec,
     RotaryControlSpec, RotaryGearSpec, RotaryIndicatorSpec, RotaryTickSpec, StrokeSpec,
+    UsbTraySpec,
 };
 
 pub(super) struct UiScale {

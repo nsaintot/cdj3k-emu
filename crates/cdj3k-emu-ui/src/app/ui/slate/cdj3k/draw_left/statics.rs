@@ -5,8 +5,9 @@ use egui::{FontId, Pos2, Rect, Shape, Stroke, Vec2};
 
 use super::super::draw_cache::ShapeList;
 use super::super::{
-    collect_back_double_circle_border, collect_bordered_rect_section, DoubleBorderSpec, StrokeSpec,
-    UiScale, COL_BLACK, COL_BTN_OUTLINED_WHITE, COL_BTN_TEXT, COL_DARK, COL_SILVER,
+    collect_back_double_circle_border, collect_bordered_rect_section, collect_computer_glyph,
+    DoubleBorderSpec, StrokeSpec, UiScale, COL_BLACK, COL_BTN_OUTLINED_WHITE, COL_BTN_TEXT,
+    COL_DARK, COL_SILVER,
 };
 use super::*;
 use crate::app::ui::draw_direction::DIRECTION_BORDER_ROUNDING;
@@ -30,46 +31,16 @@ pub(super) fn collect_left_statics(list: &mut ShapeList, ctx: &egui::Context, la
         );
         list.rect_filled(led_rect, 0.0, COL_BTN_TEXT);
 
-        // Screen rectangle: black fill, white stroke.
-        let screen_cy_ref = col.top() + col.height() * PERF_V_USB_STOP_ICON_SCREEN;
-        let screen_rect = Rect::from_center_size(
-            layout.sp(cx_ref, screen_cy_ref),
-            Vec2::new(
-                layout.sc(PERF_USB_STOP_SCREEN_W),
-                layout.sc(PERF_USB_STOP_SCREEN_H),
+        collect_computer_glyph(
+            list,
+            layout.sp(
+                cx_ref,
+                col.top() + col.height() * PERF_V_USB_STOP_ICON_SCREEN,
             ),
+            layout.sc(PERF_USB_STOP_ICON_W),
+            COL_BTN_TEXT,
+            true,
         );
-        list.rect_filled(screen_rect, 0.0, COL_BLACK);
-        list.rect_stroke(
-            screen_rect,
-            0.0,
-            Stroke::new(layout.sc(PERF_USB_STOP_SCREEN_STROKE), COL_BTN_TEXT),
-        );
-
-        // Trapezoid base with small notch on the bottom center (keyboard + pad).
-        let base_cy_ref = col.top() + col.height() * PERF_V_USB_STOP_ICON_BASE;
-        let base_top_y = base_cy_ref - PERF_USB_STOP_BASE_H * 0.5;
-        let base_bot_y = base_cy_ref + PERF_USB_STOP_BASE_H * 0.5;
-        let top_hw = PERF_USB_STOP_BASE_TOP_W * 0.5;
-        let bot_hw = PERF_USB_STOP_BASE_BOT_W * 0.5;
-        let notch_hw = PERF_USB_STOP_BASE_NOTCH_W * 0.5;
-        let notch_dy = PERF_USB_STOP_BASE_NOTCH_H;
-
-        // Trapezoid (convex) - wider at the bottom, like a keyboard.
-        let trap = vec![
-            layout.sp(cx_ref - top_hw, base_top_y),
-            layout.sp(cx_ref + top_hw, base_top_y),
-            layout.sp(cx_ref + bot_hw, base_bot_y),
-            layout.sp(cx_ref - bot_hw, base_bot_y),
-        ];
-        list.add(Shape::convex_polygon(trap, COL_BTN_TEXT, Stroke::NONE));
-
-        // Notch tab inset into the trapezoid's bottom-center (touchpad).
-        let notch_rect = Rect::from_min_max(
-            layout.sp(cx_ref - notch_hw, base_bot_y - notch_dy),
-            layout.sp(cx_ref + notch_hw, base_bot_y),
-        );
-        list.rect_filled(notch_rect, 0.0, COL_DARK);
 
         // "USB STOP" label (two lines).
         list.text(
@@ -167,6 +138,95 @@ pub(super) fn collect_left_statics(list: &mut ShapeList, ctx: &egui::Context, la
             Vec2::new(layout.sc(sq), layout.sc(sq)),
         );
         list.rect_filled(sq_rect, 0.0, COL_BTN_TEXT);
+    }
+
+    // ── USB rating under the casing: "5V <dc> 1A" ───────────────────────────
+    // The DC symbol is drawn rather than typed: the UI font has no U+2393.
+    {
+        let col = PERF_TRANSPORT_COL_REF;
+        let cx_ref = col.left() + col.width() * PERF_U_USB_RATING;
+        let cy_ref = col.top() + col.height() * PERF_V_USB_RATING;
+        let font = FontId::proportional(layout.sc(PERF_USB_RATING_FONT_SIZE));
+        list.text(
+            ctx,
+            layout.sp(cx_ref - PERF_USB_DC_GAP, cy_ref),
+            Align2::RIGHT_CENTER,
+            "5V",
+            font.clone(),
+            COL_BTN_TEXT,
+        );
+        list.text(
+            ctx,
+            layout.sp(cx_ref + PERF_USB_DC_GAP, cy_ref),
+            Align2::LEFT_CENTER,
+            "1A",
+            font,
+            COL_BTN_TEXT,
+        );
+        let half = PERF_USB_DC_W * 0.5;
+        let stroke = Stroke::new(layout.sc(PERF_USB_DC_STROKE), COL_BTN_TEXT);
+        // Solid bar over a broken one - the IEC direct-current mark.
+        list.line_segment(
+            [
+                layout.sp(cx_ref - half, cy_ref - PERF_USB_DC_SPLIT),
+                layout.sp(cx_ref + half, cy_ref - PERF_USB_DC_SPLIT),
+            ],
+            stroke,
+        );
+        let seg = PERF_USB_DC_W / 5.0;
+        for k in 0..3 {
+            let x0 = cx_ref - half + (k as f32) * seg * 2.0;
+            list.line_segment(
+                [
+                    layout.sp(x0, cy_ref + PERF_USB_DC_SPLIT),
+                    layout.sp(x0 + seg, cy_ref + PERF_USB_DC_SPLIT),
+                ],
+                stroke,
+            );
+        }
+    }
+
+    // ── SD legend under its casing: card glyph, then "SD" ───────────────────
+    {
+        let col = PERF_TRANSPORT_COL_REF;
+        let cy_ref = col.top() + col.height() * PERF_V_SD_LEGEND;
+        let gx = col.left() + col.width() * PERF_U_SD_GLYPH;
+        let (hw, hh) = (PERF_SD_GLYPH_W * 0.5, PERF_SD_GLYPH_H * 0.5);
+        let (l, r, t, b) = (gx - hw, gx + hw, cy_ref - hh, cy_ref + hh);
+        let notch = PERF_SD_GLYPH_W * PERF_SD_GLYPH_NOTCH_FRAC;
+        // Card outline with its top-right corner clipped.
+        list.add(Shape::closed_line(
+            vec![
+                layout.sp(l, t),
+                layout.sp(r - notch, t),
+                layout.sp(r, t + notch),
+                layout.sp(r, b),
+                layout.sp(l, b),
+            ],
+            Stroke::new(layout.sc(PERF_SD_GLYPH_STROKE), COL_BTN_TEXT),
+        ));
+        // Insertion arrow in the card's upper half.
+        let tri_w = PERF_SD_GLYPH_W * 0.36;
+        let tri_top = t + PERF_SD_GLYPH_H * 0.16;
+        let tri_bot = t + PERF_SD_GLYPH_H * 0.42;
+        let tri_cx = gx - PERF_SD_GLYPH_W * 0.04;
+        list.add(Shape::convex_polygon(
+            vec![
+                layout.sp(tri_cx, tri_top),
+                layout.sp(tri_cx + tri_w * 0.5, tri_bot),
+                layout.sp(tri_cx - tri_w * 0.5, tri_bot),
+            ],
+            COL_BTN_TEXT,
+            Stroke::NONE,
+        ));
+        list.text(
+            ctx,
+            layout.sp(col.left() + col.width() * PERF_U_SD_LABEL, cy_ref),
+            Align2::LEFT_CENTER,
+            "SD",
+            FontId::proportional(layout.sc(PERF_SD_LABEL_FONT_SIZE)),
+            COL_BTN_TEXT,
+        );
     }
 
     list.text(

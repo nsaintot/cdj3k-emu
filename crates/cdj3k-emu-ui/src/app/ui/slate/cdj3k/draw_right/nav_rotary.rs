@@ -21,6 +21,9 @@ use crate::app::ui::draw_vinyl_speed::{
 // ── Navigation rotary (owned by this module) ─────────────────────────────────
 /// Vertical position of the nav rotary center within MODES_COL_REF (0=top,1=bottom).
 pub(super) const NAV_CENTER_V: f32 = layout::NAV_POD_V;
+/// Single-colour LED: the encoder bit only switches it.
+const NAV_ENCODER_GLOW_COL: Color32 = Color32::from_rgb(182, 220, 220);
+
 /// Horizontal position of the nav rotary center within MODES_COL_REF.
 pub(super) const NAV_CENTER_U: f32 = layout::NAV_POD_U;
 /// Scale factor relative to VINYL_SPEED_SIZE_SCALE (×1.2 as requested).
@@ -143,6 +146,16 @@ pub(super) fn draw_nav_rotary(
     let bezel_inner_r = r_outer + s(NAV_BEZEL_INNER_GAP_REF);
     let bezel_outer_r = bezel_inner_r + s(NAV_BEZEL_WIDTH_REF);
     let btn_outer_r = s(NAV_BTN_OUTER_R_REF);
+    // The pod (bezel and arc buttons) covers the extended screen: keep its bloom.
+    let pod_edge = layout
+        .sc(NAV_BTN_BORDER_INNER_W_REF + NAV_BTN_BORDER_GAP_REF * 2.0 + NAV_BTN_BORDER_OUTER_W_REF);
+    app.bloom_keeps.push(crate::app::bloom::BloomKeep {
+        centre: center,
+        core_r: bezel_outer_r + pod_edge,
+        outer_r: btn_outer_r + pod_edge,
+        half_w: 0.0,
+        tan_a: NAV_BTN_OUTER_ANGLE_RAD.tan(),
+    });
 
     // ── 1. Arc buttons: TOP pair + BOTTOM pair, nothing on the sides ─────
     // Each button spans NAV_BTN_OUTER_ANGLE_RAD from 12 o'clock (top pair)
@@ -285,10 +298,7 @@ pub(super) fn draw_nav_rotary(
     {
         let encoder_on = app.mosi().led_bit(mosi_frame::LED_ENCODER);
         if encoder_on {
-            // Same pipeline as on-air RGB: feed raw PWM bytes through led_color()
-            // for gamma-expand + normalize-to-LED_PEAK on the dominant channel.
-            let glow_col =
-                mosi_frame::led_color(0x0a, 0x0f, 0x0f).unwrap_or(Color32::from_rgb(200, 220, 220));
+            let glow_col = NAV_ENCODER_GLOW_COL;
             let main_w = layout.sc(NAV_ENCODER_MAIN_W_REF);
             let max_expand = layout.sc(NAV_ENCODER_GLOW_SPREAD_REF);
             // Outward halo layers: fatter stroke + lower alpha, outermost first.

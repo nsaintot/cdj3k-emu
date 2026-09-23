@@ -6,6 +6,7 @@
 //! match arm, because none of them match on the model at all.
 
 use crate::frame::{MisoMap, MosiMap};
+use crate::mosi_frame::LedProfiles;
 
 /// Span of a touch coordinate in the CDJ-3000's sub-CPU frame.
 pub const TOUCH_FRAME_RANGE: f32 = 1000.0;
@@ -52,6 +53,8 @@ pub struct ModelSpec {
     pub firmware_file_names: &'static [&'static str],
     pub miso: MisoMap,
     pub mosi: MosiMap,
+    /// How each of the player's LED parts shows a colour.
+    pub leds: LedProfiles,
 }
 
 impl ModelSpec {

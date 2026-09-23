@@ -8,7 +8,8 @@
 
 `cdj3k_emu_panel::Model` names a player; its `ModelSpec` (`cdj3k.rs`,
 `cdj3kx.rs`) carries everything that differs: framebuffer size, touch space,
-the U-Boot `model` variable, the `.UPD` file names and the MISO/MOSI maps. Consumers read the spec rather than match
+the U-Boot `model` variable, the `.UPD` file names, the MISO/MOSI maps and
+the LED profiles. Consumers read the spec rather than match
 on the model; the only matches are `Model::spec`, the slate lookup
 (`slate::for_model`) and the panel window's autosave name. Adding a player is a
 spec, a `Model` variant and a slate.

@@ -15,36 +15,40 @@ use crate::app::ui::draw_direction::DIRECTION_BORDER_ROUNDING;
 pub(super) fn collect_left_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     use egui::Align2;
 
-    // ── USB 1 slot labels: name and rating above the casing, STOP below ────
-    // The X has no trident logo here; the slot reads as a vertical stack with
-    // the STOP button at its foot, and the host-link glyph beside the legend.
-    {
+    // ── USB slot labels: name and rating above the casing, STOP below ──────
+    // The CDJ-3000X has no trident logo here; each slot reads as a vertical stack with
+    // the STOP button at its foot. The host-link glyph sits beside USB 1's legend.
+    for slot in [&USB_1, &USB_2] {
         let col = PERF_TRANSPORT_COL_REF;
         let cx_ref = col.left() + col.width() * PERF_U_USB_MOUNT;
+        let top = col.top() + slot.off_y;
 
         list.text(
             ctx,
-            layout.sp(cx_ref, col.top() + col.height() * PERF_V_USB_NAME),
+            layout.sp(cx_ref, top + col.height() * PERF_V_USB_NAME),
             Align2::CENTER_CENTER,
-            "USB 1",
+            slot.name,
             FontId::proportional(layout.sc(PERF_USB_NAME_FONT_SIZE)),
             COL_BTN_TEXT,
         );
-        collect_computer_glyph(
-            list,
-            layout.sp_in_rect(col, PERF_U_USB_LINK_GLYPH, PERF_V_USB_LINK_GLYPH),
-            layout.sc(PERF_USB_LINK_GLYPH_W),
-            COL_BTN_TEXT,
-            true,
-        );
+        if !slot.type_c {
+            collect_computer_glyph(
+                list,
+                layout.sp_in_rect(col, PERF_U_USB_LINK_GLYPH, PERF_V_USB_LINK_GLYPH),
+                layout.sc(PERF_USB_LINK_GLYPH_W),
+                COL_BTN_TEXT,
+                true,
+            );
+        }
         // "5 V <dc> 1 A". The DC symbol is drawn rather than typed: the UI font
         // has no U+2393 and renders it as a missing-glyph box.
         {
-            let rating_cy = col.top() + col.height() * PERF_V_USB_RATING;
+            let rating_cy = top + col.height() * PERF_V_USB_RATING;
+            let dc_x = cx_ref + slot.dc_off_x;
             let font = FontId::proportional(layout.sc(PERF_USB_RATING_FONT_SIZE));
             list.text(
                 ctx,
-                layout.sp(cx_ref - PERF_USB_DC_GAP, rating_cy),
+                layout.sp(dc_x - PERF_USB_DC_GAP, rating_cy),
                 Align2::RIGHT_CENTER,
                 "5 V",
                 font.clone(),
@@ -52,9 +56,9 @@ pub(super) fn collect_left_statics(list: &mut ShapeList, ctx: &egui::Context, la
             );
             list.text(
                 ctx,
-                layout.sp(cx_ref + PERF_USB_DC_GAP, rating_cy),
+                layout.sp(dc_x + PERF_USB_DC_GAP, rating_cy),
                 Align2::LEFT_CENTER,
-                "1 A",
+                slot.amps,
                 font,
                 COL_BTN_TEXT,
             );
@@ -63,14 +67,14 @@ pub(super) fn collect_left_statics(list: &mut ShapeList, ctx: &egui::Context, la
             // Solid bar over a broken one - the IEC direct-current mark.
             list.line_segment(
                 [
-                    layout.sp(cx_ref - half, rating_cy - PERF_USB_DC_SPLIT),
-                    layout.sp(cx_ref + half, rating_cy - PERF_USB_DC_SPLIT),
+                    layout.sp(dc_x - half, rating_cy - PERF_USB_DC_SPLIT),
+                    layout.sp(dc_x + half, rating_cy - PERF_USB_DC_SPLIT),
                 ],
                 stroke,
             );
             let seg = PERF_USB_DC_W / 5.0;
             for k in 0..3 {
-                let x0 = cx_ref - half + (k as f32) * seg * 2.0;
+                let x0 = dc_x - half + (k as f32) * seg * 2.0;
                 list.line_segment(
                     [
                         layout.sp(x0, rating_cy + PERF_USB_DC_SPLIT),
@@ -82,7 +86,7 @@ pub(super) fn collect_left_statics(list: &mut ShapeList, ctx: &egui::Context, la
         }
 
         // Notch tab, then "STOP", under the light band.
-        let stop_cy_ref = col.top() + col.height() * PERF_V_USB_STOP_LABEL;
+        let stop_cy_ref = top + col.height() * PERF_V_USB_STOP_LABEL;
         let tab_rect = Rect::from_center_size(
             layout.sp(cx_ref - PERF_USB_STOP_TAB_OFF_X, stop_cy_ref),
             Vec2::new(layout.sc(LEGEND_TAB_W), layout.sc(LEGEND_TAB_H)),

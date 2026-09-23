@@ -269,7 +269,7 @@ pub(super) fn draw_top_section(
     // --- ON AIR LED bar - inverted trapezoid above the nav button row ---
     {
         let (r, g, b) = app.mosi().on_air_rgb().unwrap_or_default();
-        if let Some(bar_color) = mosi_frame::led_color(r, g, b) {
+        if let Some(bar_color) = app.mosi().led_color(mosi_frame::LedPart::OnAir, r, g, b) {
             let panel_cx = (MENUBAR_COL_REF.left() + MENUBAR_COL_REF.right()) * 0.5;
             let bar_top_y = MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * ON_AIR_BAR_V_TOP;
             let bar_bot_y = MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * ON_AIR_BAR_V_BOT;
@@ -441,7 +441,7 @@ pub(super) fn draw_top_section(
                     i.pointer.button_down(egui::PointerButton::Secondary)
                         && i.pointer
                             .hover_pos()
-                            .map_or(false, |p| display_rect.contains(p))
+                            .is_some_and(|p| display_rect.contains(p))
                 }),
                 interact_pos: lcd_resp.interact_pointer_pos(),
                 display_rect,
@@ -498,7 +498,10 @@ pub(super) fn draw_top_section(
             let btn_left = first_left + i as f32 * (btn_w + gap);
             let rect = layout.ar2rect(btn_left, btn_top, HOT_CUE_BTN_ASPECT, btn_w);
             let (r, g, b) = app.mosi().pad_rgb(i);
-            let accent = mosi_frame::led_color(r, g, b).unwrap_or(COL_SILVER);
+            let accent = app
+                .mosi()
+                .led_color(mosi_frame::LedPart::Pad, r, g, b)
+                .unwrap_or(COL_SILVER);
             app.btn(
                 ui,
                 layout,
@@ -529,10 +532,7 @@ pub(super) fn draw_top_section(
             0.735 + CUE_CONTROL_CALL_BTNS_GAP,
             CUE_CONTROL_V,
         );
-        let call_led = {
-            let f = &app.led_state.frame;
-            f[mosi_frame::LED_TRACK_SEARCH.0] & mosi_frame::LED_TRACK_SEARCH.1 != 0
-        };
+        let call_led = app.mosi().led_bit(mosi_frame::LED_TRACK_SEARCH);
         let call_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
                 width: layout.sc(CUE_CONTROL_CALL_BTNS_INNER_STROKE),

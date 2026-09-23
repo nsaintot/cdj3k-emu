@@ -9,6 +9,7 @@
 
 use crate::button::Btn;
 use crate::frame::{JogBrightness, MisoMap, MosiMap, RgbLamps};
+use crate::mosi_frame::{LedProfile, LedProfiles, PRIMARY_DIES, TEAL_GREEN_DIES};
 use crate::spec::{ModelSpec, TouchSpace};
 
 /// Offset of the CDJ-3000's MISO frame inside this one.
@@ -75,4 +76,32 @@ pub const SPEC: ModelSpec = ModelSpec {
         // out to a byte of its own.
         jog: JogBrightness::Level { byte: 2 },
     },
+    // Gamma and white per part, fitted to the colour settings against the
+    // hues the CDJ-3000X's screen shows.
+    leds: LedProfiles {
+        pad: CDJ3000X_SLOT,
+        slot: CDJ3000X_SLOT,
+        ring: LedProfile {
+            dies: PRIMARY_DIES,
+            gamma: 0.523,
+            white: [0x4a, 0x57, 0x39],
+            balance_whites_only: false,
+        },
+        on_air: CDJ3000X_SLOT,
+        play_rim: LedProfile {
+            dies: TEAL_GREEN_DIES,
+            gamma: 0.805,
+            white: [0xb9, 0x7f, 0x49],
+            balance_whites_only: false,
+        },
+        cue_rim: CDJ3000X_SLOT,
+    },
+};
+
+/// The media slots' LEDs, also used for the pads and CUE rim (unmeasured).
+const CDJ3000X_SLOT: LedProfile = LedProfile {
+    dies: PRIMARY_DIES,
+    gamma: 0.805,
+    white: [0xcd, 0xa5, 0x8c],
+    balance_whites_only: false,
 };

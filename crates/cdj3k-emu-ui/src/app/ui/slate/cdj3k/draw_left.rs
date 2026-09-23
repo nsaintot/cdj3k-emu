@@ -2,12 +2,12 @@ use crate::app::ui::draw_direction::{self, DirectionPlacement};
 use crate::app::ui::{DoubleBorderSpec, StrokeSpec, COL_WHITE, COL_YELLOW};
 use cdj3k_emu_panel::mosi_frame;
 use cdj3k_emu_panel::Btn;
-use egui::{FontFamily, Pos2, Rect, Stroke, Vec2};
+use egui::{Color32, FontFamily, Pos2, Rect, Stroke, Vec2};
 
 use super::{
     draw_bordered_rect_section, layout, ButtonType, CdjApp, UiScale, COL_AMBER, COL_BLACK, COL_BTN,
-    COL_BTN_CUE, COL_BTN_OUTLINED_YELLOW, COL_BTN_PLAY, COL_BTN_TEXT, COL_DARK, COL_DARK_RED,
-    COL_RED, COL_SILVER,
+    COL_BTN_CUE, COL_BTN_HOT, COL_BTN_OUTLINED_YELLOW, COL_BTN_PLAY, COL_BTN_TEXT, COL_DARK,
+    COL_DARK_RED, COL_RED, COL_SILVER,
 };
 
 mod statics;
@@ -40,7 +40,6 @@ pub(super) const PERF_U_USB_STOP: f32 = 0.695;
 /// Vertical fractions within PERF_TRANSPORT_COL_REF.
 pub(super) const PERF_V_USB_STOP_PRE_LABEL: f32 = 0.03;
 pub(super) const PERF_V_USB_STOP_ICON_SCREEN: f32 = 0.017;
-pub(super) const PERF_V_USB_STOP_ICON_BASE: f32 = 0.022;
 pub(super) const PERF_V_USB_STOP_LABEL: f32 = 0.042;
 pub(super) const PERF_V_USB_STOP_BTN: f32 = 0.070;
 
@@ -48,17 +47,8 @@ pub(super) const PERF_V_USB_STOP_BTN: f32 = 0.070;
 pub(super) const PERF_USB_STOP_LED_W: f32 = 28.0;
 pub(super) const PERF_USB_STOP_LED_H: f32 = 7.0;
 
-/// Screen rectangle (laptop display): black fill, white stroke.
-pub(super) const PERF_USB_STOP_SCREEN_W: f32 = 37.0;
-pub(super) const PERF_USB_STOP_SCREEN_H: f32 = 20.0;
-pub(super) const PERF_USB_STOP_SCREEN_STROKE: f32 = 5.0;
-
-/// Trapezoid base (keyboard) sitting just below the screen, with a small notch.
-pub(super) const PERF_USB_STOP_BASE_TOP_W: f32 = 45.0;
-pub(super) const PERF_USB_STOP_BASE_BOT_W: f32 = 70.0;
-pub(super) const PERF_USB_STOP_BASE_H: f32 = 10.0;
-pub(super) const PERF_USB_STOP_BASE_NOTCH_W: f32 = 10.0;
-pub(super) const PERF_USB_STOP_BASE_NOTCH_H: f32 = 5.0;
+/// Laptop glyph, overall width at the stand's foot.
+pub(super) const PERF_USB_STOP_ICON_W: f32 = 70.0;
 
 pub(super) const PERF_USB_STOP_LABEL_FONT_SIZE: f32 = 34.0;
 
@@ -69,10 +59,10 @@ pub(super) const PERF_USB_STOP_BTN_OUTER_STROKE: f32 = 8.0;
 // ── USB sign + LED cavity (left of the USB STOP button) ──────────────────────
 /// Center of the USB sign (logo), in fractions of PERF_TRANSPORT_COL_REF.
 pub(super) const PERF_U_USB_SIGN: f32 = 0.33;
-pub(super) const PERF_V_USB_SIGN: f32 = 0.077;
+pub(super) const PERF_V_USB_SIGN: f32 = 0.0795;
 /// Center of the USB MOUNT glow rectangle.
-pub(super) const PERF_U_USB_MOUNT: f32 = 0.315;
-pub(super) const PERF_V_USB_MOUNT: f32 = 0.036;
+pub(super) const PERF_U_USB_MOUNT: f32 = 0.322;
+pub(super) const PERF_V_USB_MOUNT: f32 = 0.040;
 
 /// USB trident logo dimensions (ref units).
 pub(super) const PERF_USB_SIGN_W: f32 = 70.0;
@@ -95,25 +85,88 @@ pub(super) const PERF_USB_SIGN_CIRCLE_R: f32 = 5.0;
 
 /// USB MOUNT: outer glow + [`mount_rect`] = **casing** (bezel). Inside that, a nested
 /// double-bordered rect = **receptacle opening**; inside that, the **tongue** bar.
-pub(super) const PERF_USB_MOUNT_W: f32 = 180.0;
-pub(super) const PERF_USB_MOUNT_H: f32 = 170.0;
-pub(super) const PERF_USB_MOUNT_ROUNDING: f32 = 2.0;
+pub(super) const PERF_USB_MOUNT_W: f32 = 196.0;
+pub(super) const PERF_USB_MOUNT_H: f32 = 180.0;
+pub(super) const PERF_USB_MOUNT_ROUNDING: f32 = 8.0;
 pub(super) const PERF_USB_MOUNT_GLOW_SPREAD: f32 = 50.0;
+/// Peak alpha of the halo outside the casing, before the lamp's drive level.
+pub(super) const PERF_USB_MOUNT_GLOW_ALPHA: f32 = 0.04;
+/// Translucent housing lit by an LED at the top and bottom wall centres: the
+/// share of their light on the wall and floor, and the exposure of the
+/// plastic and of the LED cores (see `led_color_hot`).
+pub(super) const PERF_USB_HOUSING_WALL_LIT: f32 = 0.72;
+pub(super) const PERF_USB_HOUSING_FLOOR_LIT: f32 = 0.65;
+pub(super) const PERF_USB_HOUSING_EXPOSURE: f32 = 1.4;
+pub(super) const PERF_USB_LED_EXPOSURE: f32 = 2.5;
+/// Each LED's diffused spot: half-width and half-height of its falloff.
+pub(super) const PERF_USB_LED_SPOT_RX: f32 = 135.0;
+pub(super) const PERF_USB_LED_SPOT_RY: f32 = 105.0;
 pub(super) const PERF_USB_MOUNT_BORDER_INNER_STROKE: f32 = 12.0;
 pub(super) const PERF_USB_MOUNT_BORDER_OUTER_STROKE: f32 = 4.0;
 pub(super) const PERF_USB_MOUNT_BORDER_GAP: f32 = 4.0;
-/// Receptacle frame inside casing (ref units), centered in the mount cavity.
-pub(super) const PERF_USB_CONNECTOR_W: f32 = 124.0;
-pub(super) const PERF_USB_CONNECTOR_H: f32 = 50.0;
+/// Open tray folded against the top wall; offsets from the casing centre.
+pub(super) const PERF_USB_FLAP_W: f32 = 178.0;
+pub(super) const PERF_USB_FLAP_TOP_DY: f32 = -56.0;
+pub(super) const PERF_USB_FLAP_BOT_DY: f32 = -44.0;
+pub(super) const PERF_USB_FLAP_STROKE: f32 = 2.0;
+/// Handle dome: chord along the flap's top edge, and its height above it.
+pub(super) const PERF_USB_DOME_CHORD: f32 = 81.0;
+pub(super) const PERF_USB_DOME_H: f32 = 12.0;
+/// Receptacle frame inside casing (ref units), below the tray.
+pub(super) const PERF_USB_CONNECTOR_W: f32 = 134.0;
+pub(super) const PERF_USB_CONNECTOR_H: f32 = 56.0;
+pub(super) const PERF_USB_CONNECTOR_V_OFF: f32 = 4.0;
 pub(super) const PERF_USB_CONNECTOR_ROUNDING: f32 = 2.0;
 pub(super) const PERF_USB_CONNECTOR_INNER_STROKE: f32 = 2.5;
 pub(super) const PERF_USB_CONNECTOR_OUTER_STROKE: f32 = 5.0;
 pub(super) const PERF_USB_CONNECTOR_BORDER_GAP: f32 = 3.0;
 /// Tongue inside receptacle opening (ref units); width cap, height, top inset from cavity.
 pub(super) const PERF_USB_MOUNT_TONGUE_W_FRAC: f32 = 0.88;
-pub(super) const PERF_USB_MOUNT_TONGUE_H: f32 = 10.0;
-pub(super) const PERF_USB_MOUNT_TONGUE_TOP_PAD: f32 = 6.0;
+pub(super) const PERF_USB_MOUNT_TONGUE_H: f32 = 21.0;
+pub(super) const PERF_USB_MOUNT_TONGUE_TOP_PAD: f32 = 4.0;
 pub(super) const PERF_USB_MOUNT_TONGUE_ROUNDING: f32 = 2.0;
+
+/// "5V <dc> 1A" under the USB casing: centre, font, and the drawn DC mark
+/// (half-gap to the text, bar width, stroke, half-separation of the bars).
+pub(super) const PERF_U_USB_RATING: f32 = 0.323;
+pub(super) const PERF_V_USB_RATING: f32 = 0.0698;
+pub(super) const PERF_USB_RATING_FONT_SIZE: f32 = 28.0;
+pub(super) const PERF_USB_DC_GAP: f32 = 22.0;
+pub(super) const PERF_USB_DC_W: f32 = 30.0;
+pub(super) const PERF_USB_DC_STROKE: f32 = 3.0;
+pub(super) const PERF_USB_DC_SPLIT: f32 = 4.0;
+
+// ── SD slot - under the USB casing. Decorative: drawn with its cover closed.
+/// Centre of the SD casing.
+pub(super) const PERF_U_SD: f32 = 0.464;
+pub(super) const PERF_V_SD: f32 = 0.130;
+/// Casing silhouette; top corners barely radiused, bottom ones well rounded.
+pub(super) const PERF_SD_W: f32 = 367.0;
+pub(super) const PERF_SD_H: f32 = 223.0;
+pub(super) const PERF_SD_TOP_R: f32 = 6.0;
+pub(super) const PERF_SD_BOTTOM_R: f32 = 22.0;
+/// Casing, outside in: a grey rim, the bezel, then a black wall at this inset.
+pub(super) const PERF_SD_RIM_STROKE: f32 = 5.0;
+pub(super) const PERF_SD_WALL_INSET: f32 = 13.0;
+pub(super) const PERF_SD_WALL_STROKE: f32 = 5.0;
+/// Cover: fills the cavity down to the hinge, with rounded lower corners.
+pub(super) const PERF_SD_COVER_PAD: f32 = 3.0;
+pub(super) const PERF_SD_COVER_BOT_DY: f32 = 51.0;
+pub(super) const PERF_SD_COVER_R: f32 = 16.0;
+/// Light bar below the cover: size and offset from the casing centre.
+pub(super) const PERF_SD_LED_W: f32 = 231.5;
+pub(super) const PERF_SD_LED_H: f32 = 22.0;
+pub(super) const PERF_SD_LED_DY: f32 = 79.0;
+/// "SD" legend under the casing: card glyph and label.
+pub(super) const PERF_U_SD_GLYPH: f32 = 0.405;
+pub(super) const PERF_V_SD_LEGEND: f32 = 0.1682;
+pub(super) const PERF_SD_GLYPH_W: f32 = 46.0;
+pub(super) const PERF_SD_GLYPH_H: f32 = 55.0;
+pub(super) const PERF_SD_GLYPH_STROKE: f32 = 3.5;
+/// Clipped corner of the card, as a fraction of its width.
+pub(super) const PERF_SD_GLYPH_NOTCH_FRAC: f32 = 0.3;
+pub(super) const PERF_U_SD_LABEL: f32 = 0.493;
+pub(super) const PERF_SD_LABEL_FONT_SIZE: f32 = 36.0;
 
 pub(super) const PERF_TIME_MODE_AUTO_CUE_SIZE_R: f32 = 30.0;
 pub(super) const PERF_TIME_MODE_AUTO_CUE_LABEL_FONT_SIZE: f32 = 26.0;
@@ -223,12 +276,6 @@ pub(super) const PERF_PLAY_FONT_SIZE: f32 = 38.0;
 pub(super) const PERF_PLAY_LABEL_FONT_SIZE: f32 = 34.0;
 pub(super) const PERF_PLAY_LABEL_GAP_Y: f32 = 210.0;
 
-/// Collect fully-static elements of the left (transport) section.
-///
-/// Includes: "TIME MODE / AUTO CUE" labels, "BEAT JUMP" label, "TRACK SEARCH" and
-/// "SEARCH" labels, the two back-capsule borders behind those paired circle buttons,
-/// and the "PLAY" sublabel.
-
 pub(super) fn draw_left_section(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -251,7 +298,7 @@ pub(super) fn draw_left_section(
     // ── USB MOUNT glow rectangle (LED-tinted, USB-A cavity graphic) ─────
     {
         let (r, g, b) = app.mosi().slot_2_rgb().unwrap_or_default();
-        let lit = mosi_frame::led_color(r, g, b);
+        let lit = app.mosi().led_color(mosi_frame::LedPart::Slot, r, g, b);
         let usb_drive = mosi_frame::led_drive_factor(r, g, b).unwrap_or(0.0);
 
         let mount_center =
@@ -273,7 +320,7 @@ pub(super) fn draw_left_section(
                 let falloff = t * t;
                 // Each layer extends progressively farther from the rect.
                 let expand = (1.0 - t) * max_expand;
-                let alpha_linear: f32 = falloff * 0.20 * usb_drive;
+                let alpha_linear: f32 = falloff * PERF_USB_MOUNT_GLOW_ALPHA * usb_drive;
                 let alpha = alpha_linear.powf(1.0 / mosi_frame::LED_GAMMA);
                 if alpha < 0.005 {
                     continue;
@@ -284,13 +331,22 @@ pub(super) fn draw_left_section(
             }
         }
 
-        // Body always dark; only the inner border picks up the LED color
-        // when lit (so the stroke "glows" but the rect itself stays dark).
-        let inner_stroke_color = lit.map(|c| c.gamma_multiply(usb_drive)).unwrap_or(COL_DARK);
+        // Translucent housing lit from behind by an LED at the top and bottom
+        // wall centres.
+        let wall = layout.sc(PERF_USB_MOUNT_BORDER_INNER_STROKE) * 0.5;
+        let mosi = app.mosi();
+        let hot_at =
+            |exposure: f32| mosi.led_color_hot(mosi_frame::LedPart::Slot, r, g, b, exposure);
+        let hot = hot_at(PERF_USB_HOUSING_EXPOSURE);
+        let lit_at = |k: f32| {
+            hot.map(|c| mix(COL_DARK, c, k * usb_drive))
+                .unwrap_or(COL_DARK)
+        };
+        let floor = lit_at(PERF_USB_HOUSING_FLOOR_LIT);
         let mount_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
                 width: layout.sc(PERF_USB_MOUNT_BORDER_INNER_STROKE),
-                color: inner_stroke_color,
+                color: lit_at(PERF_USB_HOUSING_WALL_LIT),
             },
             StrokeSpec {
                 width: layout.sc(PERF_USB_MOUNT_BORDER_OUTER_STROKE),
@@ -298,14 +354,43 @@ pub(super) fn draw_left_section(
             },
             layout.sc(PERF_USB_MOUNT_BORDER_GAP),
         );
-        draw_bordered_rect_section(p, mount_rect, Some(rounding), Some(COL_DARK), mount_border);
+        draw_bordered_rect_section(p, mount_rect, Some(rounding), Some(floor), mount_border);
+
+        if let Some(core) = hot_at(PERF_USB_LED_EXPOSURE) {
+            let core = mix(COL_DARK, core, usb_drive);
+            let spot = Vec2::new(
+                layout.sc(PERF_USB_LED_SPOT_RX),
+                layout.sc(PERF_USB_LED_SPOT_RY),
+            );
+            let clip = p.with_clip_rect(mount_rect.intersect(p.clip_rect()));
+            for y in [mount_rect.top() + wall, mount_rect.bottom() - wall] {
+                radial_glow(&clip, Pos2::new(mount_center.x, y), spot, core);
+            }
+        }
+
+        // The open tray, folded up against the top wall.
+        crate::app::ui::draw_usb_tray(
+            p,
+            crate::app::ui::UsbTraySpec {
+                centre_x: mount_center.x,
+                top: mount_center.y + layout.sc(PERF_USB_FLAP_TOP_DY),
+                bottom: mount_center.y + layout.sc(PERF_USB_FLAP_BOT_DY),
+                half_w: layout.sc(PERF_USB_FLAP_W) * 0.5,
+                dome_chord: layout.sc(PERF_USB_DOME_CHORD),
+                dome_h: layout.sc(PERF_USB_DOME_H),
+                stroke: layout.sc(PERF_USB_FLAP_STROKE),
+            },
+        );
 
         // Receptacle opening: its own double border (not the casing border above).
         let connector_size = Vec2::new(
             layout.sc(PERF_USB_CONNECTOR_W),
             layout.sc(PERF_USB_CONNECTOR_H),
         );
-        let connector_rect = Rect::from_center_size(mount_center, connector_size);
+        let connector_rect = Rect::from_center_size(
+            mount_center + Vec2::new(0.0, layout.sc(PERF_USB_CONNECTOR_V_OFF)),
+            connector_size,
+        );
         let connector_r = layout.sc(PERF_USB_CONNECTOR_ROUNDING);
         let connector_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
@@ -354,6 +439,73 @@ pub(super) fn draw_left_section(
             ui.id().with("usb_mount_open"),
             egui::Sense::click(),
         );
+    }
+
+    // ── SD slot: casing, closed cover, light bar ─────────────────────────
+    {
+        let (r, g, b) = app.mosi().slot_1_rgb().unwrap_or_default();
+        let lit = app.mosi().led_color(mosi_frame::LedPart::Slot, r, g, b);
+        let drive = mosi_frame::led_drive_factor(r, g, b).unwrap_or(0.0);
+
+        let centre = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, PERF_U_SD, PERF_V_SD);
+        let outer = Rect::from_center_size(
+            centre,
+            Vec2::new(layout.sc(PERF_SD_W), layout.sc(PERF_SD_H)),
+        );
+        let corners = |inset: f32| egui::Rounding {
+            nw: (layout.sc(PERF_SD_TOP_R) - inset).max(0.0),
+            ne: (layout.sc(PERF_SD_TOP_R) - inset).max(0.0),
+            sw: (layout.sc(PERF_SD_BOTTOM_R) - inset).max(0.0),
+            se: (layout.sc(PERF_SD_BOTTOM_R) - inset).max(0.0),
+        };
+        let rim_w = layout.sc(PERF_SD_RIM_STROKE);
+        p.rect_filled(outer, corners(0.0), COL_DARK);
+        p.rect_stroke(
+            outer.shrink(rim_w * 0.5),
+            corners(rim_w * 0.5),
+            Stroke::new(rim_w, COL_SILVER),
+        );
+
+        let wall_w = layout.sc(PERF_SD_WALL_STROKE);
+        let wall_mid = layout.sc(PERF_SD_WALL_INSET) + wall_w * 0.5;
+        p.rect_stroke(
+            outer.shrink(wall_mid),
+            corners(wall_mid),
+            Stroke::new(wall_w, COL_BLACK),
+        );
+        let cavity_inset = layout.sc(PERF_SD_WALL_INSET) + wall_w;
+        let cavity = outer.shrink(cavity_inset);
+        p.rect_filled(cavity, corners(cavity_inset), COL_BLACK);
+
+        let pad = layout.sc(PERF_SD_COVER_PAD);
+        let cover = Rect::from_min_max(
+            cavity.left_top() + Vec2::splat(pad),
+            Pos2::new(
+                cavity.right() - pad,
+                centre.y + layout.sc(PERF_SD_COVER_BOT_DY),
+            ),
+        );
+        let cover_r = layout.sc(PERF_SD_COVER_R);
+        let cover_round = egui::Rounding {
+            nw: 0.0,
+            ne: 0.0,
+            sw: cover_r,
+            se: cover_r,
+        };
+        p.rect_filled(cover, cover_round, COL_BTN_HOT);
+        p.rect_stroke(
+            cover,
+            cover_round,
+            Stroke::new(layout.sc(PERF_USB_FLAP_STROKE), COL_SILVER),
+        );
+
+        // A diffuser: dim while the slot is idle, the lamp colour when driven.
+        let led = Rect::from_center_size(
+            centre + Vec2::new(0.0, layout.sc(PERF_SD_LED_DY)),
+            Vec2::new(layout.sc(PERF_SD_LED_W), layout.sc(PERF_SD_LED_H)),
+        );
+        let led_col = lit.map(|c| c.gamma_multiply(drive)).unwrap_or(COL_SILVER);
+        p.rect_filled(led, led.height() * 0.5, led_col);
     }
 
     {
@@ -954,4 +1106,48 @@ pub(super) fn draw_left_section(
             Btn::Play,
         );
     }
+}
+
+/// `a` toward `b` by `t` (0..1), per sRGB channel.
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(ch(a.r(), b.r()), ch(a.g(), b.g()), ch(a.b(), b.b()))
+}
+
+/// A soft elliptical spot of `col` at `centre`, opaque there and fading to
+/// nothing at `radii` with a quadratic falloff.
+fn radial_glow(p: &egui::Painter, centre: Pos2, radii: Vec2, col: Color32) {
+    const RINGS: usize = 8;
+    const SEGMENTS: usize = 40;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(centre, col);
+    for ring in 1..=RINGS {
+        let t = ring as f32 / RINGS as f32;
+        let a = (1.0 - t) * (1.0 - t);
+        let c = Color32::from_rgba_premultiplied(
+            (col.r() as f32 * a) as u8,
+            (col.g() as f32 * a) as u8,
+            (col.b() as f32 * a) as u8,
+            (255.0 * a) as u8,
+        );
+        for k in 0..SEGMENTS {
+            let th = k as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            mesh.colored_vertex(
+                centre + Vec2::new(radii.x * t * th.cos(), radii.y * t * th.sin()),
+                c,
+            );
+        }
+    }
+    let at = |ring: usize, k: usize| (1 + (ring - 1) * SEGMENTS + k % SEGMENTS) as u32;
+    for k in 0..SEGMENTS {
+        mesh.add_triangle(0, at(1, k), at(1, k + 1));
+    }
+    for ring in 1..RINGS {
+        for k in 0..SEGMENTS {
+            mesh.add_triangle(at(ring, k), at(ring + 1, k), at(ring + 1, k + 1));
+            mesh.add_triangle(at(ring, k), at(ring + 1, k + 1), at(ring, k + 1));
+        }
+    }
+    p.add(egui::Shape::mesh(mesh));
 }

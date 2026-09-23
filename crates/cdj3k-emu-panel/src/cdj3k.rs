@@ -6,6 +6,7 @@
 use crate::frame::{JogBrightness, MisoMap, MosiMap, RgbLamps};
 use crate::miso_frame::{fields, ROTARY_IDLE};
 use crate::mosi_frame as led;
+use crate::mosi_frame::{LedProfile, LedProfiles, AZURE_BLUE_DIES};
 use crate::spec::{ModelSpec, TouchSpace, TOUCH_FRAME_RANGE};
 
 /// Idle frame payload (bytes 0..62, before the CRC).
@@ -88,4 +89,12 @@ pub const SPEC: ModelSpec = ModelSpec {
             bright: 0x08,
         },
     },
+    // One LED part throughout. Its white `44 78 7f` cuts back the red die,
+    // the strongest.
+    leds: LedProfiles::uniform(LedProfile {
+        dies: AZURE_BLUE_DIES,
+        gamma: 1.0,
+        white: [0x44, 0x78, 0x7f],
+        balance_whites_only: true,
+    }),
 };

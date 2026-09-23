@@ -3,10 +3,12 @@
 // Single PaintCallback at Order::Debug (last GL op of the frame):
 //   1. glBlitFramebuffer: screen → copy_fbo  (GPU blit of current egui frame)
 //   2. Threshold: copy_tex → blur_fbo[0]  (half-res, bright + saturated pixels only,
-//                                           LCD rects masked out)
+//                                           LCD rects masked out, except where a
+//                                           control stands over them)
 //   3. H-blur: blur_fbo[0] → blur_fbo[1]
 //   4. V-blur: blur_fbo[1] → blur_fbo[0]
-//   5. Additive composite: blur_tex[0]*strength → screen
+//   5. Additive composite: blur_tex[0]*strength → screen, under the same mask,
+//      so no halo lands on a screen
 //
 // Feedback is structurally bounded: the blur halo around an LED (~0.03 at 2 px)
 // is far below BLOOM_THRESHOLD, so halo pixels can never re-bloom themselves.
@@ -43,6 +45,28 @@ pub const BLOOM_RADIUS: f32 = 1.0;
 
 /// Maximum number of LCD exclusion rectangles.
 const MAX_EXCLUDE_ZONES: usize = 4;
+/// Must match the `u_keep_*` array sizes in the shaders.
+const MAX_KEEP_ZONES: usize = 2;
+
+/// A control standing over a masked screen rect, which blooms and takes bloom
+/// as usual: within `core_r` of `centre`, or within `outer_r` and inside a
+/// vertical band `half_w` wide or a sector `atan(tan_a)` either side of
+/// vertical. Logical points.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BloomKeep {
+    pub centre: egui::Pos2,
+    pub core_r: f32,
+    pub outer_r: f32,
+    pub half_w: f32,
+    pub tan_a: f32,
+}
+
+/// Where bloom is suppressed: the screens, minus the controls drawn over them.
+#[derive(Clone, Debug, Default)]
+pub struct BloomMask {
+    pub excludes: Vec<Rect>,
+    pub keeps: Vec<BloomKeep>,
+}
 
 // ── Shaders ────────────────────────────────────────────────────────────────────
 
@@ -69,13 +93,32 @@ uniform float u_sat_min;
 uniform float u_sat_knee;
 uniform int  u_exclude_n;
 uniform vec4 u_exclude[4]; // (x0,y0,x1,y1) in UV space, Y=0 at bottom
-void main() {
+uniform int  u_keep_n;
+uniform vec4 u_keep_a[2]; // (cx, cy, core_r, outer_r) in pixels, Y=0 at bottom
+uniform vec2 u_keep_b[2]; // (half_w, tan_a)
+uniform vec2 u_screen_px;
+bool kept(vec2 uv) {
+    vec2 p = uv * u_screen_px;
+    for (int i = 0; i < u_keep_n; i++) {
+        vec2 d = p - u_keep_a[i].xy;
+        float r = length(d);
+        if (r <= u_keep_a[i].z) return true;
+        if (r <= u_keep_a[i].w
+            && (abs(d.x) <= u_keep_b[i].x || abs(d.x) <= abs(d.y) * u_keep_b[i].y)) return true;
+    }
+    return false;
+}
+bool masked(vec2 uv) {
     for (int i = 0; i < u_exclude_n; i++) {
         vec4 r = u_exclude[i];
-        if (v_uv.x >= r.x && v_uv.x <= r.z && v_uv.y >= r.y && v_uv.y <= r.w) {
-            out_color = vec4(0.0);
-            return;
-        }
+        if (uv.x >= r.x && uv.x <= r.z && uv.y >= r.y && uv.y <= r.w) return !kept(uv);
+    }
+    return false;
+}
+void main() {
+    if (masked(v_uv)) {
+        out_color = vec4(0.0);
+        return;
     }
     vec3  scene    = texture(u_scene, v_uv).rgb;
     float hi       = max(scene.r, max(scene.g, scene.b));
@@ -122,7 +165,35 @@ in vec2 v_uv;
 out vec4 out_color;
 uniform sampler2D u_bloom;
 uniform float u_strength;
+uniform int  u_exclude_n;
+uniform vec4 u_exclude[4]; // (x0,y0,x1,y1) in UV space, Y=0 at bottom
+uniform int  u_keep_n;
+uniform vec4 u_keep_a[2]; // (cx, cy, core_r, outer_r) in pixels, Y=0 at bottom
+uniform vec2 u_keep_b[2]; // (half_w, tan_a)
+uniform vec2 u_screen_px;
+bool kept(vec2 uv) {
+    vec2 p = uv * u_screen_px;
+    for (int i = 0; i < u_keep_n; i++) {
+        vec2 d = p - u_keep_a[i].xy;
+        float r = length(d);
+        if (r <= u_keep_a[i].z) return true;
+        if (r <= u_keep_a[i].w
+            && (abs(d.x) <= u_keep_b[i].x || abs(d.x) <= abs(d.y) * u_keep_b[i].y)) return true;
+    }
+    return false;
+}
+bool masked(vec2 uv) {
+    for (int i = 0; i < u_exclude_n; i++) {
+        vec4 r = u_exclude[i];
+        if (uv.x >= r.x && uv.x <= r.z && uv.y >= r.y && uv.y <= r.w) return !kept(uv);
+    }
+    return false;
+}
 void main() {
+    if (masked(v_uv)) {
+        out_color = vec4(0.0);
+        return;
+    }
     out_color = vec4(texture(u_bloom, v_uv).rgb * u_strength, 0.0);
 }
 "#;
@@ -172,7 +243,7 @@ impl BloomPipeline {
     /// Run the bloom pass. Call from the Order::Debug PaintCallback.
     ///
     /// `w`/`h` are physical pixels. `ppp` is pixels-per-point (DPI scale).
-    /// `exclude` is egui screen-space rects (logical points, Y-down) to suppress.
+    /// `mask` says where bloom neither starts nor lands (logical points, Y-down).
     /// `scene_key` is a hash of every input that affects bloom-relevant pixels
     /// (LED state, button hover, jog ring brightness, …). When the key matches
     /// the cached one, the blit + threshold + blur passes are skipped and the
@@ -188,7 +259,7 @@ impl BloomPipeline {
         w: i32,
         h: i32,
         ppp: f32,
-        exclude: &[Rect],
+        mask: &BloomMask,
         scene_key: u64,
     ) {
         if w <= 0 || h <= 0 {
@@ -207,7 +278,7 @@ impl BloomPipeline {
         // parameters that also invalidate the cached blur (window size, DPI,
         // exclusion rects). Resize already nukes `cache_key`, but ppp/exclude
         // can change without triggering a resize.
-        let full_key = compose_key(scene_key, w, h, ppp, exclude);
+        let full_key = compose_key(scene_key, w, h, ppp, mask);
         let blur_is_cached = self.cache_key == Some(full_key);
 
         unsafe {
@@ -246,20 +317,7 @@ impl BloomPipeline {
                 );
                 set_1f(gl, self.threshold_prog, "u_sat_min", BLOOM_SAT_MIN);
                 set_1f(gl, self.threshold_prog, "u_sat_knee", BLOOM_SAT_KNEE);
-                let n = exclude.len().min(MAX_EXCLUDE_ZONES) as i32;
-                set_1i(gl, self.threshold_prog, "u_exclude_n", n);
-                for (i, rect) in exclude.iter().take(MAX_EXCLUDE_ZONES).enumerate() {
-                    // rect is in egui logical points; convert to UV (Y flipped for GL).
-                    let x0 = rect.min.x * ppp / w as f32;
-                    let y0 = 1.0 - rect.max.y * ppp / h as f32;
-                    let x1 = rect.max.x * ppp / w as f32;
-                    let y1 = 1.0 - rect.min.y * ppp / h as f32;
-                    if let Some(loc) =
-                        gl.get_uniform_location(self.threshold_prog, &format!("u_exclude[{i}]"))
-                    {
-                        gl.uniform_4_f32(Some(&loc), x0, y0, x1, y1);
-                    }
-                }
+                set_mask(gl, self.threshold_prog, mask, ppp, w, h);
                 gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
 
                 // ── 3. H-blur: blur_fbo[0] → blur_fbo[1] ─────────────────────
@@ -297,6 +355,7 @@ impl BloomPipeline {
             gl.bind_texture(glow::TEXTURE_2D, Some(blur_tex[0]));
             set_1i(gl, self.composite_prog, "u_bloom", 0);
             set_1f(gl, self.composite_prog, "u_strength", BLOOM_STRENGTH);
+            set_mask(gl, self.composite_prog, mask, ppp, w, h);
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
 
             // ── Restore GL state ──────────────────────────────────────────────
@@ -375,7 +434,55 @@ impl BloomPipeline {
 /// Combine the caller's scene hash with the layout-affecting parameters that
 /// also invalidate the cached blur. Uses `DefaultHasher` (SipHash-1-3) - a few
 /// hundred ns; negligible vs. the bloom passes themselves.
-fn compose_key(scene_key: u64, w: i32, h: i32, ppp: f32, exclude: &[Rect]) -> u64 {
+/// Upload `mask` (egui logical points, Y-down) to `prog`'s mask uniforms:
+/// rects as UV, keeps in physical pixels. The program must be in use.
+unsafe fn set_mask(
+    gl: &glow::Context,
+    prog: glow::Program,
+    mask: &BloomMask,
+    ppp: f32,
+    w: i32,
+    h: i32,
+) {
+    let loc = |name: &str| gl.get_uniform_location(prog, name);
+    set_1i(
+        gl,
+        prog,
+        "u_exclude_n",
+        mask.excludes.len().min(MAX_EXCLUDE_ZONES) as i32,
+    );
+    for (i, rect) in mask.excludes.iter().take(MAX_EXCLUDE_ZONES).enumerate() {
+        // Y flipped for GL.
+        let x0 = rect.min.x * ppp / w as f32;
+        let y0 = 1.0 - rect.max.y * ppp / h as f32;
+        let x1 = rect.max.x * ppp / w as f32;
+        let y1 = 1.0 - rect.min.y * ppp / h as f32;
+        gl.uniform_4_f32(loc(&format!("u_exclude[{i}]")).as_ref(), x0, y0, x1, y1);
+    }
+    set_2f(gl, prog, "u_screen_px", w as f32, h as f32);
+    set_1i(
+        gl,
+        prog,
+        "u_keep_n",
+        mask.keeps.len().min(MAX_KEEP_ZONES) as i32,
+    );
+    for (i, k) in mask.keeps.iter().take(MAX_KEEP_ZONES).enumerate() {
+        gl.uniform_4_f32(
+            loc(&format!("u_keep_a[{i}]")).as_ref(),
+            k.centre.x * ppp,
+            h as f32 - k.centre.y * ppp,
+            k.core_r * ppp,
+            k.outer_r * ppp,
+        );
+        gl.uniform_2_f32(
+            loc(&format!("u_keep_b[{i}]")).as_ref(),
+            k.half_w * ppp,
+            k.tan_a,
+        );
+    }
+}
+
+fn compose_key(scene_key: u64, w: i32, h: i32, ppp: f32, mask: &BloomMask) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h_ = std::collections::hash_map::DefaultHasher::new();
     scene_key.hash(&mut h_);
@@ -384,11 +491,18 @@ fn compose_key(scene_key: u64, w: i32, h: i32, ppp: f32, exclude: &[Rect]) -> u6
     // ppp / Rect coords are floats - quantize to fixed-point so identical
     // logical layouts hash identically.
     (ppp.to_bits()).hash(&mut h_);
-    for r in exclude.iter().take(MAX_EXCLUDE_ZONES) {
+    for r in mask.excludes.iter().take(MAX_EXCLUDE_ZONES) {
         r.min.x.to_bits().hash(&mut h_);
         r.min.y.to_bits().hash(&mut h_);
         r.max.x.to_bits().hash(&mut h_);
         r.max.y.to_bits().hash(&mut h_);
+    }
+    for k in mask.keeps.iter().take(MAX_KEEP_ZONES) {
+        for v in [
+            k.centre.x, k.centre.y, k.core_r, k.outer_r, k.half_w, k.tan_a,
+        ] {
+            v.to_bits().hash(&mut h_);
+        }
     }
     h_.finish()
 }

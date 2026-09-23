@@ -6,7 +6,8 @@ use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2};
 use crate::app::ui::{draw_cache::ShapeList, COL_BLACK, COL_DARK};
 
 /// Host-link computer: a stroked screen over a filled trapezoid stand, `w`
-/// wide overall at the stand's foot. `notch` cuts the stand's centre.
+/// wide overall at the stand's foot, `center` on the screen. `notch` cuts the
+/// stand's centre.
 pub(in crate::app) fn collect_computer_glyph(
     out: &mut ShapeList,
     center: Pos2,
@@ -19,7 +20,7 @@ pub(in crate::app) fn collect_computer_glyph(
     out.rect_filled(screen, 0.0, COL_BLACK);
     out.rect_stroke(screen, 0.0, Stroke::new(f(5.0), color));
 
-    let stand_top = screen.bottom();
+    let stand_top = screen.bottom() + f(5.4);
     let stand_bot = stand_top + f(10.0);
     let cx = center.x;
     out.add(Shape::convex_polygon(

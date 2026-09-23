@@ -21,6 +21,9 @@ use crate::app::ui::draw_vinyl_speed::{
 // ── Navigation rotary (owned by this module) ─────────────────────────────────
 /// Vertical position of the nav rotary center within MODES_COL_REF (0=top,1=bottom).
 pub(super) const NAV_CENTER_V: f32 = layout::NAV_POD_V;
+/// Ring glow when the deck lights the encoder but sends no ring colour.
+const NAV_ENCODER_GLOW_COL: Color32 = Color32::from_rgb(182, 220, 220);
+
 /// Horizontal position of the nav rotary center within MODES_COL_REF.
 pub(super) const NAV_CENTER_U: f32 = layout::NAV_POD_U;
 /// Scale factor relative to VINYL_SPEED_SIZE_SCALE (×1.2 as requested).
@@ -282,6 +285,14 @@ pub(super) fn draw_nav_rotary(
     let btn_edge_w = layout
         .sc(NAV_BTN_BORDER_INNER_W_REF + NAV_BTN_BORDER_GAP_REF * 2.0 + NAV_BTN_BORDER_OUTER_W_REF);
     let bezel_half_w = bezel_outer_r * NAV_BTN_OUTER_ANGLE_RAD.sin() + btn_edge_w * 0.5;
+    // The pod block covers the extended screen: keep its bloom.
+    app.bloom_keeps.push(crate::app::bloom::BloomKeep {
+        centre: center,
+        core_r: 0.0,
+        outer_r: btn_outer_r + btn_edge_w,
+        half_w: bezel_half_w,
+        tan_a: 0.0,
+    });
     let bezel_clip = {
         let full = p.clip_rect();
         p.with_clip_rect(full.intersect(egui::Rect::from_min_max(
@@ -323,14 +334,11 @@ pub(super) fn draw_nav_rotary(
         let mosi = app.mosi();
         let ring_col = mosi
             .rotary_rgb()
-            .and_then(|(r, g, b)| mosi_frame::led_color(r, g, b));
+            .and_then(|(r, g, b)| app.mosi().led_color(mosi_frame::LedPart::Ring, r, g, b));
         let encoder_on = ring_col.is_some() || mosi.led_bit(mosi_frame::LED_ENCODER);
         if encoder_on {
-            // Same pipeline as on-air RGB: feed raw PWM bytes through led_color()
-            // for gamma-expand + normalize-to-LED_PEAK on the dominant channel.
-            let glow_col = ring_col.unwrap_or_else(|| {
-                mosi_frame::led_color(0x0a, 0x0f, 0x0f).unwrap_or(Color32::from_rgb(200, 220, 220))
-            });
+            // Encoder lit without a ring colour.
+            let glow_col = ring_col.unwrap_or(NAV_ENCODER_GLOW_COL);
             let main_w = layout.sc(NAV_ENCODER_MAIN_W_REF);
             let max_expand = layout.sc(NAV_ENCODER_GLOW_SPREAD_REF);
             // Outward halo layers: fatter stroke + lower alpha, outermost first.

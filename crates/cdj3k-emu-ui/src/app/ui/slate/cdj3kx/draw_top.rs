@@ -21,8 +21,6 @@ const MID_CENTRAL_PANEL_REF: Rect = Rect::from_min_max(
     Pos2::new(layout::MID_CENTRAL_REF_RIGHT, layout::MID_CENTRAL_REF_BOT),
 );
 
-/// Vertical placement within [`MENUBAR_COL_REF`] (0 = top, 1 = bottom).
-
 // --- Nav button row ---
 /// Width of a single nav button in reference units.
 const NAV_BTN_WIDTH_REF: f32 = 291.0;
@@ -375,7 +373,7 @@ pub(super) fn draw_top_section(
                     i.pointer.button_down(egui::PointerButton::Secondary)
                         && i.pointer
                             .hover_pos()
-                            .map_or(false, |p| display_rect.contains(p))
+                            .is_some_and(|p| display_rect.contains(p))
                 }),
                 interact_pos: lcd_resp.interact_pointer_pos(),
                 display_rect,
@@ -432,7 +430,10 @@ pub(super) fn draw_top_section(
             let btn_left = first_left + i as f32 * (btn_w + gap);
             let rect = layout.ar2rect(btn_left, btn_top, HOT_CUE_BTN_ASPECT, btn_w);
             let (r, g, b) = app.mosi().pad_rgb(i);
-            let accent = mosi_frame::led_color(r, g, b).unwrap_or(COL_SILVER);
+            let accent = app
+                .mosi()
+                .led_color(mosi_frame::LedPart::Pad, r, g, b)
+                .unwrap_or(COL_SILVER);
             app.btn(
                 ui,
                 layout,
