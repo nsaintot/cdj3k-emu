@@ -21,6 +21,9 @@ pub struct Host {
     pub serial_log: bool,
     /// `--no-spawn`: never boot anything.
     pub ui_only: bool,
+    /// This process's claim on the slot, without which it may not swap an
+    /// install in: another process owns the slot.
+    pub claim: Option<&'static cdj3k_emu_storage::SlotClaim>,
 }
 
 /// Record `model` as the slot's model so the next launch of this slot opens
@@ -65,6 +68,13 @@ impl RuntimeHost for Host {
 
     fn clear_firmware(&mut self) -> std::io::Result<()> {
         FirmwarePaths::new(self.instance).remove()
+    }
+
+    fn apply_staged(&mut self) -> std::io::Result<Option<cdj3k_emu_storage::StagedRecord>> {
+        match self.claim {
+            Some(claim) => cdj3k_emu_storage::apply_staged(claim),
+            None => Ok(None),
+        }
     }
 
     fn launch(&mut self, model: Model) -> LaunchOutcome {

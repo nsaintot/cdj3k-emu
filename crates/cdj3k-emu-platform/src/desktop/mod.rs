@@ -20,6 +20,11 @@ use cdj3k_emu_panel::Model;
 
 pub use macos::open_file_picker;
 
+/// Bring another instance of the app, by pid, to the front.
+pub fn activate_process(pid: u32) -> Result<(), String> {
+    macos::activate_process(pid)
+}
+
 /// Set the process's user-visible name (Dock tile, menu bar, Activity Monitor).
 /// Must be called before [`eframe::run_native`].
 pub fn set_app_name(name: &str) {

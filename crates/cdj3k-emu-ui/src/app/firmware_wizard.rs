@@ -2,21 +2,24 @@
 //!
 //! The firmware input is either a Pioneer `.UPD` plus its LUKS key file, or an
 //! already-decrypted ISO 9660 image (the `.UPD` payload), which skips the
-//! decrypt step. Output goes to the slot's [`FirmwarePaths`]; a slot holds one
-//! installation, so installing replaces whatever model was there.
+//! decrypt step. The run writes into the slot's [`StagedFirmware`] and leaves
+//! the slot's live installation alone, running emulation included; the shell
+//! swaps it in once the run has finished and the slot's emulation is not
+//! running. A slot holds one installation, so the swap replaces whatever
+//! model was there.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
 use egui::{
-    Align, Color32, ComboBox, Context, FontId, Frame, Margin, Pos2, Rect, RichText, Rounding,
-    Sense, Stroke, TextEdit, Vec2,
+    Align, Color32, Context, FontId, Frame, Margin, Pos2, Rect, RichText, Rounding, Sense, Stroke,
+    TextEdit, Vec2,
 };
 
 use cdj3k_emu_panel::Model;
 use cdj3k_emu_platform::{desktop::open_file_picker, menu_state};
-use cdj3k_emu_storage::FirmwarePaths;
+use cdj3k_emu_storage::StagedFirmware;
 
 use super::picker;
 use super::theme;
@@ -33,7 +36,6 @@ const LABEL_W: f32 = 116.0;
 /// Between form rows.
 const ROW_GAP: f32 = 16.0;
 const BROWSE_W: f32 = 90.0;
-const SLOT_W: f32 = 132.0;
 /// Kept clear at the left of the action bar, where the build is drawn.
 const VERSION_ROOM: f32 = 46.0;
 
@@ -107,6 +109,17 @@ impl ProvisionStep {
 
 // ── Wizard ────────────────────────────────────────────────────────────────────
 
+/// Where a finished install went, which the shell settles: only the slot's
+/// owner swaps it in, and only while the slot's emulation is not running.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Installed {
+    /// Swapped in; the slot's deck boots from it.
+    Applied,
+    /// Waiting behind the slot's running emulation, which boots from it once
+    /// it restarts.
+    Staged,
+}
+
 /// The install step of the setup window: the form, the progress and the log.
 /// It does not own a window - the shell hosts it, so switching an emulation
 /// and installing its firmware happen in one place.
@@ -114,11 +127,19 @@ pub struct FirmwareWizard {
     /// The model being provisioned (chosen on the picker / the running one).
     pub model: Model,
     upd_path: String,
+    /// The path last probed for an ISO 9660 image, and the answer; the form
+    /// asks every frame.
+    iso_probe: std::cell::RefCell<Option<(String, bool)>>,
     key_path: String,
-    /// Target slot for provisioning (1..=MAX_INSTANCES). Defaults to the
-    /// current window's instance so the obvious thing happens by default.
+    /// The slot being provisioned, set by [`Self::open_for`].
     target_instance: u32,
-    /// `(slot, model)` the user asked to (re)boot from the Done banner;
+    /// The slot this window owns.
+    home_instance: u32,
+    /// A run has finished since the shell last asked.
+    finished: bool,
+    /// What the shell made of the finished run.
+    installed: Option<Installed>,
+    /// `(slot, model)` the user asked to boot, or open, from the Done banner;
     /// taken by the shell.
     boot_request: Option<(u32, Model)>,
     /// Shared log buffer; provision thread appends lines, UI reads every frame.
@@ -131,11 +152,16 @@ pub struct FirmwareWizard {
 
 impl FirmwareWizard {
     pub fn new() -> Self {
+        let instance = menu_state::lock().current_instance_id.max(1);
         Self {
             model: Model::default(),
             upd_path: String::new(),
+            iso_probe: std::cell::RefCell::new(None),
             key_path: String::new(),
-            target_instance: menu_state::lock().current_instance_id.max(1),
+            target_instance: instance,
+            home_instance: instance,
+            finished: false,
+            installed: None,
             boot_request: None,
             log: Arc::new(Mutex::new(String::new())),
             provision_status: None,
@@ -150,10 +176,27 @@ impl FirmwareWizard {
         self.target_instance = instance.max(1);
     }
 
+    /// The slot the wizard installs into.
+    pub fn target_instance(&self) -> u32 {
+        self.target_instance
+    }
+
     /// Whether a provisioning run is under way, so the shell can refuse to
-    /// close the window out from under it.
+    /// close the window, or quit, out from under it.
     pub fn is_running(&self) -> bool {
         self.provision_status.is_some()
+    }
+
+    /// A run has finished successfully since the last call, and waits for
+    /// [`Self::set_installed`].
+    pub fn take_finished(&mut self) -> bool {
+        std::mem::take(&mut self.finished)
+    }
+
+    /// Say where the finished run went, which picks what the Done banner
+    /// offers.
+    pub fn set_installed(&mut self, installed: Installed) {
+        self.installed = Some(installed);
     }
 
     /// The Done banner's boot request (`(slot, model)`), once.
@@ -172,6 +215,7 @@ impl FirmwareWizard {
         if step.is_terminal() {
             // Success is reported, not acted on: the deck starts when the user
             // says so, not behind a window they are still reading.
+            self.finished = matches!(step, ProvisionStep::Done);
             self.terminal = Some(step);
             self.provision_status = None;
         }
@@ -181,7 +225,7 @@ impl FirmwareWizard {
         let area = ui.max_rect();
         let k = picker::k_of(area);
         let pal = theme::palette(ui.ctx());
-        let running = self.provision_status.is_some();
+        let running = self.is_running();
         let done = matches!(self.terminal, Some(ProvisionStep::Done));
         let (space, bar) = picker::footer_split(area, k);
 
@@ -200,7 +244,8 @@ impl FirmwareWizard {
                     meter(ui, k, pal, &step);
                 }
                 (None, Some(ProvisionStep::Done)) => {
-                    banner(ui, k, pal, pal.ok, "Firmware installed", pal.ok);
+                    let line = self.done_line();
+                    banner(ui, k, pal, pal.ok, &line, pal.ok);
                 }
                 (None, Some(ProvisionStep::Error(msg))) => {
                     let msg = msg.clone();
@@ -235,12 +280,10 @@ impl FirmwareWizard {
                         .show(ui, |ui| {
                             if snapshot.is_empty() {
                                 ui.label(
-                                    RichText::new(
-                                        "Nothing yet. The install writes here as it runs.",
-                                    )
-                                    .size(theme::HINT_FONT * k)
-                                    .monospace()
-                                    .color(pal.faint),
+                                    RichText::new("No log entries")
+                                        .size(theme::HINT_FONT * k)
+                                        .monospace()
+                                        .color(pal.faint),
                                 );
                             } else {
                                 ui.add(
@@ -263,18 +306,40 @@ impl FirmwareWizard {
                 match (&self.provision_status, &self.terminal) {
                     // Nothing is offered while a run is under way: the window
                     // refuses to close, and says so at the bar's quiet end.
-                    (Some(_), _) => {
+                    _ if running => {
                         ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
                             ui.add_space(VERSION_ROOM * k);
                         });
                     }
 
                     (None, Some(ProvisionStep::Done)) => {
-                        if theme::primary(ui, picker::button_size(k), "Start the deck", pal)
-                            .clicked()
-                        {
-                            self.boot_request = Some((self.target_instance, self.model));
-                            close.store(true, Relaxed);
+                        let own = self.target_instance == self.home_instance;
+                        let (go, dismiss) = match (self.installed, own) {
+                            (Some(Installed::Applied), true) => {
+                                (Some("Start the deck".to_owned()), None)
+                            }
+                            (Some(Installed::Applied), false) => (
+                                Some(format!("Open slot {}", self.target_instance)),
+                                Some("Close"),
+                            ),
+                            (Some(Installed::Staged), true) => {
+                                (Some("Restart".to_owned()), Some("Later"))
+                            }
+                            (Some(Installed::Staged), false) => {
+                                (Some("Restart".to_owned()), Some("Close"))
+                            }
+                            (None, _) => (None, None),
+                        };
+                        if let Some(label) = go {
+                            if theme::primary(ui, picker::button_size(k), &label, pal).clicked() {
+                                self.boot_request = Some((self.target_instance, self.model));
+                                close.store(true, Relaxed);
+                            }
+                        }
+                        if let Some(label) = dismiss {
+                            if theme::secondary(ui, picker::button_size(k), label, pal).clicked() {
+                                close.store(true, Relaxed);
+                            }
                         }
                     }
 
@@ -313,57 +378,21 @@ impl FirmwareWizard {
     /// The form: one row per thing the install needs, each with its label in
     /// its own column so the fields line up down the step.
     fn form(&mut self, ui: &mut egui::Ui, k: f32, pal: &theme::Palette) {
-        ui.horizontal_top(|ui| {
-            label_column(ui, k, pal.dim, "Install to slot");
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    let slots = ComboBox::from_id_salt("wizard_slot")
-                        .width(SLOT_W * k)
-                        .selected_text(format!("Slot {}", self.target_instance))
-                        .show_ui(ui, |ui| {
-                            // The popup opens in an Area of its own, which is
-                            // built from the context's style, not this step's.
-                            theme::apply_setup_style(ui, pal);
-                            ui.spacing_mut().item_spacing.y = 2.0 * k;
-                            for n in 1..=menu_state::MAX_INSTANCES {
-                                theme::pointer(ui.selectable_value(
-                                    &mut self.target_instance,
-                                    n,
-                                    format!("Slot {n}"),
-                                ));
-                            }
-                        });
-                    theme::pointer(slots.response);
-                    let cur = menu_state::lock().current_instance_id;
-                    ui.label(
-                        RichText::new(if self.target_instance == cur {
-                            "current window"
-                        } else {
-                            "open from the Instances menu after install"
-                        })
-                        .size(theme::HINT_FONT * k)
-                        .color(pal.dim),
-                    );
-                });
-                // A slot holds one installation, so installing over another
-                // model takes its firmware and its eMMC with it.
-                if let Some(prev) =
-                    cdj3k_emu_storage::InstanceSettings::saved_model(self.target_instance)
-                {
-                    if prev != self.model {
-                        ui.label(
-                            RichText::new(format!(
-                                "Slot {} holds the {}. Installing replaces it, erasing its eMMC.",
-                                self.target_instance,
-                                prev.title()
-                            ))
-                            .size(theme::HINT_FONT * k)
-                            .color(pal.warn),
-                        );
-                    }
-                }
-            });
-        });
+        // A slot holds one installation, so installing over another model
+        // takes its firmware and its eMMC with it.
+        if let Some(prev) = cdj3k_emu_storage::InstanceSettings::saved_model(self.target_instance) {
+            if prev != self.model {
+                ui.label(
+                    RichText::new(format!(
+                        "Slot {} holds the {}. Installing replaces it, erasing its eMMC.",
+                        self.target_instance,
+                        prev.title()
+                    ))
+                    .size(theme::HINT_FONT * k)
+                    .color(pal.warn),
+                );
+            }
+        }
 
         ui.horizontal_top(|ui| {
             label_column(ui, k, pal.dim, "Firmware");
@@ -393,9 +422,35 @@ impl FirmwareWizard {
         }
     }
 
+    /// The Done banner's line: where the install went.
+    fn done_line(&self) -> String {
+        let own = self.target_instance == self.home_instance;
+        match (self.installed, own) {
+            (Some(Installed::Staged), true) => {
+                "Firmware installed. Will take effect after restarting.".to_owned()
+            }
+            (Some(Installed::Staged), false) => format!(
+                "Firmware installed. Slot {} will take effect after restarting.",
+                self.target_instance
+            ),
+            _ => "Firmware installed".to_owned(),
+        }
+    }
+
     /// Whether the chosen firmware file is an already-decrypted ISO image.
     fn firmware_is_iso(&self) -> bool {
-        !self.upd_path.is_empty() && is_iso9660(Path::new(&self.upd_path))
+        if self.upd_path.is_empty() {
+            return false;
+        }
+        let mut probe = self.iso_probe.borrow_mut();
+        match &*probe {
+            Some((path, is_iso)) if *path == self.upd_path => *is_iso,
+            _ => {
+                let is_iso = is_iso9660(Path::new(&self.upd_path));
+                *probe = Some((self.upd_path.clone(), is_iso));
+                is_iso
+            }
+        }
     }
 
     /// Why the chosen `.UPD` cannot go in this slot, if it cannot. An `.iso`
@@ -467,7 +522,10 @@ impl FirmwareWizard {
         }
     }
 
+    /// Start the run. The slot's emulation, if it runs, is left running.
     fn start_provision(&mut self, ctx: Context) {
+        // The file may have changed since the form last looked at it.
+        *self.iso_probe.borrow_mut() = None;
         // A decrypted ISO needs no key; a .UPD does.
         let key = if self.firmware_is_iso() {
             None
@@ -510,6 +568,8 @@ impl FirmwareWizard {
         }
         self.provision_status = None;
         self.terminal = None;
+        self.finished = false;
+        self.installed = None;
         self.log.lock().unwrap().clear();
     }
 }
@@ -796,14 +856,17 @@ fn provision(
         };
     }
 
-    let paths = FirmwarePaths::new(target_instance);
     log!("[slot] target = instance-{} ({})", target_instance, model);
-    log!("[slot] firmware dir = {}", paths.dir().display());
+    let staged = try_step!(
+        ProvisionStep::Decrypting,
+        StagedFirmware::new(target_instance)
+    );
+    let paths = staged.paths.clone();
+    log!("[slot] staging dir = {}", paths.dir().display());
 
     // A `.UPD` is a bare LUKS container whose header names no product, so its
     // file name is all there is to go on. An `.iso` has been unwrapped by
-    // hand already and is taken on trust. Refusing happens here, before
-    // anything is read or written, so it costs the slot nothing.
+    // hand already and is taken on trust.
     if key.is_some() {
         let name = upd_path.to_string_lossy();
         match upd_name_objection(&name, model, target_instance) {
@@ -816,27 +879,26 @@ fn provision(
         }
     }
 
-    // 1. Decrypt UPD → tmp ISO (or use the given ISO as is)
+    // 1. Decrypt UPD → ISO in the staging dir (or use the given ISO as is)
     set!(ProvisionStep::Decrypting);
-    let (tmp_iso, tmp_iso_owned) = match &key {
+    let tmp_iso = match &key {
         Some(key) => {
             log!("[decrypt] opening {}", upd_path.display());
-            let tmp_iso = std::env::temp_dir()
-                .join(format!("cdj3k-emu-firmware-{}.iso.tmp", target_instance));
+            let tmp_iso = paths.dir().join("firmware.iso.tmp");
             log!("[decrypt] output → {}", tmp_iso.display());
             try_step!(
                 ProvisionStep::Decrypting,
                 cdj3k_emu_firmware::decrypt_upd(&upd_path, key, &tmp_iso)
             );
             log!("[decrypt] OK - ISO written");
-            (tmp_iso, true)
+            tmp_iso
         }
         None => {
             log!(
                 "[decrypt] skipped - {} is already an ISO 9660 image",
                 upd_path.display()
             );
-            (upd_path.clone(), false)
+            upd_path.clone()
         }
     };
 
@@ -857,23 +919,6 @@ fn provision(
             cdj3k_emu_storage::FirmwareInfo::default()
         }
     };
-
-    // 2. A slot holds one installation. Clear whatever was there - including
-    //    the eMMC and everything the guest wrote to it - and record the model
-    //    the slot now is.
-    if let Some(prev) = cdj3k_emu_storage::InstanceSettings::saved_model(target_instance) {
-        if prev != model {
-            log!("[slot] replacing the {prev} installation");
-        }
-    }
-    try_step!(ProvisionStep::ExtractingKernel, paths.remove());
-    let release = firmware_info.release.clone();
-    if let Err(e) = cdj3k_emu_storage::InstanceSettings::update(target_instance, move |s| {
-        s.model = Some(model);
-        s.firmware_release = release;
-    }) {
-        log!("[slot] recording the slot model failed: {e}");
-    }
 
     // 3. Install vanilla kernel + extract Pioneer initramfs
     set!(ProvisionStep::ExtractingKernel);
@@ -939,31 +984,21 @@ fn provision(
     log!("[patch] OK → {}", initramfs_patched.display());
     let _ = std::fs::remove_file(&initramfs_orig);
 
-    // 5. Create the eMMC qcow2 (the slot's old one went with `paths.remove`)
+    // 5. Create the eMMC qcow2
     set!(ProvisionStep::CreatingEmmc);
 
     // The eMMC is new, so the slot needs the serial `genkey_pr` hashes into
-    // the cabinet passphrase - which the cabinet is keyed for just below, so
-    // it has to be settled first.  CDJ3K_SOC_SERIAL pins a particular deck's,
+    // the cabinet passphrase - which the cabinet is keyed for just below. It
+    // is recorded with the install. CDJ3K_SOC_SERIAL pins a particular deck's,
     // which is what a cabinet lifted off that deck already opens with.
     let serial = match std::env::var("CDJ3K_SOC_SERIAL") {
-        Ok(pinned) => cdj3k_emu_storage::InstanceSettings::set_soc_serial(target_instance, &pinned),
-        Err(_) => cdj3k_emu_storage::InstanceSettings::regenerate_soc_serial(target_instance),
+        Ok(pinned) => try_step!(
+            ProvisionStep::CreatingEmmc,
+            cdj3k_emu_storage::InstanceSettings::parse_soc_serial(&pinned)
+        ),
+        Err(_) => cdj3k_emu_storage::InstanceSettings::mint_soc_serial(),
     };
-    let serial = match serial {
-        Ok(serial) => {
-            log!("[serial] SoC serial = {}", serial);
-            serial
-        }
-        Err(e) => {
-            // Not fatal: the slot boots on the serial it already has, and the
-            // cabinet below is keyed for that one.
-            let kept =
-                cdj3k_emu_storage::InstanceSettings::load_or_init(target_instance).soc_serial;
-            log!("[serial] could not persist a new SoC serial ({e}) - keeping {kept}");
-            kept
-        }
-    };
+    log!("[serial] SoC serial = {}", serial);
 
     // cabinet.img carries the Widevine keys and the Device Library Plus key
     // file.  The deck's updater copies it onto the settings partition, where
@@ -1035,6 +1070,7 @@ fn provision(
 
     let emmc_path = paths.emmc.clone();
     log!("[emmc] provisioning → {}", emmc_path.display());
+    let firmware_info_release = firmware_info.release.clone();
     let emmc_cfg = cdj3k_emu_storage::EmmcConfig {
         path: emmc_path,
         instance_id: target_instance,
@@ -1048,9 +1084,18 @@ fn provision(
     );
     log!("[emmc] OK");
 
-    if tmp_iso_owned {
-        let _ = std::fs::remove_file(&tmp_iso);
+    // 6. Record the staged installation as complete, for the slot's owner to
+    //    swap in.
+    if let Some(prev) = cdj3k_emu_storage::InstanceSettings::saved_model(target_instance) {
+        if prev != model {
+            log!("[slot] replaces the {prev} installation once applied");
+        }
     }
+    let _ = std::fs::remove_file(paths.dir().join("firmware.iso.tmp"));
+    try_step!(
+        ProvisionStep::CreatingEmmc,
+        staged.finish(model, firmware_info_release.as_deref(), &serial)
+    );
 
     log!("[done] all steps completed");
     set!(ProvisionStep::Done);

@@ -242,6 +242,32 @@ pub fn reset_dock_icon_to_bundle() -> Result<(), String> {
     Ok(())
 }
 
+/// Bring the process `pid` - another instance of the app - to the front.
+#[cfg(target_os = "macos")]
+pub fn activate_process(pid: u32) -> Result<(), String> {
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+
+    let cls = AnyClass::get("NSRunningApplication").ok_or("NSRunningApplication not found")?;
+    unsafe {
+        let app: *mut AnyObject =
+            objc2::msg_send![cls, runningApplicationWithProcessIdentifier: pid as libc::pid_t];
+        if app.is_null() {
+            return Err(format!("no running application with pid {pid}"));
+        }
+        // NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps
+        let ok: Bool = objc2::msg_send![app, activateWithOptions: 3usize];
+        if !ok.as_bool() {
+            return Err(format!("pid {pid} refused activation"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn activate_process(_pid: u32) -> Result<(), String> {
+    Ok(())
+}
+
 /// Override the Dock tile / menu-bar / Activity Monitor name for this process.
 ///
 /// The Dock and the application menu read `CFBundleName` from

@@ -352,9 +352,11 @@ enum Pill {
 impl Pill {
     fn of(model: Model, view: &PickerView<'_>) -> Self {
         if view.foreign {
-            // Another slot's deck launches in its own window; nothing here
-            // reinstalls it.
-            return if view.installed == Some(model) {
+            // Another slot's deck launches in its own window; while that
+            // window is up, its card lays the firmware down again instead.
+            return if view.installed == Some(model) && view.busy {
+                Self::Reinstall
+            } else if view.installed == Some(model) {
                 Self::Launch
             } else if view.installed.is_none() {
                 Self::Install
@@ -820,14 +822,13 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
         let model = *model;
         let rect =
             Rect::from_min_size(Pos2::new(x0 + i as f32 * (cw + gap), y0), Vec2::new(cw, ch));
-        // A slot whose own window is up keeps its installation: only the deck
-        // it holds is offered, and only to bring that window forward.
-        let inert = view.busy && view.installed != Some(model);
-        let resp = ui.interact(rect, ui.id().with(("cdj_model", i)), Sense::click());
-        let resp = if inert { resp } else { theme::pointer(resp) };
+        // An install never touches a running emulation, so every card of
+        // every slot is live.
+        let resp =
+            theme::pointer(ui.interact(rect, ui.id().with(("cdj_model", i)), Sense::click()));
         let hover_t = ui.ctx().animate_bool_with_time(
             ui.id().with(("cdj_hover", i)),
-            resp.hovered() && !inert,
+            resp.hovered(),
             ANIM_TIME,
         );
         draw_card(
@@ -836,18 +837,15 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
             model,
             Pill::of(model, view),
             view.installed == Some(model),
-            inert,
             hover_t,
             k,
             pal,
         );
-        if resp.clicked() && !inert {
-            action = Some(if view.foreign && view.installed == Some(model) {
-                PickerAction::Open(view.slot)
-            } else if !view.foreign && view.running == Some(model) {
-                PickerAction::Reinstall(model)
-            } else {
-                PickerAction::Choose(model)
+        if resp.clicked() {
+            action = Some(match Pill::of(model, view) {
+                Pill::Reinstall => PickerAction::Reinstall(model),
+                Pill::Launch if view.foreign => PickerAction::Open(view.slot),
+                _ => PickerAction::Choose(model),
             });
         }
     }
@@ -1072,8 +1070,6 @@ fn draw_card(
     model: Model,
     pill_kind: Pill,
     installed: bool,
-    // The card is shown but offers nothing: the slot is another window's.
-    inert: bool,
     hover_t: f32,
     k: f32,
     pal: &Palette,
@@ -1183,29 +1179,13 @@ fn draw_card(
         k,
     );
 
-    // Foot pill: what clicking the card does to the slot, and how much it
-    // costs. Nothing at risk stays neutral until the pointer is on it; a run
-    // that has to stop first is amber; an installation that goes is red. The
-    // deck accents stay on the cap - they say which deck, never what the
-    // button does.
-    let (rest_fill, rest_edge, rest_text, hot) = if inert {
-        (pal.off, pal.off_line, pal.off_text, pal.off)
-    } else {
-        match pill_kind {
-            Pill::Launch => (pal.ink, pal.ink, pal.on_ink, pal.ink_hover),
-            Pill::Install => (pal.plate, pal.line_strong, pal.ink, pal.ink),
-            Pill::Reinstall => (pal.plate, pal.warn, pal.warn, pal.warn),
-            Pill::Replace => (pal.plate, pal.danger, pal.danger, pal.danger),
-        }
-    };
-    let fill = lerp_color(rest_fill, hot, hover_t);
-    let edge = lerp_color(rest_edge, hot, hover_t);
-    // The one already filled keeps its text; the outlines flip as they fill.
-    let text = match pill_kind {
-        _ if inert => rest_text,
-        Pill::Launch => rest_text,
-        _ => lerp_color(rest_text, pal.on_ink, hover_t),
-    };
+    // Foot pill: what clicking the card does to the slot. Every pill is the
+    // same outline, filling under the pointer; colour is kept for what
+    // destroys, and a card never does. The deck accents stay on the cap -
+    // they say which deck, never what the button does.
+    let fill = lerp_color(pal.plate, pal.ink, hover_t);
+    let edge = pal.ink;
+    let text = lerp_color(pal.ink, pal.on_ink, hover_t);
     p.rect_filled(pill, round, fill);
     p.rect_stroke(pill, round, Stroke::new(theme::HAIRLINE * k, edge));
     tracked_center(

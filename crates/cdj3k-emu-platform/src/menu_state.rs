@@ -122,6 +122,10 @@ pub struct AppState {
     /// Fires once to retire the runtime worker (stop QEMU, exit its loop)
     /// without shutting the app down; a later launch spawns a fresh worker.
     pub worker_exit_requested: bool,
+    /// Set by a worker that retired itself instead of restarting QEMU, a
+    /// finished install waiting for the slot: the shell launches again,
+    /// which swaps the install in.
+    pub relaunch_requested: bool,
     /// Set by menu actions that require a restart so the boot shade engages
     /// immediately. Cleared by the runtime worker once QEMU has respawned.
     pub shade_forced: bool,
@@ -245,6 +249,7 @@ impl AppState {
             restart_requested: false,
             manage_emulation_requested: false,
             worker_exit_requested: false,
+            relaunch_requested: false,
             shade_forced: false,
             power_off_stimuli_requested: false,
             screen_extended: false,

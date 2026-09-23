@@ -9,18 +9,25 @@
 //! A slot emulates one model. Changing which one, and installing the firmware
 //! it needs, are steps of ONE setup window ([`SetupStep`]) that opens over the
 //! running panel - two floating windows for two halves of the same job read as
-//! clutter. Nothing is touched until a card is confirmed; confirming stops the
-//! emulation, waits for it to be gone, and only then deletes the slot's
-//! installation and moves on to the wizard.
+//! clutter.
+//!
+//! An install never touches a running emulation. It is written beside the
+//! slot's live installation, and the process that owns the slot swaps it in
+//! whenever the slot's emulation is not running: at once when nothing runs,
+//! otherwise on its next start - a restart from the menu, the guest
+//! rebooting, or Restart on the finished install. Restart pressed in another
+//! window only leaves a request in the staging dir; the owner sees it and
+//! restarts itself, so no window ever stops another's emulation.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cdj3k_emu_panel::Model;
 use cdj3k_emu_platform::{app_meta, desktop, menu_state};
 
-use super::firmware_wizard::FirmwareWizard;
+use super::firmware_wizard::{FirmwareWizard, Installed};
 use super::picker::{
     draw_busy, draw_delete_confirm, draw_header, draw_picker, Header, PickerAction, PickerView,
 };
@@ -51,6 +58,9 @@ pub trait RuntimeHost {
     /// Delete the slot's installation. Called only while no worker is alive -
     /// QEMU holds the eMMC open.
     fn clear_firmware(&mut self) -> std::io::Result<()>;
+    /// Swap in a finished install waiting for the slot, if there is one.
+    /// Called only while no worker is alive, for the same reason.
+    fn apply_staged(&mut self) -> std::io::Result<Option<cdj3k_emu_storage::StagedRecord>>;
     /// Start the runtime worker for `model`. Called only while no worker is
     /// alive.
     fn launch(&mut self, model: Model) -> LaunchOutcome;
@@ -81,15 +91,12 @@ enum SetupStep {
     Pick,
     /// Asking whether this deck may take the slot over.
     Confirm(Model),
-    /// The emulation is being stopped. Nothing is deleted until it is: QEMU
-    /// holds the eMMC open, and the user asked to see the stop happen.
-    Stopping,
     /// Installing firmware.
     Install,
     /// Asking whether the slot may be emptied.
     ConfirmDelete,
-    /// The emulation is being stopped so the slot can be emptied. Same wait as
-    /// [`Stopping`](SetupStep::Stopping), with nothing to install after it.
+    /// The emulation is being stopped so the slot can be emptied: QEMU holds
+    /// the eMMC open until it is gone.
     StoppingToDelete,
 }
 
@@ -107,11 +114,11 @@ pub struct CdjShell {
     /// A picker choice waiting for the previous runtime worker to finish
     /// its graceful stop.
     pending_launch: Option<Model>,
-    /// An install waiting for the worker to stop: the model, and whether the
-    /// slot's own installation goes with it (a replacement) or stays (a
-    /// reinstall of the same model). Either way QEMU has to let go of the eMMC
-    /// before the wizard may touch it.
-    pending_install: Option<(Model, bool)>,
+    /// When the slot's staging dir is next looked at for a finished install.
+    next_install_check: Instant,
+    /// The last [`cdj3k_emu_storage::slot_in_use`] probe: slot, when, answer.
+    /// The picker asks every frame; the probe takes two locks.
+    busy_probe: Cell<Option<(u32, Instant, bool)>>,
     /// The slot is to be emptied once the worker is gone.
     pending_delete: bool,
     /// The slot the setup window is showing. Its own by default; the slot
@@ -127,13 +134,10 @@ pub struct CdjShell {
     /// the two sit exactly on top of each other. Held for as long as the
     /// window is up, so it stays where the user may have dragged it.
     setup_pos: Option<egui::Pos2>,
-    /// Whether the main window is currently hidden, so the show/hide command
-    /// is only sent when it changes.
-    main_hidden: bool,
-    /// The setup window closed onto a slot whose emulation it had already
-    /// stopped, so the main window has to stop being a panel.
+    /// The setup window emptied a slot whose emulation had already stopped,
+    /// so the main window has to stop being a panel.
     reveal_picker: bool,
-    /// "Switch Emulation" asked the worker to exit; cleared once it has.
+    /// The shell asked the worker to exit; cleared once it has.
     worker_stopping: bool,
     /// `true` once the user has triggered a close (red button / Cmd-Q / menu).
     /// While set, the actual window close is cancelled each frame so the
@@ -160,13 +164,13 @@ impl CdjShell {
             initial_model: cfg.initial_model,
             wizard: FirmwareWizard::new(),
             pending_launch: None,
-            pending_install: None,
+            next_install_check: Instant::now(),
+            busy_probe: Cell::new(None),
             pending_delete: false,
             viewed_slot: cfg.instance,
             viewed_release: cdj3k_emu_storage::slot_release(cfg.instance),
             setup: None,
             setup_pos: None,
-            main_hidden: false,
             reveal_picker: false,
             worker_stopping: false,
             shutdown_in_progress: false,
@@ -185,8 +189,9 @@ impl CdjShell {
     }
 
     /// Boot `model` (no worker alive) and show its panel; with no firmware,
-    /// open the install wizard for it instead.
-    fn launch(&mut self, ctx: &egui::Context, frame: &eframe::Frame, model: Model) {
+    /// open the install wizard for it instead. A finished install waiting for
+    /// the slot is swapped in first, and boots whatever model it holds.
+    fn launch(&mut self, ctx: &egui::Context, frame: &eframe::Frame, mut model: Model) {
         self.model = model;
         // A worker already running this model only wants its panel back; a
         // second QEMU over the live one is not a thing the runtime allows.
@@ -197,6 +202,15 @@ impl CdjShell {
             self.enter_panel(ctx, frame);
             return;
         }
+        if let Some(installed) = self.apply_staged() {
+            model = installed;
+        } else if let Some(installed) = self.host.installed_model() {
+            // Asked for a model the slot no longer holds - the install that
+            // was to bring it was replaced before it went in: boot what is
+            // there rather than open an install over a stopped deck.
+            model = installed;
+        }
+        self.model = model;
         self.app.switch_model(model);
         match self.host.launch(model) {
             LaunchOutcome::NotProvisioned => {
@@ -204,7 +218,7 @@ impl CdjShell {
                     "cdj3k-emu: no {} firmware in slot {} - opening Install Firmware",
                     model, self.instance
                 );
-                self.wizard.open_for(model, self.instance);
+                self.open_wizard(model, self.instance);
             }
             LaunchOutcome::Started | LaunchOutcome::UiOnly => {
                 self.last_launched = Some(model);
@@ -277,41 +291,115 @@ impl CdjShell {
         }
     }
 
-    /// Take the slot over for `model`. The emulation stops first and the
-    /// window says so; the delete and the wizard wait for it to be gone,
-    /// because QEMU holds the eMMC open until then.
+    /// Open the wizard to take the viewed slot over for `model`. Whatever
+    /// runs there keeps running; the install waits for it.
     fn begin_install(&mut self, model: Model) {
-        if self.viewed_slot != self.instance {
-            // Nothing of this window's holds that slot's eMMC, so there is no
-            // emulation to stop first.
-            self.install_elsewhere(model);
-            return;
-        }
-        self.model = model;
-        self.start_install(model, true);
+        self.open_wizard(model, self.viewed_slot);
     }
 
-    /// Install into the slot the window is pointed at, which is not its own.
-    fn install_elsewhere(&mut self, model: Model) {
-        let slot = self.viewed_slot;
-        if self.slot_is_open(slot) {
-            // Its window came up while this one was asking: it owns its
-            // installation again.
-            return;
-        }
-        if let Err(e) = cdj3k_emu_storage::FirmwarePaths::new(slot).remove() {
-            eprintln!("cdj3k-emu: clearing slot {slot}'s installation failed: {e}");
-        }
+    /// Lay the viewed slot's own model down afresh.
+    fn begin_reinstall(&mut self, model: Model) {
+        self.open_wizard(model, self.viewed_slot);
+    }
+
+    fn open_wizard(&mut self, model: Model, slot: u32) {
         self.wizard.open_for(model, slot);
         self.setup = Some(SetupStep::Install);
     }
 
-    /// Reinstall the slot's own model from the menu. Nothing is deleted up
-    /// front - the wizard replaces the files as it writes them - but the
-    /// emulation still has to stop first.
-    fn begin_reinstall(&mut self, model: Model) {
-        self.wizard.open_for(model, self.instance);
-        self.start_install(model, false);
+    /// Swap in a finished install waiting for this window's slot, if nothing
+    /// runs it. Returns the model it holds.
+    fn apply_staged(&mut self) -> Option<Model> {
+        if !cdj3k_emu_runtime::worker_is_finished() {
+            return None;
+        }
+        match self.host.apply_staged() {
+            Ok(Some(record)) => {
+                eprintln!(
+                    "cdj3k-emu: slot {}: the installed {} firmware is swapped in",
+                    self.instance, record.model
+                );
+                if self.viewed_slot == self.instance {
+                    self.view_slot(self.instance);
+                }
+                Some(record.model)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                eprintln!(
+                    "cdj3k-emu: slot {}: swapping in the installed firmware failed: {e}",
+                    self.instance
+                );
+                None
+            }
+        }
+    }
+
+    /// Where the wizard's finished run went. This window's slot takes it now
+    /// unless its emulation runs; another slot takes it now unless another
+    /// window has it open, which then picks it up itself.
+    fn settle_install(&mut self, slot: u32) -> Installed {
+        if slot == self.instance {
+            if self.apply_staged().is_some() {
+                return Installed::Applied;
+            }
+            return Installed::Staged;
+        }
+        self.busy_probe.set(None);
+        match cdj3k_emu_storage::SlotClaim::take(slot) {
+            Ok(Some(claim)) => {
+                match cdj3k_emu_storage::apply_staged(&claim) {
+                    Ok(Some(_)) => Installed::Applied,
+                    Ok(None) => Installed::Staged,
+                    Err(e) => {
+                        eprintln!("cdj3k-emu: slot {slot}: swapping in the installed firmware failed: {e}");
+                        Installed::Staged
+                    }
+                }
+            }
+            Ok(None) => Installed::Staged,
+            Err(e) => {
+                eprintln!("cdj3k-emu: slot {slot}: claiming it failed: {e}");
+                Installed::Staged
+            }
+        }
+    }
+
+    /// Once a second, look for a finished install waiting for this window's
+    /// slot - from another window, or from `--provision`. It goes in at once
+    /// if nothing runs. A running emulation restarts onto it when Restart was
+    /// pressed for it elsewhere, and otherwise takes it at its next start.
+    fn check_for_install(&mut self) {
+        let now = Instant::now();
+        if now < self.next_install_check {
+            return;
+        }
+        self.next_install_check = now + Duration::from_secs(1);
+        // This window's own run settles its install when it finishes.
+        if self.wizard.target_instance() == self.instance && self.wizard.is_running() {
+            return;
+        }
+        let Some(record) = cdj3k_emu_storage::pending_install(self.instance) else {
+            return;
+        };
+        if self.worker_stopping || self.pending_launch.is_some() {
+            return;
+        }
+        if cdj3k_emu_runtime::worker_is_finished() {
+            self.apply_staged();
+        } else if record.restart {
+            self.reboot_into(record.model);
+        }
+    }
+
+    /// Restart this window's emulation as `model`, which boots whatever
+    /// install is waiting for the slot.
+    fn reboot_into(&mut self, model: Model) {
+        if !cdj3k_emu_runtime::worker_is_finished() {
+            menu_state::lock().shade_forced = true;
+            self.stop_emulation();
+        }
+        self.pending_launch = Some(model);
     }
 
     /// Empty the slot. The emulation stops first - QEMU holds the eMMC open -
@@ -361,56 +449,28 @@ impl CdjShell {
         }
     }
 
-    /// Stop the emulation, then hand the window to the wizard.
-    fn start_install(&mut self, model: Model, wipe: bool) {
-        if cdj3k_emu_runtime::worker_is_finished() {
-            self.finish_stopping_now(model, wipe);
-        } else {
-            self.pending_install = Some((model, wipe));
-            self.stop_emulation();
-            self.setup = Some(SetupStep::Stopping);
-        }
-    }
-
-    /// The emulation has stopped: take the slot's installation with it, if
-    /// this is a replacement, and hand the window to the wizard.
-    fn finish_stopping(
-        &mut self,
-        ctx: &egui::Context,
-        frame: &eframe::Frame,
-        model: Model,
-        wipe: bool,
-    ) {
-        self.finish_stopping_now(model, wipe);
-        if wipe {
-            self.show_picker_window(ctx, frame);
-        }
-    }
-
-    fn finish_stopping_now(&mut self, model: Model, wipe: bool) {
-        if wipe {
-            if let Err(e) = self.host.clear_firmware() {
-                eprintln!(
-                    "cdj3k-emu: clearing slot {}'s installation failed: {e}",
-                    self.instance
-                );
-            }
-        }
-        self.wizard.open_for(model, self.instance);
-        self.setup = Some(SetupStep::Install);
-    }
-
     /// Point the setup window at `slot`.
     fn view_slot(&mut self, slot: u32) {
         self.viewed_slot = slot;
         self.viewed_release = cdj3k_emu_storage::slot_release(slot);
+        self.busy_probe.set(None);
     }
 
-    /// Whether `slot`'s own window is up. Each slot is its own process, so
-    /// this is as much as one can know about another: its runtime directory
-    /// is there for as long as its window is.
+    /// Whether another window has `slot` open, or an emulation runs it.
+    /// Probed at most once a second.
     fn slot_is_open(&self, slot: u32) -> bool {
-        slot != self.instance && cdj3k_emu_platform::runtime_paths::instance_dir(slot).exists()
+        if slot == self.instance {
+            return false;
+        }
+        let now = Instant::now();
+        if let Some((probed, at, busy)) = self.busy_probe.get() {
+            if probed == slot && now.duration_since(at) < Duration::from_secs(1) {
+                return busy;
+            }
+        }
+        let busy = cdj3k_emu_storage::slot_in_use(slot);
+        self.busy_probe.set(Some((slot, now, busy)));
+        busy
     }
 
     /// How the picker should present the slot right now.
@@ -451,7 +511,9 @@ impl CdjShell {
         // The setup window opens centred on the main one rather than wherever
         // the window manager would have put it.
         if self.setup_pos.is_none() {
-            self.setup_pos = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min);
+            self.setup_pos = ctx
+                .input(|i| i.viewport().outer_rect)
+                .map(|r| r.center() - egui::Vec2::from(SETUP_WINDOW_SIZE) * 0.5);
         }
         let title = match step {
             SetupStep::Install => "Install Firmware",
@@ -505,21 +567,6 @@ impl CdjShell {
                                 this.wizard.draw(ui, &closed_inner);
                             });
                         }
-                        Some(SetupStep::Stopping) => draw_busy(
-                            ui,
-                            &Header {
-                                slot,
-                                model: Some(going),
-                                release: this.viewed_release.as_deref(),
-                                state: Some("STOPPING"),
-                                title: "Emulation",
-                                sub: "The emulation has to stop before its installation may be touched.",
-                                switchable: false,
-                            },
-                            &format!("Stopping the {} emulation…", going.title()),
-                            
-                                "the install wizard will launch as soon as the process finishes.",
-                        ),
                         Some(SetupStep::ConfirmDelete) => {
                             let view = this.picker_view(None, None, true);
                             action = draw_delete_confirm(ui, &view);
@@ -558,57 +605,17 @@ impl CdjShell {
 
     /// Shut the setup window, unless a provisioning run would be orphaned.
     ///
-    /// Whatever is behind it is a picker: the panel of a slot that still has
-    /// an installation becomes one when its emulation has been stopped, and a
-    /// slot with none never left the main window's own startup picker. So
-    /// closing always means going back to that one rather than to this
-    /// window's `Pick` step, which would be the same cards again in a second
-    /// window.
+    /// Whatever is behind it is the running panel or the main window's own
+    /// startup picker. So closing always means going back to that rather than
+    /// to this window's `Pick` step, which would be the same cards again in a
+    /// second window.
     fn close_setup(&mut self) {
-        if self.wizard.is_running() {
+        if self.wizard.is_running() || matches!(self.setup, Some(SetupStep::StoppingToDelete)) {
             return;
         }
         self.setup = None;
         self.view_slot(self.instance);
         self.wizard.reset();
-        // An install that was called off had already stopped the deck, so the
-        // panel behind the window is a dead one.
-        if matches!(self.screen, Screen::Panel) && cdj3k_emu_runtime::worker_is_finished() {
-            self.reveal_picker = true;
-        }
-    }
-
-    /// Whether the main window has anything to show. While the emulation is
-    /// stopping and while firmware is going in it does not: the setup window
-    /// is the whole of the app, and a deck's window behind it would be one
-    /// that is going away or already gone. `Pick` is only ever reached over a
-    /// running panel, which stays where it is.
-    fn main_window_idle(&self) -> bool {
-        matches!(
-            self.setup,
-            Some(SetupStep::Stopping | SetupStep::Install)
-        )
-    }
-
-    /// Show or hide the main window to match, once per change.
-    ///
-    /// The setup window is drawn inside the main window's own update, so while
-    /// the main window is hidden the loop has to be kept turning by hand or
-    /// the setup window stops repainting with it.
-    fn sync_main_window(&mut self, ctx: &egui::Context) {
-        let hide = self.main_window_idle();
-        if hide != self.main_hidden {
-            self.main_hidden = hide;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(!hide));
-            // Coming back from hidden, the setup window that was in front has
-            // gone, so nothing else would raise this one.
-            if !hide {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            }
-        }
-        if hide {
-            ctx.request_repaint_after(Duration::from_millis(16));
-        }
     }
 
     fn apply_picker_action(&mut self, action: Option<PickerAction>) {
@@ -627,24 +634,19 @@ impl CdjShell {
         }
     }
 
-    /// A slot was (re)provisioned: boot it if it is ours.
-    fn on_firmware_provisioned(
-        &mut self,
-        ctx: &egui::Context,
-        frame: &eframe::Frame,
-        slot: u32,
-        model: Model,
-    ) {
-        if slot != self.instance {
+    /// The Done banner's button: boot this window's slot onto its new
+    /// installation, restarting a running emulation. For another slot, ask
+    /// its window to restart onto it, or bring up the window of a slot it
+    /// already went into.
+    fn on_firmware_provisioned(&mut self, slot: u32, model: Model) {
+        if slot == self.instance {
+            self.reboot_into(model);
             return;
         }
-        if cdj3k_emu_runtime::worker_is_finished() {
-            self.launch(ctx, frame, model);
-        } else {
-            // The live worker boots the (re)installed image itself.
-            let mut s = menu_state::lock();
-            s.shade_forced = true;
-            s.restart_requested = true;
+        match cdj3k_emu_storage::request_restart(slot) {
+            Ok(true) => {}
+            Ok(false) => cdj3k_emu_platform::menu::open_instance(slot),
+            Err(e) => eprintln!("cdj3k-emu: asking slot {slot} to restart failed: {e}"),
         }
     }
 }
@@ -655,7 +657,10 @@ impl eframe::App for CdjShell {
         // runtime-stop budget (which freezes the window for 1-2 s), defer
         // the actual close until the worker has finished.
         if ctx.input(|i| i.viewport().close_requested()) {
-            if !self.shutdown_in_progress {
+            if self.wizard.is_running() && !self.shutdown_in_progress {
+                // An install under way finishes first; its window says so.
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            } else if !self.shutdown_in_progress {
                 self.shutdown_in_progress = true;
                 menu_state::APP_SHUTDOWN.store(true, std::sync::atomic::Ordering::Relaxed);
                 menu_state::lock().shade_forced = true;
@@ -682,11 +687,14 @@ impl eframe::App for CdjShell {
         if self.worker_stopping && cdj3k_emu_runtime::reap_finished_worker() {
             self.worker_stopping = false;
         }
+        // The worker retired itself to restart onto a finished install.
+        if cdj3k_emu_runtime::worker_is_finished()
+            && std::mem::take(&mut menu_state::lock().relaunch_requested)
+        {
+            cdj3k_emu_runtime::reap_finished_worker();
+            self.pending_launch = Some(self.model);
+        }
         if !self.worker_stopping {
-            // The emulation is gone, so the eMMC is ours to delete at last.
-            if let Some((model, wipe)) = self.pending_install.take() {
-                self.finish_stopping(ctx, frame, model, wipe);
-            }
             if std::mem::take(&mut self.pending_delete) {
                 self.empty_own_slot();
                 self.reveal_picker = false;
@@ -701,8 +709,13 @@ impl eframe::App for CdjShell {
         }
 
         // The startup picker is already a choice of emulation; a second one
-        // over it would be the same cards twice.
-        if want_manage && matches!(self.screen, Screen::Panel) {
+        // over it would be the same cards twice. A run under way keeps the
+        // window, as does a slot being emptied.
+        if want_manage
+            && matches!(self.screen, Screen::Panel)
+            && !self.wizard.is_running()
+            && !matches!(self.setup, Some(SetupStep::StoppingToDelete))
+        {
             self.view_slot(self.instance);
             self.setup = Some(SetupStep::Pick);
         }
@@ -729,17 +742,21 @@ impl eframe::App for CdjShell {
         // provisions firmware, so it must be reachable precisely when QEMU
         // isn't running.
         self.wizard.poll();
+        if self.wizard.take_finished() {
+            let installed = self.settle_install(self.wizard.target_instance());
+            self.wizard.set_installed(installed);
+        }
+        self.check_for_install();
         let action = self.show_setup_window(ctx);
         self.apply_picker_action(action);
         if let Some((slot, model)) = self.wizard.take_boot_request() {
             self.setup = None;
             self.wizard.reset();
-            self.on_firmware_provisioned(ctx, frame, slot, model);
+            self.on_firmware_provisioned(slot, model);
         }
         if std::mem::take(&mut self.reveal_picker) {
             self.show_picker_window(ctx, frame);
         }
-        self.sync_main_window(ctx);
 
         cdj3k_emu_platform::menu::sync_menu();
         if matches!(self.screen, Screen::Panel) {

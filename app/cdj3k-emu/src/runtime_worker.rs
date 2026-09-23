@@ -46,7 +46,15 @@ pub fn spawn(instance: Option<QemuInstance>, config: QemuConfig, prebuilt_net: P
 }
 
 fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net: PrebuiltNet) {
-    menu_state::lock().qemu_running = instance.is_some();
+    {
+        let mut s = menu_state::lock();
+        s.qemu_running = instance.is_some();
+        // A restart that went through a relaunch forced the shade; the new
+        // QEMU is up, and the boot shade holds until its first frames.
+        if instance.is_some() {
+            s.shade_forced = false;
+        }
+    }
     let provider = MacOsDiskProvider;
     let cfg_client = CfgClient::new(&config.sock_dir());
     let mut usb = UsbManager::new(config.usb_placeholder_path(), cfg_client.clone());
@@ -98,7 +106,20 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
 
     loop {
         // ── Exit gates: app shutdown, or the setup window retiring this worker ─
-        let retire = std::mem::take(&mut menu_state::lock().worker_exit_requested);
+        let mut retire = std::mem::take(&mut menu_state::lock().worker_exit_requested);
+        // A restart with a finished install waiting is the shell's to do: it
+        // launches again, and a launch swaps the install in. The guest
+        // rebooting counts, as does the menu's restart.
+        let restarting = menu_state::lock().restart_requested
+            || instance.as_ref().is_some_and(|i| !i.is_running());
+        if !retire && restarting && cdj3k_emu_storage::pending_install(config.instance_id).is_some()
+        {
+            let mut s = menu_state::lock();
+            s.restart_requested = false;
+            s.relaunch_requested = true;
+            s.shade_forced = true;
+            retire = true;
+        }
         if APP_SHUTDOWN.load(Ordering::Relaxed) || retire {
             // Drop PcLink first so its threads exit while the socket is still
             // valid; otherwise the reader thread blocks on a half-closed fd.

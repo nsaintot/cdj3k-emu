@@ -203,6 +203,29 @@ fn main() {
         s.ui_only = no_spawn;
     }
 
+    // Held until the process exits, so other windows see the slot as open. A
+    // process without it never swaps an install into the slot.
+    static SLOT_CLAIM: std::sync::OnceLock<cdj3k_emu_storage::SlotClaim> =
+        std::sync::OnceLock::new();
+    match cdj3k_emu_storage::SlotClaim::take(instance) {
+        Ok(Some(claim)) => {
+            let _ = SLOT_CLAIM.set(claim);
+        }
+        // Another window owns the slot: bring it forward rather than run a
+        // second emulation over it. `--provision` stages and needs no claim.
+        Ok(None) if provision_path.is_none() => {
+            eprintln!("cdj3k-emu: slot {instance} is already open in another process");
+            if let Some(pid) = cdj3k_emu_storage::slot_holder(instance) {
+                if let Err(e) = cdj3k_emu_platform::desktop::activate_process(pid) {
+                    eprintln!("cdj3k-emu: bringing slot {instance}'s window forward failed: {e}");
+                }
+            }
+            std::process::exit(0);
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!("cdj3k-emu: claiming slot {instance} failed: {e}"),
+    }
+
     // Every setting is per slot, so the app-wide settings file holds no keys
     // and nothing else writes it.
     cdj3k_emu_storage::prune_app_file();
@@ -276,10 +299,24 @@ fn main() {
             std::process::exit(2);
         };
         match cdj3k_emu_ui::provision_blocking(upd, key_path.as_deref(), instance, model) {
-            Ok(()) => {
-                eprintln!("cdj3k-emu: {model} firmware provisioned in slot {instance}");
-                std::process::exit(0);
-            }
+            // The slot's window, if one is open, swaps it in itself.
+            Ok(()) => match SLOT_CLAIM.get().map(cdj3k_emu_storage::apply_staged) {
+                Some(Ok(_)) => {
+                    eprintln!("cdj3k-emu: {model} firmware installed in slot {instance}");
+                    std::process::exit(0);
+                }
+                Some(Err(e)) => {
+                    eprintln!("cdj3k-emu: swapping the installed firmware in failed: {e}");
+                    std::process::exit(1);
+                }
+                None => {
+                    eprintln!(
+                        "cdj3k-emu: {model} firmware installed for slot {instance}; its open \
+                         window swaps it in on the emulation's next start"
+                    );
+                    std::process::exit(0);
+                }
+            },
             Err(e) => {
                 eprintln!("cdj3k-emu: provisioning failed: {e}");
                 std::process::exit(1);
@@ -300,6 +337,7 @@ fn main() {
         no_emmc,
         serial_log,
         ui_only: no_spawn,
+        claim: SLOT_CLAIM.get(),
     };
 
     // ── UI ────────────────────────────────────────────────────────────────

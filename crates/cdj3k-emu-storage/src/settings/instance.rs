@@ -13,7 +13,7 @@ pub struct InstanceSettings {
     /// Locally-administered MAC, e.g. "0a:11:22:33:44:55". Stable across launches.
     pub mac: String,
     /// SoC serial the guest publishes as the `Serial` line of `/proc/cpuinfo`,
-    /// e.g. "0123456789abcdb6": 16 lowercase hex digits, last byte non-zero.
+    /// e.g. "0123456789abcd05": 16 lowercase hex digits, last byte non-zero.
     ///
     /// `genkey_pr` derives the `cabinet.img` LUKS passphrase as
     /// `sha512hex((model + serial) repeated N + 1 times)`, where `N` is
@@ -49,8 +49,8 @@ pub struct InstanceSettings {
     pub pc_link_enabled: bool,
     /// The model this slot emulates - the one its [`FirmwarePaths`] hold.
     /// `None` until something is installed. The app opens the slot on this
-    /// model directly and shows the picker only for a fresh slot or when
-    /// "Switch Emulation" asks for one.
+    /// model directly and shows the picker only for a fresh slot or in the
+    /// "Manage Emulation" window.
     ///
     /// [`FirmwarePaths`]: crate::FirmwarePaths
     pub model: Option<Model>,
@@ -195,15 +195,24 @@ impl InstanceSettings {
             .cloned()
     }
 
-    /// Mint a fresh SoC serial for `instance_id`, persist it and return it.
-    ///
-    /// Called by the firmware installer when it recreates the eMMC.  A minted
-    /// serial opens no cabinet: staging a real deck's `cabinet.img` also needs
-    /// that deck's serial, which [`Self::set_soc_serial`] pins.  Nothing else
+    /// A fresh SoC serial, not yet given to any slot. The firmware installer
+    /// keys a new eMMC's cabinet for it and records it once the install is
+    /// complete. A minted serial opens no real deck's cabinet: that needs the
+    /// deck's own serial, which [`Self::set_soc_serial`] pins. Nothing else
     /// may change the serial - see [`Self::soc_serial`].
-    pub fn regenerate_soc_serial(instance_id: u32) -> io::Result<String> {
-        let serial = generate_soc_serial();
-        Self::update(instance_id, |s| s.soc_serial = serial.clone())?;
+    pub fn mint_soc_serial() -> String {
+        generate_soc_serial()
+    }
+
+    /// `serial` in the stored form, or an error if `genkey_pr` could not use
+    /// it.
+    pub fn parse_soc_serial(serial: &str) -> io::Result<String> {
+        let serial = serial.trim().to_ascii_lowercase();
+        if !is_valid_soc_serial(&serial) {
+            return Err(io::Error::other(format!(
+                "not a usable SoC serial: {serial:?} - want 16 hex digits with a non-zero last byte"
+            )));
+        }
         Ok(serial)
     }
 
@@ -213,12 +222,7 @@ impl InstanceSettings {
     /// `genkey_pr` derives that deck's `cabinet.img` passphrase, so its cabinet
     /// opens here. Rejects anything `genkey_pr` could not use.
     pub fn set_soc_serial(instance_id: u32, serial: &str) -> io::Result<String> {
-        let serial = serial.trim().to_ascii_lowercase();
-        if !is_valid_soc_serial(&serial) {
-            return Err(io::Error::other(format!(
-                "not a usable SoC serial: {serial:?} - want 16 hex digits with a non-zero last byte"
-            )));
-        }
+        let serial = Self::parse_soc_serial(serial)?;
         Self::update(instance_id, {
             let serial = serial.clone();
             move |s| s.soc_serial = serial
@@ -304,8 +308,9 @@ mod tests {
         assert_eq!(s.mac, mac, "the MAC survives updates");
         assert_eq!(s.soc_serial, serial, "the SoC serial survives updates");
         // Only a firmware install mints a new one, and it sticks.
-        let fresh = InstanceSettings::regenerate_soc_serial(slot).unwrap();
+        let fresh = InstanceSettings::mint_soc_serial();
         assert!(is_valid_soc_serial(&fresh), "{fresh}");
+        InstanceSettings::update(slot, |s| s.soc_serial = fresh.clone()).unwrap();
         assert_eq!(InstanceSettings::load_or_init(slot).soc_serial, fresh);
         assert_eq!(s.model, Some(Model::Cdj3kx));
         assert!(s.audio_enabled);
@@ -320,8 +325,8 @@ mod tests {
 
         // Pinning a real deck's serial normalises and sticks; a value
         // genkey_pr could not use is refused without disturbing it.
-        let pinned = InstanceSettings::set_soc_serial(slot, " 0123456789ABCDB6 ").unwrap();
-        assert_eq!(pinned, "0123456789abcdb6", "trimmed and lower-cased");
+        let pinned = InstanceSettings::set_soc_serial(slot, " 0123456789ABCD05 ").unwrap();
+        assert_eq!(pinned, "0123456789abcd05", "trimmed and lower-cased");
         assert!(InstanceSettings::set_soc_serial(slot, "0123456789abcd00").is_err());
         assert!(InstanceSettings::set_soc_serial(slot, "deadbeef").is_err());
         assert_eq!(InstanceSettings::load_or_init(slot).soc_serial, pinned);

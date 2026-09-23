@@ -2,9 +2,11 @@ pub mod emmc;
 pub mod gpt;
 mod qcow2;
 pub mod settings;
+mod staging;
 
 pub use emmc::{default_path, provision_emmc, EmmcConfig, FirmwareInfo};
 pub use settings::{prune_app_file, InstanceSettings, PanelSettings};
+pub use staging::{apply_staged, pending_install, request_restart, StagedFirmware, StagedRecord};
 
 use std::path::PathBuf;
 
@@ -48,7 +50,7 @@ pub struct FirmwarePaths {
 }
 
 /// The three boot artefacts, by name, for the whole-slot operations below.
-const FIRMWARE_FILES: [&str; 3] = ["Image", "initramfs-patched.cpio.gz", "emmc.qcow2"];
+pub(crate) const FIRMWARE_FILES: [&str; 3] = ["Image", "initramfs-patched.cpio.gz", "emmc.qcow2"];
 
 impl FirmwarePaths {
     pub fn new(instance_id: u32) -> Self {
@@ -71,9 +73,13 @@ impl FirmwarePaths {
     }
 
     /// Delete the slot's boot artefacts, including everything the guest wrote
-    /// to its eMMC, so another model can be installed over them. QEMU holds
-    /// the eMMC open, so the emulation has to be stopped first.
+    /// to its eMMC and a finished install waiting to replace them, so another
+    /// model can be installed over them. Refused while an emulation holds the
+    /// eMMC's `flock`.
     pub fn remove(&self) -> std::io::Result<()> {
+        let _lock = lock_exclusive_retry(&self.emmc).map_err(|_| emulation_running())?;
+        forget_release(self);
+        staging::discard_staged(&self.dir().join(staging::STAGING))?;
         for path in [&self.kernel, &self.initramfs, &self.emmc] {
             match std::fs::remove_file(path) {
                 Ok(()) => {}
@@ -83,6 +89,119 @@ impl FirmwarePaths {
         }
         Ok(())
     }
+}
+
+fn emulation_running() -> std::io::Error {
+    std::io::Error::other("the slot's emulation is running")
+}
+
+/// A process's claim on a slot: an exclusive `flock` on `instance-N/.open`,
+/// held for as long as the process has the slot open and released by the OS
+/// when it exits, however it exits. The file holds the holder's pid.
+#[derive(Debug)]
+pub struct SlotClaim {
+    instance_id: u32,
+    _file: std::fs::File,
+}
+
+impl SlotClaim {
+    /// Claim `instance_id` for this process; `None` if another process holds
+    /// it. A probe ([`slot_in_use`]) holds the lock for an instant, so a
+    /// failed try is retried for a moment first.
+    pub fn take(instance_id: u32) -> std::io::Result<Option<Self>> {
+        let dir = instance_dir(instance_id);
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(".open");
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)?;
+        match lock_exclusive_retry(&path) {
+            Ok(Some(mut file)) => {
+                use std::io::{Seek, Write};
+                file.set_len(0)?;
+                file.rewind()?;
+                write!(file, "{}", std::process::id())?;
+                Ok(Some(Self {
+                    instance_id,
+                    _file: file,
+                }))
+            }
+            Ok(None) => Err(std::io::Error::other(format!(
+                "{} vanished",
+                path.display()
+            ))),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// The pid of the process holding `instance_id`'s [`SlotClaim`], if one does.
+pub fn slot_holder(instance_id: u32) -> Option<u32> {
+    let path = instance_dir(instance_id).join(".open");
+    match lock_exclusive(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            std::fs::read_to_string(&path).ok()?.trim().parse().ok()
+        }
+        _ => None,
+    }
+}
+
+/// Whether another process has slot `instance_id` open ([`SlotClaim`]) or an
+/// emulation holds its eMMC. This process's own claim counts: ask about
+/// other slots.
+pub fn slot_in_use(instance_id: u32) -> bool {
+    let claim = instance_dir(instance_id).join(".open");
+    lock_exclusive(&claim).is_err()
+        || lock_exclusive(&FirmwarePaths::new(instance_id).emmc).is_err()
+}
+
+/// [`lock_exclusive`], tried again for up to a quarter of a second while
+/// another process holds the lock. For taking a lock to keep it: every probe
+/// holds one for an instant, and a single try could land on that instant.
+fn lock_exclusive_retry(path: &std::path::Path) -> std::io::Result<Option<std::fs::File>> {
+    let mut tries = 0;
+    loop {
+        match lock_exclusive(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && tries < 12 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => return r,
+        }
+    }
+}
+
+/// An exclusive `flock` on `path`, held until the returned file drops; `None`
+/// when there is no file to lock. Fails with [`WouldBlock`] if another open
+/// file holds it.
+///
+/// [`WouldBlock`]: std::io::ErrorKind::WouldBlock
+fn lock_exclusive(path: &std::path::Path) -> std::io::Result<Option<std::fs::File>> {
+    let f = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `f` is an open file for the duration of the call.
+        let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("{} is in use", path.display()),
+            ));
+        }
+    }
+    Ok(Some(f))
 }
 
 /// What slot `instance_id` holds: the deck installed in it and the firmware
@@ -103,6 +222,13 @@ pub fn slot_summary(instance_id: u32) -> Option<(Model, Option<String>)> {
 /// predate the key costs one read per process rather than one per ask.
 static ENV_RELEASE: std::sync::Mutex<std::collections::BTreeMap<u32, Option<String>>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Drop what [`slot_release`] remembers of the slot `paths` belong to, its
+/// eMMC having been replaced or removed.
+fn forget_release(paths: &FirmwarePaths) {
+    let mut cache = ENV_RELEASE.lock().expect("release cache");
+    cache.retain(|&slot, _| FirmwarePaths::new(slot).emmc != paths.emmc);
+}
 
 /// The firmware release installed in `instance_id`.
 ///
@@ -174,11 +300,7 @@ mod tests {
     #[test]
     fn an_unrecorded_slot_is_a_cdj3000() {
         let _home = TestHome::new("adopt");
-        let root = instance_dir(1);
-        std::fs::create_dir_all(&root).unwrap();
-        for name in FIRMWARE_FILES {
-            std::fs::write(root.join(name), b"cdj3k").unwrap();
-        }
+        write_all(&FirmwarePaths::new(1), "cdj3k");
         adopt_unrecorded_slot(1);
         assert_eq!(
             settings::InstanceSettings::saved_model(1),
@@ -186,5 +308,45 @@ mod tests {
         );
         adopt_unrecorded_slot(2);
         assert_eq!(settings::InstanceSettings::saved_model(2), None);
+    }
+
+    fn write_all(paths: &FirmwarePaths, tag: &str) {
+        for path in [&paths.kernel, &paths.initramfs, &paths.emmc] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, tag).unwrap();
+        }
+    }
+
+    fn read_all(paths: &FirmwarePaths) -> Vec<String> {
+        [&paths.kernel, &paths.initramfs, &paths.emmc]
+            .iter()
+            .map(|p| std::fs::read_to_string(p).unwrap())
+            .collect()
+    }
+
+    /// A slot another process has open, or whose eMMC an emulation holds,
+    /// is in use; neither is once the holder lets go.
+    #[test]
+    fn a_slot_is_in_use_while_claimed_or_running() {
+        let _home = TestHome::new("claim");
+        assert!(!slot_in_use(2));
+
+        let claim = SlotClaim::take(2).unwrap().expect("first claim");
+        assert!(SlotClaim::take(2).unwrap().is_none(), "one claim at a time");
+        assert!(slot_in_use(2));
+        assert_eq!(slot_holder(2), Some(std::process::id()));
+        drop(claim);
+        assert!(!slot_in_use(2));
+        assert_eq!(slot_holder(2), None);
+
+        let live = FirmwarePaths::new(2);
+        write_all(&live, "old");
+        let qemu = lock_exclusive(&live.emmc).unwrap();
+        assert!(slot_in_use(2));
+        assert!(live.remove().is_err(), "a running slot's files stay");
+        assert_eq!(read_all(&live), ["old", "old", "old"]);
+        drop(qemu);
+        live.remove().unwrap();
+        assert!(!live.provisioned());
     }
 }

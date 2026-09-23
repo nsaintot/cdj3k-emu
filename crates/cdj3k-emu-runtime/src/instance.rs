@@ -103,27 +103,35 @@ impl QemuInstance {
     /// Kills any stale QEMU from a previous .app run before spawning.
     #[cfg(target_os = "macos")]
     pub fn spawn(config: QemuConfig) -> Result<Self, InstanceError> {
-        kill_stale(config.qmp_port, &config.sock_dir());
-
-        std::fs::create_dir_all(config.sock_dir()).map_err(InstanceError::SockDir)?;
-
         // Exclusive non-blocking flock on the eMMC qcow2 - prevents two cdj3k-emu
         // instances from corrupting the same image. The lock is released when
-        // the file handle held in Inner is dropped.
+        // the file handle held in Inner is dropped. Another window probing
+        // whether the slot is in use holds it for an instant, so a failed try
+        // is retried for a moment before giving up.
         let emmc_lock = if let Some(emmc) = &config.emmc_img {
             let f = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .open(emmc)
                 .map_err(InstanceError::SockDir)?;
-            let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-            if rc != 0 {
-                return Err(InstanceError::EmmcLocked(emmc.clone()));
+            let mut tries = 0;
+            while unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                tries += 1;
+                if tries > 12 {
+                    return Err(InstanceError::EmmcLocked(emmc.clone()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
             Some(f)
         } else {
             None
         };
+
+        // Only once the lock is ours: while another window's emulation runs,
+        // that window holds the lock, and the QEMU on this QMP port is live.
+        kill_stale(config.qmp_port, &config.sock_dir());
+
+        std::fs::create_dir_all(config.sock_dir()).map_err(InstanceError::SockDir)?;
 
         if config.shm {
             // Guest RAM file matches QemuConfig::MEM_BYTES; sparse so host disk usage is zero.
