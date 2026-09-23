@@ -46,6 +46,9 @@ pub struct ModelSpec {
     /// `/proc/cpuinfo` serial to derive the cabinet.img passphrase, so it has
     /// to match the deck it claims to be.
     pub model_env: &'static str,
+    /// The U-Boot variable the deck's updater records `images/system.rev`
+    /// under: `rev_kernel` on the CDJ-3000, `rev_system` on the CDJ-3000X.
+    pub system_rev_env: &'static str,
     /// What Pioneer calls this deck's `.UPD`, version suffix aside:
     /// `CDJ3Kv322.UPD`, `CDJ3000Xv140.UPD`. The installer has nothing else to
     /// go on - a `.UPD` is a bare LUKS container and its header names no

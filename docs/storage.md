@@ -87,7 +87,9 @@ CRC32-LE of the rest, then NUL-separated `key=value` pairs. Variables include
 `bootcmd_emmc`, `bootargs_emmc`, `kernel_addr_r`, `fdt_addr_r`, the per-
 instance `serial_number` (`DJMP{instance_id:06}EH`), and firmware metadata
 read from the .UPD ISO (`miniloader` MD5, `release`, `rev_apl`,
-`rev_system`) - see `emmc.rs`.
+and the system revision under the model's `system_rev_env`: `rev_kernel` on
+the CDJ-3000, `rev_system` on the CDJ-3000X, as each deck's updater writes
+it) - see `emmc::write_uboot_env`.
 
 ### Cabinet image
 

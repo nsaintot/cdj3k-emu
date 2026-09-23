@@ -63,6 +63,7 @@ pub const SPEC: ModelSpec = ModelSpec {
     },
     // Not verified against hardware.
     model_env: "CDJ3K-RK3399",
+    system_rev_env: "rev_kernel",
     firmware_file_names: &["CDJ3K"],
     miso: MisoMap {
         shift: 0,

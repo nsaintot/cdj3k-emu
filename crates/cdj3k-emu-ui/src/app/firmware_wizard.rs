@@ -844,10 +844,10 @@ fn provision(
         Ok(info) => {
             let unknown = "(unknown)";
             log!(
-                "[firmware] release={} rev_apl={} rev_kernel={} miniloader={}",
+                "[firmware] release={} rev_apl={} rev_system={} miniloader={}",
                 info.release.as_deref().unwrap_or(unknown),
                 info.rev_apl.as_deref().unwrap_or(unknown),
-                info.rev_kernel.as_deref().unwrap_or(unknown),
+                info.rev_system.as_deref().unwrap_or(unknown),
                 info.miniloader.as_deref().unwrap_or(unknown),
             );
             info

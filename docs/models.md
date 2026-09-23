@@ -8,8 +8,8 @@
 
 `cdj3k_emu_panel::Model` names a player; its `ModelSpec` (`cdj3k.rs`,
 `cdj3kx.rs`) carries everything that differs: framebuffer size, touch space,
-the U-Boot `model` variable, the `.UPD` file names, the MISO/MOSI maps and
-the LED profiles. Consumers read the spec rather than match
+the U-Boot `model` and system-revision variables, the `.UPD` file names, the
+MISO/MOSI maps and the LED profiles. Consumers read the spec rather than match
 on the model; the only matches are `Model::spec`, the slate lookup
 (`slate::for_model`) and the panel window's autosave name. Adding a player is a
 spec, a `Model` variant and a slate.
@@ -38,6 +38,7 @@ the Pioneer image (rootfs and player app) and what the spec feeds into it.
 | Player unit / process | `EP122.service` / `EP122` | `EP145.service` / `EP145` |
 | `.UPD` name | `CDJ3K…` | `CDJ3000X…` |
 | U-Boot `model` | `CDJ3K-RK3399` | `CDJ3000X` |
+| System revision variable | `rev_kernel` | `rev_system` |
 | Framebuffer (`Model::main_lcd`) | 1280x720 | 1280x800 |
 | Touch | the sub-CPU frame, read by the app | a `gt928` input device the shim synthesises |
 | `subucom_virt.ko model=` | `cdj3k` | `cdj3kx` (the shifted frame, below) |

@@ -50,6 +50,7 @@ pub const SPEC: ModelSpec = ModelSpec {
     touch: TouchSpace::ScreenPixels,
     // Read from a real unit.
     model_env: "CDJ3000X",
+    system_rev_env: "rev_system",
     firmware_file_names: &["CDJ3000X"],
     miso: MisoMap {
         shift: MISO_SHIFT,

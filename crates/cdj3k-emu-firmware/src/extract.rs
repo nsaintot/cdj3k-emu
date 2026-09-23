@@ -24,8 +24,8 @@ pub struct FirmwareInfo {
     pub release: Option<String>,
     /// Player application revision number (e.g. `"14926"`).
     pub rev_apl: Option<String>,
-    /// Kernel revision number (e.g. `"14944"`).
-    pub rev_kernel: Option<String>,
+    /// System image revision number, from `IMAGES/SYSTEM.REV` (e.g. `"14944"`).
+    pub rev_system: Option<String>,
     /// MD5 of `miniloader.img` (e.g. `"47e3ef9b7f78f5b9be317882a74e9527"`).
     pub miniloader: Option<String>,
 }
@@ -60,7 +60,7 @@ pub fn read_firmware_info(iso_path: &Path) -> Result<FirmwareInfo, ExtractError>
 
     info.release = read_trimmed(&mut cursor, "IMAGES/RELEASE.TXT");
     info.rev_apl = read_trimmed(&mut cursor, "IMAGES/APP.REV");
-    info.rev_kernel = read_trimmed(&mut cursor, "IMAGES/SYSTEM.REV");
+    info.rev_system = read_trimmed(&mut cursor, "IMAGES/SYSTEM.REV");
     cursor.set_position(0);
     info.miniloader = read_iso_file(&mut cursor, "IMAGES/MINILOADER.IMG")
         .ok()

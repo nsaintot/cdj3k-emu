@@ -162,7 +162,7 @@ fn write_uboot_env(
         ("ramdisk_addr_r", "0x0a200000"),
         ("release", fw.release.as_deref().unwrap_or("")),
         ("rev_apl", fw.rev_apl.as_deref().unwrap_or("")),
-        ("rev_system", fw.rev_kernel.as_deref().unwrap_or("")),
+        (model.spec().system_rev_env, fw.rev_system.as_deref().unwrap_or("")),
         ("serial_number", &serial),
         ("soc", "rockchip"),
         ("stderr", "serial,vidconsole"),
@@ -199,7 +199,7 @@ fn write_uboot_env(
 }
 
 fn sectors(bytes: u64) -> u64 {
-    (bytes + SECTOR - 1) / SECTOR
+    bytes.div_ceil(SECTOR)
 }
 
 /// Marker for the staged cabinet image, first line of a 512-byte ASCII header
@@ -297,6 +297,27 @@ fn write_gpt_raw(raw_path: &Path, config: &EmmcConfig) -> std::io::Result<()> {
     )
 }
 
+fn convert_to_qcow2(raw: &Path, out: &Path) -> std::io::Result<()> {
+    let status = Command::new(cdj3k_emu_platform::bundled::tool("qemu-img"))
+        .args([
+            "convert",
+            "-f",
+            "raw",
+            "-O",
+            "qcow2",
+            "-o",
+            "preallocation=off",
+            &raw.to_string_lossy(),
+            &out.to_string_lossy(),
+        ])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("qemu-img convert failed"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,26 +359,5 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap().len(), raw.len());
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-fn convert_to_qcow2(raw: &Path, out: &Path) -> std::io::Result<()> {
-    let status = Command::new(cdj3k_emu_platform::bundled::tool("qemu-img"))
-        .args([
-            "convert",
-            "-f",
-            "raw",
-            "-O",
-            "qcow2",
-            "-o",
-            "preallocation=off",
-            &raw.to_string_lossy(),
-            &out.to_string_lossy(),
-        ])
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other("qemu-img convert failed"))
     }
 }
