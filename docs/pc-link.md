@@ -56,7 +56,7 @@ diverge: HID terminates in the app, MIDI needs a third process.
               │  HidBackend           │            │ instance-<id>/             │
               │  IOHIDUserDevice      │            │   midi-driver.sock         │
               │  (needs entitlement)  │            │ app BINDS, plugin DIALS    │
-              └──────────┬────────────┘            │ identity, then raw MIDI       │
+              └──────────┬────────────┘            │ identity, then raw MIDI    │
                          │                         └─────────────┬──────────────┘
                          ▼                                       ▼
                     ┌──────────┐              ┌─ MIDIServer (Apple daemon) ─────┐

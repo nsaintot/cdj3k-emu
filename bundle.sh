@@ -399,8 +399,9 @@ fi
 # ── CoreMIDI driver plugin ───────────────────────────────────────────────────
 # Host bundle (not a cargo/qemu artifact), so build it here regardless of
 # --no-build.  Shipped in Resources; pc_link::midi_driver::ensure_driver_installed
-# copies it into ~/Library/Audio/MIDI Drivers on the first PC Link toggle.  The
-# --deep codesign below re-signs it with the real identity + hardened runtime.
+# copies it into ~/Library/Audio/MIDI Drivers on the first PC Link toggle.
+# --deep does not descend into Resources, so the codesign step signs it
+# explicitly before sealing the app.
 echo "==> Building CoreMIDI driver plugin"
 make -C "$REPO_ROOT/tools/midi-driver" clean >/dev/null 2>&1 || true
 make -C "$REPO_ROOT/tools/midi-driver"
@@ -488,6 +489,9 @@ ENT
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
     echo "==> Codesigning bundle (identity: $SIGN_IDENTITY)"
+    # Nested code in Resources is sealed as data by --deep, not re-signed.
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
+        "$RESOURCES_DIR/CDJ3KEmuMIDI.plugin"
     # Deep-sign all nested binaries first (no entitlements on helpers/dylibs).
     codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR"
     # --deep strips entitlements; the main binary is signed again here.

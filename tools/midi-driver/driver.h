@@ -51,6 +51,13 @@ struct slot {
     uint32_t        usb_vp;   /* (vid << 16) | pid */
     CFStringRef     name;     /* product, released in destroy_slot */
     CFStringRef     maker;    /* manufacturer, released in destroy_slot */
+    /* Message assembly for guest -> host bytes, which arrive as an unframed
+     * stream: a MIDIPacket must carry whole messages. */
+    Byte            rs;       /* running status, 0 when none */
+    Byte            msg[3];   /* message in progress; msg[0] == 0 when none */
+    Byte            have;     /* data bytes held in msg[1..] */
+    Byte            need;     /* data bytes msg[0] takes */
+    Byte            in_sx;    /* inside a SysEx */
 };
 /* refCon layout: generation in the high bits, slot index in the low.  A
  * Send() arriving on an endpoint whose slot has since been reused carries the
@@ -82,7 +89,11 @@ struct pc_link_identity {
 extern os_log_t g_log;
 
 extern MIDIDriverRef g_owner;
-extern volatile int  g_running;
+/* Whether the run that began at `epoch` is still current: false once Stop()
+ * has been called, even if a Start() followed it. */
+int driver_live(uint32_t epoch);
+/* Blocks the pump until the driver is started; returns the run's epoch. */
+uint32_t driver_wait_started(void);
 
 /* device.c */
 void configure_device(MIDIDeviceRef dev, const struct slot *sl);
@@ -90,7 +101,12 @@ void remove_stale_devices(void);
 int  create_slot_device(struct slot *sl, int index);
 MIDIDeviceRef slot_detach(struct slot *sl);
 void slot_retire(MIDIDeviceRef dev, uint32_t location);
-void emit_from_slot(struct slot *sl, const unsigned char *buf, int n);
+/* Bytes read per pump wake.  Bounds the packet list slot_parse fills. */
+#define READ_CHUNK 256
+/* Fits the worst case: one packet per input byte, each up to 3 data bytes. */
+#define PARSE_LIST_BYTES 4096
+int  slot_parse(struct slot *sl, const unsigned char *buf, int n,
+                MIDIPacketList *pl, size_t cap);
 
 /* link.c */
 void *pump(void *arg);

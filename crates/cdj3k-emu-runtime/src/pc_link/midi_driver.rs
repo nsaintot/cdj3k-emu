@@ -295,7 +295,10 @@ impl MidiDriverLink {
                         if stream.write_all(&msg).is_err() {
                             // A failed write leaves a partial message on the
                             // wire, so the link goes rather than the parser
-                            // being fed the next one.
+                            // being fed the next one.  Shutdown, not just a
+                            // drop: read_loop holds a clone of the fd, and
+                            // only a shutdown ends its read().
+                            let _ = stream.shutdown(std::net::Shutdown::Both);
                             *guard = None;
                         }
                     }
@@ -332,7 +335,17 @@ impl MidiDriverLink {
                     if stream.write_all(Identity::new(instance_id).as_bytes()).is_err() {
                         continue;
                     }
-                    *accept_client.lock().unwrap() = Some(stream);
+                    {
+                        // Checked under the lock `drop` takes after setting
+                        // `stop`: either `drop` finds this stream and shuts it
+                        // down, or this sees `stop` and never reads.
+                        let mut guard = accept_client.lock().unwrap();
+                        if accept_stop.load(Ordering::Acquire) {
+                            let _ = stream.shutdown(std::net::Shutdown::Both);
+                            return;
+                        }
+                        *guard = Some(stream);
+                    }
                     eprintln!("pc-link: MIDI driver attached");
 
                     // One driver at a time: read until it goes away, then

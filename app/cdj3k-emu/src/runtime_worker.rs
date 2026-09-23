@@ -351,11 +351,15 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
         // ── PC-link liveness: re-dial a live bridge whose socket died ───────
         // A QEMU respawn closes the socket without touching the endpoints.
         // Re-dial rather than rebuild, keeping the HID identity rekordbox polled.
+        // While QEMU is down nothing consumes host->guest frames, so they are
+        // discarded as they arrive.
+        if instance.is_none() {
+            if let Some(link) = pc_link.as_mut() {
+                link.drain_while_down();
+            }
+        }
         if req.pc_link_enabled && instance.is_some() {
             if let Some(link) = pc_link.as_mut() {
-                if instance.is_none() {
-                    link.drain_if_dormant();
-                }
                 if !link.is_alive() && last_pc_link_retry.elapsed() >= PC_LINK_RETRY {
                     last_pc_link_retry = Instant::now();
                     match link.reconnect() {

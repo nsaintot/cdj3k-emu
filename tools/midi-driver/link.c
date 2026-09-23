@@ -58,13 +58,13 @@ static int dial(const char *path, struct pc_link_identity *id) {
  * directory, so the set of live slots is what is in the filesystem.
  * `dial()` blocks on connect and the identity read and must stay outside the
  * lock, which Send() also takes. */
-static void scan_and_connect(void) {
+static void scan_and_connect(uint32_t epoch) {
     char base[128];
     snprintf(base, sizeof base, "/tmp/cdj3k-emu-%u", (unsigned)getuid());
     DIR *d = opendir(base);
     if (!d) return;
     struct dirent *e;
-    while ((e = readdir(d))) {
+    while ((e = readdir(d)) && driver_live(epoch)) {
         if (strncmp(e->d_name, "instance-", 9) != 0) continue;
         char path[128];
         snprintf(path, sizeof path, "%s/%s/midi-driver.sock", base, e->d_name);
@@ -113,6 +113,8 @@ static void scan_and_connect(void) {
                (unsigned)id.location);
         pthread_mutex_unlock(&g_slots_lock);
 
+        /* A Stop() since the dial: the slot goes with the rest of the run. */
+        if (!driver_live(epoch)) break;
         /* Published with the lock released; MIDIServer calls into this driver
          * while holding the setup lock this needs. */
         if (create_slot_device(sl, idx) < 0) {
@@ -126,19 +128,19 @@ static void scan_and_connect(void) {
     closedir(d);
 }
 
-void *pump(void *arg) {
-    (void)arg;
+/* One run: from a Start() until the next Stop(). */
+static void run(uint32_t epoch) {
     /* Monotonic, so an NTP step or a wake from sleep cannot stall the
      * rescan. */
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     time_t last_scan = ts.tv_sec - SCAN_SECS;
-    while (g_running) {
+    while (driver_live(epoch)) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
         time_t now = ts.tv_sec;
         if (now - last_scan >= SCAN_SECS) {
             last_scan = now;
-            scan_and_connect();
+            scan_and_connect(epoch);
         }
 
         struct pollfd pfd[MAX_SLOTS];
@@ -161,7 +163,10 @@ void *pump(void *arg) {
 
         for (int k = 0; k < n; k++) {
             if (!pfd[k].revents) continue;
-            unsigned char buf[512];
+            unsigned char buf[READ_CHUNK];
+            Byte list[PARSE_LIST_BYTES];
+            MIDIPacketList *pl = (MIDIPacketList *)list;
+            MIDIEndpointRef src = 0;
             /* Send() can close this fd, so the descriptor is only touched
              * under the lock.  poll() reported it ready, so the read returns
              * without blocking. */
@@ -171,22 +176,40 @@ void *pump(void *arg) {
             struct slot *sl = &g_slots[map[k]];
             if (sl->fd != pfd[k].fd) { pthread_mutex_unlock(&g_slots_lock); continue; }
             ssize_t r = read(sl->fd, buf, sizeof buf);
-            if (r > 0)                        emit_from_slot(sl, buf, (int)r);
+            if (r > 0) {
+                if (slot_parse(sl, buf, (int)r, pl, sizeof list)) src = sl->src;
+            }
             else if (r < 0 && errno == EINTR) { /* retry next tick */ }
             else { retire_loc = sl->location; retire = slot_detach(sl); }
             pthread_mutex_unlock(&g_slots_lock);
+            /* CoreMIDI calls stay outside the slot lock, which Send() takes. */
+            if (src) MIDIReceived(src, pl);
             slot_retire(retire, retire_loc);
         }
     }
+}
 
-    /* Shutdown runs with MIDIServer inside Stop(), holding the setup lock, so
-     * nothing here may call CoreMIDI.  Sockets and strings are released; the
-     * published devices are left for the MARKER sweep in remove_stale_devices
-     * on the next Start. */
+/* Drop every slot at the end of a run.  Stop() does not wait for this, so the
+ * devices can be unpublished here: a MIDISetupRemoveDevice blocked on
+ * MIDIServer's setup lock just waits for Stop() to return. */
+static void drop_all_slots(void) {
+    MIDIDeviceRef devs[MAX_SLOTS];
+    uint32_t locs[MAX_SLOTS];
     pthread_mutex_lock(&g_slots_lock);
-    for (int i = 0; i < MAX_SLOTS; i++)
-        if (g_slots[i].fd >= 0) (void)slot_detach(&g_slots[i]);
+    for (int i = 0; i < MAX_SLOTS; i++) {
+        locs[i] = g_slots[i].location;
+        devs[i] = g_slots[i].fd >= 0 ? slot_detach(&g_slots[i]) : 0;
+    }
     pthread_mutex_unlock(&g_slots_lock);
+    for (int i = 0; i < MAX_SLOTS; i++) slot_retire(devs[i], locs[i]);
+}
+
+void *pump(void *arg) {
+    (void)arg;
+    for (;;) {
+        run(driver_wait_started());
+        drop_all_slots();
+    }
     return NULL;
 }
 

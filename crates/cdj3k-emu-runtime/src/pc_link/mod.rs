@@ -206,10 +206,19 @@ mod imp {
             })
         }
 
-        /// Discard frames queued while the link is down.  The backends keep
+        /// Discard frames queued while the guest is down.  The backends keep
         /// publishing into the channel whether or not a transport is attached,
-        /// and only a re-dial drains it otherwise.
-        pub fn drain_if_dormant(&self) -> usize {
+        /// so a dead transport is reclaimed first and its channel drained.
+        pub fn drain_while_down(&mut self) -> usize {
+            if let Link::Connected(t) = &self.link {
+                if t.is_transport_alive() {
+                    return 0;
+                }
+                self.link = match std::mem::replace(&mut self.link, Link::Broken) {
+                    Link::Connected(mut t) => t.shutdown_into_rx().map_or(Link::Broken, Link::Dormant),
+                    other => other,
+                };
+            }
             match &self.link {
                 Link::Dormant(rx) => drain_stale(rx),
                 _ => 0,
@@ -307,6 +316,10 @@ mod imp_stub {
 
         pub fn is_alive(&self) -> bool {
             false
+        }
+
+        pub fn drain_while_down(&mut self) -> usize {
+            0
         }
 
         pub fn reconnect(&mut self) -> Result<(), PcLinkError> {

@@ -6,7 +6,12 @@
  * SendManager::midiSend only run once PC mode is active, and it is normally
  * set by a host-driven cert handshake that can't be reproduced against
  * our virtual device. The getter is `mutex_lock; w0 = *(this+8); mutex_unlock; return w0`;
- * its first 8 bytes become `mov w0,#1 ; ret`, so it reports PC mode on.
+ * its load of the flag becomes `mov w20,#1`, so it reports PC mode on.
+ *
+ * Only EP122's main thread is stopped while the text is poked.  One
+ * instruction changes and it does not touch the stack, so a thread that is
+ * inside the getter when the page flips runs either the old or the new word
+ * with the same frame.
  *
  * It is located by matching the instruction words of its body, with the two
  * PC-relative `bl` masked.  rk3399 builds 3.13 to 3.22 each match once.
@@ -26,8 +31,29 @@
 
 #include "bridge.h"
 
-#define EP122_PCMODE_ORIG   0x910003fda9be7bfdUL /* fd 7b be a9 fd 03 00 91 */
-#define EP122_PCMODE_PATCH  0xd65f03c052800020UL /* 20 00 80 52 c0 03 5f d6 */
+/* The flag load, at getter + 28, and what replaces it. */
+#define PCMODE_LOAD_OFF     28
+#define EP122_PCMODE_ORIG   0xb9400a94u /* ldr w20, [x20, #8] */
+#define EP122_PCMODE_PATCH  0x52800034u /* mov w20, #1        */
+
+// PTRACE_POKETEXT writes 8 bytes from the aligned doubleword containing the target word; this avoids partial updates.
+struct poke_site { unsigned long addr; unsigned shift; };
+
+static struct poke_site poke_site(unsigned long getter)
+{
+    unsigned long load = getter + PCMODE_LOAD_OFF;
+    return (struct poke_site){ load & ~7UL, (unsigned)(load & 7) * 8 };
+}
+
+static uint32_t site_word(struct poke_site ps, unsigned long dw)
+{
+    return (uint32_t)(dw >> ps.shift);
+}
+
+static unsigned long site_with(struct poke_site ps, unsigned long dw, uint32_t w)
+{
+    return (dw & ~(0xffffffffUL << ps.shift)) | ((unsigned long)w << ps.shift);
+}
 
 /* Body of the getter, one aarch64 word per entry.  The two `bl` (mutex lock
  * and unlock) are compared on their opcode bits only. */
@@ -148,6 +174,7 @@ void force_pc_mode(void)
     }
     unsigned long getter = find_pcmode_getter(pid);
     if (!getter) return;
+    struct poke_site ps = poke_site(getter);
     if (ptrace(PTRACE_ATTACH, pid, 0, 0) != 0) {
         fprintf(stderr, "pc-link-bridge: ptrace attach %d failed: %s\n", pid, strerror(errno));
         return;
@@ -155,15 +182,16 @@ void force_pc_mode(void)
     int st;
     waitpid(pid, &st, 0);
     errno = 0;
-    long cur = ptrace(PTRACE_PEEKTEXT, pid, (void *)getter, 0);
+    long cur = ptrace(PTRACE_PEEKTEXT, pid, (void *)ps.addr, 0);
     if (cur == -1 && errno) {
         fprintf(stderr, "pc-link-bridge: PC-mode peek failed: %s\n", strerror(errno));
-    } else if ((unsigned long)cur == EP122_PCMODE_PATCH) {
+    } else if (site_word(ps, (unsigned long)cur) == EP122_PCMODE_PATCH) {
         fprintf(stderr, "pc-link-bridge: PC mode already forced\n");
-    } else if ((unsigned long)cur != EP122_PCMODE_ORIG) {
-        fprintf(stderr, "pc-link-bridge: PC-mode getter mismatch (0x%lx); firmware differs, not patching\n",
-                (unsigned long)cur);
-    } else if (ptrace(PTRACE_POKETEXT, pid, (void *)getter, (void *)EP122_PCMODE_PATCH) != 0) {
+    } else if (site_word(ps, (unsigned long)cur) != EP122_PCMODE_ORIG) {
+        fprintf(stderr, "pc-link-bridge: PC-mode getter mismatch (0x%x); firmware differs, not patching\n",
+                site_word(ps, (unsigned long)cur));
+    } else if (ptrace(PTRACE_POKETEXT, pid, (void *)ps.addr,
+                      (void *)site_with(ps, (unsigned long)cur, EP122_PCMODE_PATCH)) != 0) {
         fprintf(stderr, "pc-link-bridge: PC-mode poke failed: %s\n", strerror(errno));
     } else {
         fprintf(stderr, "pc-link-bridge: forced PC mode on EP122 pid %d (getter %#lx)\n",
@@ -181,13 +209,15 @@ void unforce_pc_mode(void)
     if (pid < 0) return;
     unsigned long getter = find_pcmode_getter(pid);
     if (!getter) return;
+    struct poke_site ps = poke_site(getter);
     if (ptrace(PTRACE_ATTACH, pid, 0, 0) != 0) return;
     int st;
     waitpid(pid, &st, 0);
     errno = 0;
-    long cur = ptrace(PTRACE_PEEKTEXT, pid, (void *)getter, 0);
-    if (!(cur == -1 && errno) && (unsigned long)cur == EP122_PCMODE_PATCH) {
-        if (ptrace(PTRACE_POKETEXT, pid, (void *)getter, (void *)EP122_PCMODE_ORIG) == 0)
+    long cur = ptrace(PTRACE_PEEKTEXT, pid, (void *)ps.addr, 0);
+    if (!(cur == -1 && errno) && site_word(ps, (unsigned long)cur) == EP122_PCMODE_PATCH) {
+        if (ptrace(PTRACE_POKETEXT, pid, (void *)ps.addr,
+                   (void *)site_with(ps, (unsigned long)cur, EP122_PCMODE_ORIG)) == 0)
             fprintf(stderr, "pc-link-bridge: restored PC-mode getter on EP122 pid %d\n", pid);
     }
     ptrace(PTRACE_DETACH, pid, 0, 0);

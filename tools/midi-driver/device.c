@@ -99,6 +99,7 @@ MIDIDeviceRef slot_detach(struct slot *sl) {
     if (sl->name)  { CFRelease(sl->name);  sl->name = NULL; }
     if (sl->maker) { CFRelease(sl->maker); sl->maker = NULL; }
     sl->fd = -1; sl->dev = 0; sl->src = 0; sl->path[0] = 0;
+    sl->rs = 0; sl->msg[0] = 0; sl->have = 0; sl->need = 0; sl->in_sx = 0;
     return dev;
 }
 
@@ -110,13 +111,64 @@ void slot_retire(MIDIDeviceRef dev, uint32_t location) {
     MIDISetupRemoveDevice(dev);
 }
 
-/* Publish bytes arriving from one guest on that slot's source endpoint. */
-void emit_from_slot(struct slot *sl, const unsigned char *buf, int n) {
-    if (!sl->src || n <= 0) return;
-    Byte pkt[1024];
-    MIDIPacketList *pl = (MIDIPacketList *)pkt;
-    MIDIPacket *p = MIDIPacketListInit(pl);
-    p = MIDIPacketListAdd(pl, sizeof pkt, p, 0, n, buf);
-    if (p) MIDIReceived(sl->src, pl);
+/* Data bytes that follow a status byte. */
+static Byte data_len(Byte status) {
+    switch (status & 0xf0) {
+    case 0xc0: case 0xd0: return 1;
+    case 0xf0: break;
+    default:   return 2;
+    }
+    switch (status) {
+    case 0xf1: case 0xf3: return 1;
+    case 0xf2:            return 2;
+    default:              return 0;
+    }
 }
 
+struct emit { MIDIPacketList *pl; MIDIPacket *p; size_t cap; };
+
+static void emit(struct emit *e, const Byte *b, int n) {
+    if (!e->p || n <= 0) return;
+    e->p = MIDIPacketListAdd(e->pl, e->cap, e->p, 0, (ByteCount)n, b);
+}
+
+/* Assemble bytes from one guest into whole messages in `pl`.  Running status
+ * is expanded, a message split across reads is held in the slot until it
+ * completes, and a SysEx is passed through in chunks.  Returns whether `pl`
+ * holds any packet.  Called with the slot lock held. */
+int slot_parse(struct slot *sl, const unsigned char *buf, int n,
+               MIDIPacketList *pl, size_t cap) {
+    struct emit e = { pl, MIDIPacketListInit(pl), cap };
+    Byte sx[READ_CHUNK];
+    int sxn = 0;
+    for (int i = 0; i < n && i < READ_CHUNK; i++) {
+        Byte b = buf[i];
+        if (b >= 0xf8) {                         /* real-time, any position */
+            emit(&e, sx, sxn); sxn = 0;
+            emit(&e, &b, 1);
+            continue;
+        }
+        if (b & 0x80) {
+            if (sl->in_sx) {
+                sl->in_sx = 0;
+                if (b == 0xf7) { sx[sxn++] = b; emit(&e, sx, sxn); sxn = 0; continue; }
+                emit(&e, sx, sxn); sxn = 0;      /* unterminated; status ends it */
+            }
+            if (b == 0xf0) { sl->in_sx = 1; sl->rs = 0; sl->msg[0] = 0; sx[sxn++] = b; continue; }
+            if (b == 0xf7) continue;             /* stray EOX */
+            sl->rs = b < 0xf0 ? b : 0;           /* system common clears it */
+            sl->msg[0] = b; sl->have = 0; sl->need = data_len(b);
+            if (sl->need == 0) { emit(&e, sl->msg, 1); sl->msg[0] = 0; }
+            continue;
+        }
+        if (sl->in_sx) { sx[sxn++] = b; continue; }
+        if (!sl->msg[0]) {
+            if (!sl->rs) continue;               /* data with no status */
+            sl->msg[0] = sl->rs; sl->have = 0; sl->need = data_len(sl->rs);
+        }
+        sl->msg[1 + sl->have++] = b;
+        if (sl->have == sl->need) { emit(&e, sl->msg, 1 + sl->need); sl->msg[0] = 0; }
+    }
+    emit(&e, sx, sxn);                           /* SysEx continues next read */
+    return pl->numPackets > 0;
+}
