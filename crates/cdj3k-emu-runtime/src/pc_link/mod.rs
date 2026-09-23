@@ -1,9 +1,10 @@
 //! PC-link bridge: macOS-side termination of the `cdj3k.usb-link` virtio-
 //! serial channel.
 //!
-//! Presents the emulated CDJ-3000's USB-HID and USB-MIDI interfaces as native
+//! Presents the emulated deck's USB-HID and USB-MIDI interfaces as native
 //! macOS virtual endpoints, so HID clients (rekordbox, hidapi) and DAWs see
-//! the guest as a USB device on a cable.
+//! the guest as a USB device on a cable.  Both carry the identity the guest
+//! gadget reports ([`gadget`]), which is the firmware's own.
 //!
 //! Both HID and MIDI carry data.  MIDI is published by the CoreMIDI driver
 //! plugin alone: apps that walk endpoint → entity → device ignore endpoints
@@ -11,6 +12,7 @@
 //!
 //! Layout:
 //!   - `frame`:       wire format shared with the guest daemon
+//!   - `gadget`:      the gadget identity the guest reports on connect
 //!   - `transport`:   unix-socket I/O threads + framing
 //!   - `midi_driver`: link to the CoreMIDI driver plugin
 //!   - `hid`:         IOHIDUserDevice virtual HID device
@@ -30,6 +32,7 @@
 //! between those moments invalidates the name and rekordbox never converges.
 
 pub mod frame;
+pub mod gadget;
 pub mod transport;
 
 #[cfg(target_os = "macos")]
@@ -43,6 +46,7 @@ mod imp {
     use std::sync::mpsc::{self, Receiver};
     use std::sync::Arc;
 
+    use super::gadget::GadgetIdentity;
     use super::hid::HidBackend;
     use super::midi_driver::MidiDriverLink;
     use super::transport::{usb_link_sock_path, FrameSink, OutFrame, Transport};
@@ -143,6 +147,8 @@ mod imp {
         /// `runtime_paths::instance_dir(id)`; carries no PID and is not
         /// rewritten on respawn, so it stays correct across a re-dial.
         sock_dir: PathBuf,
+        /// What the endpoints were built from; a re-dial checks it again.
+        identity: GadgetIdentity,
         sink: Arc<PcLinkSink>,
         link: Link,
     }
@@ -157,13 +163,21 @@ mod imp {
             // worker poll cadence while the guest boots, and every backend
             // built here is an endpoint macOS shows to other processes.
             let stream = Transport::dial(&sock_path)?;
+            let identity = Transport::handshake(&stream)?;
+            eprintln!(
+                "cdj3k-emu: pc-link gadget {} {:04x}:{:04x} ({} B report descriptor)",
+                identity.product,
+                identity.vendor_id,
+                identity.product_id,
+                identity.report_descriptor.len()
+            );
 
             let (tx, rx) = mpsc::channel::<OutFrame>();
 
             // HID is optional: without the Apple-granted entitlement the
             // device cannot be registered, and the bridge is still useful as
             // a MIDI cable.  Report once and carry on.
-            let hid = match HidBackend::new(tx.clone(), instance_id) {
+            let hid = match HidBackend::new(tx.clone(), instance_id, &identity) {
                 Ok(h) => Some(Arc::new(h)),
                 Err(e) => {
                     eprintln!("cdj3k-emu: pc-link HID unavailable — {e}");
@@ -176,7 +190,7 @@ mod imp {
             super::midi_driver::ensure_driver_installed();
 
             // The driver link is optional: without it HID still carries.
-            let driver = match MidiDriverLink::start(sock_dir, tx.clone(), instance_id) {
+            let driver = match MidiDriverLink::start(sock_dir, tx.clone(), instance_id, &identity) {
                 Ok(d) => Some(Arc::new(d)),
                 Err(e) => {
                     eprintln!("cdj3k-emu: pc-link MIDI driver link unavailable - {e}");
@@ -187,8 +201,7 @@ mod imp {
             // With neither backend there is nothing for macOS to see, so
             // this is a failure the caller can retry.
             if hid.is_none() && driver.is_none() {
-                return Err(PcLinkError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(PcLinkError::Io(std::io::Error::other(
                     "neither the HID device nor the MIDI driver link could be created",
                 )));
             }
@@ -201,6 +214,7 @@ mod imp {
 
             Ok(Self {
                 sock_dir: sock_dir.to_path_buf(),
+                identity,
                 sink,
                 link: Link::Connected(transport),
             })
@@ -215,7 +229,9 @@ mod imp {
                     return 0;
                 }
                 self.link = match std::mem::replace(&mut self.link, Link::Broken) {
-                    Link::Connected(mut t) => t.shutdown_into_rx().map_or(Link::Broken, Link::Dormant),
+                    Link::Connected(mut t) => {
+                        t.shutdown_into_rx().map_or(Link::Broken, Link::Dormant)
+                    }
                     other => other,
                 };
             }
@@ -248,8 +264,21 @@ mod imp {
                 eprintln!("cdj3k-emu: pc-link re-dial dropped {dropped} stale host->guest frames");
             }
 
-            let stream = match Transport::dial(&usb_link_sock_path(&self.sock_dir)) {
-                Ok(s) => s,
+            let dialed = Transport::dial(&usb_link_sock_path(&self.sock_dir))
+                .and_then(|s| Transport::handshake(&s).map(|id| (s, id)));
+            let stream = match dialed {
+                Ok((s, id)) => {
+                    // The endpoints stay as registered: re-creating them is
+                    // what rekordbox cannot follow (see the module doc).
+                    if id != self.identity {
+                        eprintln!(
+                            "cdj3k-emu: pc-link gadget identity changed on re-dial \
+                             ({} -> {}); endpoints keep the first one",
+                            self.identity.product, id.product
+                        );
+                    }
+                    s
+                }
                 Err(e) => {
                     // Hold `rx` for the next attempt.  Dropping it closes the
                     // channel and kills every backend's send() for good.

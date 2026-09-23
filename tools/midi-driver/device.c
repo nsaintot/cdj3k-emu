@@ -3,8 +3,8 @@
  * instance's id. */
 #include "driver.h"
 
-/* CDJ-3000 identity: VID+PID (usbVendorProduct) + LocationID pair the MIDI
- * device with its HID sibling; the USB id selects the built-in CDJ-3000 map.
+/* The deck's identity: VID+PID (usbVendorProduct) + LocationID pair the MIDI
+ * device with its HID sibling; the USB id selects a DJ app's built-in map.
  * `location` comes from that instance's identity and equals the LocationID on
  * the HID device it registered. */
 void configure_device(MIDIDeviceRef dev, const struct slot *sl) {

@@ -14,6 +14,7 @@
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 : "${PATCH_ASSETS_DIR:?PATCH_ASSETS_DIR must be set by dispatcher}"
+: "${APP_NAME:?APP_NAME must be set by dispatcher}"
 
 # Locate the binary: bundle.sh stages it into PATCH_ASSETS_DIR, build.sh
 # leaves it in guest/out/ (mirrors patch 21 for cfgd).
@@ -31,9 +32,9 @@ echo "  -> /usr/sbin/cdj3k-pc-link-bridge installed"
 
 SERVICE_DIR="$ROOTFS/etc/systemd/system"
 mkdir -p "$SERVICE_DIR"
-cat > "$SERVICE_DIR/cdj3k-pc-link-bridge.service" << 'SVCEOF'
+cat > "$SERVICE_DIR/cdj3k-pc-link-bridge.service" << SVCEOF
 [Unit]
-Description=CDJ-3000 PC-link bridge (HID + MIDI ↔ cdj3k.usb-link)
+Description=PC-link bridge (HID + MIDI ↔ cdj3k.usb-link)
 After=start-usb-gadget.service
 Wants=start-usb-gadget.service
 StartLimitIntervalSec=0
@@ -41,6 +42,8 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 ExecStart=/usr/sbin/cdj3k-pc-link-bridge
+# The app process: pcmode.c forces PC mode only on apps that need it.
+Environment=APP_NAME=$APP_NAME
 Restart=always
 RestartSec=2s
 

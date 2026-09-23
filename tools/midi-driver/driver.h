@@ -44,9 +44,8 @@ struct slot {
     char            path[128];
     MIDIDeviceRef   dev;
     MIDIEndpointRef src;      /* guest -> host */
-    /* Identity from that instance's id.  The emulator derives it from
-     * cdj3k_emu_platform::identity, so the MIDI device and its HID sibling
-     * cannot disagree. */
+    /* Identity the emulator sent: the guest gadget's own, plus the instance's
+     * LocationID, the same values its HID sibling carries. */
     uint32_t        location;
     uint32_t        usb_vp;   /* (vid << 16) | pid */
     CFStringRef     name;     /* product, released in destroy_slot */

@@ -16,19 +16,18 @@
 //! instance gets its own connection and its own `MIDIDevice`, and no instance
 //! can disturb another's.
 
-#![cfg(target_os = "macos")]
-
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
-use std::collections::VecDeque;
 use std::thread;
 use std::time::Duration;
 
 use crate::pc_link::frame::FRAME_MIDI;
+use crate::pc_link::gadget::GadgetIdentity;
 use crate::pc_link::transport::OutFrame;
 
 /// Cap on a write to the attached driver.  A driver that stops draining is
@@ -38,6 +37,10 @@ const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 /// How often the accept thread re-checks the stop flag.  It also bounds how
 /// long `drop` waits to join that thread.
 const ACCEPT_POLL: Duration = Duration::from_millis(200);
+
+/// Pause after a failed accept (EMFILE, ENFILE, ...), so an error that
+/// persists does not spin the accept thread.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Guest→driver messages held while the driver is slow.  Beyond this the
 /// oldest are dropped; MIDI is only useful live.
@@ -102,22 +105,19 @@ const _: () = assert!(std::mem::size_of::<Identity>() == 112);
 const IDENTITY_VERSION: u16 = 1;
 
 impl Identity {
-    fn new(instance_id: u32) -> Self {
+    fn new(instance_id: u32, gadget: &GadgetIdentity) -> Self {
         let mut product = [0u8; 32];
         let mut serial = [0u8; 32];
         let mut manufacturer = [0u8; 32];
-        copy_field(&mut product, cdj3k_emu_platform::identity::PRODUCT);
-        copy_field(
-            &mut serial,
-            &cdj3k_emu_platform::identity::device_serial(instance_id),
-        );
-        copy_field(&mut manufacturer, cdj3k_emu_platform::identity::MANUFACTURER);
+        copy_field(&mut product, &gadget.product);
+        copy_field(&mut serial, &gadget.serial);
+        copy_field(&mut manufacturer, &gadget.manufacturer);
         Self {
             magic: IDENTITY_MAGIC.to_le(),
             version: IDENTITY_VERSION.to_le(),
             instance: (instance_id as u16).to_le(),
-            vid: cdj3k_emu_platform::identity::VENDOR_ID.to_le(),
-            pid: cdj3k_emu_platform::identity::PRODUCT_ID.to_le(),
+            vid: gadget.vendor_id.to_le(),
+            pid: gadget.product_id.to_le(),
             location: (cdj3k_emu_platform::identity::usb_location_id(instance_id) as u32).to_le(),
             product,
             serial,
@@ -129,7 +129,10 @@ impl Identity {
         // SAFETY: #[repr(C)] POD with no padding-sensitive reads; the driver
         // parses the same layout.
         unsafe {
-            std::slice::from_raw_parts(self as *const Self as *const u8, std::mem::size_of::<Self>())
+            std::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                std::mem::size_of::<Self>(),
+            )
         }
     }
 }
@@ -174,7 +177,9 @@ const PLUGIN_NAME: &str = "CDJ3KEmuMIDI.plugin";
 /// changed plugin on its next client connection.
 pub fn ensure_driver_installed() {
     let Some(src) = shipped_plugin() else { return };
-    let Some(home) = std::env::var_os("HOME") else { return };
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
     let dest_dir = PathBuf::from(home).join("Library/Audio/MIDI Drivers");
     let dest = dest_dir.join(PLUGIN_NAME);
 
@@ -191,7 +196,11 @@ pub fn ensure_driver_installed() {
         .join(format!("{PLUGIN_NAME}.{}.staging", std::process::id()));
     let _ = std::fs::remove_dir_all(&staged);
     // ditto preserves the bundle's code signature; a plain recursive copy does not.
-    match std::process::Command::new("/usr/bin/ditto").arg(&src).arg(&staged).status() {
+    match std::process::Command::new("/usr/bin/ditto")
+        .arg(&src)
+        .arg(&staged)
+        .status()
+    {
         Ok(s) if s.success() => {
             let _ = std::fs::remove_dir_all(&dest);
             if let Err(e) = std::fs::rename(&staged, &dest) {
@@ -258,9 +267,16 @@ pub struct MidiDriverLink {
 }
 
 impl MidiDriverLink {
-    /// Bind the socket and start accepting. `tx` receives driver→guest MIDI.
-    pub fn start(sock_dir: &Path, tx: Sender<OutFrame>, instance_id: u32) -> std::io::Result<Self> {
+    /// Bind the socket and start accepting. `tx` receives driver→guest MIDI;
+    /// each driver that attaches is handed `gadget`'s identity.
+    pub fn start(
+        sock_dir: &Path,
+        tx: Sender<OutFrame>,
+        instance_id: u32,
+        gadget: &GadgetIdentity,
+    ) -> std::io::Result<Self> {
         let path = midi_driver_sock_path(sock_dir);
+        let identity = Identity::new(instance_id, gadget);
         let listener = bind_clearing_stale(&path)?;
 
         let client: Arc<Mutex<Option<UnixStream>>> = Arc::new(Mutex::new(None));
@@ -305,7 +321,11 @@ impl MidiDriverLink {
                             thread::sleep(ACCEPT_POLL);
                             continue;
                         }
-                        Err(_) => continue,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => {
+                            thread::sleep(ACCEPT_ERROR_BACKOFF);
+                            continue;
+                        }
                     };
                     // accept() may hand back the listener's non-blocking flag.
                     let _ = stream.set_nonblocking(false);
@@ -315,7 +335,7 @@ impl MidiDriverLink {
                     };
                     let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
                     // Identity first, then the raw MIDI stream.
-                    if stream.write_all(Identity::new(instance_id).as_bytes()).is_err() {
+                    if stream.write_all(identity.as_bytes()).is_err() {
                         continue;
                     }
                     {
