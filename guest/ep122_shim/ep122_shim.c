@@ -68,8 +68,10 @@ void  *g_jog_current_dma_ptr = NULL;
 
 uint8_t *g_jog_fb = NULL;
 
-int g_hidg_rd = -1;
-int g_hidg_wr = -1;
+/* HIDG: the open() interposer hands EP122 a real f_hid char-device fd; we
+ * only keep the active-fd table so ioctl() can answer 0 instead of f_hid's
+ * ENOTTY (see syscalls_io.c; EP122's gadget manager treats ENOTTY as a
+ * fatal init failure). */
 int g_hidg_active[MAX_HIDG_FDS];
 
 int g_gpiodrv_rd = -1;
@@ -78,11 +80,8 @@ int g_gpiodrv_active[MAX_GPIODRV_FDS];
 
 int g_drm_rd = -1;
 int g_drm_wr = -1;
-int g_seq_rd = -1;
-int g_seq_wr = -1;
 
 int g_drm_active[MAX_ACTIVE_FDS];
-int g_seq_active[MAX_ALSA_FDS];
 
 /* Shared by clock.c and link.c. Raw-syscall sysfs reader so we don't
  * pull stdio into the audio hot path. Parses the LAST integer in the
@@ -131,9 +130,7 @@ static void fds_init(void) {
     for (int i = 0; i < MAX_ACTIVE_FDS; i++) {
         g_drm_active[i] = -1;
     }
-    for (int i = 0; i < MAX_ALSA_FDS; i++) {
-        g_seq_active[i] = -1;
-    }
+    for (int i = 0; i < MAX_HIDG_FDS; i++) g_hidg_active[i] = -1;
 
     int pfds[2];
 
@@ -143,22 +140,6 @@ static void fds_init(void) {
         g_drm_rd = pfds[0];
         g_drm_wr = pfds[1];
         DBG("DRM pipe: rd=%d wr=%d\n", g_drm_rd, g_drm_wr);
-    }
-
-    /* ALSA sequencer pipe - O_NONBLOCK; read→EAGAIN, write→discarded. */
-    if (syscall(SYS_pipe2, pfds, O_NONBLOCK) == 0) {
-        g_seq_rd = pfds[0];
-        g_seq_wr = pfds[1];
-        DBG("ALSA seq pipe: rd=%d wr=%d\n", g_seq_rd, g_seq_wr);
-    }
-
-    /* HIDG pipe - not pre-filled; read→0 (no host), write→discarded */
-    for (int i = 0; i < MAX_HIDG_FDS; i++) g_hidg_active[i] = -1;
-    if (syscall(SYS_pipe2, pfds, O_NONBLOCK) == 0) {
-        g_hidg_rd = pfds[0];
-        g_hidg_wr = pfds[1];
-        DBG("HIDG pipe: rd=%d wr=%d (USB HID gadget stub ready)\n",
-            g_hidg_rd, g_hidg_wr);
     }
 
     /* GPIODRV stub - blocking pipe (NO O_NONBLOCK), write-end kept open. */

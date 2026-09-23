@@ -132,16 +132,14 @@ done
 cp "$DOCKER_OUT/dummy_drv.so" "$REPO_ROOT/initramfs-patch/dummy_drv.so"
 echo "  ✓  staged dummy_drv.so"
 
-# Install shared tools into rootfs
+# Install shared tools into rootfs.  The Docker artifacts carry an `_aarch64`
+# suffix; strip it on install because the services (e.g. subucom-forwarder.service
+# ExecStart=/usr/bin/subucom_forwarder) reference the bare name.  bundle.sh's
+# .app path strips it the same way.
 mkdir -p "$ROOTFS_DIR/usr/bin"
-for tool in \
-    "subucom_live_aarch64:usr/bin" \
-    "subucom_forwarder_aarch64:usr/bin" \
-; do
-    src="${tool%%:*}"
-    dst="${tool##*:}"
-    cp "$DOCKER_OUT/$src" "$ROOTFS_DIR/$dst"
-    chmod 755 "$ROOTFS_DIR/$dst"
+for tool in subucom_live subucom_forwarder; do
+    cp "$DOCKER_OUT/${tool}_aarch64" "$ROOTFS_DIR/usr/bin/$tool"
+    chmod 755 "$ROOTFS_DIR/usr/bin/$tool"
 done
 
 # The STEMS sidecar, at the path 30-stemd-client.sh's unit execs (the .app
@@ -155,11 +153,12 @@ chmod 755 "$ROOTFS_DIR/home/root/ep122_shim.so"
 
 # Save tools to guest/out/ for bundle.sh
 mkdir -p "$REPO_ROOT/guest/out"
-# Every one of these is required: bundle.sh refuses a bundle without cfgd,
-# and the patch scripts abort the rootfs provision when a tool they install
-# is missing - long after a silently incomplete build looked fine here.
+# Every one of these is required: bundle.sh refuses a bundle without cfgd or
+# pc_link_bridge, and the patch scripts abort the rootfs provision when a tool
+# they install is missing - long after a silently incomplete build looked fine
+# here.
 for bin in ep122_shim.so subucom_forwarder_aarch64 subucom_live_aarch64 cfgd_aarch64 \
-           stemd_client_aarch64; do
+           stemd_client_aarch64 pc_link_bridge_aarch64; do
     cp "$DOCKER_OUT/$bin" "$REPO_ROOT/guest/out/$bin"
 done
 

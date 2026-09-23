@@ -118,6 +118,12 @@ pub struct InstanceSettings {
     /// Defaults to **false**: a fresh instance boots a stock EP122 and the
     /// user opts in from the menu.  Applied at the next QEMU (re)start.
     pub mods_enabled: bool,
+    /// "PC Link (USB-B cable)" toggle.  When true, the runtime brings up
+    /// the host-side virtual CoreMIDI + HID endpoints and starts the
+    /// in-guest `cdj3k-pc-link-bridge.service`.  Off by default; the
+    /// emulated cable starts unplugged.  Persisted across launches; the
+    /// runtime worker re-applies the state when the guest comes back up.
+    pub pc_link_enabled: bool,
     /// Last user-selected network interface name (e.g. "en0"), or `None` for
     /// "no network".  Restored on launch if the iface is still present;
     /// otherwise kept on disk so it can re-bind when the iface returns.
@@ -142,7 +148,7 @@ impl InstanceSettings {
                 let m = generate_mac();
                 map.insert("mac".into(), m.clone());
                 if let Err(e) = write_kv(&path, &map) {
-                    // Disk write failed — the generated MAC won't survive a
+                    // Disk write failed; the generated MAC won't survive a
                     // restart, but we'd rather proceed with a one-shot MAC
                     // than refuse to launch the slot.  Log so the user sees
                     // it in Console.app instead of getting a silent MAC churn.
@@ -178,6 +184,11 @@ impl InstanceSettings {
             .get("mods_enabled")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
+        // PC link default: OFF - emulated cable starts unplugged.
+        let pc_link_enabled = map
+            .get("pc_link_enabled")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
         let net_iface = map.get("net_iface").filter(|v| !v.is_empty()).cloned();
         let usb_virtual_path = map
             .get("usb_virtual_path")
@@ -194,6 +205,7 @@ impl InstanceSettings {
             alc_enabled,
             haptic_enabled,
             mods_enabled,
+            pc_link_enabled,
             net_iface,
             usb_virtual_path,
             usb_physical_bsd,
@@ -223,6 +235,10 @@ impl InstanceSettings {
         map.insert(
             "mods_enabled".into(),
             (if self.mods_enabled { "1" } else { "0" }).to_string(),
+        );
+        map.insert(
+            "pc_link_enabled".into(),
+            (if self.pc_link_enabled { "1" } else { "0" }).to_string(),
         );
         map.insert(
             "net_iface".into(),

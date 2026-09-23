@@ -14,6 +14,10 @@
  *                               lazy-umount /media/usb/sd* and emit usb_state 0
  *     set <name> <value>      - write <value> to a whitelisted sysfs param
  *     get <name>              - emit a `param <name> <value>` response
+ *     pc_link on|off          - systemctl start/stop cdj3k-pc-link-bridge.service
+ *                               so the dummy_hcd-attached gadget's HID + MIDI
+ *                               endpoints start/stop pumping out cdj3k.usb-link
+ *                               (emulates plugging/unplugging the USB-B cable)
  *
  *   guest → host
  *     usb_state <0|1>         - emitted by cfgd in response to SIGUSR1/SIGUSR2
@@ -246,6 +250,40 @@ static void handle_set(const char *args)
     }
 }
 
+/* Start or stop the PC-link bridge service.  Fork+exec systemctl so we
+ * inherit its setuid/cap state from systemd; the bridge unit has no
+ * [Install] section so a host toggle is the only way to bring it up.
+ * Reports the resulting active-state back over the cfg port so the host
+ * UI can reflect "connected/disconnected" without polling. */
+static void handle_pc_link(const char *arg)
+{
+    const char *action;
+    if (strcmp(arg, "on") == 0)        action = "start";
+    else if (strcmp(arg, "off") == 0)  action = "stop";
+    else {
+        emit("pc_link ?");
+        return;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        emit("pc_link %s_failed", arg);
+        return;
+    }
+    if (pid == 0) {
+        execl("/bin/systemctl", "systemctl", action,
+              "cdj3k-pc-link-bridge.service", (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    /* systemctl exits 0 on success, non-zero on failure. */
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        emit("pc_link %s", arg);
+    } else {
+        emit("pc_link %s_failed", arg);
+    }
+}
+
 static void handle_get(const char *name)
 {
     const struct param_def *p = find_param(name);
@@ -285,6 +323,8 @@ static void dispatch_line(char *line)
         handle_set(line + 4);
     } else if (strncmp(line, "get ", 4) == 0) {
         handle_get(line + 4);
+    } else if (strncmp(line, "pc_link ", 8) == 0) {
+        handle_pc_link(line + 8);
     } else if (strcmp(line, "ping") == 0) {
         emit("pong");
     } else {

@@ -197,6 +197,7 @@ fn main() {
             s.alc_enabled = inst_settings.alc_enabled;
             s.haptic_enabled = inst_settings.haptic_enabled;
             s.mods_enabled = inst_settings.mods_enabled && !no_mods;
+            s.pc_link_enabled = inst_settings.pc_link_enabled;
         }
 
         // Restore network interface selection (best effort).  If the saved

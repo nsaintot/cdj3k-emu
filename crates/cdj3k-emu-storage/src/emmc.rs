@@ -100,7 +100,7 @@ fn write_uboot_env(
     instance_id: u32,
     fw: &FirmwareInfo,
 ) -> std::io::Result<()> {
-    let serial = format!("DJMP{:06}EH", instance_id);
+    let serial = cdj3k_emu_platform::identity::device_serial(instance_id);
 
     // U-boot environment variables.
     let vars: &[(&str, &str)] = &[

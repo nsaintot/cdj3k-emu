@@ -14,8 +14,6 @@
 //! invoking user can create or replace state under here.  The path stays
 //! short enough (<25 bytes before the instance subdir) to leave headroom
 //! under the macOS UNIX-socket path limit (~104 bytes).
-//!
-//! Mirrors the path convention used by `boot.sh` (CDJ3K_SOCK_DIR).
 
 use std::io;
 use std::path::{Path, PathBuf};

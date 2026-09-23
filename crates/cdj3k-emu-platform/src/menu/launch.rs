@@ -51,6 +51,30 @@ pub(super) fn show_net_error_alert(message: &str) {
         .show();
 }
 
+/// Offered after the driver plugin is replaced under a running `MIDIServer`.
+/// The new binary loads when that process next starts, so the choice is
+/// whether to end it now.  Ending it drops every MIDI app's connection, and
+/// those apps do not reconnect on their own, so it is the user's call.
+pub(super) fn show_midi_driver_alert() {
+    let result = rfd::MessageDialog::new()
+        .set_title("MIDI driver updated")
+        .set_description(
+            "The CDJ-3000 MIDI driver was updated and needs a restart.\n\n\
+             Restarting them now interrupts every MIDI application; which may \
+             need a restart."
+        )
+        .set_buttons(rfd::MessageButtons::OkCancelCustom(
+            "Restart MIDI Services".into(),
+            "Later".into(),
+        ))
+        .show();
+    if result == rfd::MessageDialogResult::Ok {
+        let _ = std::process::Command::new("/usr/bin/killall")
+            .arg("MIDIServer")
+            .status();
+    }
+}
+
 pub(super) fn show_fda_alert() {
     let result = rfd::MessageDialog::new()
         .set_title("Admin access required")

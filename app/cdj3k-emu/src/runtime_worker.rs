@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use cdj3k_emu_platform::menu_state::{APP_SHUTDOWN, NO_USB_MOUNTED};
 
 use cdj3k_emu_platform::menu_state;
+use cdj3k_emu_runtime::pc_link::PcLink;
 use cdj3k_emu_runtime::{
     register_worker_thread, CfgClient, DiskProvider, MacOsDiskProvider, QemuConfig, QemuInstance,
     TapBridge, UsbManager, VmnetMode,
@@ -14,6 +15,16 @@ use cdj3k_emu_runtime::{
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const NET_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+// Resend interval for an unacknowledged `pc_link` command (cfgd echoes only
+// after its `systemctl` returns).
+const PC_LINK_CFG_RESEND: Duration = Duration::from_millis(1500);
+/// Spacing between `PcLink::start` attempts while the guest socket is absent.
+const PC_LINK_RETRY: Duration = Duration::from_millis(500);
+/// `pc_link` failure replies tolerated before the reconcile stops reissuing
+/// the command.  An unanswered send means the guest has not opened the cfg
+/// port yet and is retried indefinitely; a failure reply means cfgd ran
+/// systemctl and it did not work.
+const PC_LINK_CFG_MAX_FAILURES: u32 = 4;
 
 /// Pre-built network backend, set up before the very first QEMU spawn so the
 /// initial process already has the right `-netdev`. The worker holds it for
@@ -57,6 +68,19 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
     let mut alc_pushed_for_boot = false;
     // Storage to re-mount after the next QEMU boot (deferred until cfg.sock is ready).
     let mut pending_remount: Option<PendingRemount> = None;
+    // Host-side PC-link bridge.  `Some` from the first successful connect
+    // until the toggle goes off or the app stops.  Owns the OS-visible
+    // endpoints across a QEMU respawn and re-dials the socket underneath them.
+    let mut pc_link: Option<PcLink> = None;
+    // True if the user wants pc_link on but the latest connect attempt
+    // failed (typically because the guest's bridge service isn't up yet).
+    // Next worker iteration retries.
+    let mut pc_link_retry_pending = false;
+    // Ack-gated cfg reconcile state (resend throttle + last driven state).
+    let mut last_pc_link_cfg = Instant::now() - PC_LINK_CFG_RESEND;
+    let mut last_pc_link_retry = Instant::now() - PC_LINK_RETRY;
+    let mut pc_link_gave_up = false;
+    let mut last_pc_link_want: Option<bool> = None;
     // Populate the interface cache immediately so the menu has data on first open.
     menu_state::refresh_net_interfaces();
 
@@ -75,6 +99,11 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
     loop {
         // ── App-exit gate: graceful shutdown ─────────────────────────────────
         if APP_SHUTDOWN.load(Ordering::Relaxed) {
+            // Drop PcLink first so its threads exit while the socket is still
+            // valid; otherwise the reader thread blocks on a half-closed fd.
+            // `take()` triggers Drop on the inner value; we ignore the
+            // returned Option since `pc_link` is going out of scope anyway.
+            let _ = pc_link.take();
             if let Some(mut inst) = instance.take() {
                 inst.stop();
             }
@@ -85,10 +114,14 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
         // ── Auto-restart after guest-initiated shutdown ───────────────────────
         let guest_exited = instance.as_ref().map(|i| !i.is_running()).unwrap_or(false);
         if guest_exited {
+            // PcLink stays: its endpoints must outlive the respawn, else
+            // rekordbox's polled HID name goes stale.  The socket dies with
+            // the guest; the reader takes EOF and the liveness check re-dials.
             if let Some(ref mut inst) = instance {
                 inst.stop();
             }
             instance = None;
+            pc_link_gave_up = false;
             menu_state::lock().qemu_running = false;
 
             if APP_SHUTDOWN.load(Ordering::Relaxed) {
@@ -139,6 +172,8 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                 haptic_enabled: s.haptic_enabled,
                 mods_toggle: std::mem::take(&mut s.mods_toggle_requested),
                 mods_enabled: s.mods_enabled,
+                pc_link_toggle: std::mem::take(&mut s.pc_link_toggle_requested),
+                pc_link_enabled: s.pc_link_enabled,
                 selected_iface: s.selected_interface,
                 usb_virtual_img: s.usb_virtual_img.clone(),
             }
@@ -163,6 +198,9 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
 
         // ── Stop ─────────────────────────────────────────────────────────────
         if req.stop {
+            pc_link = None;
+            pc_link_retry_pending = false;
+            pc_link_gave_up = false;
             if let Some(ref mut inst) = instance {
                 inst.stop();
             }
@@ -225,6 +263,117 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
             });
         }
 
+        // ── PC-link toggle: persist + host PcLink; guest cfg is the reconcile below ──
+        if req.pc_link_toggle {
+            persist_inst(config.instance_id, |s| {
+                s.pc_link_enabled = req.pc_link_enabled
+            });
+            if req.pc_link_enabled {
+                pc_link_retry_pending = true;
+            } else {
+                pc_link = None;
+                pc_link_retry_pending = false;
+            }
+        }
+
+        // ── PC-link cfg reconcile: resend `pc_link on/off` until cfgd echoes it ──
+        // A lone send can be dropped (boot race / single-client cfg vport).  On
+        // a desired change, clear the echo so a stale/lost one can't skip it.
+        let want = req.pc_link_enabled;
+        if last_pc_link_want != Some(want) {
+            last_pc_link_want = Some(want);
+            cfg_client.reset_pc_link_state();
+            last_pc_link_cfg = Instant::now() - PC_LINK_CFG_RESEND;
+            pc_link_gave_up = false;
+        }
+        let failures = cfg_client.pc_link_failures();
+        if instance.is_some()
+            && cfg_client.is_connected()
+            && cfg_client.pc_link_state() != Some(want)
+            && failures < PC_LINK_CFG_MAX_FAILURES
+            && last_pc_link_cfg.elapsed() >= PC_LINK_CFG_RESEND
+        {
+            match cfg_client.pc_link(want) {
+                Ok(()) => eprintln!(
+                    "cdj3k-emu: pc_link cfg to guest ({})",
+                    if want { "on" } else { "off" }
+                ),
+                Err(e) => eprintln!("cdj3k-emu: pc_link cfg send failed: {e}"),
+            }
+            last_pc_link_cfg = Instant::now();
+        } else if failures == PC_LINK_CFG_MAX_FAILURES && !pc_link_gave_up {
+            pc_link_gave_up = true;
+            eprintln!(
+                "cdj3k-emu: guest refused pc_link {} {} times; not reissuing",
+                if want { "on" } else { "off" },
+                PC_LINK_CFG_MAX_FAILURES
+            );
+            // The bridge is not running, so the toggle goes back to off and
+            // the host endpoints come down with it.  The item stays clickable:
+            // toggling clears the failure count and tries again.  Written to
+            // menu_state rather than persisted, so the next launch starts from
+            // the user's own setting.
+            if want {
+                menu_state::lock().pc_link_enabled = false;
+                pc_link = None;
+                pc_link_retry_pending = false;
+            }
+        }
+
+        // ── PC-link reconcile: ensure host PcLink is up when toggle is on ────
+        if req.pc_link_enabled && pc_link.is_none() && instance.is_some() {
+            pc_link_retry_pending = true;
+        }
+
+        // Retry while the toggle is on and QEMU is up.  Each attempt that
+        // gets past the dial registers an IOKit device, and rekordbox's
+        // polled HID name goes stale if that happens repeatedly, so the
+        // attempts are paced rather than run at the poll cadence.
+        if pc_link_retry_pending
+            && pc_link.is_none()
+            && instance.is_some()
+            && last_pc_link_retry.elapsed() >= PC_LINK_RETRY
+        {
+            last_pc_link_retry = Instant::now();
+            match PcLink::start(&config.sock_dir(), config.instance_id) {
+                Ok(link) => {
+                    eprintln!("cdj3k-emu: pc-link bridge connected");
+                    pc_link = Some(link);
+                    pc_link_retry_pending = false;
+                }
+                Err(_) => {
+                    // Quietly retry next iteration.  Logging here would spam
+                    // at the worker poll cadence (every 50 ms).
+                }
+            }
+        }
+
+        // ── PC-link liveness: re-dial a live bridge whose socket died ───────
+        // A QEMU respawn closes the socket without touching the endpoints.
+        // Re-dial rather than rebuild, keeping the HID identity rekordbox polled.
+        if req.pc_link_enabled && instance.is_some() {
+            if let Some(link) = pc_link.as_mut() {
+                if instance.is_none() {
+                    link.drain_if_dormant();
+                }
+                if !link.is_alive() && last_pc_link_retry.elapsed() >= PC_LINK_RETRY {
+                    last_pc_link_retry = Instant::now();
+                    match link.reconnect() {
+                        Ok(()) => eprintln!("cdj3k-emu: pc-link re-dialed"),
+                        // Refused dial is normal during guest boot; retry next tick.
+                        Err(e) if e.is_retryable() => {}
+                        // Outbound channel gone; the backends cannot reach the
+                        // guest.  Rebuild (costs a fresh HID identity).
+                        Err(e) => {
+                            eprintln!("cdj3k-emu: pc-link unrecoverable ({e}) - rebuilding");
+                            pc_link = None;
+                            pc_link_retry_pending = true;
+                        }
+                    }
+                }
+            }
+        }
+
         // ── First-time ALC push for this QEMU boot ───────────────────────────
         // The kernel module's `audio_sync_enabled` defaults to 0 on every
         // module load.  Push the user's persisted value once per QEMU
@@ -252,6 +401,7 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                 inst.stop();
             }
             instance = None;
+            pc_link_gave_up = false;
             let (prev_phys, prev_virt) = {
                 let mut s = menu_state::lock();
                 s.qemu_running = false;
@@ -531,6 +681,8 @@ struct Requests {
     haptic_enabled: bool,
     mods_toggle: bool,
     mods_enabled: bool,
+    pc_link_toggle: bool,
+    pc_link_enabled: bool,
     selected_iface: u32,
     usb_virtual_img: Option<std::path::PathBuf>,
 }

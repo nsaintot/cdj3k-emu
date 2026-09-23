@@ -241,6 +241,17 @@ else
     echo "       Run: ./build.sh" >&2
     exit 1
 fi
+
+# 29-pc-link-bridge.sh installs pc_link_bridge_aarch64 into the rootfs.  It
+# reads PATCH_ASSETS_DIR, falling back to guest/out/, which exists only in a
+# dev checkout.
+if [[ -f "$REPO_ROOT/guest/out/pc_link_bridge_aarch64" ]]; then
+    cp "$REPO_ROOT/guest/out/pc_link_bridge_aarch64" "$RES_PATCH/"
+else
+    echo "ERROR: guest/out/pc_link_bridge_aarch64 not found" >&2
+    echo "       Run: ./build.sh" >&2
+    exit 1
+fi
 echo "     bundled merged patch-rootfs.sh (${#PATCH_STEPS[@]} steps inlined)"
 
 # patch/vanilla-modules/  - 6.6 out-of-tree modules for 22-vanilla-kernel-fixups.sh
@@ -384,6 +395,17 @@ if [[ -n "$STRAY" ]]; then
     echo "$STRAY" >&2
     exit 1
 fi
+
+# ── CoreMIDI driver plugin ───────────────────────────────────────────────────
+# Host bundle (not a cargo/qemu artifact), so build it here regardless of
+# --no-build.  Shipped in Resources; pc_link::midi_driver::ensure_driver_installed
+# copies it into ~/Library/Audio/MIDI Drivers on the first PC Link toggle.  The
+# --deep codesign below re-signs it with the real identity + hardened runtime.
+echo "==> Building CoreMIDI driver plugin"
+make -C "$REPO_ROOT/tools/midi-driver" clean >/dev/null 2>&1 || true
+make -C "$REPO_ROOT/tools/midi-driver"
+cp -R "$REPO_ROOT/tools/midi-driver/CDJ3KEmuMIDI.plugin" "$RESOURCES_DIR/"
+echo "     bundled CDJ3KEmuMIDI.plugin"
 
 # ── Codesign ─────────────────────────────────────────────────────────────────
 # cdj3k-emu calls Hypervisor.framework via libcdj3k-emu-qemu.dylib - the entitlement

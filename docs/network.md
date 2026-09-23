@@ -68,9 +68,7 @@ we see and complicate the trace.
 Default when neither vmnet nor TAP is selected. QEMU's built-in
 userspace stack provides DHCP, DNS, and outbound NAT.
 
-- SSH: host port `2222 + instance_id` forwards to guest `:22`. The
-  runtime forwards SSH only; the dev `boot.sh` additionally forwards
-  UDP `8801` (cfgd/subucom debug listener).
+- SSH: host port `2222 + instance_id` forwards to guest `:22`.
 - **Cannot** receive DJPL broadcasts from other hosts.
 - **Cannot** be discovered by other DJPL endpoints.
 - Fine for solo dev, building, kernel work, anything not involving
@@ -149,7 +147,7 @@ Two MAC sources, one per mode:
 | Source                       | When used                          | Form                              |
 | ---------------------------- | ---------------------------------- | --------------------------------- |
 | Persisted random (settings)  | runtime production launch          | `0a:xx:xx:xx:xx:xx` (LAA / unicast) |
-| Deterministic from `id`      | `boot.sh` dev launches in vmnet mode | `0a:00:00:00:00:<id>`             |
+| Deterministic from `id`      | fallback when no persisted MAC     | `0a:00:00:00:00:<id>`             |
 
 The persisted MAC lives in `instance-N/settings.txt` under key `mac`
 and is generated on first launch via `uuid::Uuid::new_v4()` with the
@@ -158,9 +156,7 @@ first byte forced to `02|LAA`:
 > `crates/cdj3k-emu-storage/src/settings.rs:237-248` - `generate_mac()`
 
 The runtime substitutes a fallback `0a:00:00:00:00:<id&0xff>` if no
-persisted MAC is set (`config.rs:270-273`). The dev `boot.sh` always
-uses the deterministic form so you can `arp -an | grep
-0a:00:00:00:00:01` to find an instance quickly.
+persisted MAC is set (`config.rs:270-273`).
 
 ---
 
@@ -287,6 +283,5 @@ the unlink-to-shutdown signal exploits exactly that asymmetry.
 | `crates/cdj3k-emu-runtime/src/tapbridge.rs`                | bridgeN + tapM watcher, stale cleanup, elevation  |
 | `crates/cdj3k-emu-storage/src/settings.rs`                 | persisted `mac`, `net_iface`, MAC generator       |
 | `crates/cdj3k-emu-platform/src/runtime_paths.rs`           | socket / instance-dir layout                      |
-| `boot.sh`                                                  | dev launcher; deterministic MAC, UDP 8801 forward |
 | `qemu/build.sh`                                            | QEMU build (unrelated to runtime networking)      |
 | `initramfs-patch/patch-rootfs.d/03-dropbear-enable.sh`     | enables in-guest SSH for both modes               |
