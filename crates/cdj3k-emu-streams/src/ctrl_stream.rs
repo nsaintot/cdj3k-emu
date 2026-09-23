@@ -138,7 +138,7 @@ fn stream_loop(
             }
             Err(e) => {
                 failed_attempts = failed_attempts.saturating_add(1);
-                if failed_attempts == 1 || failed_attempts % 10 == 0 {
+                if failed_attempts == 1 || failed_attempts.is_multiple_of(10) {
                     eprintln!(
                         "[ctrl] connect {}: {} (attempt {failed_attempts}, retrying in {:?})",
                         sock_path.display(),

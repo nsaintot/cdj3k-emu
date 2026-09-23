@@ -141,7 +141,7 @@ fn open_shm(shm_path: &str) -> Mmap {
             },
             Err(e) => {
                 log_attempts += 1;
-                if log_attempts == 1 || log_attempts % 10 == 0 {
+                if log_attempts == 1 || log_attempts.is_multiple_of(10) {
                     eprintln!("[jog_stream] open {shm_path}: {e} (attempt {log_attempts})");
                 }
             }

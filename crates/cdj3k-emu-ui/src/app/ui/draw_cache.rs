@@ -38,13 +38,8 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Shape, Stroke};
 
 /// Collects [`egui::Shape`]s for deferred/cached rendering, mirroring the
 /// [`egui::Painter`] draw API for purely *static* (non-interactive) calls.
+#[derive(Default)]
 pub struct ShapeList(Vec<Shape>);
-
-impl Default for ShapeList {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 
 impl ShapeList {
     /// Consume the list and return the inner `Vec<Shape>`.
@@ -235,16 +230,9 @@ impl BtnCacheKey {
 ///
 /// Shapes are rebuilt only when the key changes - i.e., when layout, LED color,
 /// or pressed state changes for that specific button.
+#[derive(Default)]
 pub struct BtnShapeCache {
     map: HashMap<egui::Id, (BtnCacheKey, Vec<Shape>)>,
-}
-
-impl Default for BtnShapeCache {
-    fn default() -> Self {
-        Self {
-            map: HashMap::new(),
-        }
-    }
 }
 
 impl BtnShapeCache {
@@ -259,7 +247,7 @@ impl BtnShapeCache {
         key: BtnCacheKey,
         build: impl FnOnce(&mut ShapeList),
     ) -> &[Shape] {
-        if self.map.get(&id).map_or(true, |(k, _)| k != &key) {
+        if self.map.get(&id).is_none_or(|(k, _)| k != &key) {
             let mut list = ShapeList::default();
             build(&mut list);
             self.map.insert(id, (key, list.into_shapes()));
@@ -272,18 +260,10 @@ impl BtnShapeCache {
 
 /// Shape cache for purely static regions (chassis, labels, separators).
 /// Keyed by the quantized `(ox, oy, scale, ppp)` triple - rebuilt on resize or DPI change.
+#[derive(Default)]
 pub struct StaticShapeCache {
     key: Option<(i32, i32, i32, i32)>,
     shapes: Vec<Shape>,
-}
-
-impl Default for StaticShapeCache {
-    fn default() -> Self {
-        Self {
-            key: None,
-            shapes: Vec::new(),
-        }
-    }
 }
 
 impl StaticShapeCache {

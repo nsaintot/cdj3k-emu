@@ -37,7 +37,7 @@ fn hex_u16(key: &str, v: &str) -> Result<u16, ParseError> {
 
 fn hex_bytes(v: &str) -> Result<Vec<u8>, ParseError> {
     let digits = v.as_bytes();
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return Err(ParseError("report_desc has an odd number of digits".into()));
     }
     digits

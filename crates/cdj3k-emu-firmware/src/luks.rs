@@ -56,7 +56,7 @@ impl LuksKey {
         // 1. Hex: only hex digits (and colons, which we strip).
         let hex_clean: String = clean.chars().filter(|c| *c != ':').collect();
         let all_hex = hex_clean.chars().all(|c| c.is_ascii_hexdigit());
-        if all_hex && hex_clean.len() % 2 == 0 && !hex_clean.is_empty() {
+        if all_hex && hex_clean.len().is_multiple_of(2) && !hex_clean.is_empty() {
             let bytes = (0..hex_clean.len())
                 .step_by(2)
                 .map(|i| u8::from_str_radix(&hex_clean[i..i + 2], 16).unwrap())

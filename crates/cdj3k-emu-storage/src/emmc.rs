@@ -258,7 +258,7 @@ fn write_gpt_raw(raw_path: &Path, config: &EmmcConfig) -> std::io::Result<()> {
         let last = first + n_sectors - 1;
         cursor = last + 1;
         // Align next start to 1 MiB boundary.
-        if cursor % align != 0 {
+        if !cursor.is_multiple_of(align) {
             cursor = (cursor / align + 1) * align;
         }
         PartEntry::new(data, first, last, name)

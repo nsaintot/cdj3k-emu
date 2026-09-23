@@ -405,7 +405,7 @@ where
         C::new_from_slice(data_key).map_err(bad_key)?,
         C::new_from_slice(tweak_key).map_err(bad_key)?,
     );
-    if material.len() % 16 != 0 {
+    if !material.len().is_multiple_of(16) {
         return Err(RekeyError::Malformed(
             "key material is not whole AES blocks",
         ));

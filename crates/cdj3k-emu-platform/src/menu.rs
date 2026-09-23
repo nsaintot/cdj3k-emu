@@ -731,7 +731,7 @@ fn encode_hex_uid(uid: &str) -> String {
 }
 
 fn decode_hex_uid(s: &str) -> Option<String> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let mut bytes = Vec::with_capacity(s.len() / 2);

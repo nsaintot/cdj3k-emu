@@ -357,7 +357,7 @@ impl CdjApp {
         if self
             .jog_static_cache
             .as_ref()
-            .map_or(true, |c| c.key != cache_key)
+            .is_none_or(|c| c.key != cache_key)
         {
             let mut outer = ShapeList::default();
             let mut inner_mid = ShapeList::default();

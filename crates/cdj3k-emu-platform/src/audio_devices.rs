@@ -5,8 +5,6 @@
 //! Raw HAL FFI to keep the dep set small (no `coreaudio-sys`). The HAL
 //! property API is stable and these constants haven't moved in 15 years.
 
-#![cfg(target_os = "macos")]
-
 use std::ffi::{c_char, c_void, CStr};
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -266,7 +264,7 @@ fn read_nominal_sample_rate(id: AudioObjectID) -> Option<u32> {
             &mut rate as *mut _ as *mut c_void,
         )
     };
-    if st != 0 || !(rate > 0.0) {
+    if st != 0 || rate.is_nan() || rate <= 0.0 {
         return None;
     }
     Some(rate.round() as u32)
@@ -294,7 +292,7 @@ fn read_cf_string(id: AudioObjectID, selector: u32) -> Option<String> {
         return None;
     }
     let out = cf_string_to_rust(cf);
-    unsafe { CFRelease(cf as *const c_void) };
+    unsafe { CFRelease(cf) };
     out
 }
 
