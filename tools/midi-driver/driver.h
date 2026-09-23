@@ -61,7 +61,7 @@ struct slot {
 };
 /* refCon layout: generation in the high bits, slot index in the low.  A
  * Send() arriving on an endpoint whose slot has since been reused carries the
- * old generation and is dropped rather than delivered to another deck. */
+ * old generation and is dropped. */
 #define REF_MAKE(gen, idx) ((void *)(uintptr_t)(((uint64_t)(gen) << 8) | ((idx) + 1)))
 #define REF_IDX(r)         ((int)((uintptr_t)(r) & 0xff) - 1)
 #define REF_GEN(r)         ((uint32_t)((uintptr_t)(r) >> 8))

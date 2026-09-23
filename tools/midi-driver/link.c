@@ -235,8 +235,8 @@ void link_send(int idx, uint32_t gen, const MIDIPacketList *pl) {
             ssize_t w = write(sl->fd, p->data + off, p->length - off);
             if (w > 0) { off += w; continue; }
             if (w < 0 && errno == EINTR) continue;
-            /* A partial write leaves half a message on the wire; the link goes
-             * rather than the next packet's status byte following it. */
+            /* A partial write leaves half a message on the wire; the link
+             * is dropped. */
             failed = 1;
             break;
         }

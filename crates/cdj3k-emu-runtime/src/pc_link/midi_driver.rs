@@ -32,7 +32,7 @@ use crate::pc_link::frame::FRAME_MIDI;
 use crate::pc_link::transport::OutFrame;
 
 /// Cap on a write to the attached driver.  A driver that stops draining is
-/// dropped rather than wedging the writer thread, which `drop` joins.
+/// dropped.
 const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// How often the accept thread re-checks the stop flag.  It also bounds how
@@ -166,7 +166,6 @@ fn bind_clearing_stale(path: &Path) -> std::io::Result<UnixListener> {
 }
 
 const PLUGIN_NAME: &str = "CDJ3KEmuMIDI.plugin";
-const PLUGIN_EXE: &str = "CDJ3KEmuMIDI";
 
 /// Install or refresh the CoreMIDI driver plugin into the per-user MIDI
 /// Drivers directory, where MIDIServer loads it from.  The plugin ships in the
@@ -179,18 +178,8 @@ pub fn ensure_driver_installed() {
     let dest_dir = PathBuf::from(home).join("Library/Audio/MIDI Drivers");
     let dest = dest_dir.join(PLUGIN_NAME);
 
-    // Byte-compare the executable: reinstall only when missing or changed.
-    let src_exe = src.join("Contents/MacOS").join(PLUGIN_EXE);
-    let dest_exe = dest.join("Contents/MacOS").join(PLUGIN_EXE);
-    if same_bytes(&src_exe, &dest_exe) {
+    if installed_plugin_version(&dest) == Some(IDENTITY_VERSION) {
         return;
-    }
-    if let Some(v) = installed_plugin_version(&dest) {
-        if v != IDENTITY_VERSION {
-            eprintln!(
-                "pc-link: installed MIDI driver is v{v}, this build speaks v{IDENTITY_VERSION}"
-            );
-        }
     }
 
     let _ = std::fs::create_dir_all(&dest_dir);
@@ -213,8 +202,7 @@ pub fn ensure_driver_installed() {
             eprintln!("pc-link: installed MIDI driver -> {}", dest.display());
             // A running MIDIServer has the previous binary mapped and keeps
             // serving it; only its exit loads the new one.  Ending it drops
-            // every MIDI app's connection and they do not reconnect, so the
-            // menu offers the choice instead of taking it.
+            // every MIDI app's connection, and they do not reconnect.
             if midi_server_running() {
                 cdj3k_emu_platform::menu_state::lock().midi_driver_replaced = true;
             }
@@ -258,10 +246,6 @@ fn midi_server_running() -> bool {
         .unwrap_or(false)
 }
 
-fn same_bytes(a: &Path, b: &Path) -> bool {
-    matches!((std::fs::read(a), std::fs::read(b)), (Ok(x), Ok(y)) if x == y)
-}
-
 /// Accepts the driver plugin and pumps MIDI both ways.
 pub struct MidiDriverLink {
     /// Write half of the connected driver, if one has attached.
@@ -294,8 +278,7 @@ impl MidiDriverLink {
                     if let Some(stream) = guard.as_mut() {
                         if stream.write_all(&msg).is_err() {
                             // A failed write leaves a partial message on the
-                            // wire, so the link goes rather than the parser
-                            // being fed the next one.  Shutdown, not just a
+                            // wire, so the link is dropped.  Shutdown, not just a
                             // drop: read_loop holds a clone of the fd, and
                             // only a shutdown ends its read().
                             let _ = stream.shutdown(std::net::Shutdown::Both);
