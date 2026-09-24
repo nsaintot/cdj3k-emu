@@ -84,7 +84,8 @@ TOOL_CFLAGS := -O2 -Wall -Wextra -static -I$(MODS_DIR)/shared
 TOOL_TARGETS := $(OUT)/subucom_forwarder_aarch64 \
                 $(OUT)/subucom_live_aarch64 \
                 $(OUT)/cfgd_aarch64 \
-                $(OUT)/stemd_client_aarch64
+                $(OUT)/stemd_client_aarch64 \
+                $(OUT)/pc_link_bridge_aarch64
 
 # --- host tests ---
 HOST_CC ?= cc
@@ -159,6 +160,10 @@ $(OUT)/cfgd_aarch64: cfgd/cfgd.c | $(OUT)
 $(OUT)/stemd_client_aarch64: $(MODS_STEMD_SRCS) $(MODS_STEMD_HDRS) | $(OUT)
 	$(CC) $(TOOL_CFLAGS) -o $@ $(MODS_STEMD_SRCS)
 
+PC_LINK_SRCS := $(wildcard pc_link_bridge/*.c)
+$(OUT)/pc_link_bridge_aarch64: $(PC_LINK_SRCS) pc_link_bridge/bridge.h | $(OUT)
+	$(CC) $(TOOL_CFLAGS) -o $@ $(PC_LINK_SRCS)
+
 # --- gates ---
 purity:    mods-purity
 
@@ -222,4 +227,5 @@ docker:
 	cp $(DOCKER_OUT)/subucom_live_aarch64      $(OUT)/
 	cp $(DOCKER_OUT)/cfgd_aarch64              $(OUT)/
 	cp $(DOCKER_OUT)/stemd_client_aarch64      $(OUT)/
+	cp $(DOCKER_OUT)/pc_link_bridge_aarch64    $(OUT)/
 	@echo "Built via Docker: $(OUT)/"

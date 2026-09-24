@@ -411,15 +411,17 @@ fn cleanup_qemu_files_inner(sock_dir: &Path, keep_dir: bool) {
     if let Ok(entries) = std::fs::read_dir(sock_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            // `tapbridge.alive` is the heartbeat the root-side watcher polls;
-            // removing it tells the watcher to destroy the bridge and the TAP.
-            // `TapBridge`'s Drop owns these files.
-            if keep_dir
-                && entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("tapbridge.")
-            {
+            // Files here belong to the QEMU process and are rebuilt by the
+            // next one.  These two are owned by the app and outlive a
+            // respawn, so a restart leaves them alone:
+            //   `tapbridge.alive` is the heartbeat the root-side watcher
+            //   polls; removing it tells the watcher to destroy the bridge
+            //   and the TAP.  `TapBridge`'s Drop owns these files.
+            //   `midi-driver.sock` is bound by `MidiDriverLink` for as long
+            //   as PC Link is on, and the CoreMIDI plugin dials it by name.
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if keep_dir && (name.starts_with("tapbridge.") || name == "midi-driver.sock") {
                 continue;
             }
             if let Ok(ft) = entry.file_type() {

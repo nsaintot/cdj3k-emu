@@ -306,10 +306,17 @@ impl QemuConfig {
 
         args.extend(["-device".into(), "virtio-serial-device,max_ports=8".into()]);
         for (name, nr) in &[
-            ("ctrl", None::<u32>), // bidirectional: subucom_forwarder bridges subucom_ctrl ↔ host
-            ("cfg", None),         // bidirectional: cdj3k-cfgd ↔ host runtime
-                                   //   host→guest: usb attach|detach, set/get sysfs params
-                                   //   guest→host: usb_state, param values, latency every 3s
+            ("ctrl", None::<u32>),   // bidirectional: subucom_forwarder bridges subucom_ctrl ↔ host
+            ("cfg", None),           // bidirectional: cdj3k-cfgd ↔ host runtime
+                                     //   host→guest: usb attach|detach, set/get sysfs params
+                                     //   guest→host: usb_state, param values, latency every 3s
+            ("usb-link", None),      // bidirectional: pc-link-bridge in guest ↔ cdj3k-emu-runtime
+                                     // on host.  Carries HID (/dev/hidraw0) + MIDI
+                                     // (/dev/snd/midiC1D0) frames for the
+                                     // dummy_hcd-attached gadget.  Host side surfaces
+                                     // HID as an IOHIDUserDevice and MIDI as a
+                                     // CoreMIDI virtual endpoint.
+                                     // Idle until the pc_link toggle goes on.
         ] {
             let sock_path = sock.join(format!("{}.sock", name));
             args.extend([

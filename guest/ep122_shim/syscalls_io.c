@@ -17,25 +17,6 @@ int ioctl(int fd, unsigned long request, ...) {
     if (is_drm_fd(fd))
         return handle_drm_ioctl(fd, request, arg);
 
-    /* ALSA sequencer fd - stub the MIDI client lifecycle, discard the rest */
-    if (is_seq_fd(fd)) {
-        if (request == ALSA_SEQ_IOCTL_PVERSION) {
-            /* snd_seq_open() checks major version: must be 1 or it closes fd
-             * and returns error → seq==NULL → snd_seq_nonblock() asserts.
-             * SND_SEQ_PROTOCOL_VERSION = (1<<16)|(0<<8)|2 = 0x010002 */
-            if (arg) *(int *)arg = 0x010002;
-            DBG("alsa seq(fd=%d, PVERSION) -> 0x010002\n", fd);
-        } else if (request == ALSA_SEQ_IOCTL_CLIENT_ID) {
-            /* Return EP122's real client number from the hardware: 128 */
-            if (arg) *(int *)arg = 128;
-            DBG("alsa seq(fd=%d, CLIENT_ID) -> 128\n", fd);
-        }
-        /* All other seq ioctls (CREATE_PORT, SUBSCRIBE_PORT, SET_CLIENT_INFO,
-         * etc.) succeed silently.  EP122 checks return value, not output
-         * structs for most of these. */
-        return 0;
-    }
-
     /* GPIODRV fd - accept any ioctl silently (e.g. GPIO pin configure) */
     if (is_gpiodrv_fd(fd)) {
         DBG("gpiodrv ioctl fd=%d request=0x%lx arg=%p\n", fd, (unsigned long)request, arg);
@@ -43,10 +24,11 @@ int ioctl(int fd, unsigned long request, ...) {
     }
 
     /* HIDG fd - accept any ioctl silently.
-     *   Without this, ioctl() falls through to sys_ioctl(pipe_fd, …)
-     *   which returns ENOTTY.  EP122's USB gadget manager interprets
+     *   f_hid's char device returns ENOTTY for HID-class ioctls (it only
+     *   recognises a small set).  EP122's USB gadget manager interprets
      *   ENOTTY as a gadget initialisation failure and may show
-     *   "USB Error. Remove the device." */
+     *   "USB Error. Remove the device."  Reads, writes, and poll all
+     *   pass through to the real f_hid device; only ioctl is masked. */
     if (is_hidg_fd(fd))
         return 0;
 
@@ -84,20 +66,6 @@ ssize_t read(int fd, void *buf, size_t count) {
         return 32;
     }
 
-    /* --- ALSA seq fd: O_NONBLOCK - no incoming MIDI in QEMU --- */
-    if (is_seq_fd(fd)) {
-        errno = EAGAIN;
-        return -1;
-    }
-
-    /* --- HIDG fd: no USB host connected → EAGAIN (not EOF).
-     *   read() returning 0 = EOF would cause EP122 to close the fd and
-     *   crash its HID receive thread.  EAGAIN tells it "no data yet". */
-    if (is_hidg_fd(fd)) {
-        errno = EAGAIN;
-        return -1;
-    }
-
     /* --- GPIODRV fd: passthrough to pipe + log result for shutdown tracing --- */
     if (is_gpiodrv_fd(fd)) {
         ssize_t r = sys_read(fd, buf, count);
@@ -117,29 +85,11 @@ ssize_t read(int fd, void *buf, size_t count) {
 }
 
 /* ------------------------------------------------------------------ */
-/* write - intercept HIDG fds to silently discard USB HID frames      */
+/* write - passthrough, with a db_watch tap                           */
 /* ------------------------------------------------------------------ */
-/*
- * EP122 writes 64-byte HID reports to hidg0 at regular intervals.
- * We return count immediately without writing to the pipe (which would
- * fill up since nobody drains the write-end).
- */
+/* HIDG and seq writes reach the real f_hid / f_midi char devices,    */
+/* which fan out as USB input reports / MIDI events on the gadget bus.*/
 ssize_t write(int fd, const void *buf, size_t count) {
-    if (is_hidg_fd(fd)) {
-        DBG("hidg0 write fd=%d count=%zu bytes[0..3]=%02x %02x %02x %02x\n", fd, count,
-            count > 0 ? ((const unsigned char*)buf)[0] : 0,
-            count > 1 ? ((const unsigned char*)buf)[1] : 0,
-            count > 2 ? ((const unsigned char*)buf)[2] : 0,
-            count > 3 ? ((const unsigned char*)buf)[3] : 0);
-        (void)buf;
-        return (ssize_t)count;
-    }
-    if (is_seq_fd(fd)) {
-        /* Silently discard MIDI events - no f_midi gadget in QEMU.
-         * EP122 sends MIDI to USB host via sequencer; we drop it. */
-        (void)buf;
-        return (ssize_t)count;
-    }
     /* The caller, not just the fact. A return address is what turns "the
      * library file changed" into "this code changed it". */
     db_watch_write(fd, count, (uintptr_t)__builtin_return_address(0));

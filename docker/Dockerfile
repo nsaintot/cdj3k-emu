@@ -125,6 +125,7 @@ RUN mkdir -p /out/modules && \
     cp /tmp/guest/out/subucom_live_aarch64                           /out/ && \
     cp /tmp/guest/out/cfgd_aarch64                                   /out/ && \
     cp /tmp/guest/out/stemd_client_aarch64                           /out/ && \
+    cp /tmp/guest/out/pc_link_bridge_aarch64                         /out/ && \
     echo "=== /out/ ===" && ls -la /out/ && echo "=== /out/modules/ ===" && ls -la /out/modules/
 
 # ep122_shim.so — built against glibc 2.27 (Ubuntu 18.04) so it can

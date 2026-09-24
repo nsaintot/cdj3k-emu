@@ -48,28 +48,35 @@ static int do_open(const char *pathname, int flags, mode_t mode) {
             DBG("open(%s) → real DRM fd %ld\n", pathname, fd);
             return (int)fd;
         }
-        /* ALSA control/PCM: pass through to virtio_snd.ko (card 0, real kernel device). */
-        /* ALSA sequencer: /dev/snd/seq
-         * EP122 opens this O_RDWR|O_NONBLOCK to send MIDI to the USB host
-         * via f_midi (client 24:0).  No f_midi gadget exists in QEMU, so we
-         * stub the sequencer client lifecycle and discard all MIDI output. */
-        if (strcmp(pathname, ALSA_SEQ_PATH) == 0) {
-            if (g_seq_rd < 0) { errno = ENODEV; return -1; }
-            int fd = sys_dup(g_seq_rd);
+        /* ALSA control/PCM/seq: pass through to the real kernel devices.
+         * CONFIG_SND_SEQUENCER=y, so EP122's seq client handshake reaches
+         * the real subsystem. */
+        /* /dev/hidg0 - USB HID gadget char device.  We open the real f_hid
+         * device but still register the fd so the ioctl interceptor below
+         * can answer with 0 instead of f_hid's ENOTTY (the latter trips
+         * EP122's gadget manager into a "USB Error" state). */
+        if (strcmp(pathname, HIDG_PATH) == 0) {
+            int fd = (int)sys_openat(pathname, flags, mode);
             if (fd < 0) return -1;
-            if (add_seq_fd(fd) < 0) { sys_close(fd); errno = EMFILE; return -1; }
-            DBG("open(%s) → fake ALSA seq fd %d\n", pathname, fd);
+            if (add_hidg_fd(fd) < 0) {
+                sys_close(fd);
+                errno = EMFILE;
+                return -1;
+            }
+            DBG("open(%s, 0x%x) → real f_hid fd %d (tracked for ioctl filter)\n",
+                pathname, flags, fd);
             return fd;
         }
-        /* /dev/hidg0 - USB HID gadget: EP122 opens read+write separately.
-         * We always give the pipe read-end; write() is intercepted below.
-         * Reads return EAGAIN (no USB host); poll() forces POLLOUT for writes. */
-        if (strcmp(pathname, HIDG_PATH) == 0) {
-            if (g_hidg_rd < 0) { errno = ENODEV; return -1; }
-            int fd = sys_dup(g_hidg_rd);
-            if (fd < 0) return -1;
-            if (add_hidg_fd(fd) < 0) { sys_close(fd); errno = EMFILE; return -1; }
-            DBG("open(%s, 0x%x) → hidg stub fd %d\n", pathname, flags, fd);
+        /* /proc/udev_usbg1 - Pioneer USB-B connect node absent from our
+         * kernel.  Redirect to the FIFO cdj3k-pc-link-bridge serves; EP122's
+         * detector reads connect/disconnect tokens from it.  The FIFO is
+         * absent until the bridge runs, so a failed open here is the
+         * "PC Link off" state and the detector retries on its next poll.
+         * O_NONBLOCK is forced: the bridge holds the FIFO open, so a
+         * blocking read would park the detector between tokens. */
+        if (strcmp(pathname, USBG_PROBE_PATH) == 0) {
+            int fd = (int)sys_openat(USBG_FIFO_PATH, flags | O_NONBLOCK, mode);
+            DBG("open(%s) → %s fd %d\n", pathname, USBG_FIFO_PATH, fd);
             return fd;
         }
         /* /dev/gpiodrv - Pioneer GPIO device used to detect USB presence.
@@ -238,11 +245,6 @@ int close(int fd) {
         DBG("close(DRM fd %d)\n", fd);
         return sys_close(fd);
     }
-    if (is_seq_fd(fd)) {
-        remove_seq_fd(fd);
-        DBG("close(ALSA seq fd %d)\n", fd);
-        return sys_close(fd);
-    }
     if (is_hidg_fd(fd)) {
         remove_hidg_fd(fd);
         DBG("close(HIDG fd %d)\n", fd);
@@ -328,11 +330,10 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
      * subucom/pcm: must be forced POLLIN|POLLOUT so EP122's tight
      *   850 Hz loop doesn't time out waiting for a real pipe event.
      *
-     * hidg: must NOT be forced.  Forcing POLLOUT makes EP122's HID
-     *   event loop spin at full CPU (poll returns immediately every
-     *   iteration).  Instead, let the kernel's natural poll() block
-     *   for the caller's timeout on the empty pipe - this simulates
-     *   "no USB host connected, waiting for one."
+     * hidg: POLLOUT is forced so EP122's writer never reads the gadget as
+     *   stalled, and a 1 ms sleep bounds the loop at the USB HID report
+     *   rate.  POLLIN comes from the kernel: f_hid raises it when the host
+     *   has queued an output report for /dev/hidg0.
      *
      * drm: the DRM pipe gets synthetic flip events written to g_drm_wr from
      *   inject_drm_flip_event() after each SETPLANE/PAGE_FLIP.  raw_poll()
@@ -341,16 +342,14 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
      *   poll), we fall through to raw_poll with a 33 ms cap so EP122
      *   retries rather than blocking indefinitely. */
     int hidg_n   = 0;
-    int seq_n    = 0;   /* ALSA seq: POLLOUT-only (MIDI write, no incoming) */
     int drm_n    = 0;   /* DRM fds waiting POLLIN for flip events */
     if (fds)
         for (nfds_t i = 0; i < nfds; i++) {
             if (is_hidg_fd(fds[i].fd))         hidg_n++;
-            else if (is_seq_fd(fds[i].fd))     seq_n++;
             else if (is_drm_fd(fds[i].fd) && (fds[i].events & POLLIN)) drm_n++;
         }
 
-    int stub_n = hidg_n + seq_n + drm_n;
+    int stub_n = hidg_n + drm_n;
 
     /* Pure passthrough when no stub fds involved */
     if (!stub_n) {
@@ -369,7 +368,7 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
      *
      * Fix: always call raw_poll (with 0 ms timeout when a flip is already
      * pending so we don't block), then overlay synthetic DRM POLLIN on top. */
-    if (drm_n && !hidg_n && !seq_n) {
+    if (drm_n && !hidg_n) {
         /* If any DRM fd has a pending flip, use 0-ms timeout so we don't
          * block waiting for real kernel events - we'll return immediately. */
         int flip_pending = 0;
@@ -397,36 +396,44 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout) {
         return total;
     }
 
-    /* hidg / seq stub branch:
-     * - If any fd requests POLLOUT: pretend the USB gadget / MIDI port is
-     *   always write-ready.  Rate-limit to ~1 kHz with a 1 ms sleep so we
+    /* hidg stub branch:
+     * - If any fd requests POLLOUT: pretend the USB gadget is always
+     *   write-ready.  Rate-limit to ~1 kHz with a 1 ms sleep so we
      *   don't burn CPU spinning.
-     * - If only POLLIN is requested: block on the real pipe (no host data
-     *   expected - pipe stays empty).                                    */
+     * - If only POLLIN is requested: block on the real f_hid fd (no host
+     *   data expected when no pc_link connected).                       */
     int has_pollout = 0;
     for (nfds_t i = 0; i < nfds; i++)
         if (is_hidg_fd(fds[i].fd) && (fds[i].events & POLLOUT))
             has_pollout = 1;
 
-    if (has_pollout) {
-        /* Rate-limit: 1 ms sleep ≈ 1 kHz USB HID max poll rate */
-        if (timeout != 0) {
-            struct timespec ts = { 0, 1000000L };
-            syscall(SYS_nanosleep, &ts, NULL);
-        }
-        int cnt = 0;
-        for (nfds_t i = 0; i < nfds; i++) {
-            if (is_hidg_fd(fds[i].fd)) {
-                fds[i].revents = (fds[i].events & POLLOUT) ? POLLOUT : 0;
-                if (fds[i].revents) cnt++;
-            }
-        }
-        return cnt;
+    /* Rate-limit the writer loop: POLLOUT is synthesised below, so without
+     * this the caller would spin as fast as it can issue reports.  1 ms is
+     * the USB HID maximum report rate. */
+    if (has_pollout && timeout != 0) {
+        struct timespec ts = { 0, 1000000L };
+        syscall(SYS_nanosleep, &ts, NULL);
     }
-    /* Pure POLLIN: block for real timeout - no host data expected */
-    long r = raw_poll(fds, nfds, timeout);
+
+    /* Let the kernel answer for every fd.  With POLLOUT synthesised there is
+     * nothing to wait for, so poll with 0 ms; otherwise honour the caller's
+     * timeout.  f_hid raises POLLIN on /dev/hidg0 when the host has queued an
+     * output report, and that is the only signal EP122's HID receive thread
+     * has - so the kernel's revents pass through untouched. */
+    long r = raw_poll(fds, nfds, has_pollout ? 0 : timeout);
     if (r < 0) return -1;   /* glibc syscall() already set errno */
-    for (nfds_t i = 0; i < nfds; i++)
-        if (is_hidg_fd(fds[i].fd)) fds[i].revents = 0;
-    return (int)r;
+    int total = (int)r;
+
+    /* EP122's gadget manager treats a hidg fd that never reports POLLOUT as a
+     * stalled gadget, so grant it unconditionally.  OR into revents so a
+     * POLLIN the kernel set in the same call survives. */
+    if (has_pollout) {
+        for (nfds_t i = 0; i < nfds; i++) {
+            if (!is_hidg_fd(fds[i].fd)) continue;
+            if (!(fds[i].events & POLLOUT)) continue;
+            if (fds[i].revents == 0) total++;
+            fds[i].revents |= POLLOUT;
+        }
+    }
+    return total;
 }

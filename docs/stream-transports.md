@@ -19,9 +19,7 @@ subucom SPI wire format is documented in `docs/subucom.md`.
 `sock_dir` follows the multi-instance convention
 `/tmp/cdj3k-emu/instance-{id}/` (see
 `crates/cdj3k-emu-platform/src/runtime_paths.rs`). Authoritative QEMU args
-live in `crates/cdj3k-emu-runtime/src/config.rs` around lines 300-337;
-`boot.sh --patched` is a dev helper that lays out sockets differently and
-is not the production topology.
+live in `crates/cdj3k-emu-runtime/src/config.rs` around lines 300-337.
 
 The legacy virtio-serial main/jog/sub layout (`main.sock`, `jog.sock`,
 `sub.sock`, `/dev/vport0p[012]`) is gone. Main is now shm + dirty-rect

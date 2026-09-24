@@ -165,6 +165,13 @@ pub struct AppState {
     /// consumes it and persists `haptic_enabled` to InstanceSettings.
     pub haptic_toggle_requested: bool,
 
+    /// "PC Link (USB-B cable)" toggle.
+    /// Models the rear-panel USB-B cable being plugged into the PC.
+    pub pc_link_enabled: bool,
+    /// One-shot: set when the user toggles the menu item; the runtime
+    /// worker consumes it, persists, and applies start/stop.
+    pub pc_link_toggle_requested: bool,
+
     /// Latest audio pipeline depth, pushed by the guest cfg daemon every 3 s.
     /// Packed `(total << 32) | (guest << 16) | host`, all ms.  `u64::MAX` means
     /// "no data yet" and the menu shows `--` instead.
@@ -208,6 +215,9 @@ pub struct AppState {
     pub usb_phys_perm_denied: bool,
     /// Set by the alert "Retry" button; runtime worker re-fires the toggle.
     pub usb_phys_retry_req: bool,
+    /// Set after the CoreMIDI driver plugin is replaced while `MIDIServer` is
+    /// running: it keeps serving the old binary until the process exits.
+    pub midi_driver_replaced: bool,
 }
 
 impl AppState {
@@ -237,6 +247,8 @@ impl AppState {
             alc_toggle_requested: false,
             haptic_enabled: true,
             haptic_toggle_requested: false,
+            pc_link_enabled: false,
+            pc_link_toggle_requested: false,
             latency_packed: u64::MAX,
             selected_interface: NET_SEL_NONE,
             net_ifaces: Vec::new(),
@@ -253,6 +265,7 @@ impl AppState {
             usb_phys_list_version: 0,
             usb_phys_perm_denied: false,
             usb_phys_retry_req: false,
+            midi_driver_replaced: false,
         }
     }
 }

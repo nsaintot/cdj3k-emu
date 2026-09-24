@@ -28,6 +28,7 @@ struct MenuState {
     service_item: CheckMenuItem,
     mods_item: CheckMenuItem,
     haptic_item: CheckMenuItem,
+    pc_link_item: CheckMenuItem,
 
     // Audio
     latency_item: MenuItem,
@@ -66,7 +67,7 @@ struct MenuState {
 }
 
 mod launch;
-use launch::{launch_instance, show_fda_alert, show_net_error_alert};
+use launch::{launch_instance, show_fda_alert, show_midi_driver_alert, show_net_error_alert};
 
 thread_local! {
     static MENU_STATE: RefCell<Option<MenuState>> = RefCell::new(None);
@@ -90,6 +91,11 @@ pub fn setup_menu() {
     // Initial checked state is the runtime default (true); sync_menu() will
     // re-apply the persisted value once the UI has loaded InstanceSettings.
     let haptic_item = CheckMenuItem::with_id("haptic", "Jog Haptics", true, true, None);
+    // "PC Link" models the rear-panel USB-B cable to a PC.  Off by default;
+    // the emulated cable starts unplugged; toggling on starts the in-guest
+    // bridge daemon and brings up virtual CoreMIDI + HID endpoints on the
+    // Mac so DAWs and rekordbox see the CDJ-3000.
+    let pc_link_item = CheckMenuItem::with_id("pc_link", "PC Link (USB-B)", true, false, None);
 
     let emu_submenu = Submenu::with_items(
         "Emulation",
@@ -101,6 +107,7 @@ pub fn setup_menu() {
             &service_item,
             &mods_item,
             &haptic_item,
+            &pc_link_item,
             &PredefinedMenuItem::separator(),
             &PredefinedMenuItem::quit(None),
         ],
@@ -216,6 +223,7 @@ pub fn setup_menu() {
             service_item,
             mods_item,
             haptic_item,
+            pc_link_item,
             latency_item,
             audio_item,
             alc_item,
@@ -244,6 +252,11 @@ pub fn sync_menu() {
     // ── FDA alert ────────────────────────────────────────────────────────────
     if std::mem::take(&mut menu_state::lock().usb_phys_perm_denied) {
         show_fda_alert();
+    }
+
+    // ── MIDI driver replaced under a running MIDIServer ──────────────────────
+    if std::mem::take(&mut menu_state::lock().midi_driver_replaced) {
+        show_midi_driver_alert();
     }
 
     // ── Network setup failure alert ──────────────────────────────────────────
@@ -291,6 +304,7 @@ pub fn sync_menu() {
             audio_enabled: s.audio_enabled,
             alc_enabled: s.alc_enabled,
             haptic_enabled: s.haptic_enabled,
+            pc_link_enabled: s.pc_link_enabled,
             latency_packed: s.latency_packed,
             usb_virtual_mounted: s.usb_virtual_mounted,
             usb_phys_list_version: s.usb_phys_list_version,
@@ -314,6 +328,7 @@ pub fn sync_menu() {
         state.service_item.set_checked(snap.service_mode);
         state.mods_item.set_checked(snap.mods_enabled);
         state.haptic_item.set_checked(snap.haptic_enabled);
+        state.pc_link_item.set_checked(snap.pc_link_enabled);
         state.audio_item.set_checked(snap.audio_enabled);
         state.alc_item.set_checked(snap.alc_enabled);
 
@@ -404,6 +419,7 @@ struct MenuSnap {
     audio_enabled: bool,
     alc_enabled: bool,
     haptic_enabled: bool,
+    pc_link_enabled: bool,
     latency_packed: u64,
     usb_virtual_mounted: bool,
     usb_phys_list_version: u32,
@@ -455,6 +471,13 @@ fn handle_event(id: &str, pending_create: &mut bool, pending_mount: &mut bool) {
             // No QEMU restart, no guest push.
             s.haptic_enabled = !s.haptic_enabled;
             s.haptic_toggle_requested = true;
+        }
+        "pc_link" => {
+            // Flip the user-facing state immediately so the checkmark feels
+            // responsive; the runtime worker reads `pc_link_toggle_requested`
+            // and does the actual cfgd command + PcLink construct/drop.
+            s.pc_link_enabled = !s.pc_link_enabled;
+            s.pc_link_toggle_requested = true;
         }
         "jog_screen" => s.jog_screen_popped = !s.jog_screen_popped,
         "main_screen" => s.main_screen_popped = !s.main_screen_popped,
@@ -641,7 +664,7 @@ fn sync_audio_device_checkmarks(submenu: &Submenu) {
     };
     // If the persisted UID points at a device that is no longer present
     // (Bluetooth off, USB interface unplugged, etc.) treat the selection
-    // as "system default" for display — otherwise the radio group would
+    // as "system default" for display; otherwise the radio group would
     // show nothing checked at all. The persisted UID itself is left intact
     // so reconnecting the device restores the binding.
     let selection_present = selected

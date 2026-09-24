@@ -139,9 +139,8 @@ user's responsibility, by whatever means they are themselves entitled to.
   test routines that touch hardware-only registers (e.g. fan-RPM read) return
   fixed values.
 - LINK MODE (rekordbox <-> Emulation) is half-working.
-- PC Link and Audio HID functionality are not available.
-  This requires a guest USB gadget presenting HID and MIDI, connected to a CoreMIDI endpoint.
-  On macOS 15 and later, all virtual HID implementations (such as IOHIDUserDevice via a DriverKit HID extension) are restricted by Apple Entitlements.
+- PC Link (USB-B) **Rekordbox is gated** by its real HID probing and won't
+  connect. USB audio (UAC2) is **not supported**.
 
 ## Controls
 
@@ -232,6 +231,7 @@ privileges — every elevation is scoped to one command.
 - [ALC](docs/alc.md)
 - [Network stack](docs/network.md)
 - [Storage](docs/storage.md)
+- [PC-Link](docs/pc-link.md)
 - [Host/guest stream transports](docs/stream-transports.md)
 - [subucom SPI protocol](docs/subucom.md)
 - [G2M (Renesas) — unsupported target](docs/g2m-renesas.md)

@@ -6,6 +6,7 @@ pub mod desktop;
 pub mod fonts;
 pub mod haptic;
 pub mod host;
+pub mod identity;
 pub mod menu;
 pub mod menu_state;
 pub mod runtime_paths;

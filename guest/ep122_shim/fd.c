@@ -53,26 +53,6 @@ void remove_drm_fd(int fd) {
     }
 }
 
-/* ---- ALSA SEQ fd helpers ---- */
-int is_seq_fd(int fd) {
-    if (fd < 0) return 0;
-    for (int i = 0; i < MAX_ALSA_FDS; i++) {
-        if (LOAD(&g_seq_active[i]) == fd) return 1;
-    }
-    return 0;
-}
-int add_seq_fd(int fd) {
-    for (int i = 0; i < MAX_ALSA_FDS; i++) {
-        if (try_claim(&g_seq_active[i], fd)) return 0;
-    }
-    return -1;
-}
-void remove_seq_fd(int fd) {
-    for (int i = 0; i < MAX_ALSA_FDS; i++) {
-        if (LOAD(&g_seq_active[i]) == fd) { STORE(&g_seq_active[i], -1); break; }
-    }
-}
-
 /* ---- HIDG fd helpers ---- */
 int is_hidg_fd(int fd) {
     if (fd < 0) return 0;

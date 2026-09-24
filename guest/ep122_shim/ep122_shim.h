@@ -147,23 +147,19 @@ typedef struct {
 } jog_fb_entry_t;
 
 /* ------------------------------------------------------------------ */
-/* ALSA sequencer stub (audio PCM/CTL paths use the kernel virtio_snd  */
-/* driver directly - no shim interception.)                             */
+/* USB HID Gadget interposer (/dev/hidg0)                              */
 /* ------------------------------------------------------------------ */
-
-#define ALSA_SEQ_PATH    "/dev/snd/seq"
-
-#define ALSA_SEQ_IOCTL_PVERSION    0x80045300u
-#define ALSA_SEQ_IOCTL_CLIENT_ID   0x80045301u
-
-#define MAX_ALSA_FDS  16
-
-/* ------------------------------------------------------------------ */
-/* USB HID Gadget stub (/dev/hidg0)                                   */
-/* ------------------------------------------------------------------ */
+/* Reads/writes pass through to the real f_hid char device; only      */
+/* ioctl is intercepted so unknown HID-class requests return 0 rather */
+/* than f_hid's ENOTTY (which EP122 treats as a gadget init failure). */
 
 #define HIDG_PATH    "/dev/hidg0"
 #define MAX_HIDG_FDS 8
+
+/* EP122's USB-B connect detector opens /proc/udev_usbg1 (absent from our
+ * kernel); the shim redirects it to the FIFO cdj3k-pc-link-bridge serves. */
+#define USBG_PROBE_PATH   "/proc/udev_usbg1"
+#define USBG_FIFO_PATH    "/tmp/usbg1"
 
 /* ------------------------------------------------------------------ */
 /* GPIO device stub (/dev/gpiodrv)                                    */
@@ -370,8 +366,6 @@ extern void          *g_jog_shm_pixels;      /* g_jog_shm_base + JOG_SHM_PIXELS_
 extern void          *g_jog_current_dma_ptr;
 extern uint8_t       *g_jog_fb;
 
-extern int            g_hidg_rd;
-extern int            g_hidg_wr;
 extern int            g_hidg_active[MAX_HIDG_FDS];
 
 extern int            g_gpiodrv_rd;
@@ -380,11 +374,8 @@ extern int            g_gpiodrv_active[MAX_GPIODRV_FDS];
 
 extern int            g_drm_rd;
 extern int            g_drm_wr;
-extern int            g_seq_rd;
-extern int            g_seq_wr;
 
 extern int            g_drm_active[MAX_ACTIVE_FDS];
-extern int            g_seq_active[MAX_ALSA_FDS];
 
 /* ------------------------------------------------------------------ */
 /* Shared sysfs paths and helper (clock.c + link.c)                   */
@@ -415,9 +406,6 @@ int  is_drm_fd(int fd);
 int  add_drm_fd(int fd);
 void remove_drm_fd(int fd);
 
-int  is_seq_fd(int fd);
-int  add_seq_fd(int fd);
-void remove_seq_fd(int fd);
 
 int  is_hidg_fd(int fd);
 int  add_hidg_fd(int fd);

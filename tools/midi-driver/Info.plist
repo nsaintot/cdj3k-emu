@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>com.cdj3k.emu.midi-driver</string>
+  <key>CFBundleName</key><string>CDJ3KEmuMIDI</string>
+  <key>CFBundleExecutable</key><string>CDJ3KEmuMIDI</string>
+  <key>CFBundlePackageType</key><string>BNDL</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CDJ3KEmuMIDIVersion</key><string>1</string>
+  <key>CFPlugInFactories</key>
+  <dict><key>AFA6CB46-8737-44E1-885D-0867924B22F1</key><string>CDJ3KEmuMIDIFactory</string></dict>
+  <key>CFPlugInTypes</key>
+  <dict>
+    <key>ECDE9574-0FE4-11D4-BB1A-0050E4CEA526</key>
+    <array><string>AFA6CB46-8737-44E1-885D-0867924B22F1</string></array>
+  </dict>
+</dict></plist>

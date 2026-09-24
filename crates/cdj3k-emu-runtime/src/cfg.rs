@@ -16,6 +16,8 @@
 //!     usb_state <0|1>         - emitted by the in-guest USB hooks
 //!     param <name> <value>    - response to `get` or unsolicited push
 //!     latency <g>,<h>,<t>     - pushed every 3s by cdj3k-cfgd
+//!     pc_link on|off          - confirms a host-issued pc_link toggle
+//!     pc_link on_failed|off_failed - systemctl returned non-zero
 //!
 //! Connection is lazy and self-healing: the reader thread reconnects on EOF
 //! / connect failure, the writer methods retry briefly while QEMU is still
@@ -57,6 +59,14 @@ struct Shared {
     latency: Option<Latency>,
     /// Most recent `param <name> <value>` response per name.
     params: HashMap<String, String>,
+    /// Last confirmed PC-link bridge state from the guest.
+    /// `Some(true)` = bridge running, `Some(false)` = bridge stopped,
+    /// `None` = no `pc_link` response observed yet.
+    pc_link_state: Option<bool>,
+    /// `pc_link` replies that reported a failure rather than a state.  An
+    /// unanswered command means the guest has not opened the port yet; a
+    /// failure reply means cfgd ran systemctl and it did not work.
+    pc_link_failures: u32,
     /// Writer half - `None` while disconnected.
     writer: Option<UnixStream>,
 }
@@ -107,6 +117,38 @@ impl CfgClient {
         self.shared.lock().ok()?.params.get(name).cloned()
     }
 
+    /// Latest confirmed PC-link bridge state.  `None` if the host hasn't
+    /// toggled it yet (or no response has come back).
+    pub fn pc_link_state(&self) -> Option<bool> {
+        self.shared.lock().ok()?.pc_link_state
+    }
+
+    /// Forget the last pc_link echo so the reconcile re-issues on a state change.
+    pub fn reset_pc_link_state(&self) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.pc_link_state = None;
+            s.pc_link_failures = 0;
+        }
+    }
+
+    /// Count of `pc_link *_failed` / `?` replies since the last reset.
+    pub fn pc_link_failures(&self) -> u32 {
+        self.shared.lock().map(|s| s.pc_link_failures).unwrap_or(0)
+    }
+
+    /// `true` once the reader thread has connected to the cfg unix socket
+    /// (and thus stashed a live writer half for the fast send_line path).
+    /// Independent of any guest-side activity; proves only that the QEMU
+    /// chardev is reachable and cfgd has accepted the host's connection on
+    /// its end.  Used as an audio-independent "cfg channel is live" gate
+    /// for one-shot cold-start commands like `pc_link on`.
+    pub fn is_connected(&self) -> bool {
+        self.shared
+            .lock()
+            .map(|s| s.writer.is_some())
+            .unwrap_or(false)
+    }
+
     /// Send `usb attach\n`. Retries briefly while the port is still coming up.
     pub fn usb_attach(&self) -> std::io::Result<()> {
         self.send_line("usb attach\n")
@@ -115,6 +157,14 @@ impl CfgClient {
     /// Send `usb detach\n`. No-op on the guest side (EP122 handles unmount).
     pub fn usb_detach(&self) -> std::io::Result<()> {
         self.send_line("usb detach\n")
+    }
+
+    /// Toggle the PC-link bridge in the guest.  `on=true` starts
+    /// `cdj3k-pc-link-bridge.service` which begins pumping the gadget's
+    /// HID + MIDI endpoints out the `cdj3k.usb-link` virtio-serial port;
+    /// `on=false` stops it, which the host side observes as a socket EOF.
+    pub fn pc_link(&self, on: bool) -> std::io::Result<()> {
+        self.send_line(if on { "pc_link on\n" } else { "pc_link off\n" })
     }
 
     /// Write a sysfs param. The guest will respond with a `param` line that
@@ -198,9 +248,12 @@ fn reader_loop(sock_path: PathBuf, shared: Arc<Mutex<Shared>>) {
             handle_line(&line, &shared);
         }
 
-        // Disconnected - drop writer and try again.
+        // Disconnected: drop the writer and clear the pc_link echo so a QEMU
+        // restart re-issues the command.
         if let Ok(mut s) = shared.lock() {
             s.writer = None;
+            s.pc_link_state = None;
+            s.pc_link_failures = 0;
         }
         thread::sleep(RECONNECT_DELAY);
     }
@@ -244,6 +297,32 @@ fn handle_line(line: &str, shared: &Arc<Mutex<Shared>>) {
             let value = value.trim_start();
             if let Ok(mut s) = shared.lock() {
                 s.params.insert(name.to_string(), value.to_string());
+            }
+        }
+        return;
+    }
+
+    if let Some(rest) = line.strip_prefix("pc_link ") {
+        // Guest replies: "on", "off", "on_failed", "off_failed", "?".
+        // Anything else is a protocol mismatch; log and ignore.
+        let state = match rest.trim() {
+            "on" => Some(true),
+            "off" => Some(false),
+            "on_failed" | "off_failed" | "?" => {
+                eprintln!("cfg: guest reported pc_link {}", rest.trim());
+                if let Ok(mut s) = shared.lock() {
+                    s.pc_link_failures = s.pc_link_failures.saturating_add(1);
+                }
+                None
+            }
+            other => {
+                eprintln!("cfg: unrecognised pc_link response '{other}'");
+                return;
+            }
+        };
+        if let Some(v) = state {
+            if let Ok(mut s) = shared.lock() {
+                s.pc_link_state = Some(v);
             }
         }
         return;
