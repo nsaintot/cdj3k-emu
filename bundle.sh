@@ -21,7 +21,7 @@
 #                    it the bundle signs with the free entitlements only.
 #   --dmg            after bundling, package the .app into a compressed .dmg
 #                    image alongside it (matches CFBundleShortVersionString).
-#   --version VER    CFBundleShortVersionString to embed (default: 0.1.2).
+#   --version VER    CFBundleShortVersionString to embed (default: 0.2.0).
 #                    Also names the DMG: CDJ3K-Emulator-<VER>.dmg.
 #   --build N        CFBundleVersion build number (default: 1).
 #   --notarize       after signing with a "Developer ID Application" identity,
@@ -82,7 +82,7 @@ OUT_DIR="$REPO_ROOT/dist"
 # Falls back to ad-hoc ("-") when not set.
 SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 MAKE_DMG=0
-APP_VERSION="0.1.2"
+APP_VERSION="0.2.0"
 APP_BUILD="1"
 NOTARIZE=0
 NOTARY_PROFILE="${NOTARY_PROFILE:-cdj3k-emu-notarization}"
