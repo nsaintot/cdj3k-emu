@@ -38,14 +38,14 @@
 # Prerequisites:
 #   - qemu/install/lib/libcdj3k-emu-qemu.dylib  (from qemu/build.sh)
 #   - qemu/install/bin/qemu-img             (from qemu/build.sh)
-#   - build/initramfs-work/rootfs/lib/modules/*.ko  (from build.sh)
+#   - build/docker-out/modules/*.ko  (from build.sh)
 #   - guest/out/*_aarch64, guest/out/deck_shim.so  (from build.sh)
 #
 # The script:
 #   1. Builds tools/cdj3k-emu with cargo
 #   2. Creates cdj3k-emu.app/Contents/{MacOS,Resources}
 #   3. Copies cdj3k-emu, libcdj3k-emu-qemu.dylib and qemu-img into Contents/MacOS
-#   4. Populates Contents/Resources: modules/*.ko, patch/, tools/, assets/
+#   4. Populates Contents/Resources: patch/ (with vanilla-modules/*.ko), tools/, assets/
 #   5. Writes Info.plist
 #   6. Bundles the Homebrew dylib graph next to the binaries (@loader_path) so
 #      the .app is self-contained and runs without Homebrew installed
@@ -173,26 +173,14 @@ fi
 cp "$QEMU_IMG" "$MACOS_DIR/qemu-img"
 echo "     bundled qemu-img"
 
-# ── Resources: modules, patch scripts, guest tools, PPM assets ───────────────
+# ── Resources: patch scripts, guest modules and tools, PPM assets ────────────
 #
 # Prerequisites: build.sh must have been run first so that:
-#   build/initramfs-work/rootfs/lib/modules/*.ko  - pre-built kernel modules
-#   tools/*_aarch64, guest/out/deck_shim.so            - pre-built guest tools
+#   build/docker-out/modules/*.ko                  - guest kernel modules
+#   tools/*_aarch64, guest/out/deck_shim.so        - pre-built guest tools
 echo "==> Assembling Contents/Resources"
 
-ROOTFS_MODULES="$REPO_ROOT/build/initramfs-work/rootfs/lib/modules"
 RES_DIR="$RESOURCES_DIR"
-
-# guest/modules/
-RES_MODULES="$RES_DIR/modules"
-mkdir -p "$RES_MODULES"
-if [[ -d "$ROOTFS_MODULES" ]] && compgen -G "$ROOTFS_MODULES/*.ko" > /dev/null; then
-    cp "$ROOTFS_MODULES"/*.ko "$RES_MODULES/"
-    echo "     bundled $(ls "$RES_MODULES"/*.ko | wc -l | tr -d ' ') .ko files"
-else
-    echo "WARNING: no .ko files found at $ROOTFS_MODULES"
-    echo "         Run ./build.sh before bundling"
-fi
 
 # patch/   - single merged dispatcher + per-step assets
 #

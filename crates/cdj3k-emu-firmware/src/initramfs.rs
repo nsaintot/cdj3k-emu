@@ -1,7 +1,7 @@
 //! Initramfs extraction and in-app patching.
 //!
 //! extract_initramfs - pull the original initramfs.cpio.gz from the decrypted ISO.
-//! patch_initramfs   - inject pre-built .ko modules + guest tools, run the bundled
+//! patch_initramfs   - inject guest tools, run the bundled
 //!                     patch-rootfs.sh script, repack as a new cpio.gz.
 //!
 //! # macOS bsdcpio UID/GID caveat
@@ -162,14 +162,11 @@ pub fn patch_initramfs(
     resources_dir: &Path,
     out_path: &Path,
 ) -> Result<(), PatchError> {
-    let modules_dir = resources_dir.join("modules");
     let patch_dir = resources_dir.join("patch");
     let tools_dir = resources_dir.join("tools");
 
-    for req in [&modules_dir, &patch_dir] {
-        if !req.exists() {
-            return Err(PatchError::MissingResource(req.display().to_string()));
-        }
+    if !patch_dir.exists() {
+        return Err(PatchError::MissingResource(patch_dir.display().to_string()));
     }
 
     // Per-phase timings go to the provision log.  The rootfs is unpacked to
@@ -197,18 +194,7 @@ pub fn patch_initramfs(
     unpack_cpio_gz(initramfs_gz, &rootfs)?;
     phase!("unpack");
 
-    // 2. Inject pre-built .ko files into rootfs/lib/modules/.
-    let ko_dst = rootfs.join("lib/modules");
-    std::fs::create_dir_all(&ko_dst)?;
-    for entry in std::fs::read_dir(&modules_dir)? {
-        let src = entry?.path();
-        if src.extension().and_then(|e| e.to_str()) == Some("ko") {
-            let dst = ko_dst.join(src.file_name().unwrap());
-            std::fs::copy(&src, &dst)?;
-        }
-    }
-
-    // 3. Inject guest tools (aarch64 ELFs) into rootfs/usr/bin/.
+    // 2. Inject guest tools (aarch64 ELFs) into rootfs/usr/bin/.
     if tools_dir.exists() {
         let bin_dst = rootfs.join("usr/bin");
         std::fs::create_dir_all(&bin_dst)?;
@@ -230,7 +216,7 @@ pub fn patch_initramfs(
 
     phase!("inject");
 
-    // 4. Run patch-rootfs.sh from the bundled patch directory.
+    // 3. Run patch-rootfs.sh from the bundled patch directory.
     let patch_script = patch_dir.join("patch-rootfs.sh");
     if !patch_script.exists() {
         return Err(PatchError::MissingResource(
@@ -251,17 +237,17 @@ pub fn patch_initramfs(
 
     phase!("patch scripts");
 
-    // 5. Repack rootfs → raw cpio.
+    // 4. Repack rootfs → raw cpio.
     let raw_cpio = tmp.join("initramfs-patched.cpio");
     repack_cpio(&rootfs, &raw_cpio)?;
     phase!("cpio repack");
 
-    // 6. Fix uid/gid in the raw cpio (macOS bsdcpio records host UID).
+    // 5. Fix uid/gid in the raw cpio (macOS bsdcpio records host UID).
     let mut cpio_bytes = std::fs::read(&raw_cpio)?;
     fix_cpio_ownership(&mut cpio_bytes);
     phase!("ownership fix");
 
-    // 7. Gzip compress → out_path.
+    // 6. Gzip compress → out_path.
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -273,7 +259,7 @@ pub fn patch_initramfs(
     gz.finish()?;
     phase!("gzip");
 
-    // 8. Clean up temp dir.
+    // 7. Clean up temp dir.
     let _ = std::fs::remove_dir_all(&tmp);
     eprintln!(
         "[initramfs] {:<16} {:>6.1}s",
