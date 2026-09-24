@@ -66,11 +66,6 @@ const SHADE_FADE_SPEED: f32 = 1.0;
 /// `jog_vel` neutral-position encoding (inverse: max u16 = stopped).
 const JOG_VEL_INIT: u16 = 0xffff;
 
-/// How long the host leaves the guest's service-mode combo injection alone.
-/// The guest module holds it for 5 s and its subucom_read samples about half a
-/// second into boot, so this only has to outlast that read.
-const SERVICE_COMBO_HOLD: std::time::Duration = std::time::Duration::from_secs(8);
-
 /// `rotary` at rest. Must equal the value the guest reads while nothing turns
 /// ([`cdj3k_emu_panel::miso_frame::ROTARY_IDLE`]), or the first injected
 /// frame reads as one detent.
@@ -199,9 +194,6 @@ pub struct CdjApp {
     bloom_excludes: Vec<egui::Rect>,
     /// Controls drawn over the screens in [`Self::bloom_excludes`].
     bloom_keeps: Vec<bloom::BloomKeep>,
-    /// When this panel came up, for the startup-only service-combo hold.
-    started_at: std::time::Instant,
-
     status: String,
 
     /// Cached static jog wheel geometry (outer rings + inner disk/knob).
@@ -349,7 +341,6 @@ impl CdjApp {
             bloom: None,
             bloom_excludes: Vec::new(),
             bloom_keeps: Vec::new(),
-            started_at: std::time::Instant::now(),
             status: "Starting...".to_owned(),
             jog_static_cache: None,
             btn_cache: ui::draw_cache::BtnShapeCache::new(),
@@ -428,14 +419,6 @@ impl CdjApp {
             self.lcd_touch_ctrl_latched = false;
             self.inject(self.build_current_frame().finalize());
         }
-    }
-
-    /// True while the guest's own service-combo injection must be left in
-    /// place: in Service Mode, for [`SERVICE_COMBO_HOLD`] after the panel
-    /// starts.
-    fn service_mode_hold(&self) -> bool {
-        cdj3k_emu_platform::menu_state::lock().service_mode
-            && self.started_at.elapsed() < SERVICE_COMBO_HOLD
     }
 
     /// Hash of every input that influences bloom-relevant pixels for the
@@ -537,15 +520,8 @@ impl CdjApp {
         // The guest's sub-CPU module serves its own idle frame until the
         // host's first one arrives: send the model's frame as soon as the
         // control channel is up.
-        //
-        // Except in service mode. The module pre-presses the service combo at
-        // load and holds it ~5 s, but its injected frame is a single sticky
-        // slot - the first frame from here replaces it, and the guest's
-        // subucom_read samples about half a second later, so it reads no combo
-        // and the app boots normally. Leave the combo alone until the guest
-        // has read it; nothing on the panel has been touched yet anyway.
         let ctrl_ready = self.ctrl_stream.is_ready();
-        if ctrl_ready && !self.ctrl_was_ready && !self.service_mode_hold() {
+        if ctrl_ready && !self.ctrl_was_ready {
             self.inject(self.build_current_frame().finalize());
         }
         self.ctrl_was_ready = ctrl_ready;

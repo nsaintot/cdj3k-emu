@@ -173,12 +173,13 @@ static u8 miso_idle_model[MISO_SIZE];
 /* ------------------------------------------------------------------ */
 /* Testmode boot injection                                            */
 /*                                                                    */
-/* inject_testmode=1 pre-presses the service-mode combo for ~5 s so   */
+/* inject_testmode=1 holds the service-mode combo for ~5 s so         */
 /* subucom_read sees it during boot: CDJ-3000 = BTN_CALL_PREV +       */
 /* BTN_TEMPO_RANGE (byte 6 == 0x04, byte 8 == 0x08); CDJ-3000X =      */
-/* byte 10 == 0x04 and byte 12 == 0x01 (its subucom_read compares the */
-/* whole bytes). A delayed_work clears the injection before the app   */
-/* starts its 850 Hz polling loop.                                    */
+/* byte 10 == 0x04 and byte 12 == 0x01. subucom_read compares whole   */
+/* bytes. The combo is ORed into every frame spi_read delivers, idle  */
+/* or host-injected, so host writes do not cancel it. A delayed_work  */
+/* releases it before the app starts its 850 Hz polling loop.         */
 /* ------------------------------------------------------------------ */
 
 static int inject_testmode;
@@ -187,6 +188,11 @@ MODULE_PARM_DESC(inject_testmode, "Pre-inject testmode buttons for ~5s on load (
 
 #define TESTMODE_INJECT_MS  5000
 
+/* Combo bytes and masks for the loaded model; set at init. */
+static u8 testmode_byte[2];
+static u8 testmode_mask[2];
+static int testmode_held;   /* 1 = combo ORed into every frame */
+
 static void testmode_clear_work_fn(struct work_struct *work);
 static DECLARE_DELAYED_WORK(testmode_clear_work, testmode_clear_work_fn);
 
@@ -194,9 +200,9 @@ static void testmode_clear_work_fn(struct work_struct *work)
 {
     unsigned long flags;
     spin_lock_irqsave(&miso_lock, flags);
-    has_inject = 0;
+    testmode_held = 0;
     spin_unlock_irqrestore(&miso_lock, flags);
-    pr_info("%s: testmode inject cleared after %d ms\n", DRV_NAME, TESTMODE_INJECT_MS);
+    pr_info("%s: testmode combo released after %d ms\n", DRV_NAME, TESTMODE_INJECT_MS);
 }
 
 /* uaccess helpers. cdj3k-emu only targets vanilla 6.6 - the Pioneer 4.4
@@ -246,6 +252,10 @@ static ssize_t spi_read(struct file *filp, char __user *buf,
          * replaces it with a new frame (e.g. idle on button release). */
     } else {
         memcpy(frame, miso_idle_model, MISO_SIZE);
+    }
+    if (testmode_held) {
+        frame[testmode_byte[0]] |= testmode_mask[0];
+        frame[testmode_byte[1]] |= testmode_mask[1];
     }
     spin_unlock_irqrestore(&miso_lock, flags);
 
@@ -482,27 +492,26 @@ static int __init subucom_virt_init(void)
         memcpy(miso_idle_model, miso_idle, MISO_SIZE);
     }
 
-    /* Testmode boot injection: pre-press the model's service-mode combo */
+    /* Testmode boot injection: hold the model's service-mode combo */
     if (inject_testmode) {
         unsigned long flags;
-        memcpy(inject_pending, miso_idle_model, MISO_SIZE);
         if (model_is_x) {
             /* TEMPO RANGE: byte 10, mask 0x04 */
-            inject_pending[10] |= 0x04;
+            testmode_byte[0] = 10; testmode_mask[0] = 0x04;
             /* MEMORY: byte 12, mask 0x01 */
-            inject_pending[12] |= 0x01;
+            testmode_byte[1] = 12; testmode_mask[1] = 0x01;
         } else {
             /* BTN_TEMPO_RANGE: byte 6, mask 0x04 */
-            inject_pending[6] |= 0x04;
+            testmode_byte[0] = 6; testmode_mask[0] = 0x04;
             /* BTN_CALL_PREV: byte 8, mask 0x08 */
-            inject_pending[8] |= 0x08;
+            testmode_byte[1] = 8; testmode_mask[1] = 0x08;
         }
         spin_lock_irqsave(&miso_lock, flags);
-        has_inject = 1;
+        testmode_held = 1;
         spin_unlock_irqrestore(&miso_lock, flags);
         schedule_delayed_work(&testmode_clear_work,
                               msecs_to_jiffies(TESTMODE_INJECT_MS));
-        pr_info("%s: testmode buttons injected, auto-clear in %d ms\n",
+        pr_info("%s: testmode combo held, released in %d ms\n",
                 DRV_NAME, TESTMODE_INJECT_MS);
     }
 

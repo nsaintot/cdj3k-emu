@@ -187,9 +187,11 @@ back to idle. `epoll` on `subucom_spi1.0` always reports `POLLIN` -
 EP122 throttles itself via `read()` rather than waiting on poll
 (`subucom_virt.c`).
 
-A module-param `inject_testmode=1` pre-presses `BTN_CALL_PREV +
-BTN_TEMPO_RANGE` for 5 s on insmod via a `delayed_work` so the boot
-sequence enters service mode without host interaction.
+A module-param `inject_testmode=1` holds the model's service-mode combo
+(`BTN_CALL_PREV + BTN_TEMPO_RANGE` on the CDJ-3000) for 5 s from insmod,
+released by a `delayed_work`, so the boot sequence enters service mode
+without host interaction. The combo is ORed into every delivered frame,
+idle or injected: a host write during those 5 s does not cancel it.
 
 ### 2. Guest user-space forwarder
 
