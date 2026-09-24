@@ -36,13 +36,9 @@ impl Default for DebugViewportState {
 const FPS_ALPHA: f32 = 0.1;
 /// Aspect-tolerance (px) before we re-issue an `InnerSize` to enforce ratio.
 const ASPECT_FIX_TOL_PX: f32 = 2.0;
-/// Main LCD aspect ratio (16:9 pixel grid).
-const MAIN_LCD_ASPECT: f32 = 1280.0 / 720.0;
 /// Jog LCD aspect ratio (square framebuffer).
 const JOG_LCD_ASPECT: f32 = JOG_FB_W as f32 / JOG_FB_H as f32;
 
-const MAIN_LCD_INITIAL_SIZE: [f32; 2] = [1280.0, 720.0];
-const MAIN_LCD_MIN_SIZE: [f32; 2] = [640.0, 360.0];
 const JOG_LCD_INITIAL_SIZE: [f32; 2] = [320.0, 240.0];
 const JOG_LCD_MIN_SIZE: [f32; 2] = [160.0, 120.0];
 const DEBUG_INITIAL_SIZE: [f32; 2] = [500.0, 540.0];
@@ -61,10 +57,7 @@ impl CdjApp {
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("cdj_jog_screen"),
             egui::ViewportBuilder::default()
-                .with_title(format!(
-                    "{} — Jog Screen",
-                    cdj3k_emu_platform::app_meta::DEVICE_NAME
-                ))
+                .with_title(format!("{} — Jog Screen", self.model.title()))
                 .with_inner_size(JOG_LCD_INITIAL_SIZE)
                 .with_min_inner_size(JOG_LCD_MIN_SIZE),
             |inner_ctx, _class| {
@@ -152,22 +145,24 @@ impl CdjApp {
         }
         let tex_id = self.display_tex_id;
         let connected = self.display_stream.is_connected();
+        // The popout opens at the framebuffer's native size and keeps its aspect.
+        let (fb_w, fb_h) = self.model.main_lcd();
+        let main_aspect = fb_w as f32 / fb_h as f32;
+        let main_initial = [fb_w as f32, fb_h as f32];
+        let main_min = [fb_w as f32 * 0.5, fb_h as f32 * 0.5];
         let close = Arc::new(AtomicBool::new(false));
         let close_inner = close.clone();
         let mut popout_touch: Option<LcdTouchCapture> = None;
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("cdj_main_screen"),
             egui::ViewportBuilder::default()
-                .with_title(format!(
-                    "{} — Main Screen",
-                    cdj3k_emu_platform::app_meta::DEVICE_NAME
-                ))
-                .with_inner_size(MAIN_LCD_INITIAL_SIZE)
-                .with_min_inner_size(MAIN_LCD_MIN_SIZE),
+                .with_title(format!("{} — Main Screen", self.model.title()))
+                .with_inner_size(main_initial)
+                .with_min_inner_size(main_min),
             |inner_ctx, _class| {
                 // Use the *inner* viewport's Context (not the outer captured
                 // one) so input/screen_rect read from the popout window.
-                enforce_aspect_ratio(inner_ctx, MAIN_LCD_ASPECT);
+                enforce_aspect_ratio(inner_ctx, main_aspect);
                 handle_close_request(inner_ctx, &close_inner);
                 egui::CentralPanel::default()
                     .frame(egui::Frame::none().fill(egui::Color32::BLACK))
@@ -183,7 +178,7 @@ impl CdjApp {
                                     DISCONNECTED_TINT_ALPHA,
                                 )
                             };
-                            let rect = paint_aspect_fit_image(ui, tex_id, MAIN_LCD_ASPECT, tint);
+                            let rect = paint_aspect_fit_image(ui, tex_id, main_aspect, tint);
                             popout_touch = Some(capture_lcd_touch(ui, rect));
                         }
                     });
@@ -260,7 +255,7 @@ fn capture_lcd_touch(ui: &mut egui::Ui, display_rect: egui::Rect) -> LcdTouchCap
             i.pointer.button_down(egui::PointerButton::Secondary)
                 && i.pointer
                     .hover_pos()
-                    .map_or(false, |p| display_rect.contains(p))
+                    .is_some_and(|p| display_rect.contains(p))
         }),
         interact_pos: lcd_resp.interact_pointer_pos(),
         display_rect,

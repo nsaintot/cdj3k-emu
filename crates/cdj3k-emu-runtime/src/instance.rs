@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 /// Written by `QemuInstance::spawn`, cleared by `stop()` / `Drop`.
 pub static QEMU_CHILD_PID: AtomicI32 = AtomicI32::new(-1);
 
-/// How long EP122's sub-CPU takes to unmount USB after a power-off stimulus.
-/// Mirrors the countdown on real hardware.
-const EP122_CLEANUP_WAIT: Duration = Duration::from_secs(8);
+/// How long the player's sub-CPU takes to unmount USB after a power-off
+/// stimulus. Mirrors the countdown on real hardware.
+const APP_CLEANUP_WAIT: Duration = Duration::from_secs(8);
 /// How long systemd needs to walk the unit graph for ACPI shutdown.
 const ACPI_SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
 /// Window between sending QMP `quit` and SIGKILL-ing the QEMU child.
@@ -103,27 +103,35 @@ impl QemuInstance {
     /// Kills any stale QEMU from a previous .app run before spawning.
     #[cfg(target_os = "macos")]
     pub fn spawn(config: QemuConfig) -> Result<Self, InstanceError> {
-        kill_stale(config.qmp_port, &config.sock_dir());
-
-        std::fs::create_dir_all(config.sock_dir()).map_err(InstanceError::SockDir)?;
-
         // Exclusive non-blocking flock on the eMMC qcow2 - prevents two cdj3k-emu
         // instances from corrupting the same image. The lock is released when
-        // the file handle held in Inner is dropped.
+        // the file handle held in Inner is dropped. Another window probing
+        // whether the slot is in use holds it for an instant, so a failed try
+        // is retried for a moment before giving up.
         let emmc_lock = if let Some(emmc) = &config.emmc_img {
             let f = std::fs::OpenOptions::new()
                 .read(true)
                 .write(true)
                 .open(emmc)
                 .map_err(InstanceError::SockDir)?;
-            let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-            if rc != 0 {
-                return Err(InstanceError::EmmcLocked(emmc.clone()));
+            let mut tries = 0;
+            while unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                tries += 1;
+                if tries > 12 {
+                    return Err(InstanceError::EmmcLocked(emmc.clone()));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
             }
             Some(f)
         } else {
             None
         };
+
+        // Only once the lock is ours: while another window's emulation runs,
+        // that window holds the lock, and the QEMU on this QMP port is live.
+        kill_stale(config.qmp_port, &config.sock_dir());
+
+        std::fs::create_dir_all(config.sock_dir()).map_err(InstanceError::SockDir)?;
 
         if config.shm {
             // Guest RAM file matches QemuConfig::MEM_BYTES; sparse so host disk usage is zero.
@@ -254,7 +262,7 @@ impl QemuInstance {
         }
         menu_state::lock().power_off_stimuli_requested = true;
         // Give EP122 ~8 s to unmount USB (mirrors the real sub-CPU countdown).
-        wait_or_kill(&self.running, self.inner.pid, EP122_CLEANUP_WAIT);
+        wait_or_kill(&self.running, self.inner.pid, APP_CLEANUP_WAIT);
         if self.running.load(Ordering::Acquire) {
             // EP122 cleanup done; trigger clean Linux shutdown via ACPI.
             let _ = self.inner.qmp.system_powerdown();

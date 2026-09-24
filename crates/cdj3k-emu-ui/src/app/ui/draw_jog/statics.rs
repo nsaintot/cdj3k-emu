@@ -1,7 +1,7 @@
 //! Cached static jog wheel geometry - outer rings + inner disk + JOG ADJUST
 //! gear/indicator. Consumed by the jog static cache.
 
-use egui::{Align2, Color32, FontId, Pos2, Shape, Stroke, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 
 use super::super::draw_cache::ShapeList;
 use super::super::{
@@ -89,7 +89,12 @@ pub(super) fn collect_jog_statics(
     ctx: &egui::Context,
     layout: &UiScale,
     center: Pos2,
+    jog_ref: Rect,
+    chrome: JogChrome,
 ) {
+    if !chrome.nav_arrows {
+        return;
+    }
     let radius = layout.sc(JOG_NAV_ARC_RADIUS_REF);
     let arc_len = layout.sc(JOG_NAV_ARC_LEN_REF);
     let head_len = layout.sc(JOG_NAV_ARC_HEAD_LEN_REF);
@@ -124,11 +129,7 @@ pub(super) fn collect_jog_statics(
 
     list.text(
         ctx,
-        layout.sp_in_rect(
-            JOG_PANEL_REF,
-            JOG_NAV_ARROW_LABEL_LEFT_X,
-            JOG_NAV_ARROW_LABEL_V,
-        ),
+        layout.sp_in_rect(jog_ref, JOG_NAV_ARROW_LABEL_LEFT_X, JOG_NAV_ARROW_LABEL_V),
         Align2::CENTER_CENTER,
         "   −\nREV",
         FontId::proportional(layout.sc(JOG_NAV_ARROW_LABEL_FONT_SIZE)),
@@ -137,11 +138,7 @@ pub(super) fn collect_jog_statics(
 
     list.text(
         ctx,
-        layout.sp_in_rect(
-            JOG_PANEL_REF,
-            JOG_NAV_ARROW_LABEL_RIGHT_X,
-            JOG_NAV_ARROW_LABEL_V,
-        ),
+        layout.sp_in_rect(jog_ref, JOG_NAV_ARROW_LABEL_RIGHT_X, JOG_NAV_ARROW_LABEL_V),
         Align2::CENTER_CENTER,
         "   +\nFWD",
         FontId::proportional(layout.sc(JOG_NAV_ARROW_LABEL_FONT_SIZE)),
@@ -185,6 +182,8 @@ pub(super) fn build_jog_inner(
     center: egui::Pos2,
     layout: &UiScale,
     jog_adjust: f32,
+    jog_ref: Rect,
+    chrome: JogChrome,
 ) {
     let r_touch = layout.sc(JOG_TOUCH_RADIUS);
 
@@ -210,7 +209,7 @@ pub(super) fn build_jog_inner(
     build_jog_inner_lcd_foreground(out_over, ctx, center, layout);
 
     // JOG ADJUST knob (gear + ticks + labels) - keyed on jog_adjust.
-    build_jog_adjust_static(out_over, ctx, layout, jog_adjust);
+    build_jog_adjust_static(out_over, ctx, layout, jog_adjust, jog_ref, chrome);
 }
 
 /// Static geometry for the JOG ADJUST knob: gear, indicator, tick ring, labels.
@@ -220,8 +219,10 @@ pub(super) fn build_jog_adjust_static(
     ctx: &egui::Context,
     layout: &UiScale,
     jog_adjust: f32,
+    jog_ref: Rect,
+    chrome: JogChrome,
 ) {
-    let center = layout.sp_in_rect(JOG_PANEL_REF, JOG_ADJUST_CENTER_U, JOG_ADJUST_CENTER_V);
+    let center = layout.sp_in_rect(jog_ref, JOG_ADJUST_CENTER_U, JOG_ADJUST_CENTER_V);
     let s = |r: f32| layout.sc(r * JOG_ADJUST_SIZE_SCALE);
     let r_base = s(JOG_ADJUST_KNOB_RADIUS_REF);
     let tooth_amp = s(JOG_ADJUST_TOOTH_AMP_REF);
@@ -281,7 +282,7 @@ pub(super) fn build_jog_adjust_static(
         ctx,
         top_label_pos,
         Align2::CENTER_BOTTOM,
-        "JOG ADJUST",
+        chrome.adjust_label,
         FontId::proportional(s(JOG_ADJUST_TOP_LABEL_FONT_SIZE)),
         COL_BTN_TEXT,
     );

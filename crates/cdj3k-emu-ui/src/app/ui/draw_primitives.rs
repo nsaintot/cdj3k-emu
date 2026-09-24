@@ -6,7 +6,9 @@ use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2};
 use crate::app::ui::{draw_cache::ShapeList, COL_BTN};
 
 mod buttons;
+mod glyphs;
 pub(in crate::app) use buttons::*;
+pub(in crate::app) use glyphs::*;
 
 /// Width and color for stroked outlines (rect borders, ring strokes, etc.).
 #[derive(Clone, Copy, Debug)]
@@ -122,6 +124,47 @@ fn paint_double_rect_border(
         painter.rect_stroke(rect_outer, rounding_outer, spec.outer.stroke());
         painter.rect_stroke(rect, rounding, spec.inner.stroke());
     }
+}
+
+/// An open USB tray, folded up against its casing's top wall: a thin panel
+/// with the handle's dome standing on its top edge. Screen space.
+pub(in crate::app) struct UsbTraySpec {
+    pub centre_x: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub half_w: f32,
+    /// The dome's chord along the panel's top edge, and its height above it.
+    pub dome_chord: f32,
+    pub dome_h: f32,
+    pub stroke: f32,
+}
+
+pub(in crate::app) fn draw_usb_tray(painter: &egui::Painter, tray: UsbTraySpec) {
+    use crate::app::ui::{COL_BTN_HOT, COL_SILVER};
+    let outline = Stroke::new(tray.stroke, COL_SILVER);
+    let half_c = tray.dome_chord * 0.5;
+    let sag = tray.dome_h;
+    let r = (half_c * half_c + sag * sag) / (2.0 * sag);
+    let centre = Pos2::new(tray.centre_x, tray.top - sag + r);
+    let half_angle = (half_c / r).asin();
+    const DOME_STEPS: usize = 24;
+    let dome: Vec<Pos2> = (0..=DOME_STEPS)
+        .map(|k| {
+            let a = -half_angle + 2.0 * half_angle * k as f32 / DOME_STEPS as f32;
+            Pos2::new(centre.x + r * a.sin(), centre.y - r * a.cos())
+        })
+        .collect();
+    let panel = Rect::from_min_max(
+        Pos2::new(tray.centre_x - tray.half_w, tray.top),
+        Pos2::new(tray.centre_x + tray.half_w, tray.bottom),
+    );
+    painter.rect_filled(panel, 0.0, COL_BTN_HOT);
+    // The handle is a finger recess, so it reads darker than the panel.
+    painter.add(Shape::convex_polygon(dome.clone(), COL_BTN, Stroke::NONE));
+    let mut edge = vec![panel.left_bottom(), panel.left_top()];
+    edge.extend(dome);
+    edge.extend([panel.right_top(), panel.right_bottom()]);
+    painter.add(Shape::line(edge, outline));
 }
 
 /// Draws a rounded-rect section with optional fill and a double border.

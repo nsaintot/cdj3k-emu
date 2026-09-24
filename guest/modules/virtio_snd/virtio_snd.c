@@ -508,7 +508,7 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 				 * tasklet runs (~2 × TX period).  Releasing the lock
 				 * lets vsnd_tx_done refill the pool.  In normal
 				 * operation QEMU returns a buf within ~5 ms - zero
-				 * clock drift, zero ep122 cascade.
+				 * clock drift, zero cdj3k cascade.
 				 *
 				 * Phase 1 extended - in-flight bufs present: if the
 				 * short Phase-1 window expires but QEMU still holds
@@ -1222,9 +1222,9 @@ module_virtio_driver(virtio_snd_driver);
  * frames-in-flight counter (TX submitted - TX returned) and the
  * current PCM rate. Reflects the full host pipeline latency:
  * QEMU bypass ring + CoreAudio output buffer + USB + Focusrite DAC.
- * The ep122_shim_clock hook reads this and uses it as the auto offset
- * for OptFstUdpServer, so slave-mode sync compensates whatever the
- * actual measured latency is at any given moment. */
+ * The clock hook in deck_shim.so (core/clock.c) reads this and uses it
+ * as the auto offset for OptFstUdpServer, so slave-mode sync compensates
+ * whatever the actual measured latency is at any given moment. */
 static int audio_latency_ms_get(char *buffer, const struct kernel_param *kp)
 {
 	struct vsnd_dev *vsnd = g_vsnd_dev;
@@ -1266,14 +1266,15 @@ static const struct kernel_param_ops audio_latency_ms_ops = {
 module_param_cb(audio_latency_ms, &audio_latency_ms_ops, NULL, 0444);
 MODULE_PARM_DESC(audio_latency_ms,
 	"Read-only: live audio pipeline depth in ms (frames-in-flight + host). "
-	"Capped at 200ms. Used by both ep122_shim_clock (slave-mode clock "
-	"shift) and ep122_shim_link (master-mode delay-send). Tracks actual "
+	"Capped at 200ms. Used by deck_shim.so for the slave-mode clock "
+	"shift (clock.c) and the master-mode delay-send (link.c). Tracks actual "
 	"pipeline so slave audible aligns. The watchdog forces an xrun when "
 	"frames_in_flight stays deep too long, recovering pipeline depth.");
 
-/* Manual override for ep122_shim_clock. When non-zero, the shim uses
- * this value instead of audio_latency_ms. Useful for testing fixed
- * offsets. Set to 0 (default) for automatic tracking. */
+/* Manual override for the clock shift in deck_shim.so (core/clock.c).
+ * When non-zero, the shim uses this value instead of audio_latency_ms.
+ * Useful for testing fixed offsets. Set to 0 (default) for automatic
+ * tracking. */
 static unsigned int link_pos_offset_ms;
 module_param(link_pos_offset_ms, uint, 0644);
 MODULE_PARM_DESC(link_pos_offset_ms,
@@ -1281,17 +1282,17 @@ MODULE_PARM_DESC(link_pos_offset_ms,
 	"audio_latency_ms). Non-zero = force this fixed value.");
 
 /* Master switch for ALL audio-latency compensation.
- *  0 (default) = full no-op. Both LD_PRELOAD shims pass through:
- *                - ep122_shim_clock: no clock shift on OptFstUdpServer
- *                - ep122_shim_link:  no sendto/sendmsg delay-send
+ *  0 (default) = full no-op. Both hooks in deck_shim.so pass through:
+ *                - core/clock.c: no clock shift on OptFstUdpServer
+ *                - core/link.c:  no sendto/sendmsg delay-send
  *                Audio plays raw with no Pro DJ Link sync compensation.
- *  1          = both shims active. Slave-mode clock-shift on
+ *  1          = both hooks active. Slave-mode clock-shift on
  *                OptFstUdpServer, master-mode delay-send on Pro DJ Link
  *                broadcasts. */
 static unsigned int audio_sync_enabled;
 module_param(audio_sync_enabled, uint, 0644);
 MODULE_PARM_DESC(audio_sync_enabled,
-	"Master switch for both LD_PRELOAD audio-sync shims. "
+	"Master switch for the audio-sync hooks in the deck_shim.so LD_PRELOAD. "
 	"0=off (no compensation, raw audio path), 1=on.");
 
 /* Storage declared at the top of the file (vsnd_tx_submit reads it). */

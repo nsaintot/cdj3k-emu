@@ -17,7 +17,6 @@
 //! until the callback fires (with a hard timeout).  No global state, no
 //! background threads.
 
-#![cfg(target_os = "macos")]
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
 
 use std::ffi::{c_void, CStr, CString};
@@ -295,7 +294,7 @@ unsafe fn da_string(session: DASessionRef, bsd: &str, key: CFStringRef) -> Optio
     let out = if desc.is_null() {
         None
     } else {
-        let val = CFDictionaryGetValue(desc, key as *const c_void);
+        let val = CFDictionaryGetValue(desc, key);
         let r = cf_string_to_rust(val);
         CFRelease(desc);
         r
@@ -310,7 +309,7 @@ unsafe fn da_string(session: DASessionRef, bsd: &str, key: CFStringRef) -> Optio
 pub fn list_removable() -> Vec<PhysicalDisk> {
     let mut out = Vec::new();
     unsafe {
-        let matching = IOServiceMatching(b"IOMedia\0".as_ptr() as *const c_char);
+        let matching = IOServiceMatching(c"IOMedia".as_ptr());
         if matching.is_null() {
             return out;
         }

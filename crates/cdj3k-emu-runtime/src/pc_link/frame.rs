@@ -3,20 +3,25 @@
 //! Matches `guest/pc_link_bridge/` (io.c) byte-for-byte:
 //!
 //! ```text
-//!   byte 0       : type     (FRAME_HID = 0x01, FRAME_MIDI = 0x02)
+//!   byte 0       : type     (FRAME_HID = 0x01, FRAME_MIDI = 0x02,
+//!                             FRAME_HELLO = 0x03, FRAME_IDENTITY = 0x04)
 //!   bytes 1..2   : length   (big-endian u16, payload only)
 //!   bytes 3..    : payload
 //! ```
 //!
 //! Both directions share the same encoding; "direction" is implicit in who
-//! wrote the frame.  Max payload is 4 KiB on the guest side (HID reports
-//! are 64 B, USB-MIDI packets are 4 B), but the parser doesn't enforce a
-//! cap; caller decides whether to drop oversized frames.
+//! wrote the frame.  HELLO (host -> guest, empty) asks for the gadget
+//! identity; IDENTITY (guest -> host) answers it, see [`super::gadget`].
+//! Max payload is 4 KiB on the guest side (HID reports are as long as the
+//! gadget's descriptor says, USB-MIDI packets are 4 B), but the parser
+//! doesn't enforce a cap; caller decides whether to drop oversized frames.
 
 use std::io::{self, Read, Write};
 
 pub const FRAME_HID: u8 = 0x01;
 pub const FRAME_MIDI: u8 = 0x02;
+pub const FRAME_HELLO: u8 = 0x03;
+pub const FRAME_IDENTITY: u8 = 0x04;
 
 /// Read one frame.  Returns `Ok(None)` on clean EOF, `Ok(Some((kind, payload)))`
 /// otherwise.  Any other error short-circuits the read loop.

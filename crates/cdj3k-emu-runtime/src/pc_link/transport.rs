@@ -17,16 +17,19 @@
 //! `stop`, `alive` and both join handles are per connection, constructed only
 //! in [`Transport::spawn`].
 
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::pc_link::frame::{read_frame, write_frame, FRAME_HID, FRAME_MIDI};
+use crate::pc_link::frame::{
+    read_frame, write_frame, FRAME_HELLO, FRAME_HID, FRAME_IDENTITY, FRAME_MIDI,
+};
+use crate::pc_link::gadget::GadgetIdentity;
 
 /// One frame to send out the writer half: `(kind, payload)`.
 pub type OutFrame = (u8, Vec<u8>);
@@ -34,6 +37,12 @@ pub type OutFrame = (u8, Vec<u8>);
 /// How long the writer parks on the channel before re-checking `stop`.
 /// Bounds how long `shutdown_into_rx` stalls waiting for the writer.
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// How long [`Transport::handshake`] waits for the IDENTITY reply, and how
+/// often it resends HELLO meanwhile: virtio-serial drops what the host writes
+/// while the guest bridge has the port closed.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(1500);
+const HELLO_RESEND: Duration = Duration::from_millis(300);
 
 /// Callback handed to the reader thread; one demuxed frame per call.  Must be
 /// `Send + Sync` and not block.  The same sink outlives any single connection.
@@ -66,6 +75,15 @@ impl Transport {
         let stream = UnixStream::connect(sock_path)?;
         stream.set_nonblocking(false)?;
         Ok(stream)
+    }
+
+    /// Ask the guest bridge for its gadget identity on a freshly dialed
+    /// stream, before any endpoint is built from it.  Frames other than the
+    /// reply are discarded: nothing is registered yet to receive them.
+    pub fn handshake(stream: &UnixStream) -> io::Result<GadgetIdentity> {
+        let result = handshake_loop(stream);
+        stream.set_read_timeout(None)?;
+        result
     }
 
     /// Spawn the I/O threads on an already-dialed stream.
@@ -156,6 +174,99 @@ impl Drop for Transport {
     }
 }
 
+fn handshake_loop(stream: &UnixStream) -> io::Result<GadgetIdentity> {
+    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+    let mut next_hello = Instant::now();
+    let mut pending = PartialFrame::default();
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no gadget identity from the guest bridge",
+            ));
+        }
+        if now >= next_hello {
+            write_frame(&mut &*stream, FRAME_HELLO, &[])?;
+            next_hello = now + HELLO_RESEND;
+        }
+        let wait = next_hello.min(deadline).saturating_duration_since(now);
+        stream.set_read_timeout(Some(wait.max(Duration::from_millis(1))))?;
+        match pending.read(&mut &*stream) {
+            Ok(Some((FRAME_IDENTITY, payload))) => {
+                return GadgetIdentity::parse(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "guest closed the link during the handshake",
+                ))
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// A frame read that survives read timeouts: bytes already received stay in
+/// `buf`, and the next call continues from them.  Reads never go past the end
+/// of the current frame, so the stream stays aligned for the reader thread.
+#[derive(Default)]
+struct PartialFrame {
+    buf: Vec<u8>,
+}
+
+impl PartialFrame {
+    const HDR: usize = 3;
+
+    /// `Ok(None)` on EOF at a frame boundary; EOF inside a frame is
+    /// `UnexpectedEof`.  A timeout error leaves the partial frame in place.
+    fn read<R: Read>(&mut self, r: &mut R) -> io::Result<Option<(u8, Vec<u8>)>> {
+        loop {
+            let want = if self.buf.len() < Self::HDR {
+                Self::HDR
+            } else {
+                Self::HDR + u16::from_be_bytes([self.buf[1], self.buf[2]]) as usize
+            };
+            if self.buf.len() == want {
+                let frame = std::mem::take(&mut self.buf);
+                return Ok(Some((frame[0], frame[Self::HDR..].to_vec())));
+            }
+            let have = self.buf.len();
+            self.buf.resize(want, 0);
+            let n = match r.read(&mut self.buf[have..]) {
+                Ok(n) => n,
+                Err(e) => {
+                    self.buf.truncate(have);
+                    if e.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(e);
+                }
+            };
+            self.buf.truncate(have + n);
+            if n == 0 {
+                if have == 0 {
+                    return Ok(None);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "pc-link frame cut short",
+                ));
+            }
+        }
+    }
+}
+
 fn writer_loop(
     stream: UnixStream,
     rx: Receiver<OutFrame>,
@@ -206,6 +317,8 @@ fn reader_loop(
         match read_frame(&mut r) {
             Ok(Some((FRAME_HID, payload))) => sink.on_hid(&payload),
             Ok(Some((FRAME_MIDI, payload))) => sink.on_midi(&payload),
+            // A late reply to a resent HELLO.
+            Ok(Some((FRAME_IDENTITY, _))) => {}
             // Unknown frame type; not fatal.
             Ok(Some((other, _))) => eprintln!("pc-link: unknown frame type 0x{other:02x}"),
             Ok(None) => break, // clean EOF
@@ -241,8 +354,7 @@ mod tests {
     fn spawn_pair() -> (Transport, UnixStream, Sender<OutFrame>) {
         let (host, peer) = UnixStream::pair().expect("socketpair");
         let (tx, rx) = channel::<OutFrame>();
-        let transport =
-            Transport::spawn(host, rx, Arc::new(NullSink)).expect("spawn transport");
+        let transport = Transport::spawn(host, rx, Arc::new(NullSink)).expect("spawn transport");
         (transport, peer, tx)
     }
 
@@ -263,6 +375,108 @@ mod tests {
     }
 
     #[test]
+    fn handshake_skips_traffic_and_returns_the_identity() {
+        let (host, peer) = UnixStream::pair().expect("socketpair");
+        let guest = thread::spawn(move || {
+            let mut peer = peer;
+            let (kind, _) = read_frame(&mut peer).unwrap().unwrap();
+            assert_eq!(kind, FRAME_HELLO);
+            // Traffic already in flight lands ahead of the reply.
+            write_frame(&mut peer, FRAME_HID, &[0u8; 64]).unwrap();
+            let id = concat!(
+                "idVendor=0x2b73\nidProduct=0x002f\nbcdDevice=0x0320\n",
+                "manufacturer=Pioneer DJ\nproduct=CDJ-3000\nserialnumber=DJMP000001EH\n",
+                "report_desc=06a0ff0901a101c0\n",
+            );
+            write_frame(&mut peer, FRAME_IDENTITY, id.as_bytes()).unwrap();
+            peer
+        });
+        let id = Transport::handshake(&host).expect("identity");
+        assert_eq!(id.product, "CDJ-3000");
+        assert_eq!(id.product_id, 0x002f);
+        assert_eq!(id.primary_usage(), Some((0xffa0, 0x01)));
+        let _peer = guest.join().unwrap();
+    }
+
+    #[test]
+    fn partial_frame_resumes_after_a_timeout() {
+        /// Yields one chunk per call, with a timeout between chunks.
+        struct Chunks(Vec<Option<Vec<u8>>>);
+        impl Read for Chunks {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                if self.0.is_empty() {
+                    return Ok(0);
+                }
+                match self.0.remove(0) {
+                    None => Err(io::ErrorKind::TimedOut.into()),
+                    Some(mut chunk) => {
+                        let n = chunk.len().min(out.len());
+                        out[..n].copy_from_slice(&chunk[..n]);
+                        if n < chunk.len() {
+                            self.0.insert(0, Some(chunk.split_off(n)));
+                        }
+                        Ok(n)
+                    }
+                }
+            }
+        }
+        let mut src = Chunks(vec![
+            Some(vec![FRAME_HID, 0x00]),
+            None,
+            Some(vec![0x02, 0xaa]),
+            None,
+            Some(vec![0xbb, FRAME_MIDI, 0x00, 0x00]),
+        ]);
+        let mut pending = PartialFrame::default();
+        assert!(pending.read(&mut src).is_err());
+        assert!(pending.read(&mut src).is_err());
+        assert_eq!(
+            pending.read(&mut src).unwrap(),
+            Some((FRAME_HID, vec![0xaa, 0xbb]))
+        );
+        assert_eq!(pending.read(&mut src).unwrap(), Some((FRAME_MIDI, vec![])));
+        assert_eq!(pending.read(&mut src).unwrap(), None);
+    }
+
+    #[test]
+    fn handshake_sends_hello_on_its_cadence_not_per_frame() {
+        let (host, peer) = UnixStream::pair().expect("socketpair");
+        let guest = thread::spawn(move || {
+            let mut peer = peer;
+            let (kind, _) = read_frame(&mut peer).unwrap().unwrap();
+            assert_eq!(kind, FRAME_HELLO);
+            for _ in 0..20 {
+                write_frame(&mut peer, FRAME_HID, &[0u8; 8]).unwrap();
+            }
+            // The IDENTITY header, then the rest after a host read timeout.
+            let id = concat!(
+                "idVendor=0x2b73\nidProduct=0x002f\nbcdDevice=0x0320\n",
+                "manufacturer=Pioneer DJ\nproduct=CDJ-3000\nserialnumber=DJMP000001EH\n",
+                "report_desc=06a0ff0901a101c0\n",
+            )
+            .as_bytes();
+            let len = (id.len() as u16).to_be_bytes();
+            peer.write_all(&[FRAME_IDENTITY, len[0]]).unwrap();
+            thread::sleep(HELLO_RESEND + Duration::from_millis(100));
+            peer.write_all(&[len[1]]).unwrap();
+            peer.write_all(id).unwrap();
+            // One resend over the pause; none per HID frame.
+            peer.set_read_timeout(Some(Duration::from_millis(200)))
+                .unwrap();
+            let mut hellos = 0;
+            while let Ok(Some((FRAME_HELLO, _))) = read_frame(&mut peer) {
+                hellos += 1;
+            }
+            hellos
+        });
+        let id = Transport::handshake(&host).expect("identity");
+        assert_eq!(id.product, "CDJ-3000");
+        drop(host);
+        let hellos = guest.join().unwrap();
+        assert!(hellos <= 1, "HELLO resent {hellos} times after the first");
+    }
+
+    #[test]
     fn peer_close_clears_alive_without_an_explicit_shutdown() {
         let (transport, peer, _tx) = spawn_pair();
         assert!(transport.is_transport_alive());
@@ -274,6 +488,9 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         // This is the signal the worker polls for on a QEMU respawn.
-        assert!(!transport.is_transport_alive(), "reader missed the peer close");
+        assert!(
+            !transport.is_transport_alive(),
+            "reader missed the peer close"
+        );
     }
 }

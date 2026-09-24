@@ -19,7 +19,10 @@ const LUKS_MAGIC: &[u8; 6] = b"LUKS\xba\xbe";
 pub(crate) const LUKS_SECTOR: u64 = 512;
 
 mod crypto;
+mod rekey;
 use crypto::{af_merge, decrypt_payload, pbkdf2_derive, xts_tweak};
+
+pub use rekey::{add_keyslot, cabinet_passphrase, vendor_passphrase, RekeyError};
 
 /// A LUKS keyfile (raw binary, typically 32 bytes for AES-256).
 pub struct LuksKey(pub Vec<u8>);
@@ -53,7 +56,7 @@ impl LuksKey {
         // 1. Hex: only hex digits (and colons, which we strip).
         let hex_clean: String = clean.chars().filter(|c| *c != ':').collect();
         let all_hex = hex_clean.chars().all(|c| c.is_ascii_hexdigit());
-        if all_hex && hex_clean.len() % 2 == 0 && !hex_clean.is_empty() {
+        if all_hex && hex_clean.len().is_multiple_of(2) && !hex_clean.is_empty() {
             let bytes = (0..hex_clean.len())
                 .step_by(2)
                 .map(|i| u8::from_str_radix(&hex_clean[i..i + 2], 16).unwrap())
@@ -183,6 +186,35 @@ pub(crate) struct KeySlot {
     pub(crate) stripes: u32,
 }
 
+/// Size of the decoy LUKS header the CDJ-3000X `.UPD` carries at offset 0,
+/// ahead of the real container.
+const DECOY_HEADER_BYTES: u64 = 512;
+
+/// Presents `inner` as though it began at `base`.
+///
+/// Every seek on the LUKS path is `SeekFrom::Start`, so shifting those is all
+/// it takes to parse a container that does not start at byte 0.
+struct OffsetReader<R> {
+    inner: R,
+    base: u64,
+}
+
+impl<R: Read> Read for OffsetReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+impl<R: Seek> Seek for OffsetReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let abs = match pos {
+            SeekFrom::Start(n) => self.inner.seek(SeekFrom::Start(self.base + n))?,
+            other => self.inner.seek(other)?,
+        };
+        Ok(abs.saturating_sub(self.base))
+    }
+}
+
 fn read_luks1_header<R: Read + Seek>(r: &mut R) -> Result<Luks1Header, LuksError> {
     r.seek(SeekFrom::Start(0))?;
     let mut buf = [0u8; 592];
@@ -243,8 +275,30 @@ fn read_luks1_header<R: Read + Seek>(r: &mut R) -> Result<Luks1Header, LuksError
 /// Decrypt the UPD (LUKS1) container and write the plaintext to `out_path`.
 /// `key` is the raw binary keyfile.
 pub fn decrypt_upd(upd_path: &Path, key: &LuksKey, out_path: &Path) -> Result<(), LuksError> {
-    let mut file = std::fs::File::open(upd_path)?;
-    let header = read_luks1_header(&mut file)?;
+    // The CDJ-3000X hides the real container behind a decoy header that carries
+    // valid LUKS magic of its own, so the decoy parses and only its key slots
+    // fail: try the container at 0, then behind the decoy.  The first error is
+    // the one reported, so a plain wrong-key .UPD still explains itself.
+    let mut first_err = None;
+    for base in [0, DECOY_HEADER_BYTES] {
+        match decrypt_upd_at(upd_path, key, out_path, base) {
+            Ok(()) => return Ok(()),
+            Err(e) => first_err = first_err.or(Some(e)),
+        }
+    }
+    Err(first_err.expect("one attempt per base"))
+}
+
+/// Decrypt the container that begins `base` bytes into `upd_path`.
+fn decrypt_upd_at(
+    upd_path: &Path,
+    key: &LuksKey,
+    out_path: &Path,
+    base: u64,
+) -> Result<(), LuksError> {
+    let file = std::fs::File::open(upd_path)?;
+    let mut r = OffsetReader { inner: file, base };
+    let header = read_luks1_header(&mut r)?;
 
     // Validate cipher.
     if header.cipher_name.to_lowercase() != "aes" {
@@ -254,11 +308,12 @@ pub fn decrypt_upd(upd_path: &Path, key: &LuksKey, out_path: &Path) -> Result<()
         ));
     }
 
-    // Try each active key slot.
-    let master_key = try_key_slots(&mut file, &header, &key.0)?;
+    // Try each active key slot.  This runs before the payload is written, so a
+    // failed attempt leaves no partial ISO behind.
+    let master_key = try_key_slots(&mut r, &header, &key.0)?;
 
     // Decrypt payload and stream to output.
-    decrypt_payload(&mut file, out_path, &header, &master_key).map_err(LuksError::Io)
+    decrypt_payload(&mut r, out_path, &header, &master_key).map_err(LuksError::Io)
 }
 
 fn try_key_slots<R: Read + Seek>(
@@ -402,4 +457,29 @@ fn try_key_slots<R: Read + Seek>(
 fn cstring(bytes: &[u8]) -> String {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `OffsetReader` hides `base` from the parser: an absolute seek lands
+    /// `base` bytes further into the file and reports the shifted position.
+    #[test]
+    fn offset_reader_shifts_absolute_seeks() {
+        let data: Vec<u8> = (0..=255u8).collect();
+        let mut r = OffsetReader {
+            inner: std::io::Cursor::new(data),
+            base: 16,
+        };
+
+        assert_eq!(r.seek(SeekFrom::Start(0)).unwrap(), 0);
+        let mut buf = [0u8; 4];
+        r.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, [16, 17, 18, 19], "offset 0 reads the byte at base");
+
+        assert_eq!(r.seek(SeekFrom::Start(32)).unwrap(), 32);
+        r.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, [48, 49, 50, 51]);
+    }
 }

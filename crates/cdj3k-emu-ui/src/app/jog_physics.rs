@@ -15,6 +15,8 @@ pub(super) const JOG_BRAKE_REF_OMEGA: f32 = std::f32::consts::TAU;
 ///
 /// Source: EP122TestMode jog-load-check, measured at ≈1 rev/s reference
 /// speed. Linear brake model confirmed (R² > 0.97 across all positions).
+/// Measured values; 0.318 is not 1/π.
+#[allow(clippy::approx_constant)]
 pub(super) const JOG_BRAKE_STOP_TIMES_SEC: [f32; 13] = [
     0.817, 0.717, 0.415, 0.318, 0.274, 0.224, 0.204, 0.154, 0.108, 0.096, 0.089, 0.082, 0.081,
 ];

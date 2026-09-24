@@ -19,11 +19,14 @@
 //! (settings-mount.sh detects blank signature and runs mkfs.ext4).
 //! The image is qcow2 sparse - host disk usage is near-zero until written.
 
+use std::collections::BTreeMap;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crc::{Crc, CRC_32_ISO_HDLC};
+
+use cdj3k_emu_panel::Model;
 
 use crate::gpt::{linux_data_type, write_gpt, PartEntry};
 
@@ -46,8 +49,15 @@ pub struct EmmcConfig {
     pub path: PathBuf,
     /// Instance ID - used to derive the serial number.
     pub instance_id: u32,
+    /// The deck this image is for.  Selects the `model` U-Boot variable, which
+    /// `genkey_pr` hashes with the SoC serial into the cabinet.img passphrase.
+    pub model: Model,
     /// Version metadata from the firmware ISO.
     pub firmware: FirmwareInfo,
+    /// The firmware's `images/cabinet.img`, staged raw in the recovery
+    /// partition for the guest to install on its first boot.  `None` stages
+    /// nothing, and the deck runs without Widevine or Device Library Plus.
+    pub cabinet: Option<Vec<u8>>,
 }
 
 impl EmmcConfig {
@@ -55,16 +65,17 @@ impl EmmcConfig {
         Self {
             path,
             instance_id,
+            model: Model::Cdj3k,
             firmware: FirmwareInfo::default(),
+            cabinet: None,
         }
     }
 }
 
-/// Default path: `~/Library/Application Support/<BUNDLE_ID>/instance-N/emmc.qcow2`.
+/// The eMMC image of slot `instance_id`:
+/// `~/Library/Application Support/<BUNDLE_ID>/instance-N/emmc.qcow2`.
 pub fn default_path(instance_id: u32) -> PathBuf {
-    crate::app_data_dir()
-        .join(format!("instance-{}", instance_id))
-        .join("emmc.qcow2")
+    crate::FirmwarePaths::new(instance_id).emmc
 }
 
 /// Ensure the eMMC qcow2 exists, creating and partitioning it if not.
@@ -79,7 +90,7 @@ pub fn provision_emmc(config: &EmmcConfig) -> std::io::Result<&Path> {
 
     // Step 1: create a sparse raw file, write the GPT, and inject the U-Boot env.
     let raw_path = config.path.with_extension("raw.tmp");
-    write_gpt_raw(&raw_path, config.instance_id, &config.firmware)?;
+    write_gpt_raw(&raw_path, config)?;
 
     // Step 2: convert to qcow2.  `qemu-img` is resolved by
     // [`cdj3k_emu_platform::bundled::tool`], which prefers the copy bundled
@@ -91,6 +102,30 @@ pub fn provision_emmc(config: &EmmcConfig) -> std::io::Result<&Path> {
     Ok(&config.path)
 }
 
+/// The U-Boot environment a slot's eMMC carries, as key/value pairs.
+///
+/// `None` when the block is not mapped in the image or its CRC does not cover
+/// what follows it - a half-written or foreign image says nothing.
+pub fn read_uboot_env(emmc: &Path) -> Option<BTreeMap<String, String>> {
+    let block = crate::qcow2::read_at(emmc, UBOOT_ENV_OFFSET, UBOOT_ENV_SIZE).ok()??;
+    let (stored, data) = block.split_at(4);
+    let stored = u32::from_le_bytes(stored.try_into().expect("4 bytes"));
+    if Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(data) != stored {
+        return None;
+    }
+    let mut env = BTreeMap::new();
+    for entry in data.split(|b| *b == 0) {
+        // The list ends at the first empty entry: its double-null terminator.
+        if entry.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = String::from_utf8_lossy(entry).split_once('=') {
+            env.insert(k.to_string(), v.to_string());
+        }
+    }
+    Some(env)
+}
+
 /// Build and write a valid U-Boot environment block at UBOOT_ENV_OFFSET.
 ///
 /// Format: [CRC32-LE 4 bytes][key=value\0 ... \0\0][zero padding to UBOOT_ENV_SIZE]
@@ -98,6 +133,7 @@ pub fn provision_emmc(config: &EmmcConfig) -> std::io::Result<&Path> {
 fn write_uboot_env(
     file: &mut std::fs::File,
     instance_id: u32,
+    model: Model,
     fw: &FirmwareInfo,
 ) -> std::io::Result<()> {
     let serial = cdj3k_emu_platform::identity::device_serial(instance_id);
@@ -120,13 +156,13 @@ fn write_uboot_env(
         ("kernel_addr_r", "0x10480000"),
         ("kernel_bank", "B"),
         ("miniloader", fw.miniloader.as_deref().unwrap_or("")),
-        ("model", "CDJ3K-RK3399"),
+        ("model", model.spec().model_env),
         ("part", "0:6"),
         ("pxefile_addr_r", "0x00600000"),
         ("ramdisk_addr_r", "0x0a200000"),
         ("release", fw.release.as_deref().unwrap_or("")),
         ("rev_apl", fw.rev_apl.as_deref().unwrap_or("")),
-        ("rev_kernel", fw.rev_kernel.as_deref().unwrap_or("")),
+        (model.spec().system_rev_env, fw.rev_system.as_deref().unwrap_or("")),
         ("serial_number", &serial),
         ("soc", "rockchip"),
         ("stderr", "serial,vidconsole"),
@@ -163,10 +199,42 @@ fn write_uboot_env(
 }
 
 fn sectors(bytes: u64) -> u64 {
-    (bytes + SECTOR - 1) / SECTOR
+    bytes.div_ceil(SECTOR)
 }
 
-fn write_gpt_raw(raw_path: &Path, instance_id: u32, fw: &FirmwareInfo) -> std::io::Result<()> {
+/// Marker for the staged cabinet image, first line of a 512-byte ASCII header
+/// at the start of the recovery partition.  The header carries the image
+/// length; the image itself follows it. Guest patch 14 reads both.
+const CABINET_STAGE_MAGIC: &str = "CDJ3KCAB1";
+const CABINET_STAGE_HEADER: u64 = 512;
+
+/// Write `cabinet` into the partition beginning at `first_lba`, behind the
+/// ASCII header the guest parses.
+fn stage_cabinet(
+    file: &mut std::fs::File,
+    part: &PartEntry,
+    cabinet: &[u8],
+) -> std::io::Result<()> {
+    let capacity = (part.last_lba - part.first_lba + 1) * SECTOR;
+    let needed = CABINET_STAGE_HEADER + cabinet.len() as u64;
+    if needed > capacity {
+        return Err(std::io::Error::other(format!(
+            "cabinet.img ({} B) exceeds the {} partition ({} B)",
+            cabinet.len(),
+            part.name,
+            capacity
+        )));
+    }
+
+    let mut header = format!("{}\nsize={}\n", CABINET_STAGE_MAGIC, cabinet.len()).into_bytes();
+    header.resize(CABINET_STAGE_HEADER as usize, 0);
+
+    file.seek(SeekFrom::Start(part.first_lba * SECTOR))?;
+    file.write_all(&header)?;
+    file.write_all(cabinet)
+}
+
+fn write_gpt_raw(raw_path: &Path, config: &EmmcConfig) -> std::io::Result<()> {
     // Create sparse file at full virtual size.
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -190,7 +258,7 @@ fn write_gpt_raw(raw_path: &Path, instance_id: u32, fw: &FirmwareInfo) -> std::i
         let last = first + n_sectors - 1;
         cursor = last + 1;
         // Align next start to 1 MiB boundary.
-        if cursor % align != 0 {
+        if !cursor.is_multiple_of(align) {
             cursor = (cursor / align + 1) * align;
         }
         PartEntry::new(data, first, last, name)
@@ -216,7 +284,17 @@ fn write_gpt_raw(raw_path: &Path, instance_id: u32, fw: &FirmwareInfo) -> std::i
     w.flush()?;
 
     let mut file = w.into_inner().map_err(|e| e.into_error())?;
-    write_uboot_env(&mut file, instance_id, fw)
+    // p4 (recovery) holds the staged cabinet image: the emulator boots the
+    // kernel from `-kernel`, so nothing else reads that partition.
+    if let Some(cabinet) = &config.cabinet {
+        stage_cabinet(&mut file, &partitions[3], cabinet)?;
+    }
+    write_uboot_env(
+        &mut file,
+        config.instance_id,
+        config.model,
+        &config.firmware,
+    )
 }
 
 fn convert_to_qcow2(raw: &Path, out: &Path) -> std::io::Result<()> {
@@ -237,5 +315,49 @@ fn convert_to_qcow2(raw: &Path, out: &Path) -> std::io::Result<()> {
         Ok(())
     } else {
         Err(std::io::Error::other("qemu-img convert failed"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `stage_cabinet` writes the ASCII header guest patch 14 parses, then the
+    /// image, and refuses one the partition cannot hold rather than truncating.
+    #[test]
+    fn stages_the_cabinet_behind_its_header() {
+        let dir = std::env::temp_dir().join(format!("cdj3k-cabinet-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("emmc.raw");
+
+        let first_lba = 26_624; // p4 in the layout above
+        let part = PartEntry::new(linux_data_type(), first_lba, first_lba + 2048, "recovery");
+        let cabinet: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        stage_cabinet(&mut file, &part, &cabinet).unwrap();
+
+        let raw = std::fs::read(&path).unwrap();
+        let base = (first_lba * SECTOR) as usize;
+        let header = &raw[base..base + CABINET_STAGE_HEADER as usize];
+        let end = header.iter().position(|b| *b == 0).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&header[..end]),
+            format!("{CABINET_STAGE_MAGIC}\nsize=4096\n")
+        );
+        assert_eq!(&raw[base + CABINET_STAGE_HEADER as usize..], &cabinet[..]);
+
+        // One sector past the partition is an error, and writes nothing.
+        let huge = vec![0u8; (2049 * SECTOR) as usize];
+        assert!(stage_cabinet(&mut file, &part, &huge).is_err());
+        assert_eq!(std::fs::read(&path).unwrap().len(), raw.len());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

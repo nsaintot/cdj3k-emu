@@ -1,5 +1,7 @@
 //! Jog wheel assembly: concentric rings (inner LCD, touch platter, pitchbend grip band,
-//! cosmetic outer border) centered in [`layout::JOG_REF_*`].
+//! cosmetic outer border) centered in the slate's jog zone (`jog_ref`, reference units).
+//! Shared by every slate; the radii below are absolute reference units, so a slate's
+//! jog zone must be `2 * JOG_OUTER_2_STROKE_RADIUS` wide for the rings to fit it.
 //!
 //! Rings are drawn as concentric filled disks, from outermost to innermost, so each
 //! disk naturally overwrites the interior of the previous one and produces a clean
@@ -14,21 +16,24 @@ use std::f32::consts::TAU;
 
 use crate::app::ui::{
     draw_cache::{JogCacheKey, JogStaticCache, ShapeList},
-    layout, COL_BTN, COL_BTN_TEXT, COL_DARK, COL_LCD_BG, COL_SILVER, COL_WHITE,
+    COL_BTN, COL_BTN_TEXT, COL_DARK, COL_LCD_BG, COL_SILVER, COL_WHITE,
 };
+use cdj3k_emu_panel::mosi_frame;
 use cdj3k_emu_streams::jog_stream::{JOG_FB_H, JOG_FB_W};
-use cdj3k_emu_subucom::mosi_frame;
 
 use super::{CdjApp, UiScale};
 
-/// Reference rect for the full jog panel (same extent used by the wheel assembly).
 mod geometry;
 mod statics;
 
-pub(super) const JOG_PANEL_REF: Rect = Rect::from_min_max(
-    Pos2::new(layout::JOG_REF_LEFT, layout::JOG_REF_TOP),
-    Pos2::new(layout::JOG_REF_RIGHT, layout::JOG_REF_BOT),
-);
+/// Slate-specific chrome of the jog assembly.
+#[derive(Clone, Copy)]
+pub(in crate::app) struct JogChrome {
+    /// Legend above the jog-feel rotary ("JOG ADJUST" / "JOG FEEL").
+    pub adjust_label: &'static str,
+    /// The − REV / + FWD arrows around the platter's lower half.
+    pub nav_arrows: bool,
+}
 
 // --- Jog wheel radii (reference units, concentric from center outward) ---
 /// Reference radius for scaling the jog **stream** framebuffer (slightly larger than
@@ -104,7 +109,7 @@ pub(super) const JOG_TOUCH_BORDER_GAP_REF: f32 = 6.0;
 /// dimensions. Counts, angles, and fractions (already proportional) are not
 /// affected.
 pub(super) const JOG_ADJUST_SIZE_SCALE: f32 = 0.5;
-/// Knob center fractional position within [`JOG_PANEL_REF`] (u, v in [0, 1]).
+/// Knob center fractional position within the jog zone (u, v in [0, 1]).
 pub(super) const JOG_ADJUST_CENTER_U: f32 = 0.91;
 pub(super) const JOG_ADJUST_CENTER_V: f32 = 0.11;
 /// Valley (tooth-bottom) radius of the gear knob (reference units).
@@ -201,16 +206,19 @@ pub(super) const JOG_ADJUST_SIDE_LABEL_GAP_REF: f32 = 28.0;
 pub(super) const JOG_ADJUST_SIDE_LABEL_X_OFFSET_REF: f32 = 140.0;
 
 impl CdjApp {
+    /// `jog_ref` is the slate's jog zone in reference units.
     pub(super) fn draw_jog_wheel_section(
         &mut self,
         ui: &mut egui::Ui,
         p: &egui::Painter,
         layout: &UiScale,
+        jog_ref: Rect,
+        chrome: JogChrome,
     ) {
         puffin::profile_function!();
         let jog_panel = Rect::from_min_max(
-            layout.sp(layout::JOG_REF_LEFT, layout::JOG_REF_TOP),
-            layout.sp(layout::JOG_REF_RIGHT, layout::JOG_REF_BOT),
+            layout.sp(jog_ref.left(), jog_ref.top()),
+            layout.sp(jog_ref.right(), jog_ref.bottom()),
         );
         let center = jog_panel.center();
         let r_touch = layout.sc(JOG_TOUCH_RADIUS);
@@ -336,7 +344,7 @@ impl CdjApp {
             }
         }
         // JOG ADJUST drag interaction (see paint_jog_adjust_interact below).
-        self.paint_jog_adjust_interact(ui, layout);
+        self.paint_jog_adjust_interact(ui, layout, jog_ref);
 
         // ── Static cache: rebuild when layout or jog_adjust changes ──────────
         let cache_key = JogCacheKey::new(
@@ -349,7 +357,7 @@ impl CdjApp {
         if self
             .jog_static_cache
             .as_ref()
-            .map_or(true, |c| c.key != cache_key)
+            .is_none_or(|c| c.key != cache_key)
         {
             let mut outer = ShapeList::default();
             let mut inner_mid = ShapeList::default();
@@ -362,6 +370,8 @@ impl CdjApp {
                 center,
                 layout,
                 self.jog_adjust(),
+                jog_ref,
+                chrome,
             );
             self.jog_static_cache = Some(JogStaticCache {
                 key: cache_key,
@@ -462,7 +472,7 @@ impl CdjApp {
         let jog_statics = self
             .jog_statics_cache
             .get_or_build(ox, oy, scale, ppp, |list| {
-                statics::collect_jog_statics(list, &ctx, layout, center);
+                statics::collect_jog_statics(list, &ctx, layout, center, jog_ref, chrome);
             });
         self.frame_shape_count += jog_statics.len() as u64;
         p.extend(jog_statics.iter().cloned());
@@ -477,15 +487,16 @@ impl CdjApp {
 
         // Jog ring arc lights - cached per LED state
         {
-            let brt = self.led_state.frame[mosi_frame::LED_JOG_BRT_BYTE] & 0x0c;
+            // Through the model's layout: the ring sits at byte 3 on the
+            // CDJ-3000 and byte 9 on the CDJ-3000X.
+            let mosi = self.mosi();
+            let brt = mosi.jog_level();
             let white_alpha: f32 = match brt {
-                v if v == mosi_frame::LED_JOG_BRT_2 => 1.0,
-                v if v == mosi_frame::LED_JOG_BRT_1 => 0.6,
                 0 => 0.0,
-                _ => 0.7,
+                1 => 0.6,
+                _ => 1.0,
             };
-            let red_on =
-                self.led_state.frame[mosi_frame::LED_JOG_RED.0] & mosi_frame::LED_JOG_RED.1 != 0;
+            let red_on = mosi.led_bit(mosi_frame::LED_JOG_RED);
             let (light_color, light_alpha, glow_outer_mult, glow_inner_mult) = if red_on {
                 (Color32::from_rgb(255, 70, 20), 1.0_f32, 0.35_f32, 0.2_f32)
             } else {
@@ -554,9 +565,7 @@ impl CdjApp {
         if self.lcds_blanked {
             return None;
         }
-        let Some(tex_id) = self.jog_tex_id else {
-            return None;
-        };
+        let tex_id = self.jog_tex_id?;
         let r_c0 = layout.sc(JOG_INNER_LCD_C0_RADIUS);
         let w = JOG_FB_W as f32;
         let h = JOG_FB_H as f32;
@@ -781,8 +790,8 @@ fn collect_pitchbend_grip(
 impl CdjApp {
     /// JOG ADJUST drag interaction - separated from drawing so it can run every
     /// frame while the static geometry is served from [`JogStaticCache`].
-    fn paint_jog_adjust_interact(&mut self, ui: &mut egui::Ui, layout: &UiScale) {
-        let center = layout.sp_in_rect(JOG_PANEL_REF, JOG_ADJUST_CENTER_U, JOG_ADJUST_CENTER_V);
+    fn paint_jog_adjust_interact(&mut self, ui: &mut egui::Ui, layout: &UiScale, jog_ref: Rect) {
+        let center = layout.sp_in_rect(jog_ref, JOG_ADJUST_CENTER_U, JOG_ADJUST_CENTER_V);
         let s = |r: f32| layout.sc(r * JOG_ADJUST_SIZE_SCALE);
         let r_base = s(JOG_ADJUST_KNOB_RADIUS_REF);
         let tooth_amp = s(JOG_ADJUST_TOOTH_AMP_REF);

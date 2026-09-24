@@ -1,19 +1,10 @@
 //! Per-instance device identity, shared by everything that has to agree on it.
 //!
 //! The emmc's U-Boot environment carries the serial the deck reports about
-//! itself, and the virtual HID device advertises the same string to macOS.
-//! One derivation keeps the two from drifting.
-
-/// Product name.  DJ apps match it verbatim, so it is identical on every slot.
-pub const PRODUCT: &str = "CDJ-3000";
-
-/// Manufacturer string on the HID device and the plugin's MIDI device.
-pub const MANUFACTURER: &str = "Pioneer DJ";
-
-/// USB vendor and product id, matching the gadget descriptors in patch 28.
-/// DJ apps pair a MIDI device with its HID sibling on these plus the location.
-pub const VENDOR_ID: u16 = 0x2b73;
-pub const PRODUCT_ID: u16 = 0x002f;
+//! itself; the gadget reads it back from there, and the macOS endpoints take
+//! it from the gadget.  The rest of the USB identity is the firmware's own
+//! (see `cdj3k_emu_runtime::pc_link::gadget`); only what separates one
+//! instance from another is derived here.
 
 /// `DJMP{instance_id:06}EH`, the deck's serial number, in Pioneer's format.
 pub fn device_serial(instance_id: u32) -> String {

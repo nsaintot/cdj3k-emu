@@ -12,6 +12,9 @@ dist/
 # Rust build output
 target/
 
+# ignore python scripts
+scripts/*.py
+
 # QEMU: ignore the cloned src tree, build artefacts, and install dir.
 # Track only build.sh, the overlay rsync'd onto src, and the shim sources.
 qemu/*

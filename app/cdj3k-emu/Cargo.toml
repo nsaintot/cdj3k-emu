@@ -13,6 +13,7 @@ name = "cdj3k-emu"
 path = "src/main.rs"
 
 [dependencies]
+cdj3k-emu-panel = { path = "../../crates/cdj3k-emu-panel", default-features = false }
 cdj3k-emu-ui = { path = "../../crates/cdj3k-emu-ui" }
 cdj3k-emu-platform = { path = "../../crates/cdj3k-emu-platform" }
 cdj3k-emu-runtime = { path = "../../crates/cdj3k-emu-runtime" }

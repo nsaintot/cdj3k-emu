@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-/* pcmode.c: force EP122 PC mode.
+/* pcmode.c: force PC mode on apps that cannot enter it themselves.
  *
- * The deck gates every HID/MIDI report to the host behind
+ * EP145 needs no force: picking the SOURCE PC-control row runs
+ * PcDeckSelector::select, which calls PcModeSwitcher::setMode itself.  EP122
+ * has no such path.
+ *
+ * EP122 gates every HID/MIDI report to the host behind
  * connection_with_hostapp::PcModeSwitcher: the HID send path and
  * SendManager::midiSend only run once PC mode is active, and it is normally
  * set by a host-driven cert handshake that can't be reproduced against
@@ -160,16 +164,34 @@ static pid_t find_pid(const char *comm)
     return found;
 }
 
+/* The app process to patch: APP_NAME (set on the unit by patch 29) when it
+ * is one that needs forcing, else NULL. */
+static const char *app_to_force(void)
+{
+    static const char *const k_forced[] = { "EP122" };
+    const char *app = getenv("APP_NAME");
+    if (!app || !*app) {
+        fprintf(stderr, "pc-link-bridge: APP_NAME unset; PC mode not forced\n");
+        return NULL;
+    }
+    for (size_t i = 0; i < sizeof k_forced / sizeof k_forced[0]; i++)
+        if (strcmp(app, k_forced[i]) == 0) return app;
+    fprintf(stderr, "pc-link-bridge: %s selects PC mode from SOURCE; nothing to force\n", app);
+    return NULL;
+}
+
 void force_pc_mode(void)
 {
+    const char *app = app_to_force();
+    if (!app) return;
     pid_t pid = -1;
     for (int i = 0; i < 60 && pid < 0 && !g_stop; i++) {
-        pid = find_pid("EP122");
+        pid = find_pid(app);
         if (pid < 0) msleep(1000);
     }
     if (g_stop) return;
     if (pid < 0) {
-        fprintf(stderr, "pc-link-bridge: EP122 not found; PC mode not forced\n");
+        fprintf(stderr, "pc-link-bridge: %s not found; PC mode not forced\n", app);
         return;
     }
     unsigned long getter = find_pcmode_getter(pid);
@@ -194,8 +216,8 @@ void force_pc_mode(void)
                       (void *)site_with(ps, (unsigned long)cur, EP122_PCMODE_PATCH)) != 0) {
         fprintf(stderr, "pc-link-bridge: PC-mode poke failed: %s\n", strerror(errno));
     } else {
-        fprintf(stderr, "pc-link-bridge: forced PC mode on EP122 pid %d (getter %#lx)\n",
-                pid, getter);
+        fprintf(stderr, "pc-link-bridge: forced PC mode on %s pid %d (getter %#lx)\n",
+                app, pid, getter);
     }
     ptrace(PTRACE_DETACH, pid, 0, 0);
 }
@@ -205,7 +227,9 @@ void force_pc_mode(void)
  * bytes we ourselves patched. */
 void unforce_pc_mode(void)
 {
-    pid_t pid = find_pid("EP122");
+    const char *app = app_to_force();
+    if (!app) return;
+    pid_t pid = find_pid(app);
     if (pid < 0) return;
     unsigned long getter = find_pcmode_getter(pid);
     if (!getter) return;
@@ -218,7 +242,7 @@ void unforce_pc_mode(void)
     if (!(cur == -1 && errno) && site_word(ps, (unsigned long)cur) == EP122_PCMODE_PATCH) {
         if (ptrace(PTRACE_POKETEXT, pid, (void *)ps.addr,
                    (void *)site_with(ps, (unsigned long)cur, EP122_PCMODE_ORIG)) == 0)
-            fprintf(stderr, "pc-link-bridge: restored PC-mode getter on EP122 pid %d\n", pid);
+            fprintf(stderr, "pc-link-bridge: restored PC-mode getter on %s pid %d\n", app, pid);
     }
     ptrace(PTRACE_DETACH, pid, 0, 0);
 }

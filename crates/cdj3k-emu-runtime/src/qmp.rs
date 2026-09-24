@@ -146,6 +146,7 @@ impl QmpClient {
     ///
     /// Tries `inserted.image.filename` first, falling back to `inserted.file`
     /// when it's a plain path string instead of a node object.
+    #[allow(clippy::result_unit_err)]
     pub fn query_block_medium(&mut self, drive_id: &str) -> Result<Option<String>, ()> {
         let ret = self
             .execute("query-block", &serde_json::json!({}))

@@ -46,7 +46,15 @@ pub fn spawn(instance: Option<QemuInstance>, config: QemuConfig, prebuilt_net: P
 }
 
 fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net: PrebuiltNet) {
-    menu_state::lock().qemu_running = instance.is_some();
+    {
+        let mut s = menu_state::lock();
+        s.qemu_running = instance.is_some();
+        // A restart that went through a relaunch forced the shade; the new
+        // QEMU is up, and the boot shade holds until its first frames.
+        if instance.is_some() {
+            s.shade_forced = false;
+        }
+    }
     let provider = MacOsDiskProvider;
     let cfg_client = CfgClient::new(&config.sock_dir());
     let mut usb = UsbManager::new(config.usb_placeholder_path(), cfg_client.clone());
@@ -97,8 +105,22 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
     let mut phys_restore_attempted = saved_phys_bsd.is_none();
 
     loop {
-        // ── App-exit gate: graceful shutdown ─────────────────────────────────
-        if APP_SHUTDOWN.load(Ordering::Relaxed) {
+        // ── Exit gates: app shutdown, or the setup window retiring this worker ─
+        let mut retire = std::mem::take(&mut menu_state::lock().worker_exit_requested);
+        // A restart with a finished install waiting is the shell's to do: it
+        // launches again, and a launch swaps the install in. The guest
+        // rebooting counts, as does the menu's restart.
+        let restarting = menu_state::lock().restart_requested
+            || instance.as_ref().is_some_and(|i| !i.is_running());
+        if !retire && restarting && cdj3k_emu_storage::pending_install(config.instance_id).is_some()
+        {
+            let mut s = menu_state::lock();
+            s.restart_requested = false;
+            s.relaunch_requested = true;
+            s.shade_forced = true;
+            retire = true;
+        }
+        if APP_SHUTDOWN.load(Ordering::Relaxed) || retire {
             // Drop PcLink first so its threads exit while the socket is still
             // valid; otherwise the reader thread blocks on a half-closed fd.
             // `take()` triggers Drop on the inner value; we ignore the
@@ -170,8 +192,6 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                 alc_enabled: s.alc_enabled,
                 haptic_toggle: std::mem::take(&mut s.haptic_toggle_requested),
                 haptic_enabled: s.haptic_enabled,
-                mods_toggle: std::mem::take(&mut s.mods_toggle_requested),
-                mods_enabled: s.mods_enabled,
                 pc_link_toggle: std::mem::take(&mut s.pc_link_toggle_requested),
                 pc_link_enabled: s.pc_link_enabled,
                 selected_iface: s.selected_interface,
@@ -213,21 +233,7 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
         // the new -audio config.
         let mut restart_pending = req.restart;
         if req.audio_toggle {
-            let mut settings =
-                cdj3k_emu_storage::InstanceSettings::load_or_init(config.instance_id);
-            settings.audio_enabled = req.audio_enabled;
-            if let Err(e) = settings.save(config.instance_id) {
-                eprintln!("cdj3k-emu: persisting audio_enabled failed: {e}");
-            }
-            restart_pending = true;
-        }
-
-        // ── EP122 Mods toggle ────────────────────────────────────────────────
-        // Persist; the menu handler already armed a restart so QEMU comes
-        // back with the new kernel cmdline (apply_menu_to_config copies
-        // menu_state -> config on respawn).
-        if req.mods_toggle {
-            persist_inst(config.instance_id, |s| s.mods_enabled = req.mods_enabled);
+            persist_inst(config.instance_id, |s| s.audio_enabled = req.audio_enabled);
             restart_pending = true;
         }
 
@@ -301,7 +307,7 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                 Err(e) => eprintln!("cdj3k-emu: pc_link cfg send failed: {e}"),
             }
             last_pc_link_cfg = Instant::now();
-        } else if failures == PC_LINK_CFG_MAX_FAILURES && !pc_link_gave_up {
+        } else if failures >= PC_LINK_CFG_MAX_FAILURES && !pc_link_gave_up {
             pc_link_gave_up = true;
             eprintln!(
                 "cdj3k-emu: guest refused pc_link {} {} times; not reissuing",
@@ -645,12 +651,12 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                 // appeared. We must compute the index against the fresh list
                 // we just published (not the old guard).
                 let restore = (!phys_restore_attempted)
-                    .then(|| saved_phys_bsd.as_ref())
+                    .then_some(saved_phys_bsd.as_ref())
                     .flatten()
                     .and_then(|name| fresh.iter().position(|d| &d.bsd_name == name))
                     .map(|idx| idx as i32);
-                if restore.is_some() {
-                    s.usb_phys_toggle_idx = restore.unwrap();
+                if let Some(idx) = restore {
+                    s.usb_phys_toggle_idx = idx;
                 }
                 restore.is_some()
             };
@@ -683,8 +689,6 @@ struct Requests {
     alc_enabled: bool,
     haptic_toggle: bool,
     haptic_enabled: bool,
-    mods_toggle: bool,
-    mods_enabled: bool,
     pc_link_toggle: bool,
     pc_link_enabled: bool,
     selected_iface: u32,
@@ -694,7 +698,6 @@ struct Requests {
 fn apply_menu_to_config(config: &mut QemuConfig) {
     let s = menu_state::lock();
     config.service_mode = s.service_mode;
-    config.mods_enabled = s.mods_enabled;
     config.audio = s.audio_enabled;
     config.audio_device_uid = s.audio_device_uid.clone();
 }
@@ -717,15 +720,14 @@ fn mark_virtual_mounted(instance_id: u32, path: &std::path::Path) {
     });
 }
 
-/// Load, mutate, and re-save InstanceSettings.  Errors are logged and
-/// swallowed - persistence is best-effort and should never break runtime flow.
+/// Load, mutate, and re-save InstanceSettings under the settings lock.
+/// Errors are logged and swallowed - persistence is best-effort and should
+/// never break runtime flow.
 fn persist_inst<F>(instance_id: u32, mutate: F)
 where
     F: FnOnce(&mut cdj3k_emu_storage::InstanceSettings),
 {
-    let mut s = cdj3k_emu_storage::InstanceSettings::load_or_init(instance_id);
-    mutate(&mut s);
-    if let Err(e) = s.save(instance_id) {
+    if let Err(e) = cdj3k_emu_storage::InstanceSettings::update(instance_id, mutate) {
         eprintln!("cdj3k-emu: persisting instance settings failed: {e}");
     }
 }

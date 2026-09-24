@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /* usbg.c: the /tmp/usbg1 FIFO.
  *
- * EP122's UsbHostPcConnectDetector polls /proc/udev_usbg1 (the ep122_shim
- * open() interposer redirects it here) and reads one event per poll:
+ * The app's meow::UsbHostPcConnectDetector (EP122 and EP145 alike) polls
+ * /proc/udev_usbg1 (the deck_shim open() interposer redirects it here) and
+ * reads one event per poll:
  * "connect"/"disconnect" raise the SOURCE CONTROL MODE row, anything else is
  * ignored.  It has no edge detection, so a FIFO (one token per read) is used,
  * not a plain file.  Held open O_RDWR so the detector's open always succeeds;
@@ -10,7 +11,7 @@
  * instead of parking it between tokens.
  *
  * A FIFO is a byte stream: two tokens written close together can arrive in
- * one read, and EP122 compares the whole buffer, so it matches neither. */
+ * one read, and the detector compares the whole buffer, so it matches neither. */
 
 #define _GNU_SOURCE
 #include <errno.h>

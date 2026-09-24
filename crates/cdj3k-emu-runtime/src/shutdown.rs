@@ -39,6 +39,27 @@ pub fn worker_is_finished() -> bool {
         .unwrap_or(true)
 }
 
+/// Join the registered worker if it has finished; `true` when no live worker
+/// remains (never spawned, already reaped, or reaped now). Non-blocking.
+pub fn reap_finished_worker() -> bool {
+    let Some(slot) = WORKER_JOIN.get() else {
+        return true;
+    };
+    let Ok(mut g) = slot.lock() else {
+        return true;
+    };
+    match g.as_ref() {
+        None => true,
+        Some(h) if h.is_finished() => {
+            if let Some(h) = g.take() {
+                let _ = h.join();
+            }
+            true
+        }
+        Some(_) => false,
+    }
+}
+
 /// Wait up to `timeout` for the worker to finish (after `APP_SHUTDOWN` is set).
 /// Returns `true` when joined cleanly, `false` if the watchdog elapsed.
 pub fn wait_for_worker(timeout: Duration) -> bool {

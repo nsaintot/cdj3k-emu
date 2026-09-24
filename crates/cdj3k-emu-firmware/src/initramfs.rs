@@ -59,7 +59,7 @@ impl From<ExtractError> for PatchError {
 /// Pioneer products embed the initramfs into the kernel image with different
 /// compression depending on the build:
 /// - CDJ-3000 RK3399 uses gzip (CONFIG_RD_GZIP).
-/// - EP122 / G2M Renesas R-Car uses LZ4 legacy (CONFIG_RD_LZ4).
+/// - G2M Renesas R-Car uses LZ4 legacy (CONFIG_RD_LZ4).
 ///
 /// We scan for every supported magic, try to decompress each hit, and pick
 /// the largest result that begins with a cpio newc/crc magic.  This naturally
@@ -74,7 +74,7 @@ pub fn extract_initramfs(kernel_path: &Path, out_path: &Path) -> Result<(), Extr
     let mut best: Option<Vec<u8>> = None;
     let mut consider = |cpio: Vec<u8>| {
         if (cpio.starts_with(b"070701") || cpio.starts_with(b"070702"))
-            && best.as_ref().is_none_or(|b| cpio.len() > b.len())
+            && !matches!(&best, Some(b) if cpio.len() <= b.len())
         {
             best = Some(cpio);
         }
@@ -172,6 +172,22 @@ pub fn patch_initramfs(
         }
     }
 
+    // Per-phase timings go to the provision log.  The rootfs is unpacked to
+    // temp files, repacked and deleted, so the cost tracks file count as well
+    // as size and differs sharply between models.
+    let started = std::time::Instant::now();
+    let mut mark = std::time::Instant::now();
+    macro_rules! phase {
+        ($name:literal) => {{
+            eprintln!(
+                "[initramfs] {:<16} {:>6.1}s",
+                $name,
+                mark.elapsed().as_secs_f64()
+            );
+            mark = std::time::Instant::now();
+        }};
+    }
+
     // Create a temp working directory.
     let tmp = tmp_dir("cdj3k-emu-initramfs")?;
     let rootfs = tmp.join("rootfs");
@@ -179,6 +195,7 @@ pub fn patch_initramfs(
 
     // 1. Unpack the original initramfs into rootfs/.
     unpack_cpio_gz(initramfs_gz, &rootfs)?;
+    phase!("unpack");
 
     // 2. Inject pre-built .ko files into rootfs/lib/modules/.
     let ko_dst = rootfs.join("lib/modules");
@@ -201,7 +218,7 @@ pub fn patch_initramfs(
         for entry in std::fs::read_dir(&tools_dir)? {
             let src = entry?.path();
             let name = src.file_name().unwrap().to_string_lossy().to_string();
-            let dst = if name == "ep122_shim.so" {
+            let dst = if name == "deck_shim.so" {
                 home_dst.join(&name)
             } else {
                 bin_dst.join(&name)
@@ -210,6 +227,8 @@ pub fn patch_initramfs(
             set_executable(&dst)?;
         }
     }
+
+    phase!("inject");
 
     // 4. Run patch-rootfs.sh from the bundled patch directory.
     let patch_script = patch_dir.join("patch-rootfs.sh");
@@ -230,25 +249,42 @@ pub fn patch_initramfs(
         )));
     }
 
+    phase!("patch scripts");
+
     // 5. Repack rootfs → raw cpio.
     let raw_cpio = tmp.join("initramfs-patched.cpio");
     repack_cpio(&rootfs, &raw_cpio)?;
+    phase!("cpio repack");
 
     // 6. Fix uid/gid in the raw cpio (macOS bsdcpio records host UID).
     let mut cpio_bytes = std::fs::read(&raw_cpio)?;
     fix_cpio_ownership(&mut cpio_bytes);
+    phase!("ownership fix");
 
     // 7. Gzip compress → out_path.
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let out_file = std::fs::File::create(out_path)?;
-    let mut gz = GzEncoder::new(out_file, Compression::best());
+    // Level 6 (flate2's default) rather than 9: on the CDJ-3000X rootfs
+    // (196 MiB) both emit 81 MiB, and 9 takes ~1.8x as long.
+    let mut gz = GzEncoder::new(out_file, Compression::default());
     gz.write_all(&cpio_bytes)?;
     gz.finish()?;
+    phase!("gzip");
 
     // 8. Clean up temp dir.
     let _ = std::fs::remove_dir_all(&tmp);
+    eprintln!(
+        "[initramfs] {:<16} {:>6.1}s",
+        "cleanup",
+        mark.elapsed().as_secs_f64()
+    );
+    eprintln!(
+        "[initramfs] {:<16} {:>6.1}s",
+        "total",
+        started.elapsed().as_secs_f64()
+    );
 
     Ok(())
 }
@@ -326,7 +362,7 @@ fn repack_cpio(rootfs: &Path, out: &Path) -> Result<(), PatchError> {
 
 /// Patch all NEWC cpio entries: force uid and gid fields to "00000000".
 /// Mirrors the Python post-processor in initramfs-work/repack.sh.
-fn fix_cpio_ownership(data: &mut Vec<u8>) {
+fn fix_cpio_ownership(data: &mut [u8]) {
     const MAGIC: &[u8] = b"070701";
     const HEADER: usize = 110;
     let mut pos = 0;

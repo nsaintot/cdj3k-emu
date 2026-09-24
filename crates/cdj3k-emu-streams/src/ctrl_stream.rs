@@ -12,8 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use cdj3k_emu_subucom::miso_frame::MISO_SIZE;
-use cdj3k_emu_subucom::mosi_frame::MosiFrame;
+use cdj3k_emu_panel::miso_frame::MISO_SIZE;
 
 /// Backoff before retrying `connect()` after `ctrl.sock` is gone or refuses.
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
@@ -26,13 +25,6 @@ pub struct LedState {
 impl Default for LedState {
     fn default() -> Self {
         Self { frame: [0u8; 64] }
-    }
-}
-
-impl LedState {
-    /// Wraps the raw frame bytes in a `MosiFrame` accessor.
-    pub fn mosi(&self) -> MosiFrame {
-        MosiFrame::from_bytes(self.frame)
     }
 }
 
@@ -174,6 +166,16 @@ fn read_loop(
     // visually-identical frames. `latest_mosi` is updated unconditionally so
     // the debug viewport's live peek still sees every frame.
     let mut last_repaint_mosi: Option<[u8; 64]> = None;
+    // `CDJ3K_MOSI_DUMP=<file>`: append every changed frame as one hex line
+    // (`<unix ms> <frame#> <64 bytes>`), for mapping a model's LED layout
+    // against scripted presses offline.
+    let mut dump = std::env::var_os("CDJ3K_MOSI_DUMP").and_then(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .ok()
+    });
     loop {
         let mut total = 0;
         let ok = 'frame: loop {
@@ -201,11 +203,20 @@ fn read_loop(
         // Live peek - always.
         *latest_mosi.lock().unwrap() = buf;
         // Repaint trigger - only when bytes actually changed.
-        let changed = last_repaint_mosi.map_or(true, |prev| prev != buf);
+        let changed = last_repaint_mosi != Some(buf);
         if changed {
             *state.lock().unwrap() = Some(LedState { frame: buf });
             last_repaint_mosi = Some(buf);
             gate.request();
+            if let Some(f) = dump.as_mut() {
+                use std::io::Write as _;
+                let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
+                let ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                let _ = writeln!(f, "{ms} {frames} {hex}");
+            }
         }
     }
 }

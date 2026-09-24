@@ -223,13 +223,10 @@ fn format_exfat(img_path: &Path) -> std::io::Result<()> {
         .output()?;
 
     if !out.status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "hdiutil attach failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-        ));
+        return Err(std::io::Error::other(format!(
+            "hdiutil attach failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
     }
 
     let disk = String::from_utf8_lossy(&out.stdout)
@@ -239,8 +236,7 @@ fn format_exfat(img_path: &Path) -> std::io::Result<()> {
         .to_string();
 
     if disk.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(std::io::Error::other(
             "hdiutil attach: could not parse disk device from output",
         ));
     }
@@ -255,10 +251,10 @@ fn format_exfat(img_path: &Path) -> std::io::Result<()> {
 
     match fmt {
         Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("diskutil eraseDisk failed (exit {:?})", s.code()),
-        )),
+        Ok(s) => Err(std::io::Error::other(format!(
+            "diskutil eraseDisk failed (exit {:?})",
+            s.code()
+        ))),
         Err(e) => Err(e),
     }
 }
@@ -319,10 +315,10 @@ impl UsbManager {
             .arg(size_bytes.to_string())
             .status()?;
         if !status.success() {
-            return Err(UsbError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("qemu-img create failed (exit {:?})", status.code()),
-            )));
+            return Err(UsbError::Io(std::io::Error::other(format!(
+                "qemu-img create failed (exit {:?})",
+                status.code()
+            ))));
         }
         format_exfat(img_path)?;
         self.attach_virtual(qmp, provider, img_path)

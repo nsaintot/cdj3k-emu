@@ -46,7 +46,7 @@ index ad924a850..34dd2edbd 100644
 +		/*
 +		 * cdj3k-emu: synthetic jog LCD output.  QEMU only has one
 +		 * real scanout; this second output is driven entirely by
-+		 * ep122_shim via memfd — no QEMU scanout command is sent for it.
++		 * deck_shim via memfd — no QEMU scanout command is sent for it.
 +		 * info.enabled=true makes conn_detect return connected so the
 +		 * DRM core registers the connector and EP122 can find it.
 +		 */

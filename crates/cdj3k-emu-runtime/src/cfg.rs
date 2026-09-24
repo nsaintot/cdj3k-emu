@@ -325,6 +325,5 @@ fn handle_line(line: &str, shared: &Arc<Mutex<Shared>>) {
                 s.pc_link_state = Some(v);
             }
         }
-        return;
     }
 }

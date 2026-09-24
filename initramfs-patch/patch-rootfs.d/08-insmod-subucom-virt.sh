@@ -4,28 +4,30 @@
 #
 # pre-setting.sh runs subucom_read which opens /dev/subucom_spi1.0 to read the
 # testmode byte and write /tmp/testmode.  Without /tmp/testmode, apl_start.sh
-# prints "can't read /tmp/testmode" and exits without launching EP122.
+# prints "can't read /tmp/testmode" and exits without launching the app.
 #
 # subucom_virt.ko registers the virtual /dev/subucom_spi1.0 device.
 # This service must complete before pre-setting.service runs.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
+: "${APP_UNIT:?APP_UNIT must be set by dispatcher}"
+: "${APP_SLUG:?APP_SLUG must be set by dispatcher}"
 
 SERVICE_DIR="$ROOTFS/etc/systemd/system"
 mkdir -p "$SERVICE_DIR"
 
-cat > "$SERVICE_DIR/insmod-subucom-virt.service" << 'SVCEOF'
+cat > "$SERVICE_DIR/insmod-subucom-virt.service" << SVCEOF
 [Unit]
 Description=Load subucom_virt.ko - virtual /dev/subucom_spi1.0 for QEMU
 DefaultDependencies=no
 Before=pre-setting.service
-Before=EP122.service
+Before=${APP_UNIT}
 Before=multi-user.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'TM=0; grep -qw subucom_testmode /proc/cmdline && TM=1; /sbin/insmod /lib/modules/subucom_virt.ko inject_testmode=$$TM'
+ExecStart=/bin/sh -c 'TM=0; grep -qw subucom_testmode /proc/cmdline && TM=1; /sbin/insmod /lib/modules/subucom_virt.ko model=${APP_SLUG} inject_testmode=\$\$TM'
 
 [Install]
 WantedBy=multi-user.target

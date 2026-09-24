@@ -25,6 +25,7 @@ pub(in crate::app) fn collect_button_basic(
     label_nudge: Option<Vec2>,
     font_family: egui::FontFamily,
     is_pressed: bool,
+    rounding_frac: f32,
 ) {
     let fill = if is_pressed {
         touchdown_color.unwrap_or(COL_BTN_HOT)
@@ -36,7 +37,7 @@ pub(in crate::app) fn collect_button_basic(
     } else {
         font_color.unwrap_or(COL_BTN_TEXT)
     };
-    let rounding = (rect.height() * 0.15).max(1.0);
+    let rounding = (rect.height() * rounding_frac).max(1.0);
     out.rect_filled(rect, rounding, fill);
     collect_double_rect_border(out, rect, Some(rounding), border);
     let label_pos = rect.center() + label_nudge.unwrap_or(Vec2::ZERO);
@@ -199,6 +200,7 @@ pub(in crate::app) fn collect_button(
             label_nudge,
             font_family,
             is_pressed,
+            0.15,
         ),
         ButtonType::HotCue => collect_button_hotcue(
             out,
@@ -355,8 +357,10 @@ pub(in crate::app) fn collect_arc_quad_button(
     if let Some(lh) = line_height {
         use egui::text::LayoutJob;
         use egui::{Align, TextFormat};
-        let mut job = LayoutJob::default();
-        job.halign = Align::Center;
+        let mut job = LayoutJob {
+            halign: Align::Center,
+            ..Default::default()
+        };
         job.append(
             label,
             0.0,

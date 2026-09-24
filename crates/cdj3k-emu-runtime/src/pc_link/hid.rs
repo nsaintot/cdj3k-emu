@@ -1,12 +1,12 @@
 //! Virtual HID device for the PC-link gadget HID endpoint.
 //!
-//! Registers an `IOHIDUserDevice` carrying the CDJ-3000's vendor-page report
-//! descriptor, so anything on the Mac that opens HID by VID/PID (rekordbox,
+//! Registers an `IOHIDUserDevice` carrying the guest gadget's identity and
+//! report descriptor ([`GadgetIdentity`]), so anything on the Mac that opens HID by VID/PID (rekordbox,
 //! `hidapi` clients, Console's HID logging) sees the emulated deck exactly as
 //! it would see one on a USB-B cable.
 //!
 //! Two directions:
-//!   - guest → host: [`HidBackend::publish_from_guest`] feeds 64-byte input
+//!   - guest → host: [`HidBackend::publish_from_guest`] feeds the input
 //!     reports the guest read off `/dev/hidraw0` into `IOHIDUserDeviceHandleReport`.
 //!   - host → guest: the set-report callback fires on our dispatch queue for
 //!     every output report a Mac-side client writes, and enqueues a
@@ -19,12 +19,11 @@
 //! reports.  A build without it still runs; [`crate::pc_link::PcLink`] keeps
 //! MIDI and drops HID frames.
 
-#![cfg(target_os = "macos")]
-
 use std::os::raw::{c_char, c_void};
 use std::sync::mpsc::Sender;
 
 use crate::pc_link::frame::FRAME_HID;
+use crate::pc_link::gadget::GadgetIdentity;
 use crate::pc_link::transport::OutFrame;
 
 // ── CoreFoundation / IOKit FFI ─────────────────────────────────────────────
@@ -57,6 +56,8 @@ type IOHIDUserDeviceReportCallback = extern "C" fn(
     report_length: CFIndex,
 ) -> IOReturn;
 
+// Two frameworks, not one attribute twice.
+#[allow(clippy::duplicated_attributes)]
 #[link(name = "IOKit", kind = "framework")]
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
@@ -170,49 +171,8 @@ fn cf_data(bytes: &[u8]) -> CFRef {
 
 // ── Device identity ────────────────────────────────────────────────────────
 
-/// The CDJ-3000's HID report descriptor, byte-for-byte the value patch 28
-/// writes to `functions/hid.usb0/report_desc` in the guest's gadget script:
-/// vendor usage page 0xFFA0, one 64-byte input report and one 64-byte output
-/// report, no report IDs.
-const REPORT_DESCRIPTOR: [u8; 52] = [
-    0x06, 0xa0, 0xff, // Usage Page (vendor 0xFFA0)
-    0x09, 0x01, //       Usage (0x01)
-    0xa1, 0x01, //       Collection (Application)
-    0x09, 0x02, //         Usage (0x02)
-    0xa1, 0x00, //         Collection (Physical)
-    0x06, 0xa1, 0xff, //     Usage Page (vendor 0xFFA1)
-    0x09, 0x03, //           Usage (0x03)
-    0x09, 0x04, //           Usage (0x04)
-    0x15, 0x80, //           Logical Minimum (-128)
-    0x25, 0x7f, //           Logical Maximum (127)
-    0x35, 0x00, //           Physical Minimum (0)
-    0x45, 0xff, //           Physical Maximum (255)
-    0x75, 0x08, //           Report Size (8)
-    0x95, 0x40, //           Report Count (64)
-    0x81, 0x02, //           Input (Data, Var, Abs)
-    0x09, 0x05, //           Usage (0x05)
-    0x09, 0x06, //           Usage (0x06)
-    0x15, 0x80, //           Logical Minimum (-128)
-    0x25, 0x7f, //           Logical Maximum (127)
-    0x35, 0x00, //           Physical Minimum (0)
-    0x45, 0xff, //           Physical Maximum (255)
-    0x75, 0x08, //           Report Size (8)
-    0x95, 0x40, //           Report Count (64)
-    0x91, 0x02, //           Output (Data, Var, Abs)
-    0xc0, //               End Collection
-    0xc0, //             End Collection
-];
-
-/// Matches the gadget's `idVendor` / `idProduct` (patch 28) so Mac-side
-/// clients that key on VID/PID find the emulated deck under the same numbers
-/// as real hardware.
-const VENDOR_ID: i32 = cdj3k_emu_platform::identity::VENDOR_ID as i32;
-const PRODUCT_ID: i32 = cdj3k_emu_platform::identity::PRODUCT_ID as i32;
-/// Gadget `bcdDevice` 0x0100, firmware 1.00.
-const VERSION_NUMBER: i32 = 0x0100;
-/// Primary usage page / usage of the descriptor's outermost collection.
-const PRIMARY_USAGE_PAGE: i32 = 0xffa0;
-const PRIMARY_USAGE: i32 = 0x01;
+/// Top-level usage for a descriptor that does not state one.
+const DEFAULT_PRIMARY_USAGE: (u32, u32) = (0xff00, 0x01);
 // The LocationID comes from `identity::usb_location_id` and must equal the
 // CoreMIDI driver's `USBLocationID`: djay pairs a MIDI device with its HID
 // sibling by matching VendorID+ProductID+LocationID, so the HID device is
@@ -244,7 +204,7 @@ impl std::fmt::Display for HidError {
 
 impl std::error::Error for HidError {}
 
-/// A live `IOHIDUserDevice` presenting the emulated CDJ-3000 to macOS.
+/// A live `IOHIDUserDevice` presenting the emulated deck to macOS.
 ///
 /// Construction registers the device and it appears in IOReg immediately.
 /// Drop unschedules it and releases the IOKit + dispatch handles.
@@ -284,10 +244,15 @@ extern "C" fn set_report_cb(
 }
 
 impl HidBackend {
-    /// Register the virtual HID device.  `tx` is where output reports from
-    /// Mac-side clients are enqueued for the guest.
-    pub fn new(tx: Sender<OutFrame>, instance_id: u32) -> Result<Self, HidError> {
-        let serial = cdj3k_emu_platform::identity::device_serial(instance_id);
+    /// Register the virtual HID device with the guest gadget's identity.
+    /// `tx` is where output reports from Mac-side clients are enqueued for
+    /// the guest.
+    pub fn new(
+        tx: Sender<OutFrame>,
+        instance_id: u32,
+        gadget: &GadgetIdentity,
+    ) -> Result<Self, HidError> {
+        let (usage_page, usage) = gadget.primary_usage().unwrap_or(DEFAULT_PRIMARY_USAGE);
         let location_id = cdj3k_emu_platform::identity::usb_location_id(instance_id);
         let properties = unsafe {
             CFDictionaryCreateMutable(
@@ -297,11 +262,14 @@ impl HidBackend {
                 &kCFTypeDictionaryValueCallBacks as *const c_void,
             )
         };
-        assert!(!properties.is_null(), "CFDictionaryCreateMutable returned NULL");
+        assert!(
+            !properties.is_null(),
+            "CFDictionaryCreateMutable returned NULL"
+        );
         let properties = CFRef(properties as CFTypeRef);
         let dict = properties.get() as CFMutableDictionaryRef;
 
-        let descriptor = cf_data(&REPORT_DESCRIPTOR);
+        let descriptor = cf_data(&gadget.report_descriptor);
         // IOHIDKeys.h names; IOHIDUserDevice reads them straight out of the
         // properties dictionary to build the IOHIDDevice's registry entry.
         // IOHIDUserDevice overwrites Transport with "Virtual" in the registry
@@ -309,16 +277,16 @@ impl HidBackend {
         // unchanged.
         let string_props: [(&str, CFRef); 4] = [
             ("Transport", cf_string("USB")),
-            ("Manufacturer", cf_string(cdj3k_emu_platform::identity::MANUFACTURER)),
-            ("Product", cf_string(cdj3k_emu_platform::identity::PRODUCT)),
-            ("SerialNumber", cf_string(&serial)),
+            ("Manufacturer", cf_string(&gadget.manufacturer)),
+            ("Product", cf_string(&gadget.product)),
+            ("SerialNumber", cf_string(&gadget.serial)),
         ];
         let number_props: [(&str, CFRef); 6] = [
-            ("VendorID", cf_number(VENDOR_ID)),
-            ("ProductID", cf_number(PRODUCT_ID)),
-            ("VersionNumber", cf_number(VERSION_NUMBER)),
-            ("PrimaryUsagePage", cf_number(PRIMARY_USAGE_PAGE)),
-            ("PrimaryUsage", cf_number(PRIMARY_USAGE)),
+            ("VendorID", cf_number(gadget.vendor_id as i32)),
+            ("ProductID", cf_number(gadget.product_id as i32)),
+            ("VersionNumber", cf_number(gadget.bcd_device as i32)),
+            ("PrimaryUsagePage", cf_number(usage_page as i32)),
+            ("PrimaryUsage", cf_number(usage as i32)),
             ("LocationID", cf_number(location_id)),
         ];
 
@@ -370,8 +338,9 @@ impl HidBackend {
     }
 
     /// Deliver a guest-originated input report to macOS.  `report` is the raw
-    /// 64-byte payload the guest read off `/dev/hidraw0`; the descriptor has
-    /// no report IDs, so there is no leading report-number byte to strip.
+    /// payload the guest read off `/dev/hidraw0`, as long as the descriptor's
+    /// input report; Pioneer's descriptors have no report IDs, so there is no
+    /// leading report-number byte to strip.
     pub fn publish_from_guest(&self, report: &[u8]) {
         if report.is_empty() {
             return;
@@ -400,32 +369,5 @@ impl Drop for HidBackend {
             dispatch_release(self.queue);
         }
         // _refcon drops here, after the queue drained.
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The descriptor must stay byte-identical to the gadget's `report_desc`
-    /// in `initramfs-patch/patch-rootfs.d/28-usb-gadget.sh`; a mismatch means
-    /// macOS parses a different report layout than the guest emits.
-    #[test]
-    fn descriptor_matches_gadget() {
-        let script = include_str!("../../../../initramfs-patch/patch-rootfs.d/28-usb-gadget.sh");
-        let line = script
-            .lines()
-            .find(|l| l.contains("report_desc"))
-            .expect("gadget script writes report_desc");
-        let escaped = line
-            .split_whitespace()
-            .find(|tok| tok.starts_with("\\\\x"))
-            .expect("report_desc payload is a \\x-escaped literal");
-        let bytes: Vec<u8> = escaped
-            .split("\\\\x")
-            .filter(|s| !s.is_empty())
-            .map(|s| u8::from_str_radix(s, 16).expect("hex byte"))
-            .collect();
-        assert_eq!(bytes, REPORT_DESCRIPTOR);
     }
 }

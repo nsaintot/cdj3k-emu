@@ -22,10 +22,10 @@ use tar::Archive;
 pub struct FirmwareInfo {
     /// Pioneer release string (e.g. `"X.XX"`).
     pub release: Option<String>,
-    /// Application (EP122) revision number (e.g. `"14926"`).
+    /// Player application revision number (e.g. `"14926"`).
     pub rev_apl: Option<String>,
-    /// Kernel revision number (e.g. `"14944"`).
-    pub rev_kernel: Option<String>,
+    /// System image revision number, from `IMAGES/SYSTEM.REV` (e.g. `"14944"`).
+    pub rev_system: Option<String>,
     /// MD5 of `miniloader.img` (e.g. `"47e3ef9b7f78f5b9be317882a74e9527"`).
     pub miniloader: Option<String>,
 }
@@ -60,7 +60,7 @@ pub fn read_firmware_info(iso_path: &Path) -> Result<FirmwareInfo, ExtractError>
 
     info.release = read_trimmed(&mut cursor, "IMAGES/RELEASE.TXT");
     info.rev_apl = read_trimmed(&mut cursor, "IMAGES/APP.REV");
-    info.rev_kernel = read_trimmed(&mut cursor, "IMAGES/SYSTEM.REV");
+    info.rev_system = read_trimmed(&mut cursor, "IMAGES/SYSTEM.REV");
     cursor.set_position(0);
     info.miniloader = read_iso_file(&mut cursor, "IMAGES/MINILOADER.IMG")
         .ok()
@@ -211,6 +211,58 @@ pub fn default_kernel_path(iso_path: &Path) -> PathBuf {
     iso_path.with_file_name("Image")
 }
 
+/// Read `images/cabinet.img` out of the decrypted UPD payload.
+///
+/// The CDJ-3000X ships it in the outer ISO; v3.13+ UPDs nest their payload in
+/// `IMAGES/CDJ3K-RK3399.ISO`, so the inner ISO is tried first.  Returns `None`
+/// when the firmware carries no cabinet image, and rejects anything that is not
+/// a LUKS container - the deck's `initoptenv` only ever opens one.
+pub fn read_cabinet_image(iso_path: &Path) -> Option<Vec<u8>> {
+    const LUKS_MAGIC: &[u8] = b"LUKS\xba\xbe";
+
+    let mut iso = std::fs::File::open(iso_path).ok()?;
+    let found = match read_iso_file(&mut iso, "IMAGES/CDJ3K-RK3399.ISO") {
+        Ok(inner) => {
+            let mut inner = std::io::Cursor::new(inner);
+            read_iso_file(&mut inner, "IMAGES/CABINET.IMG").ok()
+        }
+        Err(_) => None,
+    };
+    let data = match found {
+        Some(d) => d,
+        None => {
+            iso.seek(SeekFrom::Start(0)).ok()?;
+            read_iso_file(&mut iso, "IMAGES/CABINET.IMG").ok()?
+        }
+    };
+    data.starts_with(LUKS_MAGIC).then_some(data)
+}
+
+/// Read `images/images.tar.gz` out of the decrypted UPD payload.
+///
+/// The sibling of `cabinet.img`; its SHA-512 is one term of the factory
+/// cabinet passphrase (see [`crate::vendor_passphrase`]).  Follows the same
+/// nesting precedence as [`read_cabinet_image`] - the inner
+/// `CDJ3K-RK3399.ISO` first, then the outer ISO - so the two files come from
+/// the same package.  Returns `None` when the firmware carries no such file.
+pub fn read_images_targz(iso_path: &Path) -> Option<Vec<u8>> {
+    let mut iso = std::fs::File::open(iso_path).ok()?;
+    let found = match read_iso_file(&mut iso, "IMAGES/CDJ3K-RK3399.ISO") {
+        Ok(inner) => {
+            let mut inner = std::io::Cursor::new(inner);
+            read_iso_file(&mut inner, "IMAGES/IMAGES.TAR.GZ").ok()
+        }
+        Err(_) => None,
+    };
+    match found {
+        Some(d) => Some(d),
+        None => {
+            iso.seek(SeekFrom::Start(0)).ok()?;
+            read_iso_file(&mut iso, "IMAGES/IMAGES.TAR.GZ").ok()
+        }
+    }
+}
+
 // ── ISO 9660 reader ───────────────────────────────────────────────────────────
 
 pub(crate) fn read_iso_file<R: Read + Seek>(
@@ -235,13 +287,27 @@ pub(crate) fn read_iso_file<R: Read + Seek>(
     find_in_dir(r, root_lba, root_len, name)
 }
 
+/// `len` as a buffer size, once the extent at sector `lba` is known to end
+/// inside the image - the record's fields are the ISO's to set, and are only
+/// allocated for when the file backs them.
+fn extent_len<R: Seek>(r: &mut R, lba: u64, len: u64) -> Result<usize, ExtractError> {
+    let image_len = r.seek(SeekFrom::End(0))?;
+    lba.checked_mul(ISO_SECTOR)
+        .and_then(|start| start.checked_add(len))
+        .filter(|&end| end <= image_len)
+        .and_then(|_| usize::try_from(len).ok())
+        .ok_or(ExtractError::BadIso(
+            "extent runs past the end of the image",
+        ))
+}
+
 fn find_in_dir<R: Read + Seek>(
     r: &mut R,
     dir_lba: u64,
     dir_len: u64,
     target: &str,
 ) -> Result<Vec<u8>, ExtractError> {
-    let mut dir_data = vec![0u8; dir_len as usize];
+    let mut dir_data = vec![0u8; extent_len(r, dir_lba, dir_len)?];
     r.seek(SeekFrom::Start(dir_lba * ISO_SECTOR))?;
     r.read_exact(&mut dir_data)?;
 
@@ -284,7 +350,7 @@ fn find_in_dir<R: Read + Seek>(
                 return find_in_dir(r, file_lba, file_size.max(ISO_SECTOR), rest);
             } else {
                 // Read file data.
-                let mut data = vec![0u8; file_size as usize];
+                let mut data = vec![0u8; extent_len(r, file_lba, file_size)?];
                 r.seek(SeekFrom::Start(file_lba * ISO_SECTOR))?;
                 r.read_exact(&mut data)?;
                 return Ok(data);

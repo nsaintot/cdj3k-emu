@@ -38,7 +38,7 @@ int wait_open(const char *path, int extra_flags)
  * host side.
  *
  * Two ALSA cards expose the same gadget.  The f_midi card is the *gadget*
- * side and EP122 owns it: its ALSA sequencer client subscribes to f_midi,
+ * side and the app owns it: its ALSA sequencer client subscribes to f_midi,
  * which holds the rawmidi output substream, so opening that one returns
  * EBUSY.  The snd-usb-audio card is the *host* side of the dummy_hcd bus -
  * the MIDI counterpart of /dev/hidraw0 - and nothing else claims it.
@@ -183,6 +183,15 @@ int recv_and_dispatch(int vport, int hidraw_fd, int midi_fd)
     uint8_t payload[MAX_PAYLOAD];
     if (len > 0 && read_exact(vport, payload, len) < 0) return -1;
 
+    if (hdr[0] == FRAME_HELLO) {
+        char id[MAX_PAYLOAD];
+        int n = gadget_identity(id, sizeof id);
+        if (n < 0) return 0;
+        if (send_frame(vport, FRAME_IDENTITY, (const uint8_t *)id, (size_t)n) < 0) return -1;
+        fprintf(stderr, "pc-link-bridge: identity sent (%d bytes)\n", n);
+        return 0;
+    }
+
     int dst_fd;
     const char *what;
     switch (hdr[0]) {
@@ -194,13 +203,13 @@ int recv_and_dispatch(int vport, int hidraw_fd, int midi_fd)
             return 0;
     }
     /* Silently drop frames for endpoints we couldn't open (e.g. MIDI when
-     * EP122 holds the raw char device exclusive). */
+     * the app holds the raw char device exclusive). */
     if (dst_fd < 0) return 0;
     if (len == 0) return 0;
 
     if (hdr[0] == FRAME_HID) {
         /* hidraw_write() reads the first byte as the report number.  The
-         * CDJ-3000 descriptor declares no report IDs, so that byte is 0 and
+         * Pioneer descriptors declare no report IDs, so that byte is 0 and
          * is not part of the report; the wire payload carries the report
          * alone, in both directions. */
         uint8_t out[1 + MAX_PAYLOAD];

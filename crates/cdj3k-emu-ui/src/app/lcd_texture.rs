@@ -1,8 +1,9 @@
-//! GL texture allocation, sub-image upload, and blank-on-exit for the
-//! main 1280×720 display and the 320×240 jog LCD framebuffers.
+//! GL texture allocation, sub-image upload, and blank-on-exit for the main
+//! display (sized by [`Model::main_lcd`](cdj3k_emu_panel::Model::main_lcd))
+//! and the 320×240 jog LCD framebuffers.
 
 use cdj3k_emu_streams::jog_stream::{JogFrame, JOG_FB_H, JOG_FB_W};
-use cdj3k_emu_streams::main_stream::{self, DisplayDirty};
+use cdj3k_emu_streams::main_stream::{DisplayDirty, SHM_PIXELS_OFFSET};
 use egui::Color32;
 use glow::HasContext as _;
 
@@ -12,22 +13,31 @@ use super::CdjApp;
 const PX_BYTES: usize = 4;
 
 impl CdjApp {
+    /// A model switch changes the main framebuffer size: re-specify the
+    /// storage of the texture the painter already knows under its id.
+    fn ensure_display_storage(&mut self, gl: &glow::Context) {
+        if !self.display_tex_stale {
+            return;
+        }
+        if let Some(tex) = self.display_gl_tex {
+            let (w, h) = self.model.main_lcd();
+            unsafe { specify_lcd_storage(gl, tex, w as i32, h as i32) };
+        }
+        self.display_tex_stale = false;
+    }
+
     /// Zero both LCD GL textures so popout windows go black after QEMU exit.
     /// Cleared once by the next paint after `lcd_textures_need_blank` is set.
     pub(super) fn blank_lcd_textures(&mut self, gl: &glow::Context) {
+        self.ensure_display_storage(gl);
         unsafe {
             if let Some(tex) = self.display_gl_tex {
-                let zeros = vec![0u8; main_stream::LCD_W * main_stream::LCD_H * PX_BYTES];
-                upload_full_zero(
-                    gl,
-                    tex,
-                    main_stream::LCD_W as i32,
-                    main_stream::LCD_H as i32,
-                    &zeros,
-                );
+                let (w, h) = self.model.main_lcd();
+                let zeros = vec![0u8; (w * h) as usize * PX_BYTES];
+                upload_full_zero(gl, tex, w as i32, h as i32, &zeros);
             }
             if let Some(tex) = self.jog_gl_tex {
-                let zeros = vec![0u8; (JOG_FB_W * JOG_FB_H) as usize * PX_BYTES];
+                let zeros = vec![0u8; (JOG_FB_W * JOG_FB_H) * PX_BYTES];
                 upload_full_zero(gl, tex, JOG_FB_W as i32, JOG_FB_H as i32, &zeros);
             }
         }
@@ -44,17 +54,13 @@ impl CdjApp {
             return false;
         };
 
+        self.ensure_display_storage(&gl);
         if self.display_gl_tex.is_none() {
             // TEXTURE_SWIZZLE_A = ONE forces sampled alpha to 1.0 so egui's
             // premultiplied blend works even though QEMU stores 0 in the X byte.
-            let tex = unsafe {
-                allocate_lcd_texture(
-                    &gl,
-                    main_stream::LCD_W as i32,
-                    main_stream::LCD_H as i32,
-                    LcdSwizzle::AlphaOnly,
-                )
-            };
+            let (w, h) = self.model.main_lcd();
+            let tex =
+                unsafe { allocate_lcd_texture(&gl, w as i32, h as i32, LcdSwizzle::AlphaOnly) };
             let tex_id = frame.register_native_glow_texture(tex);
             self.display_gl_tex = Some(tex);
             self.display_tex_id = Some(tex_id);
@@ -64,7 +70,7 @@ impl CdjApp {
         // in shm_gfx_update); UNPACK_ROW_LENGTH lets us point directly into
         // the mmap without any row copy, even for dirty sub-rects.
         if let Some(tex) = self.display_gl_tex {
-            let offset = main_stream::SHM_PIXELS_OFFSET
+            let offset = SHM_PIXELS_OFFSET
                 + dirty.y as usize * dirty.stride as usize
                 + dirty.x as usize * PX_BYTES;
             // Minimum slice: full rows except last (which only needs w*4 bytes).
@@ -195,6 +201,14 @@ unsafe fn allocate_lcd_texture(
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_SWIZZLE_A, glow::ONE as i32);
         }
     }
+    specify_lcd_storage(gl, tex, w, h);
+    tex
+}
+
+/// (Re)allocate `tex`'s level-0 storage as an uninitialised `w`×`h`
+/// SRGB8_ALPHA8 image.
+unsafe fn specify_lcd_storage(gl: &glow::Context, tex: glow::Texture, w: i32, h: i32) {
+    gl.bind_texture(glow::TEXTURE_2D, Some(tex));
     gl.tex_image_2d(
         glow::TEXTURE_2D,
         0,
@@ -207,7 +221,6 @@ unsafe fn allocate_lcd_texture(
         None,
     );
     gl.bind_texture(glow::TEXTURE_2D, None);
-    tex
 }
 
 unsafe fn upload_sub_image(

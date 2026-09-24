@@ -97,7 +97,7 @@ is not an error condition and the reader does not time out on it.
 ### Transport
 
 `ivshmem-plain` PCI BAR2, backed by a shared file. The guest's
-`ep122_shim.so` writes XRGB pixels straight into the BAR; the host mmaps
+`deck_shim.so` writes XRGB pixels straight into the BAR; the host mmaps
 the same file and polls a seqlock counter. Zero copies, zero virtqueue
 traffic.
 
@@ -110,7 +110,7 @@ QEMU args (config.rs lines 326-337):
 
 ### Defined in
 
-- Producer: `guest/ep122_shim/jog_shm.c` (crops the visible 320×240
+- Producer: `guest/deck_shim/core/jog_shm.c` (crops the visible 320×240
   region from EP122's stretched 1280×240 DRM jog plane).
 - Consumer: `crates/cdj3k-emu-streams/src/jog_stream.rs`.
 
@@ -163,7 +163,7 @@ QEMU args (config.rs lines 300-324):
 ### Defined in
 
 - Host endpoint: `crates/cdj3k-emu-streams/src/ctrl_stream.rs`.
-- Frame helpers / CRC: `crates/cdj3k-emu-subucom/src/{mosi_frame.rs,
+- Frame helpers / CRC: `crates/cdj3k-emu-panel/src/{mosi_frame.rs,
   miso_frame.rs, crc.rs}`.
 - Guest bridge: `guest/subucom/forwarder.c` (connects the kernel
   character device `/dev/subucom_ctrl` to the virtio-serial port; module

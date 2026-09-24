@@ -43,7 +43,8 @@ int main(void)
     fprintf(stderr, "pc-link-bridge: vport=%d hidraw=%d midi=%d — pumping\n",
             vport_fd, hidraw_fd, midi_fd);
 
-    /* Signal USB-B connect (SOURCE CONTROL MODE row) and force PC mode. */
+    /* Signal USB-B connect (SOURCE CONTROL MODE row), and force PC mode on an
+     * app that cannot select it from that row. */
     usbg_open();
     set_usb_connected(1);
     force_pc_mode();

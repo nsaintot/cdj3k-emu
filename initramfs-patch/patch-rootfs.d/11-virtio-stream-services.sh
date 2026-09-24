@@ -3,7 +3,7 @@
 # Patch 15: virtio-serial stream services - subucom-forwarder.
 #
 # Main LCD is exposed natively via X → virtio-console (no capture process needed).
-# Jog LCD now uses ivshmem zero-copy: ep122_shim writes pixels directly into the
+# Jog LCD uses ivshmem zero-copy: deck_shim writes pixels directly into the
 # ivshmem BAR; the host polls the seqlock counter from its mmap. No userspace
 # forwarder process and no wake channel needed for the jog stream.
 #

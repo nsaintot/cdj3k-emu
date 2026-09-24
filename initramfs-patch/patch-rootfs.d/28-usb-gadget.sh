@@ -2,106 +2,97 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Patch 28: usb_gadget.sh - PC-link USB gadget setup for QEMU.
 #
-# Rewrites Pioneer's /home/root/scripts/usb_gadget.sh so it works against
-# dummy_hcd's dummy_udc UDC instead of the (absent) RK3399 DWC3:
-#   - drops uac2.usb0: CONFIG_USB_CONFIGFS_F_UAC2 is off, and the sysfs knobs
-#     Pioneer's uac-monitor.sh drives (usb_f_uac2 'enable'/'uac2_srate') are
-#     patches on their 4.4 BSP that mainline 6.6 does not have.  Host audio
-#     goes over virtio-snd.  Patch 22 masks usb-f-uac.service to match.
+# Keeps the firmware's own /home/root/scripts/usb_gadget.sh for everything
+# that identifies the deck (idVendor, idProduct, bcdDevice, strings, the HID
+# report length and descriptor), so each model presents the gadget its
+# firmware defines.  fw_printenv reads the U-Boot env the eMMC image carries.
+# Only the plumbing around it changes:
+#   - drops uac1/uac2.usb0: CONFIG_USB_CONFIGFS_F_UAC2 is off, and the sysfs
+#     knobs Pioneer's uac-monitor.sh drives (usb_f_uac2 'enable'/'uac2_srate')
+#     are patches on their 4.4 BSP that mainline 6.6 does not have.  Host
+#     audio goes over virtio-snd.  Patch 22 masks usb-f-uac.service to match.
 #     docs/pc-link.md has the full picture.
-#   - keeps midi.usb0 + hid.usb0 with original Pioneer parameters
-#   - replaces fw_printenv (no u-boot env on QEMU) with static fallbacks
-#   - binds explicitly to dummy_udc; bails cleanly if it isn't there yet
-#   - idempotent: tears down any prior g1 before rebuilding
+#   - mounts configfs if needed and tears down a prior g1, so a re-run
+#     rebuilds the gadget instead of failing on existing directories
+#   - waits for dummy_hcd's UDC and binds to it explicitly
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 
-cat > "$ROOTFS/home/root/scripts/usb_gadget.sh" << 'SCRIPTEOF'
-#!/bin/sh
-# CDJ-3000 PC-link gadget: HID (vendor 0xFFA0) + MIDI.
-# UAC2 removed for QEMU - host audio is routed via virtio-snd, not USB.
-
-set -eu
-
-CONFIGFS=/sys/kernel/config
-GADGET=$CONFIGFS/usb_gadget/g1
-
-# configfs may not be mounted yet on first boot.
-if ! mountpoint -q "$CONFIGFS"; then
-    /bin/mount -t configfs none "$CONFIGFS"
+SCRIPT="$ROOTFS/home/root/scripts/usb_gadget.sh"
+if [[ ! -f "$SCRIPT" ]]; then
+    echo "  WARNING: $SCRIPT not found; skipping patch 28, PC Link will not work" >&2
+    exit 0
+fi
+if grep -qF 'Rewritten by patch 28' "$SCRIPT"; then
+    echo "  -> $SCRIPT already rewritten"
+    exit 0
 fi
 
-# dummy_hcd is built in (=y), so a UDC should be present at boot.  Pick the
-# first entry under /sys/class/udc/ rather than hard-coding a name; the
-# dummy_hcd UDC is named "dummy_udc.0" (instance-suffixed), and other
-# platforms would call theirs something else entirely.  Wait up to 3 s in
-# case the udc class registers slightly after rootfs init.
-i=0
-while [ $i -lt 30 ] && [ -z "$(ls -1 /sys/class/udc/ 2>/dev/null | head -1)" ]; do
-    sleep 0.1
-    i=$((i + 1))
+# The firmware script's own lines, minus the ones this patch replaces: the
+# shebang, the cd/mkdir into g1, the UAC functions and the UDC bind.  PC Link
+# is optional, so a script without every anchor is left untouched and
+# provisioning continues without it.
+missing=()
+for anchor in 'mkdir -p g1 && cd g1' 'functions/hid.usb0/report_desc' 'ls /sys/class/udc/ > UDC'; do
+    grep -qF "$anchor" "$SCRIPT" || missing+=("$anchor")
 done
-UDC_NAME=$(ls -1 /sys/class/udc/ 2>/dev/null | head -1)
-if [ -z "$UDC_NAME" ]; then
+if (( ${#missing[@]} )); then
+    for anchor in "${missing[@]}"; do
+        echo "  WARNING: $SCRIPT has no '$anchor'" >&2
+    done
+    echo "  WARNING: skipping patch 28, $SCRIPT left as shipped; PC Link will not work" >&2
+    exit 0
+fi
+BODY=$(grep -vE '^#!|^cd /sys/kernel/config/usb_gadget/?$|^mkdir -p g1 && cd g1$|uac[12]\.usb0|^ls /sys/class/udc/ > UDC$' "$SCRIPT")
+
+cat > "$SCRIPT" << SCRIPTEOF
+#!/bin/bash
+# PC-link gadget: the firmware's HID + MIDI functions, bound to dummy_udc.
+# Rewritten by patch 28; the identity lines below are the firmware's own.
+
+CONFIGFS=/sys/kernel/config
+GADGET=\$CONFIGFS/usb_gadget/g1
+
+if ! mountpoint -q "\$CONFIGFS"; then
+    /bin/mount -t configfs none "\$CONFIGFS"
+fi
+
+# dummy_hcd is built in, so its UDC ("dummy_udc.0") should be present at
+# boot; wait up to 3 s in case the udc class registers slightly late.
+i=0
+while [ \$i -lt 30 ] && [ -z "\$(ls -1 /sys/class/udc/ 2>/dev/null | head -1)" ]; do
+    sleep 0.1
+    i=\$((i + 1))
+done
+UDC_NAME=\$(ls -1 /sys/class/udc/ 2>/dev/null | head -1)
+if [ -z "\$UDC_NAME" ]; then
     echo "usb_gadget: no UDC in /sys/class/udc - aborting" >&2
     exit 1
 fi
 
-# Tear down any prior gadget so re-runs (or stale state from a previous boot
-# carried in a snapshot) start clean.
-if [ -d "$GADGET" ]; then
-    # configfs attributes report a non-zero size whatever they hold, so the
-    # bound check reads the value.  Writing "" to an unbound gadget returns
-    # -ENODEV, which under `set -e` would abort before the rebuild below.
-    if [ -n "$(cat "$GADGET/UDC" 2>/dev/null)" ]; then
-        echo "" > "$GADGET/UDC"
+# Tear down a prior gadget so a re-run starts clean.  configfs attributes
+# report a non-zero size whatever they hold, so the bound check reads the
+# value; writing "" to an unbound gadget returns -ENODEV.
+if [ -d "\$GADGET" ]; then
+    if [ -n "\$(cat "\$GADGET/UDC" 2>/dev/null)" ]; then
+        echo "" > "\$GADGET/UDC"
     fi
-    rm -f "$GADGET/configs/c.1/"hid.usb0 "$GADGET/configs/c.1/"midi.usb0 2>/dev/null || true
-    rmdir "$GADGET/configs/c.1/strings/0x409" 2>/dev/null || true
-    rmdir "$GADGET/configs/c.1" 2>/dev/null || true
-    rmdir "$GADGET/functions/"* 2>/dev/null || true
-    rmdir "$GADGET/strings/0x409" 2>/dev/null || true
-    rmdir "$GADGET" 2>/dev/null || true
+    rm -f "\$GADGET/configs/c.1/"*.usb0 2>/dev/null || true
+    rmdir "\$GADGET/configs/c.1/strings/0x409" 2>/dev/null || true
+    rmdir "\$GADGET/configs/c.1" 2>/dev/null || true
+    rmdir "\$GADGET/functions/"* 2>/dev/null || true
+    rmdir "\$GADGET/strings/0x409" 2>/dev/null || true
+    rmdir "\$GADGET" 2>/dev/null || true
 fi
 
-mkdir -p "$GADGET"
-cd "$GADGET"
+mkdir -p "\$GADGET"
+cd "\$GADGET"
 
-# VID/PID/bcd: VID/PID match real CDJ-3000 so rekordbox identifies the device.
-# bcdDevice on real HW comes from fw_printenv -n release; that env doesn't
-# exist on QEMU, so we hard-code 0x0100 (firmware 1.00).
-echo 0x2b73 > idVendor
-echo 0x002f > idProduct
-echo 0x0100 > bcdDevice
-echo 0x0200 > bcdUSB
-echo 0x00   > bDeviceClass
-echo 0x00   > bDeviceSubClass
-echo 0x00   > bDeviceProtocol
+$BODY
 
-mkdir -p strings/0x409
-# Serial: real hardware reads u-boot env serial_number; QEMU has none, use a
-# stable QEMU-recognisable string so the host can pin its virtual device.
-echo "CDJ3KQEMU000000" > strings/0x409/serialnumber
-echo "Pioneer DJ"      > strings/0x409/manufacturer
-echo "CDJ-3000"        > strings/0x409/product
-
-mkdir -p functions/midi.usb0
-
-mkdir -p functions/hid.usb0
-echo 0  > functions/hid.usb0/protocol
-echo 0  > functions/hid.usb0/subclass
-echo 64 > functions/hid.usb0/report_length
-echo -ne \\x06\\xa0\\xff\\x09\\x01\\xa1\\x01\\x09\\x02\\xa1\\x00\\x06\\xa1\\xff\\x09\\x03\\x09\\x04\\x15\\x80\\x25\\x7f\\x35\\x00\\x45\\xff\\x75\\x08\\x95\\x40\\x81\\x02\\x09\\x05\\x09\\x06\\x15\\x80\\x25\\x7f\\x35\\x00\\x45\\xff\\x75\\x08\\x95\\x40\\x91\\x02\\xc0\\xc0 > functions/hid.usb0/report_desc
-
-mkdir -p configs/c.1
-echo 2 > configs/c.1/MaxPower
-
-ln -sf functions/midi.usb0 configs/c.1/
-ln -sf functions/hid.usb0  configs/c.1/
-
-echo "$UDC_NAME" > UDC
-echo "usb_gadget: bound g1 to $UDC_NAME (midi + hid, no uac)"
+echo "\$UDC_NAME" > UDC
+echo "usb_gadget: bound g1 to \$UDC_NAME (\$(cat strings/0x409/product), no uac)"
 SCRIPTEOF
 
-chmod 755 "$ROOTFS/home/root/scripts/usb_gadget.sh"
-echo "  -> /home/root/scripts/usb_gadget.sh rewritten (midi + hid, dummy_udc)"
+chmod 755 "$SCRIPT"
+echo "  -> $SCRIPT: firmware identity kept, UAC dropped, bound to dummy_udc"
