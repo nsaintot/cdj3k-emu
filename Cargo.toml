@@ -10,6 +10,8 @@ members = [
   "crates/cdj3k-emu-storage",
   "crates/cdj3k-emu-firmware",
 ]
+# Patched dependencies, not members: see [patch.crates-io].
+exclude = ["winit/src"]
 
 # Dependencies are optimised in dev builds; the workspace crates stay at
 # opt-level 0 so they remain debuggable. Unoptimised, the crypto and
@@ -33,3 +35,12 @@ repository = "https://github.com/nsaintot/cdj3k-emu"
 # boundaries but aren't designed for crates.io consumption.  Keep them out
 # of any accidental `cargo publish` run.
 publish = false
+
+# winit with one addition: a Wayland aspect ratio, fitted while a configure is
+# handled (`winit::platform::wayland::set_surface_aspect_ratio`). xdg-shell has
+# no aspect hint, and fitting any later draws a frame at the wrong size first.
+# winit/fetch.sh makes winit/src from the crates.io release and
+# winit/patches/; run it before any cargo command.
+[patch.crates-io]
+winit = { path = "winit/src" }
+

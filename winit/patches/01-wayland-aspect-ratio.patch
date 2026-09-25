@@ -1,0 +1,115 @@
+--- a/src/platform/wayland.rs
++++ b/src/platform/wayland.rs
+@@ -129,3 +129,84 @@
+         self.inner.native_identifier()
+     }
+ }
++
++/// An aspect ratio a floating window keeps while it is resized.
++///
++/// xdg-shell has no aspect hint for the compositor to enforce, and a floating
++/// window's configured size is a maximum the client may shrink within. With
++/// this set, winit fits the size to the ratio while handling the configure,
++/// before anything is drawn, as AppKit's `contentAspectRatio` and X11's
++/// `WM_NORMAL_HINTS` aspect do natively.
++///
++/// As in ICCCM, the ratio applies to the size minus the base size, so a fixed
++/// strip (a toolbar, a menu) can sit outside it. Sizes are logical, inside any
++/// client-side decorations. It applies to every configure of a floating window,
++/// the one ending a drag included; it enlarges neither axis beyond the size
++/// being fitted, except to reach the minimum, and is left out of maximized,
++/// fullscreen and tiled states, whose geometry the compositor sets.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct AspectRatio {
++    pub width: u32,
++    pub height: u32,
++    pub base_width: u32,
++    pub base_height: u32,
++}
++
++impl AspectRatio {
++    /// The largest size within `size` that keeps the ratio, no smaller than
++    /// `min`.
++    pub fn fit(
++        &self,
++        size: crate::dpi::LogicalSize<u32>,
++        min: crate::dpi::LogicalSize<u32>,
++    ) -> crate::dpi::LogicalSize<u32> {
++        if self.width == 0 || self.height == 0 {
++            return size;
++        }
++        let avail_w = u64::from(size.width.saturating_sub(self.base_width));
++        let avail_h = u64::from(size.height.saturating_sub(self.base_height));
++        if avail_w == 0 || avail_h == 0 {
++            return size;
++        }
++        let (rw, rh) = (u64::from(self.width), u64::from(self.height));
++        // On the ratio to within a pixel already: refitting it would round a
++        // pixel off, and every configure would shrink the window by one.
++        if avail_w.abs_diff(avail_h * rw / rh) <= 1 || avail_h.abs_diff(avail_w * rh / rw) <= 1 {
++            return crate::dpi::LogicalSize::new(
++                size.width.max(min.width),
++                size.height.max(min.height),
++            );
++        }
++        let (w, h) = if avail_w * rh > avail_h * rw {
++            (avail_h * rw / rh, avail_h)
++        } else {
++            (avail_w, avail_w * rh / rw)
++        };
++        crate::dpi::LogicalSize::new(
++            (w as u32 + self.base_width).max(min.width),
++            (h as u32 + self.base_height).max(min.height),
++        )
++    }
++}
++
++static ASPECT_RATIOS: std::sync::Mutex<Vec<(usize, AspectRatio)>> =
++    std::sync::Mutex::new(Vec::new());
++
++/// Keep the window whose `wl_surface` is `surface` at `aspect`, or release it
++/// with `None`. `surface` is the pointer its raw window handle carries, which
++/// is all a toolkit that owns the `Window` may expose.
++pub fn set_surface_aspect_ratio(surface: NonNull<c_void>, aspect: Option<AspectRatio>) {
++    let key = surface.as_ptr() as usize;
++    let mut ratios = ASPECT_RATIOS.lock().unwrap_or_else(|e| e.into_inner());
++    ratios.retain(|(k, _)| *k != key);
++    if let Some(aspect) = aspect {
++        ratios.push((key, aspect));
++    }
++}
++
++pub(crate) fn surface_aspect_ratio(surface: *const c_void) -> Option<AspectRatio> {
++    let key = surface as usize;
++    let ratios = ASPECT_RATIOS.lock().unwrap_or_else(|e| e.into_inner());
++    ratios.iter().find(|(k, _)| *k == key).map(|(_, a)| *a)
++}
++
+--- a/src/platform_impl/linux/wayland/window/state.rs
++++ b/src/platform_impl/linux/wayland/window/state.rs
+@@ -378,6 +378,25 @@
+             }
+         }
+ 
++        // A floating window with an aspect ratio set is fitted to it on every
++        // configure, the one ending a drag included. During an interactive
++        // resize the offered size is fitted; between two floating configures
++        // outside one, the window's own size is, since the offer can lag the
++        // client's last request. Maximized, fullscreen and tiled windows take
++        // the offered size.
++        if !configure.is_maximized() && !configure.is_fullscreen() && !configure.is_tiled() {
++            let surface = self.window.wl_surface().id().as_ptr() as *const std::ffi::c_void;
++            if let Some(aspect) = crate::platform::wayland::surface_aspect_ratio(surface) {
++                let was_floating = self.last_configure.as_ref().is_some_and(|last| {
++                    !last.is_maximized() && !last.is_fullscreen() && !last.is_tiled()
++                });
++                if was_floating && !configure.is_resizing() {
++                    new_size = self.size;
++                }
++                new_size = aspect.fit(new_size, self.min_inner_size);
++            }
++        }
++
+         let new_state = configure.state;
+         let old_state = self.last_configure.as_ref().map(|configure| configure.state);
+ 
