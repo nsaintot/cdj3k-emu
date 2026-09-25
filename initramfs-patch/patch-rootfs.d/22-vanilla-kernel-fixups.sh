@@ -25,6 +25,7 @@ set -eu
 echo "  [22] cleaning Pioneer 4.4 modules from /lib/modules ..."
 # Remove all .ko files - the Pioneer rootfs ships 4.4.194 modules that can't
 # load into a 6.6 kernel.
+mkdir -p "${ROOTFS}/lib/modules"
 find "${ROOTFS}/lib/modules" -maxdepth 1 -name '*.ko' -delete 2>/dev/null || true
 
 VANILLA_MODS="${PATCH_ASSETS_DIR}/vanilla-modules"
