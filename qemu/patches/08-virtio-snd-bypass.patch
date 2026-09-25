@@ -1,33 +1,45 @@
 diff --git a/hw/audio/virtio-snd.c b/hw/audio/virtio-snd.c
-index fb5cff3..c284771 100644
+index fb5cff3..f1f1853 100644
 --- a/hw/audio/virtio-snd.c
 +++ b/hw/audio/virtio-snd.c
-@@ -36,6 +36,965 @@ static void virtio_snd_process_cmdq(VirtIOSound *s);
+@@ -36,6 +36,1017 @@ static void virtio_snd_process_cmdq(VirtIOSound *s);
  static void virtio_snd_pcm_flush(VirtIOSoundPCMStream *stream);
  static void virtio_snd_pcm_in_cb(void *data, int available);
  static void virtio_snd_unrealize(DeviceState *dev);
 +static void virtio_snd_pcm_buffer_free(VirtIOSoundPCMBuffer *buffer);
 +
-+/* ============= CoreAudio bypass ring (Darwin only) =============
-+ * SPSC ring: virtio-snd writes (main loop), CoreAudio IOProc reads (RT).
++/* ============= Host audio bypass ring =============
++ * SPSC ring: virtio-snd writes (main loop), the host backend's real-time
++ * callback reads: CoreAudio's IOProc on macOS, PipeWire's process callback
++ * on Linux.
 + * Bypasses QEMU's hw->buf_emul, eliminating ~15-20ms of mixer latency.
-+ * Stereo, F32 or S32 (S32→F32 inline), guest rate must match HAL rate
-+ * (no resampling). Falls back to AUD path on mismatch. Output only.
++ * Stereo, F32 or S32 (S32→F32 inline); the writer resamples when the
++ * guest and device rates differ. Output only.
 + */
 +
 +/* Always declared so pcm_close/pcm_prepare can unconditionally manage
 + * it without an #ifdef wrapper at every call site; only read by the
-+ * Darwin-only drain timer below. */
++ * bypass drain timer below. */
 +static VirtIOSound *vsnd_drain_target_dev;
 +
-+#ifdef CONFIG_DARWIN
++/* The ring needs a backend that drains it from its own real-time callback;
++ * elsewhere the stubs below keep every call site unconditional. */
++#if defined(CONFIG_DARWIN) || defined(CONFIG_AUDIO_PIPEWIRE)
++#define VSND_HOST_BYPASS 1
++#endif
++
++#ifdef VSND_HOST_BYPASS
 +#include <stdatomic.h>
 +#include <pthread.h>
 +#include <time.h>
 +#include <math.h>
++#ifdef CONFIG_DARWIN
 +#include <mach/mach.h>
 +#include <mach/mach_time.h>
 +#include <mach/thread_policy.h>
++#else
++#include <sched.h>
++#endif
 +
 +/* cdj3k-emu: pin the bypass writer thread to a real-time scheduling band
 + * so macOS cannot preempt it during normal scheduling jitter. Without
@@ -46,6 +58,7 @@ index fb5cff3..c284771 100644
 + * are well below any contract violation threshold. */
 +static void vsnd_writer_thread_set_rt(void)
 +{
++#ifdef CONFIG_DARWIN
 +    mach_timebase_info_data_t tb;
 +    if (mach_timebase_info(&tb) != KERN_SUCCESS) {
 +        return;
@@ -72,6 +85,21 @@ index fb5cff3..c284771 100644
 +        fprintf(stderr,
 +                "virtio-snd: writer thread bound to Mach RT (0.5 ms / 2 ms)\n");
 +    }
++#else
++    /* Linux has no time-constraint class. SCHED_FIFO works where the
++     * process is allowed it (an rtkit grant, CAP_SYS_NICE, an rtprio
++     * limit); otherwise the writer keeps normal priority and the ring's
++     * depth has to absorb the jitter. */
++    struct sched_param sp = { .sched_priority = 10 };
++    int r = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
++    if (r != 0) {
++        fprintf(stderr,
++                "virtio-snd: writer thread at normal priority "
++                "(SCHED_FIFO refused: %s)\n", strerror(r));
++    } else {
++        fprintf(stderr, "virtio-snd: writer thread bound to SCHED_FIFO 10\n");
++    }
++#endif
 +}
 +
 +/* cdj3k-emu: dedicated writer thread for the bypass ring.
@@ -255,22 +283,36 @@ index fb5cff3..c284771 100644
 +                                memory_order_relaxed);
 +}
 +
++/* What the host backend reports about the pipeline downstream of the ring. */
++#ifdef CONFIG_DARWIN
 +extern uint32_t coreaudio_get_pipeline_depth_us(void);
 +extern uint32_t coreaudio_get_static_latency_frames(void);
 +extern unsigned coreaudio_get_active_samplerate(void);
++#define host_audio_pipeline_depth_us     coreaudio_get_pipeline_depth_us
++#define host_audio_static_latency_frames coreaudio_get_static_latency_frames
++#define host_audio_active_samplerate     coreaudio_get_active_samplerate
++#else
++extern uint32_t pwaudio_get_pipeline_depth_us(void);
++extern uint32_t pwaudio_get_static_latency_frames(void);
++extern unsigned pwaudio_get_active_samplerate(void);
++#define host_audio_pipeline_depth_us     pwaudio_get_pipeline_depth_us
++#define host_audio_static_latency_frames pwaudio_get_static_latency_frames
++#define host_audio_active_samplerate     pwaudio_get_active_samplerate
++#endif
 +
 +/* Public accessor: host-side pipeline depth DOWNSTREAM of the bypass ring
 + * - CoreAudio HAL queue + static device latency. Does NOT include the
 + * ring depth (already covered by guest frames_in_flight when deferred
 + * return is in effect). */
++uint32_t virtio_snd_bypass_depth_frames(void);
 +uint32_t virtio_snd_bypass_depth_frames(void)
 +{
-+    uint32_t hal_us = coreaudio_get_pipeline_depth_us();
-+    uint32_t hal_rate = coreaudio_get_active_samplerate();
++    uint32_t hal_us = host_audio_pipeline_depth_us();
++    uint32_t hal_rate = host_audio_active_samplerate();
 +    uint32_t hal_frames = 0;
 +    if (hal_rate > 0)
 +        hal_frames = (uint32_t)(((uint64_t)hal_us * hal_rate) / 1000000ULL);
-+    uint32_t static_frames = coreaudio_get_static_latency_frames();
++    uint32_t static_frames = host_audio_static_latency_frames();
 +    return hal_frames + static_frames;
 +}
 +
@@ -554,7 +596,7 @@ index fb5cff3..c284771 100644
 + * ring-full so caller leaves buf in stream->queue for retry. */
 +static size_t vsnd_bypass_write_convert(const void *src, size_t src_bytes)
 +{
-+    uint32_t hal_rate   = coreaudio_get_active_samplerate();
++    uint32_t hal_rate   = host_audio_active_samplerate();
 +    uint32_t guest_rate = atomic_load_explicit(&vsnd_bypass_guest_rate,
 +                                               memory_order_relaxed);
 +    if (hal_rate == 0 || guest_rate == 0 || hal_rate == guest_rate) {
@@ -796,7 +838,7 @@ index fb5cff3..c284771 100644
 +    if (d_underrun == 0 && d_overrun == 0) {
 +        return;
 +    }
-+    unsigned rate = coreaudio_get_active_samplerate();
++    unsigned rate = host_audio_active_samplerate();
 +    if (rate == 0) rate = 96000;
 +    uint64_t d_underrun_us = (d_underrun * 1000000ULL) / rate;
 +    fprintf(stderr,
@@ -943,11 +985,21 @@ index fb5cff3..c284771 100644
 +    int prev = atomic_exchange_explicit(&vsnd_bypass_active, on,
 +                                        memory_order_acq_rel);
 +    if (prev != on) {
-+        fprintf(stderr, "virtio-snd: CoreAudio bypass %s (fmt=%d)\n",
++        fprintf(stderr, "virtio-snd: host audio bypass %s (fmt=%d)\n",
 +                on ? "ENABLED" : "DISABLED", src_fmt);
 +    }
 +}
++/* Whether a host consumer exists to drain the ring. CoreAudio's IOProc
++ * always does once the voice is open; PipeWire only when the audiodev is
++ * PipeWire, so a guest stream never fills a ring nobody reads. */
++#ifdef CONFIG_DARWIN
++static inline int host_audio_bypass_ready(void) { return 1; }
 +#else
++extern int pwaudio_bypass_ready(void);
++static inline int host_audio_bypass_ready(void) { return pwaudio_bypass_ready(); }
++#endif
++#else
++static inline int host_audio_bypass_ready(void) { return 0; }
 +static inline int virtio_snd_bypass_is_active(void) { return 0; }
 +static inline size_t vsnd_bypass_write_convert(const void *s, size_t n) {
 +    (void)s; return n;
@@ -963,12 +1015,12 @@ index fb5cff3..c284771 100644
 +static inline void vsnd_bypass_pending_flush(void) {}
 +static inline uint64_t vsnd_bypass_head_value(void) { return 0; }
 +static inline uint32_t virtio_snd_bypass_depth_frames(void) { return 0; }
-+#endif /* CONFIG_DARWIN */
-+/* ============= /CoreAudio bypass ring ============= */
++#endif /* VSND_HOST_BYPASS */
++/* ============= /host audio bypass ring ============= */
  
  static uint32_t supported_formats = BIT(VIRTIO_SND_PCM_FMT_S8)
                                    | BIT(VIRTIO_SND_PCM_FMT_U8)
-@@ -103,6 +1062,15 @@ virtio_snd_get_config(VirtIODevice *vdev, uint8_t *config)
+@@ -103,6 +1114,15 @@ virtio_snd_get_config(VirtIODevice *vdev, uint8_t *config)
      cpu_to_le32s(&sndconfig->streams);
      cpu_to_le32s(&sndconfig->chmaps);
  
@@ -984,7 +1036,7 @@ index fb5cff3..c284771 100644
  }
  
  static void
-@@ -402,6 +1370,8 @@ static void virtio_snd_pcm_close(VirtIOSoundPCMStream *stream)
+@@ -402,6 +1422,8 @@ static void virtio_snd_pcm_close(VirtIOSoundPCMStream *stream)
      if (stream) {
          virtio_snd_pcm_flush(stream);
          if (stream->info.direction == VIRTIO_SND_D_OUTPUT) {
@@ -993,21 +1045,22 @@ index fb5cff3..c284771 100644
              audio_be_close_out(stream->s->audio_be, stream->voice.out);
              stream->voice.out = NULL;
          } else if (stream->info.direction == VIRTIO_SND_D_INPUT) {
-@@ -475,6 +1445,24 @@ static uint32_t virtio_snd_pcm_prepare(VirtIOSound *s, uint32_t stream_id)
+@@ -475,6 +1497,25 @@ static uint32_t virtio_snd_pcm_prepare(VirtIOSound *s, uint32_t stream_id)
                                           virtio_snd_pcm_out_cb,
                                           &as);
          audio_be_set_volume_out_lr(s->audio_be, stream->voice.out, 0, 255, 255);
 +
-+        /* Activate CoreAudio bypass for any S32/F32 stereo guest stream,
-+         * regardless of HAL rate. The bypass writer thread resamples
-+         * (linear interpolation) when guest_rate != hal_rate, so we no
-+         * longer need to refuse on mismatch and fall back to QEMU's
-+         * AUD_write mixer (which had its own glitchy resampler). The
-+         * resampler runs off-BQL in the writer thread, keeping the
-+         * lock-free IOProc path intact. */
++        /* Activate the host bypass for any S32/F32 stereo guest stream,
++         * whatever the device rate: the bypass writer thread resamples
++         * (linear interpolation) when guest_rate != hal_rate, off the
++         * BQL, so the real-time callback stays lock-free. QEMU's
++         * AUD_write mixer carries the stream when the bypass is not
++         * ready.
++         */
 +        bool bypass_ok = (as.nchannels == 2 &&
 +                          (as.fmt == AUDIO_FORMAT_F32 ||
-+                           as.fmt == AUDIO_FORMAT_S32));
++                           as.fmt == AUDIO_FORMAT_S32) &&
++                          host_audio_bypass_ready());
 +        if (bypass_ok) {
 +            vsnd_drain_target_dev = s;
 +            virtio_snd_bypass_set_active(1, as.fmt, (uint32_t)as.freq);
@@ -1018,7 +1071,7 @@ index fb5cff3..c284771 100644
      } else {
          stream->voice.in = audio_be_open_in(s->audio_be,
                                          stream->voice.in,
-@@ -918,6 +1906,22 @@ tx_err:
+@@ -918,6 +1959,22 @@ tx_err:
      if (must_empty_invalid_queue) {
          empty_invalid_queue(vdev, vq);
      }
@@ -1041,7 +1094,7 @@ index fb5cff3..c284771 100644
  }
  
  /*
-@@ -1068,7 +2072,11 @@ static void virtio_snd_realize(DeviceState *dev, Error **errp)
+@@ -1068,7 +2125,11 @@ static void virtio_snd_realize(DeviceState *dev, Error **errp)
      vsnd->pcm.pcm_params =
          g_new0(virtio_snd_pcm_set_params, vsnd->snd_conf.streams);
  
@@ -1054,7 +1107,7 @@ index fb5cff3..c284771 100644
      virtio_add_feature(&vsnd->features, VIRTIO_F_VERSION_1);
  
      /* set default params for all streams */
-@@ -1154,6 +2162,20 @@ static void virtio_snd_pcm_out_cb(void *data, int available)
+@@ -1154,6 +2215,20 @@ static void virtio_snd_pcm_out_cb(void *data, int available)
      VirtIOSoundPCMBuffer *buffer;
      size_t size;
  
@@ -1075,11 +1128,11 @@ index fb5cff3..c284771 100644
      WITH_QEMU_LOCK_GUARD(&stream->queue_mutex) {
          while (!QSIMPLEQ_EMPTY(&stream->queue)) {
              buffer = QSIMPLEQ_FIRST(&stream->queue);
-@@ -1320,6 +2342,28 @@ static inline void virtio_snd_pcm_flush(VirtIOSoundPCMStream *stream)
+@@ -1320,6 +2395,28 @@ static inline void virtio_snd_pcm_flush(VirtIOSoundPCMStream *stream)
              buffer = QSIMPLEQ_FIRST(&stream->queue);
              cb(stream, buffer);
          }
-+#ifdef CONFIG_DARWIN
++#ifdef VSND_HOST_BYPASS
 +        /* Flush the pending deferred-return list - the guest sent
 +         * RELEASE because its frames_in_flight is too high, and we
 +         * MUST ack those bufs so the guest's count comes back down or

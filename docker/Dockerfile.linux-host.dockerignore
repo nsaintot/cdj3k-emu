@@ -1,0 +1,11 @@
+# Context for the Linux host build. The repo root's .dockerignore is tuned for
+# the guest image and excludes everything this needs, so BuildKit uses this
+# file instead (it prefers <dockerfile>.dockerignore).
+.git/
+target/
+dist/
+build/
+guest/out/
+qemu/src/
+qemu/build/
+qemu/install/
