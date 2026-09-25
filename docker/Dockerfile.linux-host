@@ -1,0 +1,21 @@
+# Builds the patched QEMU for the Linux host.
+#
+# Debian bookworm sets the glibc floor at 2.36. Everything the app links is
+# vendored beside it except GL, Wayland/X11 and PipeWire, which come from the
+# user's system and are the package's declared dependencies.
+FROM debian:bookworm AS qemu
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential git ninja-build python3 python3-venv python3-pip \
+        pkg-config libglib2.0-dev libpixman-1-dev zlib1g-dev libzstd-dev \
+        libslirp-dev libpipewire-0.3-dev flex bison ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+COPY qemu/ /work/qemu/
+RUN bash qemu/build.sh
+
+# The artefacts the package ships: the emulator's QEMU and the image tool.
+FROM scratch AS qemu-artifacts
+COPY --from=qemu /work/qemu/install/bin/qemu-system-aarch64 /
+COPY --from=qemu /work/qemu/install/bin/qemu-img /

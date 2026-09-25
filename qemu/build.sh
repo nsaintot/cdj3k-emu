@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # qemu/build.sh
 #
-# Clone QEMU v10.2.2, apply the shm display patch, and build qemu-system-aarch64.
+# Clone QEMU at QEMU_REF, apply qemu/patches/*.patch in order, and build
+# qemu-system-aarch64 for this host.
 #
 # Usage:
 #   cd <repo-root>
@@ -19,6 +20,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCHES_DIR="${SCRIPT_DIR}/patches"
 SHIM_DIR="${SCRIPT_DIR}/shim"
+HOST_OS="$(uname -s)"
 SRC_DIR="${SCRIPT_DIR}/src"
 BUILD_DIR="${SCRIPT_DIR}/build"
 INSTALL_DIR="${SCRIPT_DIR}/install"
@@ -53,7 +55,7 @@ if [ "${need_fetch}" = "1" ]; then
     git -C "${SRC_DIR}" remote add origin "${QEMU_REPO}"
     git -C "${SRC_DIR}" fetch --depth=1 origin "${QEMU_REF}"
     git -C "${SRC_DIR}" checkout -q FETCH_HEAD
-    # No submodules needed for a minimal aarch64-softmmu+cocoa build.
+    # No submodules needed for an aarch64-softmmu build.
 else
     echo "==> Source tree already at ${QEMU_REF:0:12} - skipping fetch"
 fi
@@ -119,8 +121,27 @@ fi
 
 mkdir -p "${BUILD_DIR}"
 
+# Per-host flags; everything else is identical across hosts.
+#
+#   macOS: HVF, and Cocoa because the .app needs a UI backend linked even
+#          though the display is the shm one.
+#   Linux: KVM, PipeWire, and no UI backend: the display is the shm one, and
+#          GTK/SDL would add to the package's dependency list.
+case "${HOST_OS}" in
+    Darwin)
+        HOST_FLAGS=(--enable-hvf --enable-cocoa --disable-pvg)
+        ;;
+    Linux)
+        HOST_FLAGS=(--enable-kvm --enable-pipewire)
+        ;;
+    *)
+        echo "ERROR: unsupported build host: ${HOST_OS}" >&2
+        exit 1
+        ;;
+esac
+
 if [ ! -f "${BUILD_DIR}/build.ninja" ]; then
-    echo "==> Configuring …"
+    echo "==> Configuring for ${HOST_OS} …"
     # configure must be invoked from the build directory:
     # it runs `meson setup "$PWD" "$source_path"` internally.
     (
@@ -128,14 +149,12 @@ if [ ! -f "${BUILD_DIR}/build.ninja" ]; then
         "${SRC_DIR}/configure" \
             --prefix="${INSTALL_DIR}"   \
             --target-list=aarch64-softmmu \
-            --enable-hvf                \
-            --enable-cocoa              \
+            "${HOST_FLAGS[@]}"          \
             --disable-gtk               \
             --disable-sdl               \
             --disable-curses            \
             --disable-vnc               \
             --disable-fuse              \
-            --disable-pvg               \
             --disable-docs              \
             --disable-guest-agent       \
             --disable-plugins           \
@@ -157,17 +176,44 @@ JOBS="${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || nproc)}"
 echo "==> Building with ${JOBS} jobs …"
 # `--enable-tools` configures a fleet of small helper tools (qemu-img,
 # qemu-io, qemu-nbd, qemu-storage-daemon, qemu-edid, elf2dmp,
-# ivshmem-client, ivshmem-server) for install; `meson install` aborts if
-# any of them is missing, so build them all even though the .app only
-# ships qemu-img.  They link fast, so the extra ninja work is negligible.
-ninja -C "${BUILD_DIR}" -j"${JOBS}" \
-    qemu-system-aarch64 \
-    qemu-img qemu-io qemu-nbd storage-daemon/qemu-storage-daemon \
-    qemu-edid contrib/elf2dmp/elf2dmp \
-    contrib/ivshmem-client/ivshmem-client \
+# ivshmem-client, ivshmem-server) for install; `meson install` aborts if any
+# of them is missing, so they are built even though only qemu-img ships.
+#
+# Which of them exist depends on the host (elf2dmp is not a target on Linux,
+# qemu-bridge-helper is Linux-only, qemu-keymap needs xkbcommon), so the union
+# is listed and intersected with the targets ninja knows.
+WANTED=(
+    qemu-system-aarch64
+    qemu-img qemu-io qemu-nbd storage-daemon/qemu-storage-daemon
+    qemu-edid contrib/elf2dmp/elf2dmp
+    contrib/ivshmem-client/ivshmem-client
     contrib/ivshmem-server/ivshmem-server
+    qemu-bridge-helper qemu-pr-helper qemu-vmsr-helper
+    qemu-keymap
+)
+# Whole directories of generated data that meson installs, named by prefix
+# because there are dozens of them and no alias that builds the set: the
+# keymaps exist only where qemu-keymap does, which is where xkbcommon does.
+WANTED_UNDER=( pc-bios/keymaps/ )
 
+KNOWN="$(ninja -C "${BUILD_DIR}" -t targets all | cut -d: -f1)"
+declare -a TARGETS
+for t in "${WANTED[@]}"; do
+    if grep -qxF "${t}" <<<"${KNOWN}"; then
+        TARGETS+=("${t}")
+    else
+        echo "    (skipping ${t} - not a target on this host)"
+    fi
+done
+for prefix in "${WANTED_UNDER[@]}"; do
+    mapfile -t under < <(grep "^${prefix}" <<<"${KNOWN}" || true)
+    if [[ ${#under[@]} -gt 0 ]]; then
+        TARGETS+=("${under[@]}")
+        echo "    (${#under[@]} targets under ${prefix})"
+    fi
+done
 
+ninja -C "${BUILD_DIR}" -j"${JOBS}" "${TARGETS[@]}"
 
 # --------------------------------------------------------------------------
 # 5. Install
@@ -192,6 +238,15 @@ echo "Done. Binary at: ${INSTALL_DIR}/bin/qemu-system-aarch64"
 # Mach-O dylib interposing so cdj3k_emu_qemu_run() can return cleanly.
 # Consumed by crates/cdj3k-emu-runtime via FFI.
 
+# macOS only: there QEMU is linked into the app so a launch is a re-exec of
+# ourselves rather than a second binary. Elsewhere the installed
+# qemu-system-aarch64 is what ships, and there is nothing further to do.
+if [ "${HOST_OS}" != "Darwin" ]; then
+    echo ""
+    echo "Done. ${HOST_OS} ships the binary directly - no embedding library needed."
+    exit 0
+fi
+
 echo "==> Building libcdj3k-emu-qemu.dylib …"
 
 SHIM_SRC="${SHIM_DIR}/cdj3k_emu_shim.c"
@@ -210,10 +265,8 @@ echo "  shim compiled: ${SHIM_OBJ}"
 NINJA="${BUILD_DIR}/build.ninja"
 
 # 1. The (objc_|c_)LINKER build rule line. Prefer the unsigned target (some
-#    configs skip the signing step). Master switched qemu-system-aarch64 to
-#    objc_LINKER once coreaudio.m became part of the binary's direct link
-#    (vs. v10.2.2 where it lived only inside libqemuaudio.a). The line can
-#    be 50 KB+; awk handles it.
+#    configs skip the signing step). coreaudio.m in the direct link makes it
+#    objc_LINKER. The line can be 50 KB+; awk handles it.
 BUILD_LINE=$(awk '
     /^build qemu-system-aarch64-unsigned: (objc_|c_)LINKER / { print; found=1; exit }
     END { if (!found) exit 1 }
