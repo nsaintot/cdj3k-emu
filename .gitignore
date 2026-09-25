@@ -33,3 +33,10 @@ app/cdj3k-emu/assets/*
 # Apple provisioning profile authorising the restricted entitlements
 # (vmnet, virtual HID).  Team-specific; supply your own via --profile.
 *.provisionprofile
+
+# winit fetched and patched by winit/fetch.sh
+winit/src/
+# Linux QEMU artefacts copied out of the docker build
+qemu-linux-arm64/
+# cdj3k-mods checkout (its own repository)
+guest/ep122_shim/cdj3k-mods/

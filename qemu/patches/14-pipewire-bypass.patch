@@ -1,0 +1,199 @@
+diff --git a/audio/pwaudio.c b/audio/pwaudio.c
+index a59c22e..9547b65 100644
+--- a/audio/pwaudio.c
++++ b/audio/pwaudio.c
+@@ -24,6 +24,65 @@
+ #include "audio_int.h"
+ #include "trace.h"
+ 
++#include <stdatomic.h>
++
++/*
++ * cdj3k-emu: virtio-snd's bypass ring (hw/audio/virtio-snd.c). While
++ * virtio-snd has it active, the playback callback drains it directly and
++ * the mixer and this backend's own ring are skipped. Weak so that a build
++ * without virtio-snd still links.
++ */
++extern int virtio_snd_bypass_is_active(void) __attribute__((weak));
++extern size_t virtio_snd_bypass_avail(void) __attribute__((weak));
++extern size_t virtio_snd_bypass_read(void *dst, size_t bytes)
++    __attribute__((weak));
++extern void virtio_snd_bypass_note_underrun(uint32_t frames)
++    __attribute__((weak));
++
++/* What virtio-snd reads back about the pipeline after the ring. */
++static _Atomic uint32_t pw_bypass_rate;
++static _Atomic uint32_t pw_bypass_depth_us;
++static atomic_int pw_bypass_streams;
++
++unsigned pwaudio_get_active_samplerate(void);
++uint32_t pwaudio_get_pipeline_depth_us(void);
++uint32_t pwaudio_get_static_latency_frames(void);
++int pwaudio_bypass_ready(void);
++
++/* The stream's rate. The ring is written at this rate, so it matching the
++ * guest's is what keeps virtio-snd on its passthrough path. */
++unsigned pwaudio_get_active_samplerate(void)
++{
++    return atomic_load_explicit(&pw_bypass_rate, memory_order_relaxed);
++}
++
++uint32_t pwaudio_get_pipeline_depth_us(void)
++{
++    return atomic_load_explicit(&pw_bypass_depth_us, memory_order_relaxed);
++}
++
++/* PipeWire's delay already includes the device's own latency, so there is
++ * nothing fixed to add to it. */
++uint32_t pwaudio_get_static_latency_frames(void)
++{
++    return 0;
++}
++
++/* Whether a playback stream exists to drain the ring. */
++int pwaudio_bypass_ready(void)
++{
++    return atomic_load_explicit(&pw_bypass_streams, memory_order_acquire) > 0;
++}
++
++/* What the ring has to hold before playback resumes after an underrun.
++ * Draining it quantum by quantum from empty turns every late guest batch
++ * into a gap; a cushion absorbs them at the cost of this much latency,
++ * which the guest sees in the reported depth. */
++#define PW_BYPASS_CUSHION_MS  20
++/* Silent callbacks after which any whole quantum resumes play, for a guest
++ * whose buffer is smaller than the cushion. */
++#define PW_BYPASS_STARVED_MAX 50
++
+ #define RINGBUFFER_SIZE    (1u << 22)
+ #define RINGBUFFER_MASK    (RINGBUFFER_SIZE - 1)
+ 
+@@ -55,6 +114,14 @@ typedef struct PWVoice {
+     struct spa_audio_info_raw info;
+     uint32_t highwater_mark;
+     uint32_t frame_size, req;
++    /* Counted in pw_bypass_streams, so teardown knows to uncount it. */
++    bool bypass_capable;
++    /* The ring holds a cushion and is being played from. Cleared by an
++     * underrun, so play resumes only once the cushion is back. */
++    bool bypass_primed;
++    /* Silent callbacks since the last underrun, to give up on a cushion
++     * the guest never delivers. */
++    uint32_t bypass_starved;
+     struct spa_ringbuffer ring;
+     uint8_t buffer[RINGBUFFER_SIZE];
+ 
+@@ -83,6 +150,26 @@ stream_destroy(void *data)
+     v->stream = NULL;
+ }
+ 
++/* Time until the next sample reaches the device, from the graph's delay
++ * plus what the stream's resampler holds. */
++static void
++pw_bypass_note_depth(PWVoice *v)
++{
++    struct pw_time t;
++    uint64_t us = 0;
++
++    if (pw_stream_get_time_n(v->stream, &t, sizeof(t)) < 0 ||
++        t.rate.denom == 0 || v->info.rate == 0) {
++        return;
++    }
++    if (t.delay > 0) {
++        us = (uint64_t)t.delay * 1000000ULL * t.rate.num / t.rate.denom;
++    }
++    us += t.buffered * 1000000ULL / v->info.rate;
++    atomic_store_explicit(&pw_bypass_depth_us,
++                          (uint32_t)MIN(us, 1000000), memory_order_relaxed);
++}
++
+ /* output data processing function to read stuffs from the buffer */
+ static void
+ playback_on_process(void *data)
+@@ -115,6 +202,37 @@ playback_on_process(void *data)
+     }
+     n_bytes = SPA_MIN(req, buf->datas[0].maxsize);
+ 
++    if (v->bypass_capable && virtio_snd_bypass_is_active()) {
++        /* All or nothing, as CoreAudio's IOProc does it: a short buffer
++         * makes PipeWire call straight back for the rest. After an underrun
++         * the ring refills to the cushion before play resumes. */
++        size_t avail = virtio_snd_bypass_avail();
++        size_t cushion = (size_t)v->info.rate * PW_BYPASS_CUSHION_MS / 1000 *
++                         v->frame_size;
++
++        n_bytes -= n_bytes % v->frame_size;
++        if (!v->bypass_primed &&
++            (avail >= MAX(cushion, n_bytes) ||
++             (v->bypass_starved >= PW_BYPASS_STARVED_MAX && avail >= n_bytes))) {
++            v->bypass_primed = true;
++        }
++        if (v->bypass_primed && avail >= n_bytes) {
++            virtio_snd_bypass_read(p, n_bytes);
++            v->bypass_starved = 0;
++        } else {
++            memset(p, 0, n_bytes);
++            virtio_snd_bypass_note_underrun(n_bytes / v->frame_size);
++            v->bypass_primed = false;
++            v->bypass_starved++;
++        }
++        pw_bypass_note_depth(v);
++        buf->datas[0].chunk->offset = 0;
++        buf->datas[0].chunk->stride = v->frame_size;
++        buf->datas[0].chunk->size = n_bytes;
++        pw_stream_queue_buffer(v->stream, b);
++        return;
++    }
++
+     /* get no of available bytes to read data from buffer */
+     avail = spa_ringbuffer_get_read_index(&v->ring, &index);
+ 
+@@ -539,6 +657,17 @@ qpw_init_out(HWVoiceOut *hw, struct audsettings *as)
+     qpw_set_position(as->nchannels, v->info.position);
+     v->info.rate = as->freq;
+ 
++    /* The bypass ring holds interleaved stereo F32, so the stream runs in
++     * it and the callback can pass the ring's bytes through untouched. The
++     * mixer path converts to whatever format the voice reports, so it is
++     * unaffected. */
++    v->bypass_capable = virtio_snd_bypass_is_active && virtio_snd_bypass_avail &&
++                        virtio_snd_bypass_read && virtio_snd_bypass_note_underrun &&
++                        as->nchannels == 2;
++    if (v->bypass_capable) {
++        v->info.format = SPA_AUDIO_FORMAT_F32_LE;
++    }
++
+     obt_as.fmt =
+         pw_to_audfmt(v->info.format, &obt_as.big_endian, &v->frame_size);
+     v->frame_size *= as->nchannels;
+@@ -550,9 +679,15 @@ qpw_init_out(HWVoiceOut *hw, struct audsettings *as)
+     r = qpw_stream_new(c, v, ppdo->stream_name ?: AUDIO_MIXENG_BACKEND(c)->dev->id,
+                        ppdo->name, SPA_DIRECTION_OUTPUT);
+     if (r < 0) {
++        v->bypass_capable = false;
+         pw_thread_loop_unlock(c->thread_loop);
+         return -1;
+     }
++    if (v->bypass_capable) {
++        atomic_store_explicit(&pw_bypass_rate, v->info.rate,
++                              memory_order_relaxed);
++        atomic_fetch_add_explicit(&pw_bypass_streams, 1, memory_order_release);
++    }
+ 
+     /* report the audio format we support */
+     audio_pcm_init_info(&hw->info, &obt_as);
+@@ -624,7 +759,13 @@ qpw_voice_fini(AudioPw *c, PWVoice *v)
+ static void
+ qpw_fini_out(HWVoiceOut *hw)
+ {
+-    qpw_voice_fini(AUDIO_PW(hw->s), &PW_VOICE_OUT(hw)->v);
++    PWVoice *v = &PW_VOICE_OUT(hw)->v;
++
++    if (v->bypass_capable) {
++        v->bypass_capable = false;
++        atomic_fetch_sub_explicit(&pw_bypass_streams, 1, memory_order_release);
++    }
++    qpw_voice_fini(AUDIO_PW(hw->s), v);
+ }
+ 
+ static void
