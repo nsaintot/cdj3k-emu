@@ -27,6 +27,9 @@ pub enum PatchError {
     Io(io::Error),
     Extract(ExtractError),
     MissingResource(String),
+    /// A bundled resource is present but cannot be used as given — a step
+    /// manifest that does not parse, or one that is stale against the rootfs.
+    InvalidResource(String),
     CommandFailed(String),
 }
 
@@ -36,6 +39,7 @@ impl std::fmt::Display for PatchError {
             Self::Io(e) => write!(f, "I/O: {e}"),
             Self::Extract(e) => write!(f, "extract: {e}"),
             Self::MissingResource(s) => write!(f, "missing bundled resource: {s}"),
+            Self::InvalidResource(s) => write!(f, "invalid bundled resource: {s}"),
             Self::CommandFailed(s) => write!(f, "command failed: {s}"),
         }
     }
@@ -162,6 +166,10 @@ pub fn patch_initramfs(
     resources_dir: &Path,
     out_path: &Path,
 ) -> Result<(), PatchError> {
+    // The host-side path, taken only with `CDJ3K_INITRAMFS_HOST`: it needs
+    // bash, GNU sed and cpio. The default is `initramfs_guest`, which its
+    // caller selects.
+
     let patch_dir = resources_dir.join("patch");
     let tools_dir = resources_dir.join("tools");
 

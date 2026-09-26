@@ -140,6 +140,7 @@ RESOURCES_DIR="$APP_DIR/Contents/Resources"
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 if [[ "$DO_BUILD" -eq 1 ]]; then
+    "$REPO_ROOT/winit/fetch.sh"
     echo "==> cargo build $CARGO_PROFILE_FLAG -p cdj3k-emu"
     (cd "$REPO_ROOT" && cargo build $CARGO_PROFILE_FLAG -p cdj3k-emu)
 fi
@@ -188,46 +189,8 @@ RES_DIR="$RESOURCES_DIR"
 # debuggability; the bundle ships ONE concatenated patch-rootfs.sh so the
 # .app contains a single file instead of the directory tree.
 RES_PATCH="$RES_DIR/patch"
-mkdir -p "$RES_PATCH"
-PATCH_SRC_DIR="$REPO_ROOT/initramfs-patch"
-PATCH_STEPS=("$PATCH_SRC_DIR"/patch-rootfs.d/[0-9]*.sh)
-{
-    cat <<'HDR'
-#!/usr/bin/env bash
-# patch-rootfs.sh - auto-generated bundle dispatcher.
-# Concatenation of every initramfs-patch/patch-rootfs.d/*.sh in numeric order.
-# Source: kept modular in the repo at initramfs-patch/patch-rootfs.d/.
-set -euo pipefail
-ROOTFS="${1:?Usage: $0 <initramfs-root>}"
-export ROOTFS
-export PATCH_ASSETS_DIR="$(cd "$(dirname "$0")" && pwd)"
-# The player application's unit, detected from the rootfs: EP122.service on
-# the CDJ-3000, EP145.service on the CDJ-3000X.
-APP_UNIT="$(cd "$ROOTFS/etc/systemd/system" 2>/dev/null && ls EP1[0-9][0-9].service 2>/dev/null | head -n1 || true)"
-export APP_UNIT="${APP_UNIT:-EP122.service}"
-export APP_NAME="${APP_UNIT%.service}"
-# The slug the emulator names this player by, from the unit the rootfs carries.
-case "$APP_UNIT" in
-    EP145.service) export APP_SLUG="cdj3kx" ;;
-    *)             export APP_SLUG="cdj3k" ;;
-esac
-# SSH is off by default in shipped builds (no passwordless root in the wild),
-# but respect an explicit ENABLE_SSH=1 from the caller's environment so a
-# developer can `ENABLE_SSH=1 open dist/CDJ3K\ Emulator.app` (or launch via
-# the CLI binary directly) without rebuilding.
-export ENABLE_SSH="${ENABLE_SSH:-0}"
-echo "=== Patching initramfs rootfs at: $ROOTFS (app unit: $APP_UNIT) ==="
-HDR
-    for step in "${PATCH_STEPS[@]}"; do
-        name=$(basename "$step")
-        printf '\necho "--- %s ---"\n(\n' "$name"
-        # Strip per-step shebang and `set -euo pipefail` (already set above).
-        sed -E '1{/^#!/d;}; /^set -euo pipefail$/d' "$step"
-        printf ')\n'
-    done
-    printf '\necho "=== All patches applied ==="\n'
-} > "$RES_PATCH/patch-rootfs.sh"
-chmod +x "$RES_PATCH/patch-rootfs.sh"
+"$REPO_ROOT/scripts/make-patch-dispatcher.sh" \
+    "$REPO_ROOT/initramfs-patch/patch-rootfs.d" "$RES_PATCH/patch-rootfs.sh"
 
 # cfgd_aarch64 is required: 21-cfgd.sh aborts the whole rootfs patch without
 # it.  Checked here because that abort happens at *provision* time, long after
@@ -250,7 +213,6 @@ else
     echo "       Run: ./build.sh" >&2
     exit 1
 fi
-echo "     bundled merged patch-rootfs.sh (${#PATCH_STEPS[@]} steps inlined)"
 
 # patch/vanilla-modules/  - 6.6 out-of-tree modules for 22-vanilla-kernel-fixups.sh
 MODS_SRC="$REPO_ROOT/build/docker-out/modules"
