@@ -173,7 +173,7 @@ SCRIPTEOF
 
 # The open-file wait greps lsof for the player: the CDJ-3000's lines carry
 # "PIONEER", the CDJ-3000X's the binary path.
-sed -i '' "s|grep \"PIONEER\"|grep -E \"PIONEER\\|/pdj/${APP_NAME}\"|" \
+sed -i "s|grep \"PIONEER\"|grep -E \"PIONEER\\|/pdj/${APP_NAME}\"|" \
     "$ROOTFS/home/root/scripts/unbind-usb-device.sh"
 chmod 755 "$ROOTFS/home/root/scripts/unbind-usb-device.sh"
 echo "  -> unbind-usb-device.sh patched (virtio2 support added, lsof grep for ${APP_NAME})"

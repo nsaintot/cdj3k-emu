@@ -4,6 +4,11 @@
 #
 # Dispatcher: runs every script in patch-rootfs.d/ (in numeric order).
 #
+# These run inside the provisioning guest (`cdj3k-emu-firmware::
+# initramfs_guest`), on a filesystem that holds modes, symlinks and setuid
+# bits. The `CDJ3K_INITRAMFS_HOST` fallback runs them on the host, which then
+# needs GNU sed.
+#
 # Usage:
 #   ./patch-rootfs.sh <path/to/initramfs-root>
 #
