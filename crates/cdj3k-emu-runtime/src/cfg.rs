@@ -35,13 +35,6 @@ use std::time::{Duration, Instant};
 /// QEMU while it's spinning up its virtio-serial port, short enough that the
 /// "first frame" UX (latency label, USB state) lights up promptly.
 const RECONNECT_DELAY: Duration = Duration::from_millis(500);
-/// Cold-path writer: max attempts to open a one-shot connection while the
-/// reader thread is still bringing up the long-lived writer. `RETRY_DELAY ×
-/// RETRIES = 2 s`, matching the read-side timeout below.
-const COLD_WRITER_RETRIES: u32 = 20;
-const COLD_WRITER_RETRY_DELAY: Duration = Duration::from_millis(100);
-/// Write timeout for the cold-path one-shot connection.
-const COLD_WRITER_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Latency {
@@ -69,11 +62,16 @@ struct Shared {
     pc_link_failures: u32,
     /// Writer half - `None` while disconnected.
     writer: Option<UnixStream>,
+    /// Set once the guest has sent a line, which proves cfgd has the port
+    /// open. QEMU accepts the host connection whether or not the guest is
+    /// reading, so a command written before that is discarded with no error.
+    guest_ready: bool,
+    /// Commands held until `guest_ready`.
+    pending: Vec<String>,
 }
 
 #[derive(Clone)]
 pub struct CfgClient {
-    sock_path: PathBuf,
     shared: Arc<Mutex<Shared>>,
 }
 
@@ -91,7 +89,7 @@ impl CfgClient {
             .spawn(move || reader_loop(path, shared_clone))
             .expect("spawn cfg-stream thread");
 
-        Self { sock_path, shared }
+        Self { shared }
     }
 
     /// Most recently received guest USB mount state (`Some(true/false)`),
@@ -192,34 +190,20 @@ impl CfgClient {
     }
 
     fn send_line(&self, line: &str) -> std::io::Result<()> {
-        // Fast path: writer already connected by the reader thread.
-        if let Ok(mut s) = self.shared.lock() {
-            if let Some(ref mut w) = s.writer {
+        let Ok(mut s) = self.shared.lock() else {
+            return Err(std::io::Error::other("cfg state poisoned"));
+        };
+        if s.guest_ready {
+            if let Some(w) = s.writer.as_mut() {
                 if w.write_all(line.as_bytes()).is_ok() && w.flush().is_ok() {
                     return Ok(());
                 }
-                // Write failed - drop and let the reader thread reconnect.
                 s.writer = None;
+                s.guest_ready = false;
             }
         }
-        // Cold path: open a one-shot writer connection. We don't hold this
-        // open because the reader thread owns the long-lived stream.
-        let mut last_err: Option<std::io::Error> = None;
-        for _ in 0..COLD_WRITER_RETRIES {
-            match UnixStream::connect(&self.sock_path) {
-                Ok(mut s) => {
-                    s.set_write_timeout(Some(COLD_WRITER_WRITE_TIMEOUT))?;
-                    s.write_all(line.as_bytes())?;
-                    s.flush()?;
-                    return Ok(());
-                }
-                Err(e) => {
-                    last_err = Some(e);
-                    thread::sleep(COLD_WRITER_RETRY_DELAY);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(|| std::io::Error::other("cfg socket unavailable")))
+        s.pending.push(line.to_string());
+        Ok(())
     }
 }
 
@@ -237,6 +221,7 @@ fn reader_loop(sock_path: PathBuf, shared: Arc<Mutex<Shared>>) {
         if let Ok(write_clone) = stream.try_clone() {
             if let Ok(mut s) = shared.lock() {
                 s.writer = Some(write_clone);
+                s.guest_ready = false;
             }
         }
 
@@ -252,10 +237,28 @@ fn reader_loop(sock_path: PathBuf, shared: Arc<Mutex<Shared>>) {
         // restart re-issues the command.
         if let Ok(mut s) = shared.lock() {
             s.writer = None;
+            s.guest_ready = false;
             s.pc_link_state = None;
             s.pc_link_failures = 0;
         }
         thread::sleep(RECONNECT_DELAY);
+    }
+}
+
+/// A line from the guest proves cfgd is reading: mark it ready and write
+/// whatever was queued meanwhile.
+fn flush_pending(shared: &Arc<Mutex<Shared>>) {
+    let Ok(mut s) = shared.lock() else { return };
+    if s.guest_ready {
+        return;
+    }
+    s.guest_ready = true;
+    let queued = std::mem::take(&mut s.pending);
+    let Some(w) = s.writer.as_mut() else { return };
+    for line in queued {
+        if w.write_all(line.as_bytes()).is_err() || w.flush().is_err() {
+            break;
+        }
     }
 }
 
@@ -264,6 +267,8 @@ fn handle_line(line: &str, shared: &Arc<Mutex<Shared>>) {
     if line.is_empty() {
         return;
     }
+
+    flush_pending(shared);
 
     if let Some(rest) = line.strip_prefix("usb_state ") {
         let mounted = rest.trim() == "1";
