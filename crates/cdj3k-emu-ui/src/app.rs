@@ -16,7 +16,7 @@ mod viewports;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use egui::Color32;
 
@@ -40,7 +40,9 @@ pub(crate) const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 
 /// Fresh main-LCD generations to observe after QEMU starts before the boot
 /// spinner overlay is removed.
-const BOOT_FRAMES_THRESHOLD: u32 = 15;
+/// The panel frame is all zeroes until the guest drives it. If it never does,
+/// drop the shade anyway this long after QEMU starts.
+const BOOT_SHADE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Frames the inner window size must remain stable before the aspect-snap
 /// fires (so brief pauses during a drag don't trigger a mid-drag resize).
@@ -228,10 +230,10 @@ pub struct CdjApp {
     /// Rendered above the MISO dump (3 centred lines).
     jog_dbg_lines: [String; 3],
 
-    /// Frame count from `MainLcdStream` at the moment QEMU was last seen
-    /// transitioning to running. The boot overlay clears once
-    /// `frames_seen() - frame_baseline_at_boot >= BOOT_FRAMES_THRESHOLD`.
-    frame_baseline_at_boot: u32,
+    /// When QEMU was last seen transitioning to running. The boot overlay
+    /// clears on the first non-zero panel frame, or `BOOT_SHADE_TIMEOUT`
+    /// after this.
+    qemu_running_since: Option<Instant>,
     qemu_was_running: bool,
     /// Current rendered alpha of the boot/idle shade in [0, 1]. Linearly ramps
     /// toward the target each frame so the overlay fades in/out over 1 s.
@@ -363,7 +365,7 @@ impl CdjApp {
             jog_dbg_last_dt: 0.0,
             jog_dbg_last_omega_sample: 0.0,
             jog_dbg_lines: [String::new(), String::new(), String::new()],
-            frame_baseline_at_boot: 0,
+            qemu_running_since: None,
             qemu_was_running: false,
             shade_alpha: if ui_only { 0.0 } else { 1.0 },
             lcds_blanked: !ui_only,
@@ -742,20 +744,22 @@ impl CdjApp {
             (s.qemu_running, s.shade_forced, s.ui_only)
         };
         if qemu_running && !self.qemu_was_running {
-            self.frame_baseline_at_boot = self.display_stream.frames_seen();
+            self.qemu_running_since = Some(Instant::now());
         }
         // QEMU just exited: blank LCD textures so popout windows go black.
         let qemu_just_exited = self.qemu_was_running && !qemu_running;
         self.qemu_was_running = qemu_running;
         if qemu_just_exited {
             self.lcd_textures_need_blank = true;
+            self.qemu_running_since = None;
+            self.led_state = LedState::default();
         }
 
-        let frames_since_boot = self
-            .display_stream
-            .frames_seen()
-            .saturating_sub(self.frame_baseline_at_boot);
-        let booting = (qemu_running && frames_since_boot < BOOT_FRAMES_THRESHOLD) || shade_forced;
+        let panel_driven = self.led_state.frame.iter().any(|&b| b != 0);
+        let waited = self
+            .qemu_running_since
+            .is_some_and(|t| t.elapsed() >= BOOT_SHADE_TIMEOUT);
+        let booting = (qemu_running && !panel_driven && !waited) || shade_forced;
         // `--no-spawn` has no guest to wait for: keep the chassis unshaded.
         let target_alpha: f32 = if ui_only {
             0.0
