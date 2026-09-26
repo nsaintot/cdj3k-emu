@@ -13,7 +13,7 @@ set -euo pipefail
 TARGET="$ROOTFS/home/root/scripts/apl_start.sh"
 [[ -f "$TARGET" ]] || { echo "  WARNING: $TARGET not found -- skipping"; exit 0; }
 
-sed -i '' \
+sed -i \
     -e 's|SN65REG=\$(/sbin/i2cget -f -y 3 0x2c 0xe5)|SN65REG="0x00"  # QEMU: stubbed|g' \
     -e 's|SN65REG=\$(/sbin/i2cget -f -y 3 0x2d 0xe5)|SN65REG="0x00"  # QEMU: stubbed|g' \
     -e 's|/bin/aplay .*silence\.wav|true  # QEMU: skip aplay silence.wav (plughw:0,1 absent)|g' \
