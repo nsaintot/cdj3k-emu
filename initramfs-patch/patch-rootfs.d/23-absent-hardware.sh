@@ -11,11 +11,12 @@
 # "[checkNetworkConnectionChange] ... open err." once a second.
 #
 # /tmp/ccode: absent, the app does not start. It stats the file every 100 ms
-# and waits, while wlan-monitor.sh spends `for i in seq 1 10; sleep 1` looking
-# for an SDIO device that will never appear before writing it - so the app's
-# initApplication takes ~10 s longer than the CDJ-3000's, whose firmware has no
-# such wait. "XX" is what the monitor writes when it finds no device, and
+# and waits. "XX" is what the monitor writes when it finds no device, and
 # mlan0Addr is written on the same path.
+#
+# start-mlan0.service is masked: on its no-SDIO path wlan-monitor.sh writes the
+# wlanbterr caution (E-7026: WLAN module ERROR) after a 10 s probe, and the
+# files it would have written are provided here.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 
@@ -33,3 +34,6 @@ f /tmp/ccode 0644 root root - XX
 f /tmp/mlan0Addr 0644 root root - 00:00:00:00:00:00
 EOFC
 echo "  -> tmpfiles.d/cdj3k-absent-hardware.conf: net_mlan0_state.dat, ccode, mlan0Addr"
+
+ln -sf /dev/null "$ROOTFS/etc/systemd/system/start-mlan0.service"
+echo "  -> masked start-mlan0.service (no WLAN module under QEMU)"
