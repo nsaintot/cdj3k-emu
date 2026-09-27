@@ -2,13 +2,11 @@
 /*
  * virtio_snd.c - Minimal virtio-sound PCM playback driver, Linux 6.6 / AArch64.
  *
- * ALSA timing: hrtimer fires every VSND_QEMU_FACTOR ALSA periods, advancing
- * hw_ptr and waking the EP122/JUCE application.  Firing at the TX submission
- * rate (~93 Hz at 48 kHz / 64-frame) rather than the ALSA period rate
- * (~750 Hz) cuts EP122 wakeup frequency and PCM lock contention by 8×,
- * preventing CPU saturation in EP122's audio thread.
+ * ALSA timing: hrtimer fires every qemu_factor ALSA periods (one QEMU TX
+ * buf, ~94 Hz at 96 kHz), advancing hw_ptr and waking the EP122/JUCE
+ * application at the TX submission rate rather than the ALSA period rate.
  *
- * Audio forwarding: each hrtimer tick copies VSND_QEMU_FACTOR ALSA periods
+ * Audio forwarding: each hrtimer tick copies qemu_factor ALSA periods
  * from the ring buffer (at OLD hw_ptr positions) into one TX buffer and
  * submits it to QEMU.  hw_ptr is only advanced for periods that are actually
  * copied - if the TX pool is exhausted the driver stalls hw_ptr so EP122
@@ -67,24 +65,27 @@
 #define AUDIO_LATENCY_MS_MAX 200u
 
 /*
- * VSND_QEMU_FACTOR - number of ALSA periods accumulated into one QEMU TX buf.
- *
- * QEMU's CoreAudio backend returns each TX buf approximately one TX-buf-duration
- * after submission (the audio must be consumed by CoreAudio before the buf is
- * marked "used").  Empirically, with FACTOR=8 (5.33 ms/buf), QEMU takes ~10 ms
- * to return each buf → pool-empty window of ~5 ms per TX cycle → ~1600 Phase-1
- * stalls/s → EP122 writei blocks for up to 10 ms per period → JUCE audio
- * callbacks take 100–800 ms → "snd over" cascade and audible pops.
- *
- * Setting FACTOR=16 (10.67 ms/buf) matches the QEMU return latency so that
- * each buf is returned right as the next submission is due.  Pool stays at
- * ~31/32 bufs, Phase-1 stalls vanish, writei never blocks, snd-over events
- * disappear and audio is clean.
+ * VSND_QEMU_FACTOR - ALSA periods per QEMU TX buf at the default 64-frame
+ * period: 1024 frames, 10.67 ms at 96 kHz, which matches the latency at which
+ * the host returns a buf, so the pool does not run dry between submissions.
  */
 #define VSND_QEMU_FACTOR    16
 
-/* Pool of QEMU TX buffers.  Each holds VSND_QEMU_FACTOR ALSA periods
- * (= 10.67 ms of audio at FACTOR=16, period_size=32, rate=48 kHz).
+/* One QEMU TX buf holds this many frames whatever the ALSA period: the
+ * per-stream factor (qemu_factor) is VSND_QEMU_FRAMES / period_size, so a
+ * larger period means fewer periods per buf, not a larger buf. Every
+ * threshold below counted in periods scales by the same factor and keeps its
+ * duration. At the default 64-frame period the factor is VSND_QEMU_FACTOR. */
+#define VSND_QEMU_FRAMES    (64 * VSND_QEMU_FACTOR)
+
+/* ALSA period, in frames of S32 stereo. 64 is JUCE/EP122's own cadence; a
+ * host that cannot wake the guest that often (TCG) passes a larger one on the
+ * kernel command line (cdj3k.snd_period=N, read by insmod-virtio-snd). A
+ * power of two from 64 to VSND_QEMU_FRAMES. */
+static unsigned int period_frames = 64;
+
+/* Pool of QEMU TX buffers.  Each holds VSND_QEMU_FRAMES frames (10.67 ms
+ * at 96 kHz).
  *
  * With the host-side deferred-return mechanism (return_tx_buffer is held
  * back until CoreAudio's IOProc has actually consumed the bytes), the
@@ -184,7 +185,7 @@ struct vsnd_pcm {
 	int                 pool_head;
 	int                 pool_tail;
 
-	/* Accumulation: VSND_QEMU_FACTOR ALSA periods → one QEMU TX buf */
+	/* Accumulation: qemu_factor ALSA periods → one QEMU TX buf */
 	struct vsnd_tx_buf *accum_buf;   /* TX buf currently being filled */
 	unsigned int        accum_count; /* ALSA periods written into accum_buf */
 
@@ -196,7 +197,8 @@ struct vsnd_pcm {
 	long                frames_in_flight; /* submitted - returned; reflects guest pipeline depth */
 	u32                 host_extra_frames;/* cached pipeline_extra_frames from QEMU config; refreshed in tasklet */
 	unsigned int        period_bytes;     /* bytes per ALSA period */
-	unsigned int        qemu_period_bytes;/* bytes per QEMU TX buffer = VSND_QEMU_FACTOR × period_bytes */
+	unsigned int        qemu_period_bytes;/* bytes per QEMU TX buffer = qemu_factor × period_bytes */
+	unsigned int        qemu_factor;      /* ALSA periods per QEMU TX buffer */
 	unsigned int        frame_bytes;
 
 	/* hrtimer drives hw_ptr and snd_pcm_period_elapsed */
@@ -504,7 +506,7 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 				 * Hybrid pool-empty strategy:
 				 *
 				 * Phase 1 - retry (no drift): break without advancing
-				 * hw_ptr for up to VSND_QEMU_FACTOR*2 consecutive
+				 * hw_ptr for up to qemu_factor*2 consecutive
 				 * tasklet runs (~2 × TX period).  Releasing the lock
 				 * lets vsnd_tx_done refill the pool.  In normal
 				 * operation QEMU returns a buf within ~5 ms - zero
@@ -529,7 +531,7 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 				vpcm->pool_stall_ticks++;
 				vpcm->dbg_pool_drop++;
 				vpcm->dbg_interval_drop++;
-				if (vpcm->pool_stall_ticks < VSND_QEMU_FACTOR * 2) {
+				if (vpcm->pool_stall_ticks < vpcm->qemu_factor * 2) {
 					break; /* Phase 1: short retry */
 				}
 				/* Phase 2 gate: only fire if no bufs are in flight,
@@ -544,7 +546,7 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 				 * with stall counter rising at ~1000/s.
 				 * Scan is O(VSND_TX_BUFS) but only runs on pool-empty
 				 * paths which are rare in normal operation. */
-#define VSND_PHASE1_HARDCAP  (VSND_QEMU_FACTOR * 32)  /* ~340 ms */
+#define VSND_PHASE1_HARDCAP  (vpcm->qemu_factor * 32)  /* ~340 ms */
 				if (vpcm->pool_stall_ticks < VSND_PHASE1_HARDCAP) {
 					int j, in_flight = 0;
 					for (j = 0; j < VSND_TX_BUFS; j++)
@@ -571,7 +573,7 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 				 * snd-over-delta cascades, which empirically lock the
 				 * EP122 HuiProcessor thread into a userspace tight loop
 				 * that the kernel can't escape. */
-#define VSND_XRUN_THRESHOLD  (VSND_QEMU_FACTOR * 4)  /* 64 periods ≈ 42 ms */
+#define VSND_XRUN_THRESHOLD  (vpcm->qemu_factor * 4)  /* ≈ 42 ms */
 				vpcm->dbg_phase2_drop++;
 				vpcm->dbg_interval_phase2++;
 				vpcm->hw_ptr = (vpcm->hw_ptr + vpcm->period_size) %
@@ -618,7 +620,7 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 		memcpy(dst, src, vpcm->period_bytes);
 		vpcm->accum_count++;
 
-		if (vpcm->accum_count == VSND_QEMU_FACTOR) {
+		if (vpcm->accum_count == vpcm->qemu_factor) {
 			vsnd_tx_submit(vpcm, vpcm->accum_buf);
 			vpcm->accum_buf   = NULL;
 			vpcm->accum_count = 0;
@@ -705,27 +707,12 @@ static enum hrtimer_restart vsnd_hrtimer_fn(struct hrtimer *t)
 	if ((u32)overrun > vpcm->dbg_interval_overrun)
 		vpcm->dbg_interval_overrun = (u32)overrun;
 	/*
-	 * Clamp burst to half the pool capacity (= 16 TX buffers = 256 ALSA
-	 * periods = 170 ms of audio) so a single macOS preemption stall can
-	 * never drain the entire pool in one shot.
-	 *
-	 * Prior value (VSND_QEMU_FACTOR * 2 = 32 periods = 2 TX bufs) was set
-	 * with the goal of keeping each per-tick hw_ptr jump <30 ms (EP122's
-	 * snd-over threshold), but in practice it DROPS overrun excess instead
-	 * of catching up: hrtimer_forward_now returns N missed intervals, the
-	 * clamp truncates to 32, the other N-32 are silently lost from
-	 * pending_periods.  Result observed empirically: snd-over deltas of
-	 * 30-500 ms during play (because hw_ptr drifts behind wall-clock by
-	 * up to (N-32) × period_time per preemption event), JUCE recovery
-	 * cascade fires repeatedly.
-	 *
-	 * Bumping to FACTOR * TX_BUFS / 2 = 16 * 32 / 2 = 256 periods aligns
-	 * with the original comment's stated design ("half the pool capacity")
-	 * and lets a single tasklet run absorb a typical 170 ms preemption
-	 * window without drift.  Per-burst CPU cost: 256 memcpy + 16 TX submits,
-	 * roughly 1 ms of guest CPU - acceptable.
+	 * Clamp a catch-up burst to half the pool (16 TX bufs, ~170 ms): a
+	 * single tasklet run absorbs a host stall of that length without drift,
+	 * and cannot drain the whole pool. Missed intervals beyond it are
+	 * dropped.
 	 */
-#define VSND_OVERRUN_CLAMP  (VSND_QEMU_FACTOR * VSND_TX_BUFS / 2)  /* 256 periods ≈ 170 ms */
+#define VSND_OVERRUN_CLAMP  (vpcm->qemu_factor * VSND_TX_BUFS / 2)  /* ≈ 170 ms */
 	if (overrun > VSND_OVERRUN_CLAMP)
 		overrun = VSND_OVERRUN_CLAMP;
 	atomic_add((int)overrun, &vpcm->pending_periods);
@@ -838,6 +825,8 @@ static int vsnd_pcm_open(struct snd_pcm_substream *sub)
 
 	vpcm->substream = sub;
 	sub->runtime->hw = vsnd_hw;
+	sub->runtime->hw.period_bytes_min = period_frames * 8;
+	sub->runtime->hw.period_bytes_max = period_frames * 8;
 	snd_pcm_hw_constraint_integer(sub->runtime, SNDRV_PCM_HW_PARAM_PERIODS);
 	snd_pcm_set_managed_buffer(sub, SNDRV_DMA_TYPE_VMALLOC, NULL,
 				   0, vsnd_hw.buffer_bytes_max);
@@ -879,7 +868,9 @@ static int vsnd_pcm_hw_params(struct snd_pcm_substream *sub,
 	vpcm->buffer_size        = params_buffer_size(params);
 	vpcm->rate               = params_rate(params);
 
-	vpcm->qemu_period_bytes  = vpcm->period_bytes * VSND_QEMU_FACTOR;
+	vpcm->qemu_factor        = max_t(unsigned int, 1,
+	                                 VSND_QEMU_FRAMES / vpcm->period_size);
+	vpcm->qemu_period_bytes  = vpcm->period_bytes * vpcm->qemu_factor;
 
 	/* hrtimer period duration */
 	ns = (u64)vpcm->period_size * 1000000000ULL;
@@ -1108,6 +1099,13 @@ static int vsnd_probe(struct virtio_device *vdev)
 	struct snd_pcm  *pcm;
 	int err;
 
+	if (period_frames < 64 || period_frames > VSND_QEMU_FRAMES ||
+	    (period_frames & (period_frames - 1))) {
+		pr_warn("virtio_snd: period_frames=%u out of range, using 64\n",
+			period_frames);
+		period_frames = 64;
+	}
+
 	err = snd_card_new(&vdev->dev, -1, "vsnd", THIS_MODULE, 0, &card);
 	if (err < 0)
 		return err;
@@ -1297,6 +1295,8 @@ MODULE_PARM_DESC(audio_sync_enabled,
 
 /* Storage declared at the top of the file (vsnd_tx_submit reads it). */
 module_param(verbose_stats, uint, 0644);
+module_param(period_frames, uint, 0444);
+MODULE_PARM_DESC(period_frames, "ALSA period in frames (power of two, 64-1024)");
 MODULE_PARM_DESC(verbose_stats,
 	"Emit a per-second pr_info with TX/pool/xrun counters. 0=off, 1=on.");
 
