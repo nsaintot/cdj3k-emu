@@ -47,6 +47,8 @@ pub const BLOOM_RADIUS: f32 = 1.0;
 const MAX_EXCLUDE_ZONES: usize = 4;
 /// Must match the `u_keep_*` array sizes in the shaders.
 const MAX_KEEP_ZONES: usize = 2;
+/// Must match the `u_chrome` array size in the shaders.
+const MAX_CHROME_ZONES: usize = 8;
 
 /// A control standing over a masked screen rect, which blooms and takes bloom
 /// as usual: within `core_r` of `centre`, or within `outer_r` and inside a
@@ -66,6 +68,9 @@ pub struct BloomKeep {
 pub struct BloomMask {
     pub excludes: Vec<Rect>,
     pub keeps: Vec<BloomKeep>,
+    /// The application's own chrome — the menu strip and its panels — which
+    /// neither blooms nor takes a halo, whatever stands under it.
+    pub chrome: Vec<Rect>,
 }
 
 // ── Shaders ────────────────────────────────────────────────────────────────────
@@ -97,6 +102,8 @@ uniform int  u_keep_n;
 uniform vec4 u_keep_a[2]; // (cx, cy, core_r, outer_r) in pixels, Y=0 at bottom
 uniform vec2 u_keep_b[2]; // (half_w, tan_a)
 uniform vec2 u_screen_px;
+uniform int  u_chrome_n;
+uniform vec4 u_chrome[8]; // (x0,y0,x1,y1) in UV space, Y=0 at bottom
 bool kept(vec2 uv) {
     vec2 p = uv * u_screen_px;
     for (int i = 0; i < u_keep_n; i++) {
@@ -109,6 +116,10 @@ bool kept(vec2 uv) {
     return false;
 }
 bool masked(vec2 uv) {
+    for (int i = 0; i < u_chrome_n; i++) {
+        vec4 r = u_chrome[i];
+        if (uv.x >= r.x && uv.x <= r.z && uv.y >= r.y && uv.y <= r.w) return true;
+    }
     for (int i = 0; i < u_exclude_n; i++) {
         vec4 r = u_exclude[i];
         if (uv.x >= r.x && uv.x <= r.z && uv.y >= r.y && uv.y <= r.w) return !kept(uv);
@@ -171,6 +182,8 @@ uniform int  u_keep_n;
 uniform vec4 u_keep_a[2]; // (cx, cy, core_r, outer_r) in pixels, Y=0 at bottom
 uniform vec2 u_keep_b[2]; // (half_w, tan_a)
 uniform vec2 u_screen_px;
+uniform int  u_chrome_n;
+uniform vec4 u_chrome[8]; // (x0,y0,x1,y1) in UV space, Y=0 at bottom
 bool kept(vec2 uv) {
     vec2 p = uv * u_screen_px;
     for (int i = 0; i < u_keep_n; i++) {
@@ -183,6 +196,10 @@ bool kept(vec2 uv) {
     return false;
 }
 bool masked(vec2 uv) {
+    for (int i = 0; i < u_chrome_n; i++) {
+        vec4 r = u_chrome[i];
+        if (uv.x >= r.x && uv.x <= r.z && uv.y >= r.y && uv.y <= r.w) return true;
+    }
     for (int i = 0; i < u_exclude_n; i++) {
         vec4 r = u_exclude[i];
         if (uv.x >= r.x && uv.x <= r.z && uv.y >= r.y && uv.y <= r.w) return !kept(uv);
@@ -452,12 +469,18 @@ unsafe fn set_mask(
         mask.excludes.len().min(MAX_EXCLUDE_ZONES) as i32,
     );
     for (i, rect) in mask.excludes.iter().take(MAX_EXCLUDE_ZONES).enumerate() {
-        // Y flipped for GL.
-        let x0 = rect.min.x * ppp / w as f32;
-        let y0 = 1.0 - rect.max.y * ppp / h as f32;
-        let x1 = rect.max.x * ppp / w as f32;
-        let y1 = 1.0 - rect.min.y * ppp / h as f32;
+        let [x0, y0, x1, y1] = uv_rect(rect, ppp, w, h);
         gl.uniform_4_f32(loc(&format!("u_exclude[{i}]")).as_ref(), x0, y0, x1, y1);
+    }
+    set_1i(
+        gl,
+        prog,
+        "u_chrome_n",
+        mask.chrome.len().min(MAX_CHROME_ZONES) as i32,
+    );
+    for (i, rect) in mask.chrome.iter().take(MAX_CHROME_ZONES).enumerate() {
+        let [x0, y0, x1, y1] = uv_rect(rect, ppp, w, h);
+        gl.uniform_4_f32(loc(&format!("u_chrome[{i}]")).as_ref(), x0, y0, x1, y1);
     }
     set_2f(gl, prog, "u_screen_px", w as f32, h as f32);
     set_1i(
@@ -482,6 +505,16 @@ unsafe fn set_mask(
     }
 }
 
+/// A rect in points as (x0, y0, x1, y1) in UV space, Y flipped for GL.
+fn uv_rect(rect: &Rect, ppp: f32, w: i32, h: i32) -> [f32; 4] {
+    [
+        rect.min.x * ppp / w as f32,
+        1.0 - rect.max.y * ppp / h as f32,
+        rect.max.x * ppp / w as f32,
+        1.0 - rect.min.y * ppp / h as f32,
+    ]
+}
+
 fn compose_key(scene_key: u64, w: i32, h: i32, ppp: f32, mask: &BloomMask) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h_ = std::collections::hash_map::DefaultHasher::new();
@@ -491,7 +524,12 @@ fn compose_key(scene_key: u64, w: i32, h: i32, ppp: f32, mask: &BloomMask) -> u6
     // ppp / Rect coords are floats - quantize to fixed-point so identical
     // logical layouts hash identically.
     (ppp.to_bits()).hash(&mut h_);
-    for r in mask.excludes.iter().take(MAX_EXCLUDE_ZONES) {
+    for r in mask
+        .excludes
+        .iter()
+        .take(MAX_EXCLUDE_ZONES)
+        .chain(mask.chrome.iter().take(MAX_CHROME_ZONES))
+    {
         r.min.x.to_bits().hash(&mut h_);
         r.min.y.to_bits().hash(&mut h_);
         r.max.x.to_bits().hash(&mut h_);

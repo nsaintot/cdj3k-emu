@@ -33,7 +33,10 @@ const REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1
 /// `alpha` is the current ramp value in `[0, 1]`. `booting` toggles the
 /// spinner; chrome reveals cleanly when it's off during fade-out.
 pub(super) fn paint_boot_shade(ctx: &egui::Context, alpha: f32, booting: bool) {
-    let screen = ctx.screen_rect();
+    // The deck is what is booting, so the shade covers the deck and stops at
+    // the in-window menu strip: those controls work throughout.
+    let mut screen = ctx.screen_rect();
+    screen.min.y += cdj3k_emu_platform::menu::in_window_bar_height();
     egui::Area::new(egui::Id::new("qemu_boot_shade"))
         .order(egui::Order::Foreground)
         .interactable(false)

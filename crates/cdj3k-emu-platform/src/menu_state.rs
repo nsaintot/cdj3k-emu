@@ -1,13 +1,6 @@
-//! Cross-platform UI/runtime state shared between the native macOS NSMenu
-//! implementation, the egui UI, and the runtime worker thread.
-//!
-//! Previously a soup of ~28 atomic globals + 3 ad-hoc `Mutex<...>`s. Folded
-//! into a single `Mutex<AppState>` so:
-//!
-//!   * lock acquisition order is trivial (only one lock).
-//!   * the menu can snapshot the whole state with one `lock()` instead of 20+
-//!     individual atomic loads.
-//!   * adding new fields no longer means picking a fresh atomic type.
+//! UI and runtime state shared between the menu, the egui UI and the runtime
+//! worker thread, behind one `Mutex<AppState>`: one lock to order, and one
+//! `lock()` to snapshot everything.
 //!
 //! The lock is never held across I/O. Hot loops (menu sync, runtime poll)
 //! snapshot what they need, drop the guard, then perform work. Audio thread
@@ -16,6 +9,8 @@
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, MutexGuard};
+
+use crate::audio::AudioOutDevice;
 
 /// Maximum instance count (slots are 1..=MAX_INSTANCES).
 pub const MAX_INSTANCES: u32 = 4;
@@ -53,39 +48,11 @@ pub static APP_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
-/// A single discovered network interface.
-#[derive(Clone, Debug, PartialEq)]
-pub struct NetIf {
-    /// e.g. "en0"
-    pub name: String,
-    /// IPv4 address, e.g. "192.168.1.42"
-    pub addr: String,
-    /// CIDR prefix length, e.g. 24
-    pub prefix_len: u8,
-}
-
-impl NetIf {
-    /// Menu label: "192.168.1.42/24 (en0)"
-    pub fn label(&self) -> String {
-        format!("{}/{} ({})", self.addr, self.prefix_len, self.name)
-    }
-}
-
-/// A removable physical disk entry (mirrors cdj3k_emu_runtime::usb::PhysicalDisk).
+/// A removable physical disk entry (mirrors cdj3k_emu_runtime::disk::PhysicalDisk).
 #[derive(Clone, Debug, PartialEq)]
 pub struct PhysicalDisk {
     pub bsd_name: String,
     pub label: String,
-}
-
-/// A CoreAudio output device exposed in the per-instance "Audio Output" picker.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AudioOutDevice {
-    pub uid: String,
-    pub name: String,
-    pub is_default: bool,
-    /// Current nominal sample rate in Hz, or 0 if unavailable.
-    pub sample_rate_hz: u32,
 }
 
 // ── Aggregate state ───────────────────────────────────────────────────────────
@@ -146,9 +113,9 @@ pub struct AppState {
     pub audio_toggle_requested: bool,
 
     // ── Audio output device ─────────────────────────────────────────────────
-    /// Selected CoreAudio device UID, or `None` for "system default output".
-    /// Persisted in InstanceSettings. The runtime worker passes this through
-    /// to QEMU's `-audiodev coreaudio` config on (re)spawn.
+    /// Selected output device ([`AudioOutDevice::uid`]), or `None` for
+    /// "system default output". Persisted in InstanceSettings. The runtime
+    /// worker passes it to QEMU's `-audiodev` config on (re)spawn.
     pub audio_device_uid: Option<String>,
     /// Cached enumeration of host output devices; refreshed by the menu
     /// thread on a 5 s tick via [`refresh_audio_devices`].
@@ -173,6 +140,8 @@ pub struct AppState {
     /// consumes it and persists `haptic_enabled` to InstanceSettings.
     pub haptic_toggle_requested: bool,
 
+    /// Whether this build can publish PC Link endpoints. Set once at startup.
+    pub pc_link_supported: bool,
     /// "PC Link (USB-B cable)" toggle.
     /// Models the rear-panel USB-B cable being plugged into the PC.
     pub pc_link_enabled: bool,
@@ -210,6 +179,12 @@ pub struct AppState {
     pub usb_eject_req: bool,
 
     // ── Storage / physical USB ──────────────────────────────────────────────
+    /// Set by the runtime: the guest's cfgd has spoken on this boot, so a
+    /// mount request reaches it.
+    pub guest_cfg_live: bool,
+    /// Set by the UI: the boot shade has lifted, so the player app is up to
+    /// see a medium arrive.
+    pub guest_booted: bool,
     pub usb_phys_disks: Vec<PhysicalDisk>,
     /// Index of the physical disk currently mounted in the guest, or
     /// [`NO_USB_MOUNTED`] when nothing is mounted.
@@ -218,11 +193,13 @@ pub struct AppState {
     pub usb_phys_toggle_idx: i32,
     /// Bumped by the USB worker whenever the disk list changes.
     pub usb_phys_list_version: u32,
-    /// Set by the runtime when attach_physical fails with PermissionDenied;
-    /// consumed by the menu to show a one-shot alert.
-    pub usb_phys_perm_denied: bool,
+    /// Set by the runtime when attach_physical fails with PermissionDenied:
+    /// the host's retry prompt, for a one-shot alert.
+    pub usb_phys_perm_denied: Option<&'static str>,
     /// Set by the alert "Retry" button; runtime worker re-fires the toggle.
     pub usb_phys_retry_req: bool,
+    /// Why the last physical attach failed, for a one-shot alert.
+    pub usb_error_message: Option<String>,
     /// Set after the CoreMIDI driver plugin is replaced while `MIDIServer` is
     /// running: it keeps serving the old binary until the process exits.
     pub midi_driver_replaced: bool,
@@ -264,6 +241,7 @@ impl AppState {
             alc_toggle_requested: false,
             haptic_enabled: true,
             haptic_toggle_requested: false,
+            pc_link_supported: false,
             pc_link_enabled: false,
             pc_link_toggle_requested: false,
             latency_packed: u64::MAX,
@@ -276,11 +254,14 @@ impl AppState {
             usb_virtual_mount_req: false,
             usb_create_req: false,
             usb_eject_req: false,
+            guest_cfg_live: false,
+            guest_booted: false,
             usb_phys_disks: Vec::new(),
+            usb_error_message: None,
             usb_phys_mounted_idx: NO_USB_MOUNTED,
             usb_phys_toggle_idx: NO_USB_MOUNTED,
             usb_phys_list_version: 0,
-            usb_phys_perm_denied: false,
+            usb_phys_perm_denied: None,
             usb_phys_retry_req: false,
             midi_driver_replaced: false,
         }
@@ -338,86 +319,17 @@ pub fn unpack_latency(packed: u64) -> Option<(u32, u32, u32)> {
 
 // ── Network helpers ───────────────────────────────────────────────────────────
 
-/// Returns true if the interface is something we can actually plug QEMU into.
-/// Two valid backends, one allowlist prefix each:
-///   en*  - real Ethernet / Wi-Fi; bridged via Apple's vmnet.framework.
-///   tap* - user-mode TAP; bridged in userspace by `TapBridge::setup`.
-/// Everything else (utun, awdl, gif, stf, ipsec, bridge, bond, vlan, lo, …)
-/// is either Layer 3 or has no upstream link and can't be bridged.
-fn is_bridgeable(name: &str) -> bool {
-    name.starts_with("en") || name.starts_with("tap")
-}
+/// The host decides which interfaces can carry a guest; see
+/// [`crate::net`]. Re-exported here because this module is where the menu
+/// reads the list from.
+pub use crate::net::NetIf;
 
-/// Enumerate all non-loopback IPv4 interfaces via `getifaddrs`.
-pub fn enumerate_interfaces() -> Vec<NetIf> {
-    let mut out = Vec::new();
-
-    #[cfg(unix)]
-    unsafe {
-        let mut addrs: *mut libc::ifaddrs = std::ptr::null_mut();
-        if libc::getifaddrs(&mut addrs) != 0 {
-            return out;
-        }
-
-        let mut cur = addrs;
-        while !cur.is_null() {
-            let ifa = &*cur;
-            cur = ifa.ifa_next;
-
-            let sa = ifa.ifa_addr;
-            if sa.is_null() {
-                continue;
-            }
-            if (*sa).sa_family as i32 != libc::AF_INET {
-                continue;
-            }
-            if (ifa.ifa_flags & libc::IFF_LOOPBACK as u32) != 0 {
-                continue;
-            }
-            if (ifa.ifa_flags & libc::IFF_UP as u32) == 0 {
-                continue;
-            }
-
-            let sin = &*(sa as *const libc::sockaddr_in);
-            let ip = u32::from_be(sin.sin_addr.s_addr);
-            let a = (ip >> 24) as u8;
-            let b = (ip >> 16) as u8;
-            let c = (ip >> 8) as u8;
-            let d = ip as u8;
-
-            let mask_sa = ifa.ifa_netmask;
-            let prefix_len = if !mask_sa.is_null() && (*mask_sa).sa_family as i32 == libc::AF_INET {
-                let mask_sin = &*(mask_sa as *const libc::sockaddr_in);
-                u32::from_be(mask_sin.sin_addr.s_addr).count_ones() as u8
-            } else {
-                0
-            };
-
-            let name = std::ffi::CStr::from_ptr(ifa.ifa_name)
-                .to_string_lossy()
-                .into_owned();
-
-            if !is_bridgeable(&name) {
-                continue;
-            }
-
-            out.push(NetIf {
-                name,
-                addr: format!("{a}.{b}.{c}.{d}"),
-                prefix_len,
-            });
-        }
-
-        libc::freeifaddrs(addrs);
-    }
-
-    out
-}
+// ── Interface list refresh ────────────────────────────────────────────────────
 
 /// Re-enumerate interfaces and update the cached list.
 /// Bumps `net_list_version` only when the list actually changed.
 pub fn refresh_net_interfaces() {
-    let fresh = enumerate_interfaces();
+    let fresh = crate::net::enumerate_interfaces();
     let mut s = lock();
     let changed = s.net_ifaces.len() != fresh.len()
         || s.net_ifaces
@@ -432,32 +344,31 @@ pub fn refresh_net_interfaces() {
 
 // ── Audio device helpers ──────────────────────────────────────────────────────
 
-/// Re-enumerate CoreAudio output devices and update the cached list.
-/// Bumps `audio_device_list_version` only when the list actually changed.
-/// No-op on non-macOS targets.
+/// Re-enumerate the host's audio outputs and update the cached list.
+///
+/// Bumps `audio_device_list_version` only when the list actually changed, so
+/// the menu rebuilds its radio group only when it has to. A host with no
+/// enumeration leaves the list empty, and the guest follows the system
+/// default.
 pub fn refresh_audio_devices() {
-    #[cfg(target_os = "macos")]
-    {
-        let fresh: Vec<AudioOutDevice> = crate::audio_devices::enumerate_output_devices()
-            .into_iter()
-            .map(|d| AudioOutDevice {
-                uid: d.uid,
-                name: d.name,
-                is_default: d.is_default,
-                sample_rate_hz: d.sample_rate_hz,
-            })
-            .collect();
-        let mut s = lock();
-        let changed = s.audio_devices.len() != fresh.len()
-            || s.audio_devices.iter().zip(fresh.iter()).any(|(a, b)| {
-                a.uid != b.uid
-                    || a.name != b.name
-                    || a.is_default != b.is_default
-                    || a.sample_rate_hz != b.sample_rate_hz
-            });
-        if changed {
-            s.audio_devices = fresh;
-            s.audio_device_list_version = s.audio_device_list_version.wrapping_add(1);
-        }
+    store_devices(crate::audio::enumerate_output_devices());
+}
+
+/// Replace the cached device list, bumping the version only on a real change.
+///
+/// The version drives a menu rebuild, and this is polled every few seconds —
+/// so an unconditional bump would rebuild the radio group forever.
+fn store_devices(fresh: Vec<AudioOutDevice>) {
+    let mut s = lock();
+    let changed = s.audio_devices.len() != fresh.len()
+        || s.audio_devices.iter().zip(fresh.iter()).any(|(a, b)| {
+            a.uid != b.uid
+                || a.name != b.name
+                || a.is_default != b.is_default
+                || a.sample_rate_hz != b.sample_rate_hz
+        });
+    if changed {
+        s.audio_devices = fresh;
+        s.audio_device_list_version = s.audio_device_list_version.wrapping_add(1);
     }
 }

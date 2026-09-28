@@ -1,8 +1,10 @@
-//! macOS: AppKit hooks - window resize constraints, file picker.
+//! AppKit: the window shell, the process's Dock presence, and the file panel.
+//!
+//! Aspect-ratio resize is enforced with `NSWindow` methods, not in egui.
 
-// ── Aspect-ratio constraint (shared on/off-macOS stub) ───────────────────────
+use super::{PICKER_SIZE, panel_initial_size};
+use cdj3k_emu_panel::Model;
 
-#[cfg(target_os = "macos")]
 fn ns_window_for_handle(
     handle: &impl raw_window_handle::HasWindowHandle,
 ) -> Result<objc2::rc::Retained<objc2_app_kit::NSWindow>, String> {
@@ -44,8 +46,7 @@ fn ns_window_for_handle(
 /// Off-screen-recovery (e.g. a monitor was unplugged) is handled by AppKit.
 /// Use a per-instance name so multiple emulator instances keep separate frames.
 /// Returns whether a previously saved frame was applied.
-#[cfg(target_os = "macos")]
-pub fn set_window_autosave_name(
+fn set_window_autosave_name(
     handle: &impl raw_window_handle::HasWindowHandle,
     name: &str,
 ) -> Result<bool, String> {
@@ -64,21 +65,10 @@ pub fn set_window_autosave_name(
     Ok(restored)
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn set_window_autosave_name(
-    _handle: &impl raw_window_handle::HasWindowHandle,
-    _name: &str,
-) -> Result<bool, String> {
-    Ok(false)
-}
-
 /// Stop AppKit frame persistence for this window (an empty autosave name).
 /// The frame saved so far stays in `NSUserDefaults` for the next
 /// [`set_window_autosave_name`].
-#[cfg(target_os = "macos")]
-pub fn clear_window_autosave_name(
-    handle: &impl raw_window_handle::HasWindowHandle,
-) -> Result<(), String> {
+fn clear_window_autosave_name(handle: &impl raw_window_handle::HasWindowHandle) -> Result<(), String> {
     use objc2_foundation::{MainThreadMarker, NSString};
 
     MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
@@ -91,16 +81,8 @@ pub fn clear_window_autosave_name(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn clear_window_autosave_name(
-    _handle: &impl raw_window_handle::HasWindowHandle,
-) -> Result<(), String> {
-    Ok(())
-}
-
 /// Toggle `NSWindowStyleMaskResizable` (user resizing via the window edges).
-#[cfg(target_os = "macos")]
-pub fn set_window_resizable(
+fn set_window_resizable(
     handle: &impl raw_window_handle::HasWindowHandle,
     resizable: bool,
 ) -> Result<(), String> {
@@ -122,18 +104,9 @@ pub fn set_window_resizable(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn set_window_resizable(
-    _handle: &impl raw_window_handle::HasWindowHandle,
-    _resizable: bool,
-) -> Result<(), String> {
-    Ok(())
-}
-
 /// Resize the content area to `w` x `h` points, keeping the window centre
 /// where it is (the frame grows/shrinks around it).
-#[cfg(target_os = "macos")]
-pub fn set_window_content_size_centered(
+fn set_window_content_size_centered(
     handle: &impl raw_window_handle::HasWindowHandle,
     w: f64,
     h: f64,
@@ -157,21 +130,9 @@ pub fn set_window_content_size_centered(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn set_window_content_size_centered(
-    _handle: &impl raw_window_handle::HasWindowHandle,
-    _w: f64,
-    _h: f64,
-) -> Result<(), String> {
-    Ok(())
-}
-
 /// Disable macOS native window tabbing for this window.
 /// Without this, AppKit adds "Show Tab Bar" / "Show All Tabs" to the View menu automatically.
-#[cfg(target_os = "macos")]
-pub fn disable_window_tabbing(
-    handle: &impl raw_window_handle::HasWindowHandle,
-) -> Result<(), String> {
+fn disable_window_tabbing(handle: &impl raw_window_handle::HasWindowHandle) -> Result<(), String> {
     use objc2_foundation::MainThreadMarker;
 
     MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
@@ -184,20 +145,12 @@ pub fn disable_window_tabbing(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn disable_window_tabbing(
-    _handle: &impl raw_window_handle::HasWindowHandle,
-) -> Result<(), String> {
-    Ok(())
-}
-
 /// App-wide kill switch for the system "Show Tab Bar" / "Show All Tabs" View
 /// menu entries. Per-window `setTabbingMode:` only suppresses tabbing on the
 /// main eframe window; any extra `NSWindow` AppKit creates (e.g. the deferred
 /// debug viewport) still opts into tabbing and re-introduces those menu items.
 /// Setting the class property to `NO` covers every current and future window.
-#[cfg(target_os = "macos")]
-pub fn disable_automatic_window_tabbing_global() -> Result<(), String> {
+fn disable_automatic_window_tabbing_global() -> Result<(), String> {
     use objc2::runtime::AnyClass;
     use objc2_foundation::MainThreadMarker;
 
@@ -210,11 +163,6 @@ pub fn disable_automatic_window_tabbing_global() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn disable_automatic_window_tabbing_global() -> Result<(), String> {
-    Ok(())
-}
-
 /// Drop any runtime-installed dock icon override so the Dock falls back to
 /// the bundle's `CFBundleIconFile` (`cdj3k-emu.icns` in `Contents/Resources/`).
 ///
@@ -224,8 +172,7 @@ pub fn disable_automatic_window_tabbing_global() -> Result<(), String> {
 /// process - visible as the bundle icon briefly flashing as the override is
 /// torn down on quit.  Passing nil to `setApplicationIconImage:` is the
 /// AppKit-blessed way to revert to the Info.plist-declared icon.
-#[cfg(target_os = "macos")]
-pub fn reset_dock_icon_to_bundle() -> Result<(), String> {
+fn reset_dock_icon_to_bundle() -> Result<(), String> {
     use objc2_app_kit::NSApplication;
     use objc2_foundation::MainThreadMarker;
 
@@ -237,13 +184,29 @@ pub fn reset_dock_icon_to_bundle() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn reset_dock_icon_to_bundle() -> Result<(), String> {
+fn set_window_aspect_constraints(
+    handle: &impl raw_window_handle::HasWindowHandle,
+    aspect_w: f64,
+    aspect_h: f64,
+) -> Result<(), String> {
+    use objc2_foundation::{MainThreadMarker, NSSize};
+
+    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+
+    let window = ns_window_for_handle(handle)?;
+    // NOTE: do NOT also call `setAspectRatio` here - that locks the whole
+    // window frame (incl. title bar) to the ratio, while we want the *content
+    // area* locked. Setting both leaves AppKit arbitrating between two
+    // mutually-incompatible constraints (differ by the title bar height),
+    // which manifests as a snap/fight after each resize.
+    let s = NSSize::new(aspect_w, aspect_h);
+    unsafe {
+        window.setContentAspectRatio(s);
+    }
     Ok(())
 }
 
 /// Bring the process `pid` - another instance of the app - to the front.
-#[cfg(target_os = "macos")]
 pub fn activate_process(pid: u32) -> Result<(), String> {
     use objc2::runtime::{AnyClass, AnyObject, Bool};
 
@@ -263,11 +226,6 @@ pub fn activate_process(pid: u32) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn activate_process(_pid: u32) -> Result<(), String> {
-    Ok(())
-}
-
 /// Override the Dock tile / menu-bar / Activity Monitor name for this process.
 ///
 /// The Dock and the application menu read `CFBundleName` from
@@ -280,7 +238,6 @@ pub fn activate_process(_pid: u32) -> Result<(), String> {
 ///
 /// Must be called before `eframe::run_native` — once `NSApplication` finishes
 /// launching, the menu-bar title is cached and won't refresh.
-#[cfg(target_os = "macos")]
 pub fn set_app_name(name: &str) -> Result<(), String> {
     use objc2::runtime::{AnyClass, AnyObject};
     use objc2_foundation::{MainThreadMarker, NSString};
@@ -312,49 +269,81 @@ pub fn set_app_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn set_app_name(_name: &str) -> Result<(), String> {
-    Ok(())
+/// Best-effort from [`eframe::CreationContext`] (view may not be in a window yet).
+pub fn on_creation_context(cc: &eframe::CreationContext<'_>) {
+    let _ = disable_window_tabbing(cc);
+    // Class-level kill switch: prevents the deferred debug viewport (and
+    // any other NSWindow AppKit spawns) from re-adding "Show Tab Bar" /
+    // "Show All Tabs" to the View menu.
+    let _ = disable_automatic_window_tabbing_global();
+    // Drop eframe's default placeholder icon so the Dock reads our
+    // bundle's CFBundleIconFile instead.
+    let _ = reset_dock_icon_to_bundle();
 }
 
-#[cfg(target_os = "macos")]
-pub fn set_window_aspect_constraints(
-    handle: &impl raw_window_handle::HasWindowHandle,
-    aspect_w: f64,
-    aspect_h: f64,
-) -> Result<(), String> {
-    use objc2_foundation::{MainThreadMarker, NSSize};
-
-    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
-
-    let window = ns_window_for_handle(handle)?;
-    // NOTE: do NOT also call `setAspectRatio` here - that locks the whole
-    // window frame (incl. title bar) to the ratio, while we want the *content
-    // area* locked. Setting both leaves AppKit arbitrating between two
-    // mutually-incompatible constraints (differ by the title bar height),
-    // which manifests as a snap/fight after each resize.
-    let s = NSSize::new(aspect_w, aspect_h);
-    unsafe {
-        window.setContentAspectRatio(s);
+/// Turn the main window into the panel of `model`: user-resizable, restored
+/// to slot `instance_id`'s last saved panel frame for that model (or sized to
+/// the default and kept centred where the picker was), then aspect-locked to
+/// `ref_canvas`.
+pub fn enter_panel_window(
+    ctx: &egui::Context,
+    frame: &eframe::Frame,
+    instance_id: u32,
+    model: Model,
+    ref_canvas: (f32, f32),
+) {
+    let _ = set_window_resizable(frame, true);
+    let restored =
+        set_window_autosave_name(frame, &super::frame_key(instance_id, model)).unwrap_or(false);
+    if !restored {
+        let [w, h] = panel_initial_size(ref_canvas);
+        let _ = set_window_content_size_centered(frame, w as f64, h as f64);
     }
-    Ok(())
+    let _ = set_window_aspect_constraints(frame, ref_canvas.0 as f64, ref_canvas.1 as f64);
+    let _ = ctx;
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn set_window_aspect_constraints(
-    _handle: &impl raw_window_handle::HasWindowHandle,
-    _aspect_w: f64,
-    _aspect_h: f64,
-) -> Result<(), String> {
-    Ok(())
+/// Turn the main window back into the compact picker: stop frame autosave (so
+/// the picker size is never recorded as the panel frame), fixed size, centred
+/// where the panel was.
+pub fn enter_picker_window(ctx: &egui::Context, frame: &eframe::Frame) {
+    let _ = clear_window_autosave_name(frame);
+    let _ = set_window_content_size_centered(
+        frame,
+        PICKER_SIZE[0] as f64,
+        PICKER_SIZE[1] as f64,
+    );
+    let _ = set_window_resizable(frame, false);
+    let _ = ctx;
 }
 
-// ── File picker ───────────────────────────────────────────────────────────────
+/// Re-apply AppKit aspect constraints every frame so nothing in the stack
+/// resets them during resize. `None` while the picker is up (fixed size).
+pub fn apply_resize_constraints(
+    ctx: &egui::Context,
+    frame: &eframe::Frame,
+    state: &mut super::ResizeState,
+    ref_canvas: Option<(f32, f32)>,
+) {
+    if let Some((w, h)) = ref_canvas {
+        let _ = set_window_aspect_constraints(frame, w as f64, h as f64);
+        super::snap_when_settled(ctx, state, (w, h));
+    }
+}
+
+/// Run the picker on the calling thread, which is the UI thread:
+/// `NSOpenPanel` exists only there, and its modal is AppKit's own.
+pub(super) fn run_picker(
+    title: &str,
+    allowed_types: &[&str],
+    reply: std::sync::mpsc::Sender<Option<std::path::PathBuf>>,
+) {
+    let _ = reply.send(open_file_picker(title, allowed_types));
+}
 
 /// Open a native file-open dialog and return the chosen path, or `None` if cancelled.
 /// `title` is the panel's message text; `allowed_types` filters by UTType identifier
 /// (e.g. `&["public.data"]` for any file).  Pass an empty slice for no filter.
-#[cfg(target_os = "macos")]
 pub fn open_file_picker(title: &str, allowed_types: &[&str]) -> Option<std::path::PathBuf> {
     use objc2::msg_send_id;
     use objc2::rc::Retained;
@@ -389,7 +378,13 @@ pub fn open_file_picker(title: &str, allowed_types: &[&str]) -> Option<std::path
     path_ns.map(|s| std::path::PathBuf::from(s.to_string()))
 }
 
-#[cfg(not(target_os = "macos"))]
-pub fn open_file_picker(_title: &str, _allowed_types: &[&str]) -> Option<std::path::PathBuf> {
-    None
+/// Show a file in the host's file manager, selected rather than opened.
+pub fn reveal_in_file_manager(path: &std::path::Path) {
+    let _ = std::process::Command::new("/usr/bin/open")
+        .arg("-R")
+        .arg(path)
+        .spawn();
 }
+
+/// Whether a second window can be centred over the first.
+pub const PLACES_WINDOWS: bool = true;

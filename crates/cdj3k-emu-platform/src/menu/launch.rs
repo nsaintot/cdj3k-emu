@@ -1,5 +1,5 @@
-//! Spawn-a-new-instance helper plus the macOS Full Disk Access alert
-//! shown when a USB pass-through op fails for permission reasons.
+//! Spawn-a-new-instance helper and the menu's alert dialogs.
+
 
 use crate::menu_state;
 
@@ -22,20 +22,34 @@ pub(super) fn launch_instance(target: u32) {
         .and_then(|p| p.parent())
         .and_then(|p| p.parent());
     if let Some(app) = app_root.filter(|p| p.extension().is_some_and(|e| e == "app")) {
-        let _ = std::process::Command::new("/usr/bin/open")
-            .arg("-n")
-            .arg("-a")
-            .arg(app)
-            .arg("--args")
-            .arg("--instance")
-            .arg(target.to_string())
-            .spawn();
+        reap(
+            std::process::Command::new("/usr/bin/open")
+                .arg("-n")
+                .arg("-a")
+                .arg(app)
+                .arg("--args")
+                .arg("--instance")
+                .arg(target.to_string())
+                .spawn(),
+        );
     } else {
         // Dev mode: re-exec the binary directly.
-        let _ = std::process::Command::new(&exe)
-            .arg("--instance")
-            .arg(target.to_string())
-            .spawn();
+        reap(
+            std::process::Command::new(&exe)
+                .arg("--instance")
+                .arg(target.to_string())
+                .spawn(),
+        );
+    }
+}
+
+/// Wait for a launched window's process on a thread of its own, so it does
+/// not linger as a zombie once it exits.
+fn reap(child: std::io::Result<std::process::Child>) {
+    if let Ok(mut child) = child {
+        let _ = std::thread::Builder::new()
+            .name("cdj3k-emu-reap".into())
+            .spawn(move || child.wait());
     }
 }
 
@@ -46,6 +60,16 @@ pub(super) fn show_net_error_alert(message: &str) {
     let _ = rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
         .set_title("Network setup failed")
+        .set_description(message)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+}
+
+/// The physical disk could not be handed to the deck.
+pub(super) fn show_usb_error_alert(message: &str) {
+    let _ = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("USB disk not attached")
         .set_description(message)
         .set_buttons(rfd::MessageButtons::Ok)
         .show();
@@ -86,16 +110,8 @@ pub(super) fn show_midi_driver_alert() {
     }
 }
 
-pub(super) fn show_fda_alert() {
-    if confirm(
-        "Admin access required",
-        "cdj3k-emu needs write access to the raw disk device.\n\n\
-         Click Retry to show a macOS password prompt that grants \
-         temporary write permission (chmod 660). \
-         This resets automatically when the drive is unplugged.",
-        "Retry",
-        "Cancel",
-    ) {
+pub(super) fn show_raw_disk_alert(prompt: &str) {
+    if confirm("Admin access required", prompt, "Retry", "Cancel") {
         menu_state::lock().usb_phys_retry_req = true;
     }
 }

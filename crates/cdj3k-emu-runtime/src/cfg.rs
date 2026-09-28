@@ -25,7 +25,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use cdj3k_emu_platform::local_socket::LocalStream as UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -145,6 +145,12 @@ impl CfgClient {
             .lock()
             .map(|s| s.writer.is_some())
             .unwrap_or(false)
+    }
+
+    /// `true` once cfgd has said anything on the current connection, so a
+    /// `usb attach` would reach the guest rather than QEMU's buffer.
+    pub fn guest_heard(&self) -> bool {
+        self.shared.lock().map(|s| s.guest_ready).unwrap_or(false)
     }
 
     /// Send `usb attach\n`. Retries briefly while the port is still coming up.
@@ -267,7 +273,6 @@ fn handle_line(line: &str, shared: &Arc<Mutex<Shared>>) {
     if line.is_empty() {
         return;
     }
-
     flush_pending(shared);
 
     if let Some(rest) = line.strip_prefix("usb_state ") {

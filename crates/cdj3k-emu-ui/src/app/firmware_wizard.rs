@@ -18,7 +18,7 @@ use egui::{
 };
 
 use cdj3k_emu_panel::Model;
-use cdj3k_emu_platform::{desktop::open_file_picker, menu_state};
+use cdj3k_emu_platform::{desktop::PendingPick, menu_state};
 use cdj3k_emu_storage::StagedFirmware;
 
 use super::picker;
@@ -121,16 +121,21 @@ pub enum Installed {
 }
 
 /// The install step of the setup window: the form, the progress and the log.
-/// It does not own a window - the shell hosts it, so switching an emulation
-/// and installing its firmware happen in one place.
+/// It does not own a window; the shell hosts it.
 pub struct FirmwareWizard {
     /// The model being provisioned (chosen on the picker / the running one).
     pub model: Model,
+    /// A file dialog that is open right now, and which field it fills. The
+    /// dialog runs on its own thread so the window keeps drawing while it is
+    /// up; `poll` collects the answer.
+    pending_pick: Option<(bool, PendingPick)>,
     upd_path: String,
     /// The path last probed for an ISO 9660 image, and the answer; the form
     /// asks every frame.
     iso_probe: std::cell::RefCell<Option<(String, bool)>>,
     key_path: String,
+    /// Provision passwordless root SSH into the guest.
+    ssh: bool,
     /// The slot being provisioned, set by [`Self::open_for`].
     target_instance: u32,
     /// The slot this window owns.
@@ -154,10 +159,12 @@ impl FirmwareWizard {
     pub fn new() -> Self {
         let instance = menu_state::lock().current_instance_id.max(1);
         Self {
+            pending_pick: None,
             model: Model::default(),
             upd_path: String::new(),
             iso_probe: std::cell::RefCell::new(None),
             key_path: String::new(),
+            ssh: ssh_from_env(),
             target_instance: instance,
             home_instance: instance,
             finished: false,
@@ -420,6 +427,25 @@ impl FirmwareWizard {
                 ui.vertical(|ui| self.path_row(ui, "wizard_key", false, k));
             });
         }
+
+        ui.horizontal_top(|ui| {
+            label_column(ui, k, pal.dim, "Developer");
+            ui.vertical(|ui| {
+                ui.checkbox(
+                    &mut self.ssh,
+                    RichText::new("Root SSH").size(theme::HINT_FONT * k).color(pal.dim),
+                );
+                if self.ssh {
+                    ui.label(
+                        RichText::new(
+                            "Root access isn't protected with a password. Anyone who can reach this emulation can log in.",
+                        )
+                        .size(theme::HINT_FONT * k)
+                        .color(pal.warn),
+                    );
+                }
+            });
+        });
     }
 
     /// The Done banner's line: where the install went.
@@ -482,6 +508,21 @@ impl FirmwareWizard {
         // Accumulate the file-picker result outside the closure to avoid
         // conflicting borrows with the TextEdit's &mut path reference.
         let mut new_pick: Option<String> = None;
+        // Collect an answer from a dialog this field opened on an earlier
+        // frame. Both fields run this every frame, so each leaves the other's
+        // dialog alone.
+        if let Some((for_upd, pick)) = &self.pending_pick {
+            if *for_upd == is_upd {
+                if let Some(answer) = pick.take() {
+                    self.pending_pick = None;
+                    new_pick = answer.map(|p| p.to_string_lossy().into_owned());
+                }
+            }
+        }
+        // A dialog is up: keep asking for frames so its answer is noticed.
+        if self.pending_pick.is_some() {
+            ui.ctx().request_repaint();
+        }
         ui.horizontal(|ui| {
             let path = if is_upd {
                 &mut self.upd_path
@@ -500,17 +541,19 @@ impl FirmwareWizard {
             let pal = theme::palette(ui.ctx());
             if theme::secondary(ui, [BROWSE_W * k, theme::FIELD_H * k], "Browse…", pal).clicked()
             {
-                let picked = if is_upd {
-                    open_file_picker(
-                        "Select firmware (.UPD or decrypted .iso)",
-                        &["UPD", "upd", "iso", "ISO"],
-                    )
-                } else {
-                    open_file_picker("Select key file", &[])
-                };
-                if let Some(p) = picked {
-                    new_pick = Some(p.to_string_lossy().into_owned());
-                }
+                // Opened on its own thread; the answer is collected by the
+                // poll below, so the frame loop keeps running while it is up.
+                self.pending_pick = Some((
+                    is_upd,
+                    if is_upd {
+                        PendingPick::open(
+                            "Select firmware (.UPD or decrypted .iso)",
+                            &["UPD", "upd", "iso", "ISO"],
+                        )
+                    } else {
+                        PendingPick::open("Select key file", &[])
+                    },
+                ));
             }
         });
         if let Some(val) = new_pick {
@@ -545,6 +588,7 @@ impl FirmwareWizard {
         let upd = PathBuf::from(&self.upd_path);
         let target = self.target_instance;
         let model = self.model;
+        let ssh = self.ssh;
         let status = Arc::new(Mutex::new(ProvisionStep::Decrypting));
         self.provision_status = Some(status.clone());
 
@@ -554,7 +598,7 @@ impl FirmwareWizard {
 
         std::thread::Builder::new()
             .name("cdj3k-emu-provision".into())
-            .spawn(move || provision(upd, key, target, model, status, log, ctx))
+            .spawn(move || provision(upd, key, target, model, ssh, status, log, ctx))
             .expect("failed to spawn provision thread");
     }
 
@@ -572,6 +616,12 @@ impl FirmwareWizard {
         self.installed = None;
         self.log.lock().unwrap().clear();
     }
+}
+
+/// `ENABLE_SSH=1` in the app's environment ticks the SSH box, and asks for it
+/// on a `--provision` run.
+fn ssh_from_env() -> bool {
+    std::env::var("ENABLE_SSH").is_ok_and(|v| v == "1")
 }
 
 /// A field label: capitals at the window's micro size, tracked by the painter
@@ -731,6 +781,7 @@ pub fn provision_blocking(
                     key,
                     instance,
                     model,
+                    ssh_from_env(),
                     status,
                     log,
                     Context::default(),
@@ -765,11 +816,9 @@ pub fn provision_blocking(
 /// Why an update file cannot go in a slot being set up as `model`, if it
 /// cannot.
 ///
-/// A `.UPD` is a bare LUKS container whose header names no product, so its
-/// file name is the whole of the evidence: it has to be one Pioneer publishes
-/// this deck under. A name belonging to another deck, or to none of ours, is
-/// refused - a CDJ-3000 slot takes a `CDJ3K…`, a CDJ-3000X slot a `CDJ3000X…`, and
-/// nothing else.
+/// A `.UPD` is a bare LUKS container whose header names no product, so only
+/// its file name identifies the deck: a CDJ-3000 slot takes a `CDJ3K…`, a
+/// CDJ-3000X slot a `CDJ3000X…`, and any other name is refused.
 fn upd_name_objection(path: &str, model: Model, slot: u32) -> Option<String> {
     match Model::from_firmware_file_name(path) {
         Some(named) if named == model => None,
@@ -800,25 +849,16 @@ fn name_list(model: Model) -> String {
 // ── Background provisioning ───────────────────────────────────────────────────
 
 fn bundled_resources() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe() {
-        let macos = exe.parent().unwrap_or(std::path::Path::new("."));
-        let resources = macos.parent().unwrap_or(macos).join("Resources");
-        if resources.exists() {
-            return resources;
-        }
-        let dev = macos.join("resources");
-        if dev.exists() {
-            return dev;
-        }
-    }
-    std::path::PathBuf::from("resources")
+    cdj3k_emu_platform::bundled::resources()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn provision(
     upd_path: PathBuf,
     key: Option<cdj3k_emu_firmware::LuksKey>,
     target_instance: u32,
     model: Model,
+    ssh: bool,
     status: Arc<Mutex<ProvisionStep>>,
     log: Arc<Mutex<String>>,
     ctx: Context,
@@ -864,9 +904,7 @@ fn provision(
     let paths = staged.paths.clone();
     log!("[slot] staging dir = {}", paths.dir().display());
 
-    // A `.UPD` is a bare LUKS container whose header names no product, so its
-    // file name is all there is to go on. An `.iso` has been unwrapped by
-    // hand already and is taken on trust.
+    // An `.iso` has been unwrapped by hand already and is taken on trust.
     if key.is_some() {
         let name = upd_path.to_string_lossy();
         match upd_name_objection(&name, model, target_instance) {
@@ -928,7 +966,7 @@ fn provision(
         std::fs::create_dir_all(&out_dir)
     );
 
-    // Vanilla kernel ships in the app bundle - no Pioneer extraction or SMC patching.
+    // The vanilla kernel ships in the app bundle.
     let resources_dir = bundled_resources();
     let kernel_src = resources_dir.join("Image");
     let kernel_out = paths.kernel.clone();
@@ -945,7 +983,7 @@ fn provision(
     );
     log!("[kernel] OK");
 
-    // 4. Patch initramfs - still uses Pioneer firmware as the rootfs base
+    // 4. Patch initramfs - Pioneer firmware is the rootfs base
     //    (EP122 binary and Pioneer libraries live there).
     //    The Pioneer kernel is extracted to a temp file solely to unpack the
     //    embedded initramfs; it is not used as the final kernel.
@@ -976,11 +1014,58 @@ fn provision(
     let _ = std::fs::remove_file(&pioneer_kernel_tmp);
     log!("[initramfs] OK");
 
-    try_step!(
-        ProvisionStep::PatchingInitramfs,
-        cdj3k_emu_firmware::patch_initramfs(&initramfs_orig, &resources_dir, &initramfs_patched)
+    // Patching happens inside a throwaway guest, where the scripts' modes,
+    // symlinks and setuid bits hold. Setting `CDJ3K_INITRAMFS_HOST` patches on
+    // the host instead, which needs bash, GNU sed and cpio and drops setuid.
+    if std::env::var_os("CDJ3K_INITRAMFS_HOST").is_some() {
+        try_step!(
+            ProvisionStep::PatchingInitramfs,
+            cdj3k_emu_firmware::patch_initramfs(
+                &initramfs_orig,
+                &resources_dir,
+                &initramfs_patched
+            )
             .map_err(|e| std::io::Error::other(e.to_string()))
-    );
+        );
+    } else {
+        let scratch = initramfs_patched.with_extension("handback.img");
+        let size = try_step!(
+            ProvisionStep::PatchingInitramfs,
+            cdj3k_emu_firmware::initramfs_guest::scratch_size_for(&initramfs_orig)
+                .map_err(|e| std::io::Error::other(e.to_string()))
+        );
+        try_step!(
+            ProvisionStep::PatchingInitramfs,
+            std::fs::File::create(&scratch).and_then(|f| f.set_len(size))
+        );
+        log!(
+            "[patch] provisioning guest: {} MiB scratch",
+            size / (1 << 20)
+        );
+
+        let runner = cdj3k_emu_runtime::QemuGuestRunner {
+            ssh,
+            ..Default::default()
+        };
+        if ssh {
+            log!("[patch] root SSH enabled");
+        }
+        let result = cdj3k_emu_firmware::patch_initramfs_in_guest(
+            &initramfs_orig,
+            &resources_dir,
+            &initramfs_patched,
+            &cdj3k_emu_firmware::GuestProvision {
+                kernel: &kernel_src,
+                scratch: &scratch,
+                runner: &runner,
+            },
+        );
+        let _ = std::fs::remove_file(&scratch);
+        try_step!(
+            ProvisionStep::PatchingInitramfs,
+            result.map_err(|e| std::io::Error::other(e.to_string()))
+        );
+    }
     log!("[patch] OK → {}", initramfs_patched.display());
     let _ = std::fs::remove_file(&initramfs_orig);
 
