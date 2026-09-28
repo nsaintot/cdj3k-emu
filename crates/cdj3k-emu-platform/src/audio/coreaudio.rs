@@ -1,11 +1,11 @@
-//! Enumerate CoreAudio output devices for the per-instance "Audio Output"
-//! picker. UID is the stable identifier across reboots / USB replug; the
-//! display name is shown to the user but never persisted.
+//! CoreAudio output devices, through raw HAL FFI.
 //!
-//! Raw HAL FFI to keep the dep set small (no `coreaudio-sys`). The HAL
-//! property API is stable and these constants haven't moved in 15 years.
+//! Raw rather than a `coreaudio-sys` dependency: the HAL property constants
+//! are stable.
 
 use std::ffi::{c_char, c_void, CStr};
+
+use super::AudioOutDevice;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -89,21 +89,6 @@ extern "C" {
 }
 
 // ── Public surface ───────────────────────────────────────────────────────────
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AudioOutDevice {
-    /// Stable identifier (e.g. `"AppleHDAEngineOutput:1B,0,1,1:0"` or
-    /// `"BuiltInSpeakerDevice"`). Persisted in InstanceSettings.
-    pub uid: String,
-    /// Human label as shown in macOS Sound Preferences.
-    pub name: String,
-    /// True when this device matches the current system default output.
-    pub is_default: bool,
-    /// Current nominal sample rate in Hz, or 0 if the property is
-    /// unavailable. Shown in the menu so the user can spot devices that
-    /// aren't on the guest-expected 96 kHz without opening AMS.
-    pub sample_rate_hz: u32,
-}
 
 /// Enumerate every device that exposes at least one output stream.
 /// Returns the devices sorted by display name for a stable menu order.
@@ -229,9 +214,8 @@ fn device_has_output_streams(id: AudioObjectID) -> bool {
     // AudioBufferList layout: u32 mNumberBuffers + variable AudioBuffer
     // tail. AudioBuffer holds a pointer so it is 8-byte aligned, which means
     // there are 4 padding bytes after mNumberBuffers before mBuffers[0].
-    // Walk the buffers via the struct field offset (don't hand-compute from
-    // sizeof(u32), or you read 4 bytes early and every channel count looks
-    // like garbage, filtering out every device).
+    // Walk the buffers via the struct field offset, not sizeof(u32).
+
     let list = unsafe { &*(buf.as_ptr() as *const AudioBufferList) };
     if list.number_buffers == 0 {
         return false;

@@ -306,9 +306,13 @@ pub(in crate::app) struct PickerView<'a> {
     /// The slot shown is not this window's. Its emulation runs in its own
     /// window, so the deck it holds offers a launch rather than a reinstall.
     pub foreign: bool,
-    /// That slot's window is already up, so its installation is not this
-    /// window's to touch.
+    /// That slot's window is already up, so its installation is its window's
+    /// to change: a delete from here is a request to it.
     pub busy: bool,
+    /// That window's emulation is running, not merely open.
+    pub running_elsewhere: bool,
+    /// No slot holds anything: the only way on is an install.
+    pub every_slot_empty: bool,
     /// The firmware release installed in the slot shown.
     pub release: Option<&'a str>,
 }
@@ -789,13 +793,14 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
         release: view.release,
         state: match (view.running, view.busy) {
             (Some(_), _) => Some("RUNNING"),
+            (None, true) if view.running_elsewhere => Some("RUNNING"),
             (None, true) => Some("OPEN"),
             _ => None,
         },
-        title: if view.dismissable {
-            "Choose an emulation"
-        } else {
+        title: if view.every_slot_empty {
             "Install an emulation"
+        } else {
+            "Choose an emulation"
         },
         sub: &sub,
         switchable: true,
@@ -866,21 +871,23 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
     // Leaving the slot as it is: a named button in the bar, where the window's
     // other actions are, rather than a second cross under the one the desktop
     // already draws.
-    // A slot whose own window has it keeps its installation; and only a window
-    // standing over an emulation has anything to go back to.
-    let deletable = view.installed.is_some() && !view.busy;
-    if view.dismissable || deletable {
+    // Any installed slot can be emptied: one held by another window is
+    // emptied by that window, on request. Leaving is always possible once
+    // something is installed somewhere; with every slot empty an install is
+    // the only way on.
+    let deletable = view.installed.is_some();
+    let closable = view.dismissable || !view.every_slot_empty;
+    if closable || deletable {
         ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
             theme::apply_setup_style(ui, pal);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if view.dismissable && theme::secondary(ui, button_size(k), "Close", pal).clicked()
-                {
+                if closable && theme::secondary(ui, button_size(k), "Close", pal).clicked() {
                     action = Some(PickerAction::Dismiss);
                 }
                 // Beside the dismiss, behind a rule and outlined rather than
                 // filled: destructive, but not the thing this step is for.
                 if deletable {
-                    if view.dismissable {
+                    if closable {
                         footer_rule(ui, pal, k);
                     }
                     // Which slot is the strip's job, at the top of the window;
@@ -1208,7 +1215,10 @@ pub(in crate::app) fn draw_delete_confirm(
     let pal = theme::palette(ui.ctx());
     let held = view.installed.map(|m| m.title()).unwrap_or("nothing");
     let title = format!("Delete the emulation in slot {}?", view.slot);
-    let sub = if view.running.is_some() {
+    let sub = if view.running_elsewhere {
+        "Its window stops the emulation first - QEMU holds the eMMC open while it runs - and \
+         the slot goes back to empty. Nothing is installed in its place."
+    } else if view.running.is_some() {
         "The emulation stops first - QEMU holds the eMMC open while it runs - and the slot goes \
          back to empty. Nothing is installed in its place."
     } else {

@@ -1,5 +1,4 @@
 use std::net::TcpStream;
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Arc;
@@ -40,15 +39,12 @@ pub fn kill_qemu_child() {
     if pid <= 0 {
         return;
     }
-    unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    crate::process::terminate(pid);
     let deadline = Instant::now() + SIGTERM_GRACE;
-    while Instant::now() < deadline {
-        if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
-            break; // process gone
-        }
+    while Instant::now() < deadline && crate::process::is_alive(pid) {
         std::thread::sleep(SIGTERM_POLL);
     }
-    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    crate::process::kill(pid);
     QEMU_CHILD_PID.store(-1, Ordering::Relaxed);
 }
 
@@ -56,7 +52,7 @@ pub fn kill_qemu_child() {
 pub fn kill_qemu_child_now() {
     let pid = QEMU_CHILD_PID.load(Ordering::Relaxed);
     if pid > 0 {
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        crate::process::kill(pid);
     }
 }
 
@@ -101,7 +97,6 @@ pub struct QemuInstance {
 impl QemuInstance {
     /// Spawn QEMU as a child subprocess (re-exec self with --qemu-worker).
     /// Kills any stale QEMU from a previous .app run before spawning.
-    #[cfg(target_os = "macos")]
     pub fn spawn(config: QemuConfig) -> Result<Self, InstanceError> {
         // Exclusive non-blocking flock on the eMMC qcow2 - prevents two cdj3k-emu
         // instances from corrupting the same image. The lock is released when
@@ -115,7 +110,7 @@ impl QemuInstance {
                 .open(emmc)
                 .map_err(InstanceError::SockDir)?;
             let mut tries = 0;
-            while unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            while cdj3k_emu_platform::file_lock::lock(&f, emmc).is_err() {
                 tries += 1;
                 if tries > 12 {
                     return Err(InstanceError::EmmcLocked(emmc.clone()));
@@ -131,6 +126,10 @@ impl QemuInstance {
         // that window holds the lock, and the QEMU on this QMP port is live.
         kill_stale(config.qmp_port, &config.sock_dir());
 
+        // Through the runtime root, not straight to the instance directory:
+        // the host's isolation step runs on the root when it is created.
+        cdj3k_emu_platform::runtime_paths::ensure_runtime_base_dir()
+            .map_err(InstanceError::SockDir)?;
         std::fs::create_dir_all(config.sock_dir()).map_err(InstanceError::SockDir)?;
 
         if config.shm {
@@ -164,39 +163,14 @@ impl QemuInstance {
         }
 
         let qemu_argv = config.build_argv();
-        let self_exe = std::env::current_exe().map_err(InstanceError::SockDir)?;
-
         eprintln!(
-            "cdj3k-emu: spawning QEMU subprocess: {} --qemu-worker {}",
-            self_exe.display(),
-            qemu_argv.join(" ")
+            "cdj3k-emu: spawning QEMU subprocess: {}",
+            crate::qemu_exec::describe(&qemu_argv)
         );
 
-        let tap_fd = config.net_tap_fd;
-        let mut cmd = std::process::Command::new(&self_exe);
-        cmd.arg("--qemu-worker").args(&qemu_argv);
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(move || {
-                // Re-clear FD_CLOEXEC after fork so the tap fd reaches cdj3k_emu_qemu_run.
-                if let Some(fd) = tap_fd {
-                    libc::fcntl(fd, libc::F_SETFD, 0);
-                }
-                // Pin QEMU's main thread to USER_INTERACTIVE QoS so macOS keeps
-                // it on P-cores. Process-default QoS is inherited by QEMU
-                // threads spawned later (audio callback, vCPU threads), which
-                // reduces gap_max in the virtio_snd TX-return path.
-                extern "C" {
-                    fn pthread_set_qos_class_self_np(
-                        qos_class: u32,
-                        relative_priority: i32,
-                    ) -> libc::c_int;
-                }
-                const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
-                pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-                Ok(())
-            });
-        }
+        let mut cmd = crate::qemu_exec::qemu_command(config.net_tap_fd)
+            .map_err(InstanceError::SockDir)?
+            .with_argv(&qemu_argv);
         let child = cmd.spawn().map_err(InstanceError::SockDir)?;
 
         let pid = child.id();
@@ -275,7 +249,6 @@ impl QemuInstance {
     }
 
     /// Stop and restart with a new config.
-    #[cfg(target_os = "macos")]
     pub fn restart(&mut self, new_config: QemuConfig) -> Result<(), InstanceError> {
         self.stop();
         // Release the flock before spawn tries to re-acquire it on a new fd.
@@ -324,7 +297,7 @@ fn wait_or_kill(running: &Arc<AtomicBool>, pid: u32, timeout: Duration) {
             "cdj3k-emu: QEMU did not exit within {}s - sending SIGKILL",
             timeout.as_secs()
         );
-        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        crate::process::kill(pid as i32);
     }
 }
 
@@ -399,6 +372,24 @@ pub fn cleanup_qemu_files(sock_dir: &Path) {
     cleanup_qemu_files_inner(sock_dir, /* keep_dir = */ false);
 }
 
+/// Whether a name in the sock dir belongs to the app rather than to QEMU.
+///
+/// Everything else in there is QEMU's and the next spawn rebuilds it, so a
+/// restart clears it. These outlive a respawn and a restart must not touch
+/// them:
+///
+/// * `tapbridge.*` are the macOS tap bridge's heartbeat, script and hand-over
+///   files. Its elevated watcher destroys the bridge when the heartbeat goes,
+///   so deleting it would take the link QEMU is being handed.
+/// * `linuxnet.*` are the Linux link's elevated script and hand-over file.
+/// * `midi-driver.sock` is bound by `MidiDriverLink` for as long as PC Link
+///   is on, and the CoreMIDI plugin dials it by name.
+///
+/// A new bridge back end names its files here.
+fn app_owned(name: &str) -> bool {
+    name.starts_with("tapbridge.") || name.starts_with("linuxnet.") || name == "midi-driver.sock"
+}
+
 /// Restart-time cleanup: empties the sock dir but keeps the directory, which
 /// the next QEMU spawn reuses.
 pub fn cleanup_qemu_files_for_restart(sock_dir: &Path) {
@@ -419,17 +410,9 @@ fn cleanup_qemu_files_inner(sock_dir: &Path, keep_dir: bool) {
     if let Ok(entries) = std::fs::read_dir(sock_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            // Files here belong to the QEMU process and are rebuilt by the
-            // next one.  These two are owned by the app and outlive a
-            // respawn, so a restart leaves them alone:
-            //   `tapbridge.alive` is the heartbeat the root-side watcher
-            //   polls; removing it tells the watcher to destroy the bridge
-            //   and the TAP.  `TapBridge`'s Drop owns these files.
-            //   `midi-driver.sock` is bound by `MidiDriverLink` for as long
-            //   as PC Link is on, and the CoreMIDI plugin dials it by name.
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if keep_dir && (name.starts_with("tapbridge.") || name == "midi-driver.sock") {
+            if keep_dir && app_owned(&name) {
                 continue;
             }
             if let Ok(ft) = entry.file_type() {
@@ -450,11 +433,10 @@ fn cleanup_qemu_files_inner(sock_dir: &Path, keep_dir: bool) {
 mod cleanup_tests {
     use super::{cleanup_qemu_files, cleanup_qemu_files_for_restart};
 
-    /// The restart path must leave `tapbridge.*` alone - removing the
-    /// heartbeat tells the root watcher to destroy the bridge and TAP that
-    /// QEMU is about to be handed.  Shutdown takes them with everything else.
+    /// A restart leaves a bridge's files alone; shutdown takes them with
+    /// everything else.
     #[test]
-    fn restart_keeps_tapbridge_state_shutdown_does_not() {
+    fn restart_keeps_bridge_state_shutdown_does_not() {
         let dir = std::env::temp_dir().join(format!("cdj3k-tapclean-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let seed = || {
@@ -463,6 +445,9 @@ mod cleanup_tests {
                 "tapbridge.alive",
                 "tapbridge.sh",
                 "tapbridge.names",
+                "linuxnet.sh",
+                "linuxnet.ready",
+                "midi-driver.sock",
                 "ctrl.sock",
             ] {
                 std::fs::write(dir.join(f), "").unwrap();
@@ -477,6 +462,9 @@ mod cleanup_tests {
         );
         assert!(dir.join("tapbridge.sh").exists());
         assert!(dir.join("tapbridge.names").exists());
+        assert!(dir.join("linuxnet.sh").exists());
+        assert!(dir.join("linuxnet.ready").exists());
+        assert!(dir.join("midi-driver.sock").exists());
         assert!(!dir.join("ctrl.sock").exists(), "QEMU-owned files still go");
         assert!(dir.exists(), "restart keeps the dir");
 

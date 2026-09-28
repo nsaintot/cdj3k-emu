@@ -24,7 +24,7 @@ use std::io;
 use std::os::raw::{c_char, c_int};
 use std::time::{Duration, Instant};
 
-use super::usb::PhysicalDisk;
+use super::PhysicalDisk;
 
 // ── CoreFoundation ────────────────────────────────────────────────────────────
 

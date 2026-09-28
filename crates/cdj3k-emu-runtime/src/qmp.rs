@@ -1,5 +1,11 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -72,26 +78,7 @@ impl QmpClient {
         line.push('\n');
         self.stream.write_all(line.as_bytes())?;
 
-        // Read response lines until we see a "return" or "error" key.
-        loop {
-            let resp_str = self.read_line()?;
-            if resp_str.trim().is_empty() {
-                continue;
-            }
-            let resp: Value = serde_json::from_str(&resp_str)?;
-            if let Some(ret) = resp.get("return") {
-                return Ok(ret.clone());
-            }
-            if let Some(err) = resp.get("error") {
-                let msg = err
-                    .get("desc")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("unknown QMP error")
-                    .to_string();
-                return Err(QmpError::QemuError(msg));
-            }
-            // Could be an event - skip and read next line.
-        }
+        read_reply(&mut self.reader)
     }
 
     /// Hot-add a raw block device file as a named blockdev node.
@@ -122,20 +109,20 @@ impl QmpClient {
     /// Swap the medium behind a named drive (id= from -drive if=none).
     /// Triggers virtio_blk_change_media → virtio_notify_config on the QEMU side,
     /// which fires virtblk_config_changed → revalidate_disk in the Pioneer guest.
+    ///
+    /// `format: None` leaves the driver chain to the filename, for a `json:`
+    /// filename that spells it out.
     pub fn blockdev_change_medium(
         &mut self,
         drive_id: &str,
         filename: &str,
-        format: &str,
+        format: Option<&str>,
     ) -> Result<Value, QmpError> {
-        self.execute(
-            "blockdev-change-medium",
-            &serde_json::json!({
-                "device": drive_id,
-                "filename": filename,
-                "format": format
-            }),
-        )
+        let mut args = serde_json::json!({ "device": drive_id, "filename": filename });
+        if let Some(format) = format {
+            args["format"] = format.into();
+        }
+        self.execute("blockdev-change-medium", &args)
     }
 
     /// Return the current backing filename for a named drive.
@@ -170,6 +157,13 @@ impl QmpClient {
         Err(()) // drive not found in list
     }
 
+    /// Release an fdset handed over with [`add_fd`], closing QEMU's copy of the
+    /// descriptor. Media opened from it keep their own duplicates.
+    pub fn remove_fd(&mut self, fdset_id: u64) -> Result<(), QmpError> {
+        self.execute("remove-fd", &serde_json::json!({ "fdset-id": fdset_id }))?;
+        Ok(())
+    }
+
     /// Send ACPI power button event - guest systemd handles graceful shutdown.
     /// Errors are swallowed: if QMP is already gone the caller's next
     /// `wait_or_kill` will SIGKILL the child anyway, and surfacing the error
@@ -187,8 +181,89 @@ impl QmpClient {
     }
 
     fn read_line(&mut self) -> Result<String, QmpError> {
-        let mut line = String::new();
-        self.reader.read_line(&mut line)?;
-        Ok(line)
+        read_line(&mut self.reader)
     }
+}
+
+fn read_line(reader: &mut impl BufRead) -> Result<String, QmpError> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Err(QmpError::Io(std::io::ErrorKind::UnexpectedEof.into()));
+    }
+    Ok(line)
+}
+
+/// Read lines until a command's reply, skipping events. Returns its `return`.
+fn read_reply(reader: &mut impl BufRead) -> Result<Value, QmpError> {
+    loop {
+        let resp_str = read_line(reader)?;
+        if resp_str.trim().is_empty() {
+            continue;
+        }
+        let resp: Value = serde_json::from_str(&resp_str)?;
+        if let Some(ret) = resp.get("return") {
+            return Ok(ret.clone());
+        }
+        if let Some(err) = resp.get("error") {
+            let msg = err
+                .get("desc")
+                .and_then(|d| d.as_str())
+                .unwrap_or("unknown QMP error")
+                .to_string();
+            return Err(QmpError::QemuError(msg));
+        }
+    }
+}
+
+/// Hand QEMU a file descriptor through the Unix-socket monitor at `socket`,
+/// and return the fdset it joined: open it in QEMU as `/dev/fdset/<id>`.
+///
+/// QEMU keeps a non-empty fdset after this connection closes, until
+/// [`QmpClient::remove_fd`].
+#[cfg(unix)]
+pub fn add_fd(socket: &Path, fd: BorrowedFd<'_>) -> Result<u64, QmpError> {
+    let stream = UnixStream::connect(socket)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+    read_line(&mut reader)?;
+    (&stream).write_all(b"{\"execute\":\"qmp_capabilities\"}\n")?;
+    read_reply(&mut reader)?;
+    send_with_fd(&stream, b"{\"execute\":\"add-fd\"}\n", fd.as_raw_fd())?;
+    let ret = read_reply(&mut reader)?;
+    ret.get("fdset-id")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| QmpError::QemuError(format!("add-fd returned no fdset-id: {ret}")))
+}
+
+/// Write `data` with `fd` attached as SCM_RIGHTS, in one message so QEMU sees
+/// the descriptor with the command that claims it.
+#[cfg(unix)]
+fn send_with_fd(stream: &UnixStream, data: &[u8], fd: RawFd) -> std::io::Result<()> {
+    let mut iov = libc::iovec {
+        iov_base: data.as_ptr() as *mut libc::c_void,
+        iov_len: data.len(),
+    };
+    // u64 words keep the control buffer aligned for `cmsghdr`.
+    let mut control = [0u64; 8];
+    let fd_len = std::mem::size_of::<RawFd>() as u32;
+    // SAFETY: msghdr is plain data; every pointer set below outlives sendmsg,
+    // and the control buffer is aligned and larger than CMSG_SPACE(one fd).
+    let sent = unsafe {
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr().cast();
+        msg.msg_controllen = libc::CMSG_SPACE(fd_len) as _;
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        (*cmsg).cmsg_level = libc::SOL_SOCKET;
+        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(fd_len) as _;
+        std::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<RawFd>(), fd);
+        libc::sendmsg(stream.as_raw_fd(), &msg, 0)
+    };
+    if sent < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut stream = stream;
+    stream.write_all(&data[sent as usize..])
 }

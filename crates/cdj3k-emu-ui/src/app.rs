@@ -44,17 +44,6 @@ pub(crate) const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 /// drop the shade anyway this long after QEMU starts.
 const BOOT_SHADE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Frames the inner window size must remain stable before the aspect-snap
-/// fires (so brief pauses during a drag don't trigger a mid-drag resize).
-const STABLE_FRAMES_REQUIRED: u32 = 8;
-
-/// Movement threshold (px²) below which a frame is considered "stable" for
-/// the aspect-snap detector.
-const STABLE_SIZE_TOL_SQ: f32 = 0.25;
-
-/// Aspect-ratio tolerance before the snap fires (relative).
-const ASPECT_SNAP_TOL: f32 = 0.001;
-
 /// EMA factor for the smoothed FPS estimate.
 const FPS_EMA_ALPHA: f32 = 0.1;
 
@@ -215,10 +204,8 @@ pub struct CdjApp {
     grip_cache: ui::draw_cache::ShapeCache<(i32, i32, i32, i32)>,
 
     fps_smooth: f32,
-    /// Previous frame's inner window size. Used to detect "stable" (not mid-drag)
-    /// so the aspect-ratio snap only fires after a resize settles.
-    last_inner_size: egui::Vec2,
-    stable_frames: u32,
+    /// What holding the window to the chassis aspect carries between frames.
+    resize: cdj3k_emu_platform::desktop::ResizeState,
     /// Shapes submitted to the egui painter in the current frame (reset each update).
     frame_shape_count: u64,
     /// Last MISO frame sent to the device (first 32 bytes displayed for debugging).
@@ -356,8 +343,7 @@ impl CdjApp {
             jog_corner_labels_cache: ui::draw_cache::ShapeCache::new(),
             grip_cache: ui::draw_cache::ShapeCache::new(),
             fps_smooth: 60.0,
-            last_inner_size: egui::Vec2::ZERO,
-            stable_frames: 0,
+            resize: Default::default(),
             frame_shape_count: 0,
             last_miso: [0u8; miso_frame::MISO_SIZE],
             jog_dbg_last_source: "none",
@@ -407,8 +393,7 @@ impl CdjApp {
         self.grip_cache = ui::draw_cache::ShapeCache::new();
         // The window is re-shaped for the new canvas; let the aspect snap
         // re-evaluate from scratch.
-        self.last_inner_size = egui::Vec2::ZERO;
-        self.stable_frames = 0;
+        self.resize = Default::default();
     }
 
     /// The panel is hidden (picker shown): release any held or latched
@@ -465,12 +450,13 @@ impl CdjApp {
             puffin::GlobalProfiler::lock().new_frame();
         }
 
-        cdj3k_emu_platform::desktop::apply_macos_resize_constraints_from_frame(
+        let ref_canvas = self.ref_canvas();
+        cdj3k_emu_platform::desktop::apply_resize_constraints(
+            ctx,
             frame,
-            Some(self.ref_canvas()),
+            &mut self.resize,
+            Some(ref_canvas),
         );
-
-        self.snap_window_aspect(ctx);
 
         self.poll_menu_state();
 
@@ -687,33 +673,6 @@ impl CdjApp {
         ui::slate::for_model(self.model).ref_canvas
     }
 
-    /// Snap the inner window aspect to the layout reference once a resize
-    /// has settled. `setContentAspectRatio` only constrains *future*
-    /// resizes; if the window comes up at the wrong aspect (e.g. autosaved
-    /// from a prior layout), it stays letterboxed without this.
-    fn snap_window_aspect(&mut self, ctx: &egui::Context) {
-        let (ref_w, ref_h) = self.ref_canvas();
-        let size = ctx.screen_rect().size();
-        if (size - self.last_inner_size).length_sq() < STABLE_SIZE_TOL_SQ {
-            self.stable_frames = self.stable_frames.saturating_add(1);
-        } else {
-            self.stable_frames = 0;
-        }
-        self.last_inner_size = size;
-        if self.stable_frames < STABLE_FRAMES_REQUIRED {
-            return;
-        }
-        let target_aspect = ref_w / ref_h;
-        let current_aspect = size.x / size.y;
-        if (current_aspect - target_aspect).abs() > ASPECT_SNAP_TOL {
-            let new_w = size.y * target_aspect;
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(
-                new_w, size.y,
-            )));
-            self.stable_frames = 0;
-        }
-    }
-
     /// Pull menu state (set by the native macOS menu or the egui menu):
     /// the pop-out toggles and power-off requests.
     fn poll_menu_state(&mut self) {
@@ -760,6 +719,7 @@ impl CdjApp {
             .qemu_running_since
             .is_some_and(|t| t.elapsed() >= BOOT_SHADE_TIMEOUT);
         let booting = (qemu_running && !panel_driven && !waited) || shade_forced;
+        menu_state::lock().guest_booted = qemu_running && !booting;
         // `--no-spawn` has no guest to wait for: keep the chassis unshaded.
         let target_alpha: f32 = if ui_only {
             0.0
@@ -793,6 +753,7 @@ impl CdjApp {
         let mask = bloom::BloomMask {
             excludes: self.bloom_excludes.clone(),
             keeps: self.bloom_keeps.clone(),
+            chrome: cdj3k_emu_platform::menu::chrome_rects(ctx),
         };
         let scene_key = self.bloom_scene_key();
         let cb = eframe::egui_glow::CallbackFn::new(move |info, painter| {
@@ -813,6 +774,9 @@ impl CdjApp {
                 scene_key,
             );
         });
+        // `Order::Debug` is above the `Order::Foreground` a menu draws in, and
+        // the pass covers the whole viewport: the mask's chrome rects keep it
+        // off the strip and every open panel.
         ctx.layer_painter(egui::LayerId::new(
             egui::Order::Debug,
             egui::Id::new("bloom_pass"),

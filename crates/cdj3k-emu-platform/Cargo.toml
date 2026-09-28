@@ -10,14 +10,39 @@ publish.workspace = true
 
 [dependencies]
 cdj3k-emu-panel = { path = "../cdj3k-emu-panel", default-features = false }
-eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
+eframe = { version = "0.29", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
 egui = "0.29"
 libc = "0.2"
 raw-window-handle = "0.6"
-muda = "0.15"
 rfd = { version = "0.15", default-features = false }
 
+# rfd's default backend is GTK3. xdg-portal talks to the desktop portal over
+# D-Bus instead, so no GUI toolkit is linked in.
+#
+# async-std rather than tokio: the picker is called from the UI thread with no
+# runtime around it, and zbus's tokio executor panics there
+# ("there is no reactor running"). async-std's `block_on` drives the executor
+# itself, which is what a blocking dialog needs.
+[target.'cfg(target_os = "linux")'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+
+# GNOME draws no server-side decorations on Wayland. Without this feature winit
+# draws a plain fallback frame that ignores the light/dark setting. eframe
+# enables it only through `winit/default`, which `default-features = false`
+# turns off.
+winit = { version = "0.30", default-features = false, features = ["wayland", "wayland-csd-adwaita"] }
+# WM_NORMAL_HINTS for the X11 aspect lock (desktop/linux.rs). Already in the
+# build through winit; the pure-Rust connection needs no system library.
+x11rb = { version = "0.13", default-features = false }
+
 [target.'cfg(target_os = "macos")'.dependencies]
+# Native menu bar. macOS only
+muda = "0.15"
 objc2 = { version = "0.5.2", features = ["relax-sign-encoding"] }
 objc2-app-kit = { version = "0.2.2", features = ["NSView", "NSWindow", "NSResponder", "NSOpenPanel", "NSPanel", "NSSavePanel", "NSApplication", "NSRunningApplication"] }
 objc2-foundation = { version = "0.2.2", features = ["NSGeometry", "NSString", "NSThread", "NSURL", "libc"] }

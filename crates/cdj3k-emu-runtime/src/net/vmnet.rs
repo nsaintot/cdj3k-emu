@@ -43,18 +43,16 @@ pub enum VmnetMode {
 }
 
 impl VmnetMode {
-    /// Bridged onto `iface`, or `None` when the name is not a BSD interface
-    /// name.  Names reach a QEMU command line, so they are checked here rather
-    /// than trusted from whatever enumerated them.
+    /// Bridged onto `iface`, or `None` when the name is not one to put on a
+    /// command line.
     pub fn bridged(iface: &str) -> Option<Self> {
-        is_valid_iface(iface).then(|| VmnetMode::Bridged(iface.to_string()))
+        cdj3k_emu_platform::net::is_valid_iface(iface).then(|| VmnetMode::Bridged(iface.to_string()))
     }
 
     /// The `-netdev` argument for this mode.
     ///
-    /// `isolated` is left at its default (off) in both modes: switching it on
-    /// would cut each guest off from the others on the same vmnet network,
-    /// which is the opposite of what DJ-Link discovery needs.
+    /// `isolated` stays at its default (off) in both modes: on, it cuts each
+    /// guest off from the others on the same vmnet network.
     pub fn netdev_arg(&self, id: &str) -> String {
         match self {
             VmnetMode::Host => {
@@ -63,16 +61,6 @@ impl VmnetMode {
             VmnetMode::Bridged(iface) => format!("vmnet-bridged,id={id},ifname={iface}"),
         }
     }
-}
-
-/// Validate an interface name against the BSD ifname grammar before it reaches
-/// a QEMU command line or an elevated shell template.
-pub(crate) fn is_valid_iface(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 16
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 #[cfg(test)]
@@ -92,18 +80,7 @@ mod tests {
 
     #[test]
     fn bridged_rejects_names_outside_the_grammar() {
-        assert!(VmnetMode::bridged("en0").is_some());
         assert!(VmnetMode::bridged("en0 ; reboot").is_none());
         assert!(VmnetMode::bridged("").is_none());
-    }
-
-    #[test]
-    fn iface_names_follow_the_bsd_grammar() {
-        assert!(is_valid_iface("en0"));
-        assert!(is_valid_iface("bridge99"));
-        assert!(!is_valid_iface(""));
-        assert!(!is_valid_iface("en0;reboot"));
-        assert!(!is_valid_iface("en 0"));
-        assert!(!is_valid_iface("aaaaaaaaaaaaaaaaa")); // 17 chars
     }
 }

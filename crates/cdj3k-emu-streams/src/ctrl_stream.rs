@@ -6,7 +6,7 @@
 //! `inject()` can send MISO frames from any thread.
 
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use cdj3k_emu_platform::local_socket::LocalStream as UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;

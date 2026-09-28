@@ -84,28 +84,19 @@ impl RuntimeHost for Host {
         if self.installed_model() != Some(model) {
             return LaunchOutcome::NotProvisioned;
         }
-        #[cfg(target_os = "macos")]
-        {
-            // Recorded before the worker exists; it reads the slot settings
-            // as soon as it starts.
-            persist_model(self.instance, model);
-            self.spawn(model);
-            LaunchOutcome::Started
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = model;
-            LaunchOutcome::UiOnly
-        }
+        // Recorded before the worker exists; it reads the slot settings as
+        // soon as it starts.
+        persist_model(self.instance, model);
+        self.spawn(model);
+        LaunchOutcome::Started
     }
 }
 
-#[cfg(target_os = "macos")]
 impl Host {
     /// Build the QEMU config, pre-build the network backend, spawn QEMU and
     /// the runtime worker. Requires no live worker.
     fn spawn(&self, model: Model) {
-        use cdj3k_emu_runtime::{QemuConfig, QemuInstance, TapBridge, VmnetMode};
+        use cdj3k_emu_runtime::{QemuConfig, QemuInstance};
 
         use crate::runtime_worker;
 
@@ -123,7 +114,7 @@ impl Host {
         config.audio = inst_settings.audio_enabled;
         config.audio_device_uid = inst_settings.audio_device_uid.clone();
         config.service_mode = menu_state::lock().service_mode;
-        config.mac = Some(inst_settings.mac);
+        config.mac = Some(inst_settings.mac.clone());
         config.soc_serial = Some(inst_settings.soc_serial);
         config.serial_log = self.serial_log;
 
@@ -134,7 +125,7 @@ impl Host {
         // immediately.  prev_net_idx in the worker is seeded from this value
         // so the first poll iteration is a no-op for network setup.
         let mut prebuilt_net = runtime_worker::PrebuiltNet {
-            tap_bridge: None,
+            keep: cdj3k_emu_runtime::NetKeepAlive::Nothing,
             initial_net_idx: menu_state::NET_SEL_NONE,
         };
         let (initial_net_idx, iface_name) = {
@@ -146,32 +137,28 @@ impl Host {
             };
             (idx, name)
         };
-        if initial_net_idx == menu_state::NET_SEL_VMNET_HOST {
-            eprintln!("cdj3k-emu: vmnet host-only selected");
-            config.net_vmnet = Some(VmnetMode::Host);
-            prebuilt_net.initial_net_idx = initial_net_idx;
-        }
-        if let Some(name) = iface_name {
-            if name.starts_with("tap") {
-                match TapBridge::setup(&name, config.instance_id) {
-                    Ok(tb) => {
-                        config.net_tap_iface = Some(tb.qemu_tap.clone());
-                        config.net_tap_fd = Some(tb.qemu_tap_fd);
-                        prebuilt_net.tap_bridge = Some(tb);
-                        prebuilt_net.initial_net_idx = initial_net_idx;
-                    }
-                    Err(e) => {
-                        eprintln!("cdj3k-emu: initial tapbridge setup failed: {e}");
-                        menu_state::lock().selected_interface = menu_state::NET_SEL_NONE;
-                    }
+        let attempt = if initial_net_idx == menu_state::NET_SEL_VMNET_HOST {
+            Some(("host-only".to_string(), cdj3k_emu_runtime::net_attach_host_only()))
+        } else {
+            iface_name.map(|name| {
+                let r = cdj3k_emu_runtime::net_attach(&name, &inst_settings.mac, instance);
+                (name, r)
+            })
+        };
+        if let Some((name, result)) = attempt {
+            match result {
+                Ok(a) => {
+                    eprintln!("cdj3k-emu: bridged on {name}");
+                    config.net_vmnet = a.vmnet.clone();
+                    config.net_tap_iface = a.tap_iface.clone();
+                    config.net_tap_fd = a.tap_fd;
+                    prebuilt_net.keep = a.keep;
+                    prebuilt_net.initial_net_idx = initial_net_idx;
                 }
-            } else if let Some(mode) = VmnetMode::bridged(&name) {
-                eprintln!("cdj3k-emu: vmnet bridged on {name}");
-                config.net_vmnet = Some(mode);
-                prebuilt_net.initial_net_idx = initial_net_idx;
-            } else {
-                eprintln!("cdj3k-emu: invalid saved interface name: {name:?}");
-                menu_state::lock().selected_interface = menu_state::NET_SEL_NONE;
+                Err(e) => {
+                    eprintln!("cdj3k-emu: cannot bridge on {name}: {e}");
+                    menu_state::lock().selected_interface = menu_state::NET_SEL_NONE;
+                }
             }
         }
 

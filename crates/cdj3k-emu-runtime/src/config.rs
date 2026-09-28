@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use cdj3k_emu_panel::Model;
+use cdj3k_emu_platform::host::{self, Accelerator};
 
 /// Configuration for a single QEMU player instance.
 #[derive(Clone, Debug)]
@@ -17,19 +18,20 @@ pub struct QemuConfig {
     /// Initramfs image (initramfs-patched.cpio.gz).
     pub initramfs: PathBuf,
 
-    /// Use HVF acceleration.
-    pub hvf: bool,
+    /// The hypervisor to run under, or `None` for software emulation.
+    pub accel: Option<Accelerator>,
 
     /// Back guest RAM with a MAP_SHARED file for host-side mmap injection.
     pub shm: bool,
 
-    /// Expose virtio-sound-device (CoreAudio backend).
+    /// Expose virtio-sound-device.
     pub audio: bool,
 
-    /// CoreAudio device UID (kAudioDevicePropertyDeviceUID) to bind the
-    /// output stream to. `None` means "follow system default output".
-    /// Forwarded to QEMU as `out.device-uid=<UID>` on `-audiodev coreaudio`.
-    /// Only meaningful when `audio == true`.
+    /// Which host output to bind the stream to, named the way this host's
+    /// audio backend names one: a CoreAudio device UID
+    /// (kAudioDevicePropertyDeviceUID) on macOS, a PipeWire sink's node name
+    /// on Linux. `None` means "follow the system default output". Only
+    /// meaningful when `audio == true`.
     pub audio_device_uid: Option<String>,
 
     /// Boot into EP122 service/test mode.
@@ -44,7 +46,7 @@ pub struct QemuConfig {
     /// vmnet backend for Pro DJ Link.  QEMU opens the interface itself via
     /// `-netdev vmnet-host` / `vmnet-bridged`, unprivileged under the
     /// `com.apple.developer.networking.vmnet` entitlement.
-    pub net_vmnet: Option<crate::vmnet::VmnetMode>,
+    pub net_vmnet: Option<crate::net::vmnet::VmnetMode>,
 
     /// TAP interface name - informational only (e.g. for logs/display).
     pub net_tap_iface: Option<String>,
@@ -98,8 +100,7 @@ impl QemuConfig {
             model: Model::Cdj3k,
             kernel,
             initramfs,
-            // CDJ3K_EMU_TCG=1 in the environment selects TCG instead of HVF.
-            hvf: std::env::var_os("CDJ3K_EMU_TCG").is_none(),
+            accel: host::accelerator(),
             shm: false,
             audio: false,
             audio_device_uid: None,
@@ -120,6 +121,12 @@ impl QemuConfig {
     /// Socket directory: see [`runtime_paths::instance_dir`].
     pub fn sock_dir(&self) -> PathBuf {
         cdj3k_emu_platform::runtime_paths::instance_dir(self.instance_id)
+    }
+
+    /// The second QMP monitor, on a Unix socket: the only transport that can
+    /// carry a file descriptor into QEMU (`add-fd`).
+    pub fn qmp_fd_socket(&self) -> PathBuf {
+        self.sock_dir().join("qmp-fd.sock")
     }
 
     /// Shared RAM file path (only when shm=true).
@@ -144,15 +151,9 @@ impl QemuConfig {
     pub fn build_argv(&self) -> Vec<String> {
         let sock = self.sock_dir();
 
-        // GIC selection:
-        //   macOS 15+ (Sequoia) with HVF → in-kernel vGIC via hv_gic_create.
-        //     Drops per-IRQ vCPU-exit cost dramatically; the dominant
-        //     cost driver for HVF guests with chatty workloads (EP122).
-        //   macOS 13/14 or TCG       → userspace GIC emulation.
-        //     Slower per-IRQ but functional - no Apple-side hypervisor
-        //     primitive exists on those releases.
-        // Requires QEMU master post-2026-05-05 for the in-kernel path.
-        let in_kernel_gic = self.hvf && cdj3k_emu_platform::host::has_hvf_in_kernel_gic();
+        // An in-kernel GIC saves a vCPU exit per interrupt, the dominant
+        // cost for the player's IRQ load.
+        let in_kernel_gic = self.accel.is_some_and(|a| a.in_kernel_gic);
         let machine_base = if in_kernel_gic {
             "virt,gic-version=3,kernel-irqchip=on"
         } else {
@@ -167,11 +168,13 @@ impl QemuConfig {
             format!("{}B", Self::MEM_BYTES),
         ];
 
-        if self.hvf {
-            args.extend(["-accel".into(), "hvf".into()]);
-            args.extend(["-cpu".into(), "host".into()]);
-        } else {
-            args.extend(["-cpu".into(), "cortex-a72".into()]);
+        match self.accel {
+            Some(accel) => {
+                args.extend(["-accel".into(), accel.name.into()]);
+                args.extend(["-cpu".into(), "host".into()]);
+            }
+            // The deck is an A72, so emulate one: the app reads /proc/cpuinfo.
+            None => args.extend(["-cpu".into(), "cortex-a72".into()]),
         }
 
         // The RK3399 has 6 cores (2x A72 + 4x A53) and the player app pins
@@ -212,6 +215,13 @@ impl QemuConfig {
         // (which becomes card 0 when Dummy is silent).
         if self.audio {
             kcmd.push_str(" snd-dummy.enable=0");
+            // Under TCG the guest cannot take the player's 64-frame period
+            // (1500 wakeups a second into a 2.7 ms ring at 96 kHz); a larger
+            // one gives the audio thread room to be late. Read by the guest's
+            // insmod-virtio-snd.
+            if self.accel.is_none() {
+                kcmd.push_str(" cdj3k.snd_period=512");
+            }
         }
         // `CDJ3K_KCMD_EXTRA`: append to the kernel cmdline. Lets a dev boot
         // hold a unit back (`systemd.mask=EP145.service`) so the console shell
@@ -278,35 +288,33 @@ impl QemuConfig {
             "-qmp".into(),
             format!("tcp:localhost:{},server=on,wait=off", self.qmp_port),
         ]);
+        if crate::disk::PASSES_FDS {
+            args.extend([
+                "-qmp".into(),
+                format!("unix:{},server=on,wait=off", self.qmp_fd_socket().display()),
+            ]);
+        }
 
         args.extend([
             "-object".into(),
-            "rng-random,id=rng0,filename=/dev/urandom".into(),
+            host::RNG_OBJECT.into(),
             "-device".into(),
             "virtio-rng-device,rng=rng0".into(),
         ]);
 
-        if self.audio {
-            // Build the audiodev string. When the user pinned a specific
-            // device via the per-instance Audio Output picker, append
-            // `out.device-uid=<UID>` so the patched coreaudio.m binds to
-            // that device instead of the system default output.
-            // out.buffer-length=5000 (5 ms): a previous bump to 30000 us
-            // did not help the audible pops because Apple Silicon's
-            // built-in HAL buffer-frame-size range clamped the request
-            // down to ~13.78 ms regardless, AND the underlying cause is
-            // not HAL-side scheduling jitter but guest VCPU starvation
-            // under host CPU/GPU stress. Reverted to 5 ms so we don't
-            // pay latency we don't get any value for. Real fix is RT
-            // scheduling for the HVF VCPU threads (see hvf-accel-ops
-            // patch) so the guest's PCM thread can't be preempted.
-            let mut audiodev =
-                String::from("coreaudio,id=audio0,in.voices=0,out.buffer-length=5000");
+        // A host with no backend gets no `-audiodev` rather than another
+        // host's driver, which QEMU would refuse.
+        if let (true, Some(backend)) = (self.audio, host::AUDIO) {
+            let mut audiodev = String::from(backend.driver);
+            audiodev.push_str(",id=audio0,in.voices=0");
+            audiodev.push_str(backend.options);
             if let Some(uid) = self.audio_device_uid.as_deref().filter(|s| !s.is_empty()) {
-                // CoreAudio UIDs contain ':', spaces, and other chars QEMU's
-                // -audiodev parser passes through untouched (it splits on
-                // ',' and '=' only); no escaping needed in practice.
-                audiodev.push_str(",out.device-uid=");
+                // A pinned device from the per-instance Audio Output picker is
+                // named here so the backend binds to it rather than to the
+                // system default. Both selectors' values contain ':' and
+                // spaces, which QEMU's `-audiodev` parser passes through — it
+                // splits on ',' and '=' only.
+                audiodev.push_str(backend.device_selector);
                 audiodev.push_str(uid);
             }
             args.extend([
@@ -439,5 +447,107 @@ impl QemuConfig {
         args.extend(["-gdb".into(), format!("tcp::{}", self.gdb_port)]);
 
         args
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> QemuConfig {
+        let mut c = QemuConfig::new(PathBuf::from("/k/Image"), PathBuf::from("/k/initramfs"));
+        c.audio = true;
+        c.shm = true;
+        c
+    }
+
+    /// Every host gets the same guest topology: six cores, the same RAM, GICv3.
+    #[test]
+    fn the_guest_topology_is_identical_on_every_host() {
+        let a = config().build_argv().join(" ");
+        assert!(a.contains("-smp 6"), "{a}");
+        assert!(a.contains(&format!("{}B", QemuConfig::MEM_BYTES)), "{a}");
+        assert!(a.contains("virt,gic-version=3"), "{a}");
+    }
+
+    const KVM: Accelerator = Accelerator {
+        name: "kvm",
+        in_kernel_gic: true,
+    };
+
+    #[test]
+    fn an_accelerated_guest_runs_the_hosts_cpu() {
+        let mut c = config();
+        c.accel = Some(KVM);
+        let joined = c.build_argv().join(" ");
+        assert!(joined.contains("-accel kvm"), "{joined}");
+        assert!(joined.contains("-cpu host"), "{joined}");
+        assert!(joined.contains("kernel-irqchip=on"), "{joined}");
+    }
+
+    #[test]
+    fn software_emulation_runs_the_decks_own_core() {
+        let mut c = config();
+        c.accel = None;
+        let joined = c.build_argv().join(" ");
+        assert!(!joined.contains("-accel"), "{joined}");
+        assert!(joined.contains("-cpu cortex-a72"), "{joined}");
+        assert!(joined.contains("kernel-irqchip=off"), "{joined}");
+    }
+
+    /// The larger ALSA period is for TCG alone; an accelerated guest keeps
+    /// the player's own.
+    #[test]
+    fn only_tcg_widens_the_audio_period() {
+        let mut c = config();
+        c.accel = None;
+        assert!(c.build_argv().join(" ").contains(" cdj3k.snd_period=512"));
+        c.accel = Some(KVM);
+        assert!(!c.build_argv().join(" ").contains("cdj3k.snd_period"));
+    }
+
+    #[test]
+    fn the_audio_backend_is_the_hosts_own() {
+        let joined = config().build_argv().join(" ");
+        let Some(backend) = host::AUDIO else {
+            // A host with no backend gets no audio device at all.
+            assert!(!joined.contains("-audiodev"), "{joined}");
+            assert!(!joined.contains("virtio-sound-device"), "{joined}");
+            return;
+        };
+        assert!(
+            joined.contains(&format!("-audiodev {}", backend.driver)),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("virtio-sound-device,audiodev=audio0"),
+            "{joined}"
+        );
+    }
+
+    #[test]
+    fn a_pinned_output_device_uses_the_backends_own_selector() {
+        let Some(backend) = host::AUDIO else {
+            return;
+        };
+        let mut c = config();
+        c.audio_device_uid = Some("Some Output".into());
+        let joined = c.build_argv().join(" ");
+        assert!(
+            joined.contains(&format!("{}Some Output", backend.device_selector)),
+            "{joined}"
+        );
+    }
+
+    #[test]
+    fn the_ram_file_is_handed_to_qemu_as_the_machine_memory() {
+        let c = config();
+        let joined = c.build_argv().join(" ");
+        assert!(joined.contains("memory-backend-file,id=ram0"), "{joined}");
+        assert!(
+            joined.contains(&c.shm_path().display().to_string()),
+            "{joined}"
+        );
+        assert!(joined.contains("memory-backend=ram0"), "{joined}");
     }
 }

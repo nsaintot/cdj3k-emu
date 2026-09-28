@@ -12,23 +12,9 @@ use std::path::PathBuf;
 
 use cdj3k_emu_panel::Model;
 
-/// `~/Library/Application Support/<BUNDLE_ID>/` on macOS,
-/// `$XDG_DATA_HOME/<BUNDLE_ID>/` (fallback: `~/.local/share/<BUNDLE_ID>/`)
-/// elsewhere. The directory name is the macOS bundle identifier, matching
-/// the OS convention (reverse-DNS, never the human display name).
-pub fn app_data_dir() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    let base = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join("Library")
-        .join("Application Support");
-    #[cfg(not(target_os = "macos"))]
-    let base = std::env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".local/share")
-        });
-    base.join(cdj3k_emu_platform::app_meta::BUNDLE_ID)
-}
+/// [`cdj3k_emu_platform::app_dirs::app_data_dir`], re-exported because this is
+/// where the slot directories under it are addressed from.
+pub use cdj3k_emu_platform::app_dirs::app_data_dir;
 
 /// `app_data_dir()/instance-N`: the slot's settings and its firmware.
 pub fn instance_dir(instance_id: u32) -> PathBuf {
@@ -149,6 +135,46 @@ pub fn slot_holder(instance_id: u32) -> Option<u32> {
     }
 }
 
+/// Whether an emulation is running slot `instance_id`: a running QEMU holds
+/// the slot's eMMC locked for as long as it is up.
+pub fn slot_running(instance_id: u32) -> bool {
+    lock_exclusive(&FirmwarePaths::new(instance_id).emmc).is_err()
+}
+
+const DELETE_REQUEST: &str = ".delete-request";
+
+/// How long a delete request stays good. The owner polls once a second, so
+/// this is ample; past it a request is taken to be left over from a window
+/// that went away, and a slot must never be emptied by a leftover.
+const DELETE_REQUEST_TTL_SECS: u64 = 10;
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Ask the window that holds slot `instance_id` to empty it. Only that window
+/// can: its emulation has the eMMC open, and it has to stop first.
+pub fn request_delete(instance_id: u32) -> std::io::Result<()> {
+    let dir = instance_dir(instance_id);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(DELETE_REQUEST), unix_now().to_string())
+}
+
+/// Consume a delete request for slot `instance_id`: true if one was made in
+/// the last few seconds. An older one is discarded without effect.
+pub fn take_delete_request(instance_id: u32) -> bool {
+    let path = instance_dir(instance_id).join(DELETE_REQUEST);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let _ = std::fs::remove_file(&path);
+    text.trim()
+        .parse::<u64>()
+        .is_ok_and(|at| unix_now().saturating_sub(at) <= DELETE_REQUEST_TTL_SECS)
+}
+
 /// Whether another process has slot `instance_id` open ([`SlotClaim`]) or an
 /// emulation holds its eMMC. This process's own claim counts: ask about
 /// other slots.
@@ -189,18 +215,7 @@ fn lock_exclusive(path: &std::path::Path) -> std::io::Result<Option<std::fs::Fil
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        // SAFETY: `f` is an open file for the duration of the call.
-        let rc = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                format!("{} is in use", path.display()),
-            ));
-        }
-    }
+    cdj3k_emu_platform::file_lock::lock(&f, path)?;
     Ok(Some(f))
 }
 
@@ -308,6 +323,37 @@ mod tests {
         );
         adopt_unrecorded_slot(2);
         assert_eq!(settings::InstanceSettings::saved_model(2), None);
+    }
+
+    /// A request is consumed once, and only a fresh one counts.
+    #[test]
+    fn a_delete_request_is_taken_once_and_only_while_fresh() {
+        let _home = TestHome::new("delreq");
+        assert!(!take_delete_request(2));
+        request_delete(2).unwrap();
+        assert!(take_delete_request(2));
+        assert!(!take_delete_request(2), "a request is consumed");
+
+        // One left behind by a window that went away must not empty the slot
+        // the next time its owner starts.
+        let path = instance_dir(2).join(DELETE_REQUEST);
+        std::fs::write(&path, (unix_now() - DELETE_REQUEST_TTL_SECS - 5).to_string()).unwrap();
+        assert!(!take_delete_request(2), "a stale request is ignored");
+        assert!(!path.exists(), "and removed");
+
+        std::fs::write(&path, "garbage").unwrap();
+        assert!(!take_delete_request(2));
+    }
+
+    /// Running means the eMMC is locked, which is what a live QEMU holds.
+    #[test]
+    fn a_slot_runs_while_its_emmc_is_held() {
+        let _home = TestHome::new("running");
+        let paths = FirmwarePaths::new(3);
+        write_all(&paths, "cdj3k");
+        assert!(!slot_running(3));
+        let _held = lock_exclusive(&paths.emmc).unwrap().unwrap();
+        assert!(slot_running(3));
     }
 
     fn write_all(paths: &FirmwarePaths, tag: &str) {

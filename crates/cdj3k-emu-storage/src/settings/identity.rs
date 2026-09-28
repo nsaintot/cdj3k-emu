@@ -29,14 +29,6 @@ pub(super) fn generate_soc_serial() -> String {
     )
 }
 
-pub(super) fn is_valid_mac(s: &str) -> bool {
-    let parts: Vec<&str> = s.split(':').collect();
-    parts.len() == 6
-        && parts
-            .iter()
-            .all(|p| p.len() == 2 && u8::from_str_radix(p, 16).is_ok())
-}
-
 /// Generate a random locally-administered unicast MAC.
 /// Uses `uuid::Uuid::new_v4()` (already a dep) as the entropy source - its bytes
 /// are cryptographically random on macOS/Linux. The first byte is forced to
@@ -64,15 +56,11 @@ mod tests {
         assert!(!is_valid_soc_serial("zzzzzzzzzzzzzzzz"), "not hex");
         assert!(!is_valid_soc_serial("0123456789ABCD05"), "upper case");
 
-        assert!(is_valid_mac("02:11:22:33:44:55"));
-        assert!(!is_valid_mac("02:11:22:33:44"), "five octets");
-        assert!(!is_valid_mac("02-11-22-33-44-55"), "not colon-separated");
-
         for _ in 0..64 {
             let serial = generate_soc_serial();
             assert!(is_valid_soc_serial(&serial), "{serial}");
             let mac = generate_mac();
-            assert!(is_valid_mac(&mac), "{mac}");
+            assert!(cdj3k_emu_platform::net::is_valid_mac(&mac), "{mac}");
             let first = u8::from_str_radix(&mac[..2], 16).unwrap();
             assert_eq!(first & 0x03, 0x02, "{mac}: LAA set, multicast clear");
         }
