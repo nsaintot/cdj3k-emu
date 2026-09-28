@@ -8,8 +8,8 @@ use cdj3k_emu_platform::menu_state::{APP_SHUTDOWN, NO_USB_MOUNTED};
 use cdj3k_emu_platform::menu_state;
 use cdj3k_emu_runtime::pc_link::PcLink;
 use cdj3k_emu_runtime::{
-    register_worker_thread, CfgClient, DiskProvider, MacOsDiskProvider, QemuConfig, QemuInstance,
-    TapBridge, UsbManager, VmnetMode,
+    host_disk_provider, register_worker_thread, CfgClient, DiskProvider, HostDiskProvider,
+    NetKeepAlive, QemuConfig, QemuInstance, UsbManager,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -31,7 +31,7 @@ const PC_LINK_CFG_MAX_FAILURES: u32 = 4;
 /// its lifetime - Drop tears the bridge down.  vmnet needs nothing here: QEMU
 /// opens the interface itself and releases it when it exits.
 pub struct PrebuiltNet {
-    pub tap_bridge: Option<TapBridge>,
+    pub keep: cdj3k_emu_runtime::NetKeepAlive,
     /// Initial value to seed `prev_net_idx` with so the worker doesn't
     /// trigger a restart on the first poll iteration.
     pub initial_net_idx: u32,
@@ -55,9 +55,9 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
             s.shade_forced = false;
         }
     }
-    let provider = MacOsDiskProvider;
+    let provider = host_disk_provider();
     let cfg_client = CfgClient::new(&config.sock_dir());
-    let mut usb = UsbManager::new(config.usb_placeholder_path(), cfg_client.clone());
+    let mut usb = UsbManager::new(&config, cfg_client.clone());
     let mut phys_disks: Vec<cdj3k_emu_runtime::PhysicalDisk> = Vec::new();
     let mut last_disk_refresh = Instant::now() - DISK_REFRESH_INTERVAL;
 
@@ -67,7 +67,7 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
     // directories are removed in one place only: `cleanup_runtime_files` on
     // process exit.
     #[allow(unused_assignments)]
-    let mut _active_tap_bridge: Option<TapBridge> = prebuilt_net.tap_bridge;
+    let mut _active_net: NetKeepAlive = prebuilt_net.keep;
     let mut prev_net_idx: u32 = prebuilt_net.initial_net_idx;
     let mut last_phys_toggle: i32 = -1;
     let mut last_net_refresh = Instant::now() - NET_REFRESH_INTERVAL;
@@ -158,7 +158,6 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
             reset_usb(&mut usb, &config, &cfg_client);
             pending_remount = PendingRemount::capture(prev_phys, prev_virt, &phys_disks);
             apply_menu_to_config(&mut config);
-            #[cfg(target_os = "macos")]
             match QemuInstance::spawn(config.clone()) {
                 Ok(new_inst) => {
                     instance = Some(new_inst);
@@ -202,7 +201,6 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
         // ── Post-provisioning boot ────────────────────────────────────────────
         if req.boot {
             apply_menu_to_config(&mut config);
-            #[cfg(target_os = "macos")]
             match QemuInstance::spawn(config.clone()) {
                 Ok(inst) => {
                     eprintln!("cdj3k-emu: QEMU started after provisioning");
@@ -404,6 +402,8 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
             menu_state::lock().latency_packed =
                 menu_state::pack_latency(lat.total_ms, lat.guest_ms, lat.host_ms);
         }
+        let cfg_live = instance.is_some() && cfg_client.guest_heard();
+        menu_state::lock().guest_cfg_live = cfg_live;
 
         // ── Restart ──────────────────────────────────────────────────────────
         if restart_pending {
@@ -420,7 +420,6 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
             reset_usb(&mut usb, &config, &cfg_client);
             pending_remount = PendingRemount::capture(prev_phys, prev_virt, &phys_disks);
             apply_menu_to_config(&mut config);
-            #[cfg(target_os = "macos")]
             match QemuInstance::spawn(config.clone()) {
                 Ok(inst) => {
                     eprintln!("cdj3k-emu: QEMU restarted");
@@ -437,41 +436,42 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
         // ── Network interface selection ───────────────────────────────────────
         if req.selected_iface != prev_net_idx {
             prev_net_idx = req.selected_iface;
-            _active_tap_bridge = None;
+            _active_net = NetKeepAlive::Nothing;
             config.net_vmnet = None;
             config.net_tap_iface = None;
             config.net_tap_fd = None;
 
-            if req.selected_iface == menu_state::NET_SEL_VMNET_HOST {
-                eprintln!("cdj3k-emu: vmnet host-only selected");
-                config.net_vmnet = Some(VmnetMode::Host);
-            } else if req.selected_iface != menu_state::NET_SEL_NONE {
-                let iface_name = menu_state::lock()
+            let attempt = match req.selected_iface {
+                menu_state::NET_SEL_NONE => None,
+                menu_state::NET_SEL_VMNET_HOST => {
+                    Some(("host-only".to_string(), cdj3k_emu_runtime::net_attach_host_only()))
+                }
+                idx => menu_state::lock()
                     .net_ifaces
-                    .get(req.selected_iface as usize)
-                    .map(|i| i.name.clone());
-                if let Some(name) = iface_name {
-                    if name.starts_with("tap") {
-                        match TapBridge::setup(&name, config.instance_id) {
-                            Ok(tb) => {
-                                config.net_tap_iface = Some(tb.qemu_tap.clone());
-                                config.net_tap_fd = Some(tb.qemu_tap_fd);
-                                _active_tap_bridge = Some(tb);
-                            }
-                            Err(e) => {
-                                let msg = format!("tapbridge setup failed: {e}");
-                                eprintln!("cdj3k-emu: {msg}");
-                                let mut s = menu_state::lock();
-                                s.selected_interface = menu_state::NET_SEL_NONE;
-                                s.net_error_message = Some(msg);
-                                prev_net_idx = menu_state::NET_SEL_NONE;
-                            }
-                        }
-                    } else if let Some(mode) = VmnetMode::bridged(&name) {
-                        eprintln!("cdj3k-emu: vmnet bridged on {name}");
-                        config.net_vmnet = Some(mode);
-                    } else {
-                        let msg = format!("invalid interface name: {name:?}");
+                    .get(idx as usize)
+                    .map(|i| i.name.clone())
+                    .map(|name| {
+                        // The same call `launch.rs` makes, so a selection made
+                        // while running behaves like one made at boot.
+                        let r = cdj3k_emu_runtime::net_attach(
+                            &name,
+                            &config.mac.clone().unwrap_or_default(),
+                            config.instance_id,
+                        );
+                        (name, r)
+                    }),
+            };
+            if let Some((name, result)) = attempt {
+                match result {
+                    Ok(a) => {
+                        eprintln!("cdj3k-emu: bridged on {name}");
+                        config.net_vmnet = a.vmnet.clone();
+                        config.net_tap_iface = a.tap_iface.clone();
+                        config.net_tap_fd = a.tap_fd;
+                        _active_net = a.keep;
+                    }
+                    Err(e) => {
+                        let msg = format!("cannot bridge on {name}: {e}");
                         eprintln!("cdj3k-emu: {msg}");
                         let mut s = menu_state::lock();
                         s.selected_interface = menu_state::NET_SEL_NONE;
@@ -482,7 +482,6 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
             }
 
             apply_menu_to_config(&mut config);
-            #[cfg(target_os = "macos")]
             if let Some(ref mut inst) = instance {
                 match inst.restart(config.clone()) {
                     Ok(()) => {
@@ -585,9 +584,16 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
                             });
                         }
                         Err(cdj3k_emu_runtime::UsbError::PermissionDenied(_)) => {
-                            menu_state::lock().usb_phys_perm_denied = true;
+                            menu_state::lock().usb_phys_perm_denied =
+                                Some(cdj3k_emu_runtime::disk::RETRY_PROMPT);
                         }
-                        Err(e) => eprintln!("cdj3k-emu: physical USB attach failed: {e}"),
+                        Err(e) => {
+                            eprintln!("cdj3k-emu: physical USB attach failed: {e}");
+                            menu_state::lock().usb_error_message = Some(match &e {
+                                cdj3k_emu_runtime::UsbError::Io(io) => io.to_string(),
+                                e => e.to_string(),
+                            });
+                        }
                     }
                 }
             }
@@ -735,7 +741,7 @@ where
 /// Clear USB manager and mounted-state fields after any QEMU restart.
 /// The new QEMU instance always starts with the placeholder; nothing is mounted.
 fn reset_usb(usb: &mut UsbManager, config: &QemuConfig, cfg: &CfgClient) {
-    *usb = UsbManager::new(config.usb_placeholder_path(), cfg.clone());
+    *usb = UsbManager::new(config, cfg.clone());
     let mut s = menu_state::lock();
     s.usb_virtual_mounted = false;
     s.usb_phys_mounted_idx = NO_USB_MOUNTED;
@@ -780,7 +786,7 @@ impl PendingRemount {
         &self,
         usb: &mut UsbManager,
         qmp: &mut cdj3k_emu_runtime::QmpClient,
-        provider: &MacOsDiskProvider,
+        provider: &HostDiskProvider,
     ) -> bool {
         match self {
             Self::Physical { disk, idx } => match usb.attach_physical(qmp, disk, provider) {

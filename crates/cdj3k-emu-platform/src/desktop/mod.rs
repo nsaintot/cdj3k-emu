@@ -1,34 +1,111 @@
-//! Platform desktop integration: native window options, AppKit hooks for
-//! macOS (window aspect/autosave/tabbing), file pickers, and the trackpad
-//! scroll-phase probe used by jog haptic feedback.
+//! Platform desktop integration: native window options, the window shell,
+//! file pickers, and revealing a file in the host's file manager.
 //!
 //! **Rendering:** egui draws the UI with **OpenGL** (glow) into the window's
-//! content area. That is not Cocoa/AppKit `NSView` drawing APIs for the
-//! panel - only the **window shell** (title bar, resize) is standard AppKit
-//! `NSWindow`. Aspect-ratio resize is enforced with `NSWindow` methods, not
-//! in egui.
+//! content area. On macOS that is not Cocoa/AppKit `NSView` drawing APIs for
+//! the panel - only the **window shell** (title bar, resize) is standard AppKit
+//! `NSWindow`.
 //!
 //! **Two window shapes.** The app opens as the compact, fixed-size model
 //! picker ([`PICKER_SIZE`]). Choosing a model turns the same window into the
 //! resizable, aspect-locked panel ([`enter_panel_window`]); "Switch
 //! Emulation" shrinks it back ([`enter_picker_window`]). Only the panel frame
-//! is persisted (AppKit frame autosave, one name per instance slot).
+//! is persisted, per instance slot and model ([`frame_key`]), by each host's
+//! adapter: AppKit's frame autosave on macOS, a file of our own on Linux.
 
-mod macos;
+#[cfg(target_os = "macos")]
+#[path = "macos.rs"]
+mod imp;
+#[cfg(target_os = "linux")]
+#[path = "linux.rs"]
+mod imp;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[path = "unsupported.rs"]
+mod imp;
 
-use cdj3k_emu_panel::Model;
+/// The window layer drawn through egui and winit, for an adapter whose host
+/// has no native one to call.
+#[cfg(target_os = "linux")]
+mod portable;
+#[cfg(target_os = "linux")]
+mod frame_store;
 
-pub use macos::open_file_picker;
+pub use imp::{
+    activate_process, apply_resize_constraints, enter_panel_window, enter_picker_window,
+    on_creation_context, open_file_picker, reveal_in_file_manager, PLACES_WINDOWS,
+};
 
-/// Bring another instance of the app, by pid, to the front.
-pub fn activate_process(pid: u32) -> Result<(), String> {
-    macos::activate_process(pid)
+/// What holding a window to its aspect carries between frames: the settle
+/// snap's view of the size.
+#[derive(Debug)]
+pub struct ResizeState {
+    last_size: egui::Vec2,
+    changed_at: std::time::Instant,
+}
+
+impl Default for ResizeState {
+    fn default() -> Self {
+        Self {
+            last_size: egui::Vec2::ZERO,
+            changed_at: std::time::Instant::now(),
+        }
+    }
+}
+
+/// How long the size has to stay put before the settle snap fires, so a drag
+/// in progress is not fought. Time rather than frames: frames arrive only as
+/// fast as something repaints.
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(40);
+/// Movement (px²) under which the size counts as unchanged.
+const STABLE_SIZE_TOL_SQ: f32 = 0.25;
+/// Width error (px) the settle snap lets stand. Above a whole pixel, so it
+/// never chases the rounding of a native aspect lock.
+const SNAP_TOL_PX: f32 = 1.5;
+
+/// Square the window up to `ref_w`:`ref_h` once a resize has settled.
+///
+/// Behind every native lock, because those constrain resizes and nothing
+/// else: a window that comes up at the wrong shape, from a saved frame or a
+/// model change, would otherwise stay that way. Where the lock works, a
+/// settled window is already square and this does nothing.
+fn snap_when_settled(ctx: &egui::Context, state: &mut ResizeState, (ref_w, ref_h): (f32, f32)) {
+    let size = ctx.screen_rect().size();
+    if (size - state.last_size).length_sq() >= STABLE_SIZE_TOL_SQ {
+        state.changed_at = std::time::Instant::now();
+    }
+    state.last_size = size;
+    let settled_for = state.changed_at.elapsed();
+    if settled_for < SETTLE {
+        // Nothing else may repaint in time, so ask for the frame that will
+        // find the size settled.
+        ctx.request_repaint_after(SETTLE - settled_for);
+        return;
+    }
+    // The in-window menu is inside the window but outside the chassis, so the
+    // aspect applies to what is left below it.
+    let bar = crate::menu::in_window_bar_height();
+    let want_w = (size.y - bar).max(1.0) * ref_w / ref_h;
+    if (size.x - want_w).abs() > SNAP_TOL_PX {
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(want_w, size.y)));
+        state.changed_at = std::time::Instant::now();
+    }
+}
+
+/// The name a panel frame is saved under, per slot and model.
+///
+/// The CDJ-3000 uses the unsuffixed name, which existing saved frames use;
+/// other models append their slug (different canvas aspect).
+pub fn frame_key(instance_id: u32, model: cdj3k_emu_panel::Model) -> String {
+    match model {
+        cdj3k_emu_panel::Model::Cdj3k => format!("cdj3k-emu-instance-{}", instance_id),
+        other => format!("cdj3k-emu-instance-{}-{}", instance_id, other.slug()),
+    }
 }
 
 /// Set the process's user-visible name (Dock tile, menu bar, Activity Monitor).
 /// Must be called before [`eframe::run_native`].
 pub fn set_app_name(name: &str) {
-    let _ = macos::set_app_name(name);
+    let _ = imp::set_app_name(name);
 }
 
 /// Compact, fixed-size window the app wears whenever it is not a panel
@@ -47,105 +124,62 @@ pub fn panel_initial_size((ref_w, ref_h): (f32, f32)) -> [f32; 2] {
     [w, w * (ref_h / ref_w)]
 }
 
-/// Frame-autosave name for slot `instance_id`'s panel window of `model`.
-/// The CDJ-3000 keeps the pre-model name so existing installs keep their
-/// frame; other models get their slug appended (different canvas aspect).
-fn autosave_name(instance_id: u32, model: Model) -> String {
-    match model {
-        Model::Cdj3k => format!("cdj3k-emu-instance-{}", instance_id),
-        other => format!("cdj3k-emu-instance-{}-{}", instance_id, other.slug()),
-    }
-}
-
 pub fn native_options(instance_id: u32) -> eframe::NativeOptions {
     let title = format!("{} - {}", crate::app_meta::APP_DISPLAY_NAME, instance_id);
+    // The app id has to match the .desktop file's name, or a Wayland
+    // compositor cannot pair the window with its entry: GNOME then has no
+    // name and no icon for it, and calls it "Unknown" in its dialogs.
+    let viewport = egui::ViewportBuilder::default()
+        .with_title(title)
+        .with_app_id(crate::app_meta::APP_ID)
+        .with_inner_size(PICKER_SIZE)
+        .with_min_inner_size(PICKER_SIZE)
+        .with_resizable(false);
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(title)
-            .with_inner_size(PICKER_SIZE)
-            .with_min_inner_size(PICKER_SIZE)
-            .with_resizable(false),
+        viewport,
         centered: true,
         ..Default::default()
     }
 }
 
-/// Best-effort from [`eframe::CreationContext`] (view may not be in a window yet).
-pub fn on_creation_context(cc: &eframe::CreationContext<'_>) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = macos::disable_window_tabbing(cc);
-        // Class-level kill switch: prevents the deferred debug viewport (and
-        // any other NSWindow AppKit spawns) from re-adding "Show Tab Bar" /
-        // "Show All Tabs" to the View menu.
-        let _ = macos::disable_automatic_window_tabbing_global();
-        // Drop eframe's default placeholder icon so the Dock reads our
-        // bundle's CFBundleIconFile instead.
-        let _ = macos::reset_dock_icon_to_bundle();
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = cc;
+/// A file dialog that does not block the frame loop.
+///
+/// The dialog itself has to block the thread it runs on, so it runs on one of
+/// its own: blocking the UI thread stops the app answering the compositor,
+/// and a desktop then offers to kill it while its own picker is open. Poll
+/// [`PendingPick::take`] each frame.
+pub struct PendingPick {
+    rx: std::sync::mpsc::Receiver<Option<std::path::PathBuf>>,
 }
 
-/// Turn the main window into the panel of `model`: user-resizable, restored
-/// to slot `instance_id`'s last saved panel frame for that model (or sized to
-/// the default and kept centred where the picker was), then aspect-locked to
-/// `ref_canvas`.
-pub fn enter_panel_window(
-    frame: &eframe::Frame,
-    instance_id: u32,
-    model: Model,
-    ref_canvas: (f32, f32),
-) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = macos::set_window_resizable(frame, true);
-        let restored = macos::set_window_autosave_name(frame, &autosave_name(instance_id, model))
-            .unwrap_or(false);
-        if !restored {
-            let [w, h] = panel_initial_size(ref_canvas);
-            let _ = macos::set_window_content_size_centered(frame, w as f64, h as f64);
+impl PendingPick {
+    /// Open a picker for `title`, filtered to `allowed_types`.
+    pub fn open(title: &str, allowed_types: &[&str]) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let title = title.to_string();
+        let types: Vec<String> = allowed_types.iter().map(|s| s.to_string()).collect();
+        let spawned = std::thread::Builder::new()
+            .name("cdj3k-emu-file-dialog".into())
+            .spawn(move || {
+                let refs: Vec<&str> = types.iter().map(String::as_str).collect();
+                let _ = tx.send(open_file_picker(&title, &refs));
+            });
+        if spawned.is_err() {
+            // No thread: the caller sees a cancelled dialog rather than a
+            // wait that never ends.
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(None);
+            return Self { rx };
         }
-        let _ =
-            macos::set_window_aspect_constraints(frame, ref_canvas.0 as f64, ref_canvas.1 as f64);
+        Self { rx }
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = (frame, instance_id, model, ref_canvas);
-}
 
-/// Turn the main window back into the compact picker: stop frame autosave (so
-/// the picker size is never recorded as the panel frame), fixed size, centred
-/// where the panel was.
-pub fn enter_picker_window(frame: &eframe::Frame) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = macos::clear_window_autosave_name(frame);
-        let _ = macos::set_window_content_size_centered(
-            frame,
-            PICKER_SIZE[0] as f64,
-            PICKER_SIZE[1] as f64,
-        );
-        let _ = macos::set_window_resizable(frame, false);
+    /// The answer, once there is one. `Some(None)` is a cancelled dialog.
+    pub fn take(&self) -> Option<Option<std::path::PathBuf>> {
+        match self.rx.try_recv() {
+            Ok(v) => Some(v),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+        }
     }
-    #[cfg(not(target_os = "macos"))]
-    let _ = frame;
-}
-
-/// Re-apply AppKit aspect constraints every frame so nothing in the stack
-/// resets them during resize. `None` while the picker is up (fixed size).
-#[cfg(target_os = "macos")]
-pub fn apply_macos_resize_constraints_from_frame(
-    frame: &eframe::Frame,
-    ref_canvas: Option<(f32, f32)>,
-) {
-    if let Some((w, h)) = ref_canvas {
-        let _ = macos::set_window_aspect_constraints(frame, w as f64, h as f64);
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn apply_macos_resize_constraints_from_frame(
-    _frame: &eframe::Frame,
-    _ref_canvas: Option<(f32, f32)>,
-) {
 }

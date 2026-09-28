@@ -8,6 +8,9 @@
 /// Reads as the app name in macOS Dock / Cmd-Tab.
 pub const APP_DISPLAY_NAME: &str = "CDJ3K Emulator";
 
+/// Window compositor identifier.
+pub const APP_ID: &str = "cdj3k-emu";
+
 /// macOS bundle identifier - mirrors `CFBundleIdentifier` in `bundle.sh`.
 /// Used as the per-user data directory name under `Application Support`.
 pub const BUNDLE_ID: &str = "com.cdj3k.emu";

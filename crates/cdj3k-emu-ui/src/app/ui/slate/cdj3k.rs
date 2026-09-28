@@ -131,7 +131,10 @@ const JOG_CHROME: JogChrome = JogChrome {
 
 /// Draw the whole panel: chassis, LCD overlay, then every section.
 fn draw_panel(app: &mut CdjApp, ui: &mut egui::Ui) {
-    let layout = UiScale::fit(ui.clip_rect().shrink(2.0), REF_W, REF_H);
+    // `max_rect`, not `clip_rect`: the clip rect is a painting bound and
+    // still spans the window when a panel sits above, which would draw the
+    // chassis underneath the in-window menu.
+    let layout = UiScale::fit(ui.max_rect().shrink(2.0), REF_W, REF_H);
     let (ox, oy, scale) = layout.cache_key();
     let p = ui.painter().clone();
     let ppp = ui.ctx().pixels_per_point();

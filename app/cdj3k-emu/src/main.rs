@@ -52,47 +52,8 @@ fn configure_helvetica_medium(ctx: &egui::Context) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // ── Worker mode ───────────────────────────────────────────────────────
-    // When spawned as a QEMU subprocess, run QEMU directly and exit.
-    // Each Start spawns a fresh process so QEMU global state is always clean.
-    #[cfg(target_os = "macos")]
-    if args.get(1).map(|s| s == "--qemu-worker").unwrap_or(false) {
-        use std::ffi::CString;
-        extern "C" {
-            fn cdj3k_emu_qemu_run(
-                argc: libc::c_int,
-                argv: *const *const libc::c_char,
-            ) -> libc::c_int;
-            fn cdj3k_emu_qemu_abort();
-        }
-
-        // Capture parent PID before it can be reparented (launchd takes over
-        // after the parent dies, changing getppid() to 1).  The watchdog thread
-        // polls the original PID and force-quits if the parent is gone.
-        let parent_pid = unsafe { libc::getppid() };
-        std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            if unsafe { libc::kill(parent_pid, 0) } != 0 {
-                eprintln!("cdj3k-emu-worker: parent gone, aborting");
-                unsafe {
-                    cdj3k_emu_qemu_abort();
-                    libc::_exit(0)
-                };
-            }
-        });
-
-        let qemu_args: Vec<String> = args.into_iter().skip(2).collect();
-        eprintln!("cdj3k-emu-worker: {}", qemu_args.join(" "));
-        let c_strings: Vec<CString> = qemu_args
-            .iter()
-            .map(|s| CString::new(s.as_str()).expect("argv NUL"))
-            .collect();
-        let c_ptrs: Vec<*const libc::c_char> = c_strings.iter().map(|cs| cs.as_ptr()).collect();
-        let code = unsafe { cdj3k_emu_qemu_run(c_ptrs.len() as libc::c_int, c_ptrs.as_ptr()) };
-        // cdj3k_emu_qemu_run returned via longjmp from exit() shim; orphaned QEMU
-        // threads remain in this subprocess - _exit kills them all atomically.
-        unsafe { libc::_exit(code) };
-    }
+    // Started as the QEMU worker: runs QEMU and exits.
+    cdj3k_emu_runtime::qemu_exec::run_worker_if_asked(&args);
 
     // Slot 1 is the default for a fresh launch. Slots 2..=4 are reachable
     // via `--instance N` (the "Instances" menu launches us with `open -n`).
@@ -201,6 +162,7 @@ fn main() {
         let mut s = cdj3k_emu_platform::menu_state::lock();
         s.current_instance_id = instance;
         s.ui_only = no_spawn;
+        s.pc_link_supported = cdj3k_emu_runtime::pc_link::is_supported();
     }
 
     // Held until the process exits, so other windows see the slot as open. A
@@ -258,7 +220,8 @@ fn main() {
             s.audio_device_uid = inst_settings.audio_device_uid.clone();
             s.alc_enabled = inst_settings.alc_enabled;
             s.haptic_enabled = inst_settings.haptic_enabled;
-            s.pc_link_enabled = inst_settings.pc_link_enabled;
+            s.pc_link_enabled =
+                inst_settings.pc_link_enabled && cdj3k_emu_runtime::pc_link::is_supported();
             s.service_mode = service_mode;
         }
 
@@ -352,33 +315,11 @@ fn main() {
     // (`cdj3k-emu.icns` in `Contents/Resources/`) from Info.plist.
     options.viewport = std::mem::take(&mut options.viewport).with_icon(egui::IconData::default());
 
-    // Register the sock dir for shutdown cleanup. Three exit paths:
-    //   - window-X / Cmd-Q  → eframe::App::on_exit (CdjShell → CdjApp)
-    //   - Ctrl-C, SIGTERM   → signal handler below (calls cleanup inline,
-    //                         then _exit; doesn't rely on atexit, which on
-    //                         macOS is unreliable across NSApplication quit)
-    //   - normal return     → atexit (belt-and-suspenders)
-    #[cfg(target_os = "macos")]
-    {
-        let _ = cdj3k_emu_runtime::SHUTDOWN_SOCK_DIR
-            .set(cdj3k_emu_platform::runtime_paths::instance_dir(instance));
-        extern "C" fn cleanup_at_exit() {
-            cdj3k_emu_runtime::cleanup_runtime_files();
-        }
-        extern "C" fn on_signal(_sig: libc::c_int) {
-            cdj3k_emu_platform::menu_state::APP_SHUTDOWN
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            cdj3k_emu_runtime::kill_qemu_child_now();
-            cdj3k_emu_runtime::cleanup_runtime_files();
-            unsafe { libc::_exit(0) };
-        }
-        unsafe {
-            libc::atexit(cleanup_at_exit);
-            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP, libc::SIGQUIT] {
-                libc::signal(sig, on_signal as *const () as libc::sighandler_t);
-            }
-        }
-    }
+    // Window close and Quit run eframe's `on_exit`; a signal or a plain
+    // return run these.
+    cdj3k_emu_runtime::process::install_exit_cleanup(
+        cdj3k_emu_platform::runtime_paths::instance_dir(instance),
+    );
 
     let app_name = format!(
         "{} - {}",

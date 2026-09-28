@@ -9,6 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+cdj3k-emu-firmware = { path = "../cdj3k-emu-firmware" }
 cdj3k-emu-panel = { path = "../cdj3k-emu-panel", default-features = false }
 serde_json = "1"
 libc = "0.2"
@@ -20,3 +21,8 @@ cdj3k-emu-platform = { path = "../cdj3k-emu-platform" }
 [target.'cfg(target_os = "macos")'.dependencies]
 # libcdj3k-emu-qemu.dylib is macOS-only (HVF + Cocoa)
 # On other platforms this crate compiles but cdj3k_emu_qemu_run is unavailable.
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# udisks' Block.OpenDevice: a raw USB disk as a descriptor, under polkit.
+# async-io, not tokio: the app runs no tokio runtime.
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
