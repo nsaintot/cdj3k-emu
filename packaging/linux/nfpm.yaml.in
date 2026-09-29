@@ -1,0 +1,66 @@
+# Template for the .deb and the .rpm. The contents are identical; only the
+# dependency names differ by family, in the `overrides` blocks below.
+#
+# nfpm does not expand environment variables, so packaging/linux/build.sh runs
+# this through envsubst first. It substitutes:
+#   VERSION  - the release, e.g. 0.2.0
+#   ARCH     - nfpm's arch name: amd64 or arm64
+#   BLURB    - the arch-specific line about acceleration
+#
+# `src` paths are relative: build.sh runs nfpm from inside the staged tree, so
+# the recipe carries no absolute path from whatever machine built it.
+name: cdj3k-emu
+version: ${VERSION}
+arch: ${ARCH}
+platform: linux
+maintainer: nsaintot <nsaintot@le-cluster.com>
+description: |
+  Pioneer CDJ-3000 and CDJ-3000X emulator.
+  Runs the player's own firmware under a patched QEMU, with the deck's
+  surface, jog and displays drawn on the host. ${BLURB}
+  No firmware is included: the setup window extracts it from an update
+  package you supply.
+vendor: cdj3k-emu
+homepage: https://github.com/nsaintot/cdj3k-emu
+license: MIT OR Apache-2.0
+
+contents:
+  # Everything we ship lives under one prefix. QEMU is patched, so it must
+  # never land in /usr/bin where it could be mistaken for the distro's.
+  - src: opt/cdj3k-emu
+    dst: /opt/cdj3k-emu
+  - src: usr/share/applications/cdj3k-emu.desktop
+    dst: /usr/share/applications/cdj3k-emu.desktop
+  - src: usr/share/icons
+    dst: /usr/share/icons
+  - src: /opt/cdj3k-emu/bin/cdj3k-emu
+    dst: /usr/bin/cdj3k-emu
+    type: symlink
+
+# The libraries scripts/bundle-sos.sh refuses to vendor: they talk to a
+# driver, a display server or a sound daemon. Everything else the emulator and
+# QEMU need is inside /opt/cdj3k-emu/lib.
+overrides:
+  deb:
+    depends:
+      - libgl1
+      - libegl1
+      - libwayland-client0
+      - libxkbcommon0
+      - libx11-6
+      - libpipewire-0.3-0
+    recommends:
+      # Virtual media is formatted through udisks, unprivileged.
+      - udisks2
+      - exfatprogs
+  rpm:
+    depends:
+      - mesa-libGL
+      - mesa-libEGL
+      - libwayland-client
+      - libxkbcommon
+      - libX11
+      - pipewire-libs
+    recommends:
+      - udisks2
+      - exfatprogs

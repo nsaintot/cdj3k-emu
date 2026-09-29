@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CDJ3K Emulator
+GenericName=DJ Player Emulator
+Comment=Run Pioneer CDJ-3000 and CDJ-3000X firmware on this machine
+Exec=cdj3k-emu
+Icon=cdj3k-emu
+Terminal=false
+Categories=AudioVideo;Audio;System;Emulator;
+Keywords=CDJ;Pioneer;AlphaTheta;DJ;rekordbox;emulator;
+StartupWMClass=cdj3k-emu
