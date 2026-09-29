@@ -1,0 +1,5 @@
+target/
+dist/
+build/initramfs-work/
+qemu/build/
+.git/

@@ -1,0 +1,47 @@
+# Builds the three Linux artefacts: .deb, .rpm and .AppImage.
+#
+# Same bookworm base as the QEMU stage, so everything shipped has one glibc
+# floor (2.36). Build for one architecture at a time: `--platform linux/arm64`
+# or `linux/amd64`.
+FROM debian:bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential pkg-config ca-certificates curl file git \
+        patchelf imagemagick desktop-file-utils zsync gettext-base \
+        libgl1 libegl1 libwayland-dev libxkbcommon-dev libx11-dev \
+        libpipewire-0.3-dev \
+        # QEMU's runtime libraries, vendored from this image into the package.
+        libpixman-1-0 libslirp0 libglib2.0-0 libzstd1 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+# The emulator's own toolchain. Pinned by rust-toolchain.toml when present.
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# nfpm writes the deb and the rpm from one recipe; appimagetool writes the
+# third. Both are single static binaries, fetched per architecture.
+ARG NFPM_VERSION=2.41.1
+RUN set -eux; \
+    case "$(dpkg --print-architecture)" in \
+        amd64) nfpm_arch=x86_64; ai_arch=x86_64 ;; \
+        arm64) nfpm_arch=arm64;  ai_arch=aarch64 ;; \
+        *) echo "unsupported architecture" >&2; exit 1 ;; \
+    esac; \
+    curl -sSL -o /tmp/nfpm.tar.gz \
+        "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_${nfpm_arch}.tar.gz"; \
+    tar -xzf /tmp/nfpm.tar.gz -C /usr/local/bin nfpm; \
+    rm /tmp/nfpm.tar.gz; \
+    curl -sSL -o /usr/local/bin/appimagetool \
+        "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ai_arch}.AppImage"; \
+    chmod +x /usr/local/bin/appimagetool
+
+# appimagetool is itself an AppImage and a container has no FUSE, so it is
+# extracted once here and run from the extracted tree.
+RUN cd /opt && /usr/local/bin/appimagetool --appimage-extract >/dev/null \
+    && mv squashfs-root appimagetool.d \
+    && printf '#!/bin/sh\nexec /opt/appimagetool.d/AppRun "$@"\n' \
+        > /usr/local/bin/appimagetool \
+    && chmod +x /usr/local/bin/appimagetool
+
+WORKDIR /work
+ENTRYPOINT ["/bin/bash", "-lc"]
