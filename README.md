@@ -1,6 +1,6 @@
 ![cdj3k-emu hero](docs/hero.png)
 
-A macOS desktop app that boots CDJ's firmware inside QEMU on Apple Silicon,
+A desktop app for macOS and Linux that boots CDJ's firmware inside QEMU,
 surfacing the device's main LCD, jog LCD, jog wheel, faders, buttons, USB, PC-Link, and Pro DJ Link network in a native window.
 
 <table>
@@ -54,7 +54,8 @@ do with real CDJs on a physical LAN when you're on vacation.
 > - **It does not ship Pioneer firmware.** You need to supply your own copy
 >   of the deck's firmware update file (`.UPD`) and decryption key at first launch.
 >   The in-app **Install Firmware** wizard decrypts it locally and provisions
->   a per-instance eMMC qcow2 disk image under `~/Library/Application Support/com.cdj3k.emu/`.
+>   a per-instance eMMC qcow2 disk image under `~/Library/Application Support/com.cdj3k.emu/`
+>   (`~/.local/share/com.cdj3k.emu/` on Linux).
 >   Nothing Pioneer-owned is in this repository or the distributed bundle.
 > - Not endorsed by, affiliated with, or sponsored by AlphaTheta Corporation /
 >   Pioneer DJ. CDJ, rekordbox, and Pro DJ Link are trademarks of their
@@ -65,8 +66,8 @@ do with real CDJs on a physical LAN when you're on vacation.
 > - Not a turntable replacement. Jog wheel and rotary feel are reproduced via
 >   pointer drag + scroll wheel; there's no support for an external MIDI
 >   controller bridging into the emulated SPI bus.
-> - Not currently portable. Apple Silicon macOS only (HVF, vmnet.framework,
->   AppKit window/menu, CoreAudio). Linux/Windows are out of scope for v0.1.
+> - macOS on Apple silicon and Linux (aarch64, x86_64) only;
+>   see [Platform support](docs/platform-support.md) for what differs.
 > - **Not compatible with pre-3.00 firmware.** See _Firmware compatibility_
 >   below — on the CDJ-3000, only firmware 3.00 and newer is accepted.
 
@@ -119,6 +120,8 @@ user's responsibility, by whatever means they are themselves entitled to.
 
 ## System requirements
 
+### macOS
+
 - **macOS 13 (Ventura) or newer**, Apple Silicon (M1/M2/M3/M4).
 - **macOS 15 (Sequoia) is strongly recommended.** cdj3k-emu auto-detects
   the host version at every spawn:
@@ -129,6 +132,16 @@ user's responsibility, by whatever means they are themselves entitled to.
   - 13 / 14 → QEMU falls back to **userspace GIC emulation**
     (`kernel-irqchip=off`). Functional but noticeably more CPU per
     instance; you'll feel it most when running multiple slots at once.
+
+### Linux
+
+- A Wayland or X11 desktop with GL 3.3, PipeWire, and udisks2.
+- **aarch64 with KVM** (`/dev/kvm`, user in the `kvm` group) runs at full
+  speed. **x86_64 runs under software emulation (TCG)**
+- `/dev/shm` with 3 GiB free, and 29.1 GB free for each slot's eMMC image.
+
+### Both
+
 - Roughly 8 GB free RAM if you plan to run two instances at once
   (1.5 GB guest each + host overhead).
 - A copy of a supported model firmware update file and its decryption key (if needed).
@@ -138,15 +151,15 @@ user's responsibility, by whatever means they are themselves entitled to.
 - Audio is not a bit-perfect reproduction of the real hardware. The CDJ-3000
   ships dedicated audio silicon with its own clock domain and DSP path; we
   re-route the firmware's PCM through `virtio_snd` -> a QEMU bypass ring ->
-  CoreAudio, which is a fundamentally different pipeline. Occasional pops
+  CoreAudio or PipeWire, which is a fundamentally different pipeline. Occasional pops
   and transient artifacts can occur, especially under host CPU pressure or
-  when the macOS HAL device clock drifts against the guest. A large amount
+  when the host device clock drifts against the guest. A large amount
   of work has gone into mitigations (lock-free SPSC ring, dedicated RT
   writer thread, soft-PLL clock-skew correction, pipeline-depth watchdog,
   RELEASE-flush on recovery) - see `docs/audio-stack.md` for the full
   pipeline. Steady-state output on a matched-rate device is clean, but the
   result is not forensically identical to a physical CDJ-3000.
-- Audio latency depends on macOS CoreAudio queue depth - typically 30-80 ms
+- Audio latency depends on the host audio queue depth - typically 30-80 ms
   end-to-end with the bundled bypass-ring patches. ALC ("Enable ALC") shifts
   the audible / Pro DJ Link broadcast alignment to compensate but adds a
   bit of jitter; default-on.
@@ -191,47 +204,92 @@ STEMS needs a [stemd](https://github.com/nsaintot/stemd) server on the LAN.
 
 ## Building
 
+### Every host
+
 ```bash
 git clone https://github.com/nsaintot/cdj3k-emu
+cd cdj3k-emu
 
-# 1. Build QEMU (clones upstream, applies our shm-display patch, ~10 min).
+# 1. The patched winit: the crates.io release plus winit/patches/.
+./winit/fetch.sh
+
+# 2. QEMU for this host: clones upstream at the pinned commit, applies
+#    qemu/patches/, and builds with HVF + Cocoa on macOS or KVM + PipeWire on
+#    Linux (~10 min).
 ./qemu/build.sh
 
-# 2. Build the aarch64 kernel, out-of-tree modules, the shim, and guest
-#    tools (Docker). `make abi-check` gates the shim against the deck's glibc.
+# 3. The guest payload (Docker): the aarch64 kernel, out-of-tree modules, the
+#    shim and the guest tools. `make abi-check` gates the shim against the
+#    deck's glibc.
 ./build.sh
+```
 
-# 3. Assemble the .app bundle. The Homebrew dylibs QEMU links against are
-#    copied into the bundle and rewritten to @loader_path, so the .app runs
-#    on a Mac without Homebrew.
-./bundle.sh                # ad-hoc signed (HVF works, FDA does not)
-./bundle.sh --sign "Apple Development"   # real cert (enables Full Disk Access)
-./bundle.sh --sign "Developer ID Application" --dmg   # distributable .dmg
+`./winit/fetch.sh` has to run once before **any** cargo command, including a
+plain `cargo build` and rust-analyzer: `Cargo.toml` patches winit from
+`winit/src`, which the script makes, and Cargo resolves that path before it
+builds anything. Re-running it is a no-op until the version or a patch
+changes.
 
-# or, optionally, a Release build: Developer ID + notarized + stapled .app and .dmg.
-#    One-time: store notary credentials (app-specific password from appleid.apple.com) under a keychain profile:
+### macOS
 
+```bash
+# The .app. The Homebrew dylibs QEMU links against are copied into the bundle
+# and rewritten to @loader_path, so it runs on a Mac without Homebrew.
+./bundle.sh                                            # ad-hoc signed (HVF works, FDA does not)
+./bundle.sh --sign "Apple Development"                 # real cert (enables Full Disk Access)
+./bundle.sh --sign "Developer ID Application" --dmg    # distributable .dmg
+
+# A release build: Developer ID, notarized and stapled .app and .dmg. Store the
+# notary credentials (an app-specific password from appleid.apple.com) once:
 xcrun notarytool store-credentials cdj3k-emu-notarization --apple-id <APPLE_ID> --team-id <TEAM_ID>
 ./bundle.sh --sign "Developer ID Application" --dmg --notarize
 ```
 
+### Linux
+
+```bash
+# One staged tree for this architecture: the app, QEMU, qemu-img, the
+# vendored libraries ($ORIGIN) and the guest payload, laid out as /opt/cdj3k-emu.
+packaging/linux/stage.sh
+
+# The .deb, the .rpm (nfpm) and the AppImage from that tree.
+packaging/linux/build.sh
+```
+
+`docker/Dockerfile.linux-pkg` carries the packaging tools and a bookworm
+glibc floor, and `docker/Dockerfile.linux-host` the QEMU build dependencies.
+`stage.sh --qemu DIR` takes a QEMU built elsewhere (`DIR/bin/`).
+
 ## First-run privilege prompts
 
-cdj3k-emu asks for the macOS admin password in three specific situations,
-**only when you ask it to**:
+cdj3k-emu asks for elevation only when you ask it to do one of these.
+
+### macOS
+
+The admin password, in three situations:
 
 | Action                                                   | Why it elevates                                                                                                                                                                                                        |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Bridging a TAP interface (OpenVPN-style) for Pro DJ Link | Creates a macOS kernel bridge with `ifconfig`, which is root-only. vmnet modes need no prompt: QEMU opens the interface itself under the app's `com.apple.developer.networking.vmnet` entitlement.                     |
 | Selecting a TAP interface (OpenVPN etc.)                 | Creates a macOS `bridge` device + assigns a `tap` device to QEMU via Authorization Services. Torn down automatically when the app exits.                                                                               |
-| Attaching a physical USB drive in pass-through mode      | `chmod 660` on `/dev/diskN` so QEMU can open it `O_RDWR`. The exact device path is validated against `/dev/disk[0-9]+(s[0-9]+)?` before elevation — see `crates/cdj3k-emu-runtime/src/usb.rs::is_valid_bsd_disk_path`. |
+| Attaching a physical USB drive in pass-through mode      | `chmod 660` on `/dev/diskN` so QEMU can open it `O_RDWR`. The exact device path is validated against `/dev/disk[0-9]+(s[0-9]+)?` before elevation — see `crates/cdj3k-emu-runtime/src/disk/macos.rs::is_valid_bsd_disk_path`. |
 
 All three use the native macOS password dialog (TouchID / Apple Watch eligible)
 via `AuthorizationServices`, not a CLI prompt. None of them grant ongoing
 privileges — every elevation is scoped to one command.
 
+### Linux
+
+The desktop's polkit agent asks, in two situations:
+
+| Action | Why it elevates |
+| --- | --- |
+| Bridging onto a NIC or a bridge for Pro DJ Link | Creates a macvtap, or a tap on the bridge, through `pkexec`. The link persists until the host reboots, so later launches reuse it without asking. Picking an existing tap you own asks nothing. |
+| Attaching a physical USB drive in pass-through mode | udisks opens the disk exclusively for the app (`org.freedesktop.udisks2.open-device`) when your user cannot. The host cannot mount it while the deck holds it. |
+
 ## Documentation and reference
 
+- [Platform support](docs/platform-support.md)
 - [Audio stack](docs/audio-stack.md)
 - [ALC](docs/alc.md)
 - [Network stack](docs/network.md)
@@ -257,7 +315,9 @@ guest/               C sources built for the guest:
   modules/             out-of-tree kernel modules (subucom_virt, virtio_snd, udev_usb1)
   kernel-patches/      vanilla 6.6 patches + the guest kernel .config
 qemu/                upstream QEMU source + our overlay patches
+winit/               winit fetched from crates.io + our overlay patch
 docker/              Alpine + Ubuntu build pipeline for guest artefacts
+packaging/linux/     staging, .deb/.rpm (nfpm) and AppImage
 initramfs-patch/     numbered rootfs patch scripts (concatenated by bundle.sh)
 scripts/             bundle-dylibs.sh (self-contained .app)
 ```

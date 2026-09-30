@@ -202,11 +202,10 @@ switch - writes go through `cfg.sock`.
 
 | Layer | File | Notes |
 |---|---|---|
-| `CheckMenuItem` | `crates/cdj3k-emu-platform/src/menu.rs` | `with_id("alc", "Enable ALC (Experimental)", true, false, None)` - initial checked state is overwritten on first refresh |
-| Container | `crates/cdj3k-emu-platform/src/menu.rs` | Audio submenu: Current Latency → Enable Audio → Enable ALC → Output Device |
-| Click handler | `crates/cdj3k-emu-platform/src/menu.rs` | Toggles `alc_enabled`, sets `alc_toggle_requested = true` |
+| Row | `crates/cdj3k-emu-platform/src/menu/service.rs` | `MenuNode::check(MenuId::Alc, "Enable ALC (Experimental)", snap.alc_enabled)`, rebuilt from state on every sync |
+| Container | `crates/cdj3k-emu-platform/src/menu/service.rs` | Audio submenu: Current Latency → Enable Audio → Enable ALC → Output Device |
+| Click handler | `crates/cdj3k-emu-platform/src/menu/action.rs` | Toggles `alc_enabled`, sets `alc_toggle_requested = true` |
 | State mirror | `crates/cdj3k-emu-platform/src/menu_state.rs` | `pub alc_enabled: bool` + `alc_toggle_requested: bool` |
-| Check-state sync | `crates/cdj3k-emu-platform/src/menu.rs` | `alc_item.set_checked(snap.alc_enabled)` on each menu refresh |
 | Persistence | `crates/cdj3k-emu-storage/src/settings/instance.rs` | `InstanceSettings::alc_enabled`, key `alc_enabled` in per-instance `settings.txt` |
 | Default | `crates/cdj3k-emu-storage/src/settings/instance.rs` | `.unwrap_or(true)` - new instances get ALC on |
 | Worker dispatch | `app/cdj3k-emu/src/runtime_worker.rs` | `req.alc_toggle` → `cfg_client.set_param("audio_sync_enabled", …)` + persist |
@@ -261,7 +260,7 @@ vmnet wiring.
 | `guest/modules/virtio_snd/virtio_snd.c` | Kernel driver: exposes `audio_sync_enabled`, `audio_latency_ms`, `link_pos_offset_ms` |
 | `crates/cdj3k-emu-runtime/src/cfg.rs` | `CfgClient` - host side of `cfg.sock` (line protocol, latency mirror) |
 | `crates/cdj3k-emu-storage/src/settings/instance.rs` | `InstanceSettings::alc_enabled` (default true) |
-| `crates/cdj3k-emu-platform/src/menu.rs` | "Enable ALC (Experimental)" `CheckMenuItem`, click dispatch |
+| `crates/cdj3k-emu-platform/src/menu/{service,action}.rs` | "Enable ALC (Experimental)" row, click dispatch |
 | `crates/cdj3k-emu-platform/src/menu_state.rs` | `alc_enabled` / `alc_toggle_requested` state mirror |
 | `app/cdj3k-emu/src/runtime_worker.rs` | Per-boot ALC push (`alc_pushed_for_boot` latch), toggle handler |
 | `docs/audio-stack.md` | Pipeline mechanics, watchdog, telemetry - the deep audio reference |
