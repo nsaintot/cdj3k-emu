@@ -11,9 +11,10 @@
 EP122 (Pioneer's CDJ firmware) is a JUCE app inside the QEMU guest. It
 writes audio via libasound to `/dev/snd/pcmC0D0p`, served by our in-tree
 `virtio_snd.ko`, which speaks virtio-sound to QEMU's patched
-`hw/audio/virtio-snd.c`. QEMU forwards to macOS CoreAudio via the
-patched `audio/coreaudio.m`. The hot path bypasses QEMU's audio mixer
-entirely.
+`hw/audio/virtio-snd.c`. QEMU forwards to CoreAudio on macOS (patched
+`audio/coreaudio.m`) or PipeWire on Linux (patched `audio/pwaudio.c`). The hot
+path bypasses QEMU's audio mixer entirely. The diagram below is the macOS
+path; [Linux](#linux-pipewire) lists what differs.
 
 ```
 EP122 (JUCE, SCHED_FIFO 98 on its own pinned core in the guest)
@@ -160,6 +161,7 @@ re-applied in numerical order, and `qemu-system-aarch64` is rebuilt.
 | `10-virtio-blk-removable.patch` | `hw/block/virtio-blk.c` (NULL-guard on shutdown race) |
 | `11-console-vc-quiet.patch` | `ui/console-vc.c` (no-op `vt100_update_cursor`) |
 | `12-hvf-vcpu-qos.patch` | `accel/hvf/hvf-accel-ops.c` (QoS on VCPU threads) |
+| `14-pipewire-bypass.patch` | `audio/pwaudio.c` (bypass drain on Linux) |
 
 (Patches 01-06 are unrelated infrastructure: ivshmem and the shm
 display backend used for the LCD framebuffer.)
@@ -408,9 +410,10 @@ in `docs/alc.md`.
 | `qemu/patches/09-system-main-qos.patch` | Host: Mach RT on QEMU main loop |
 | `qemu/patches/11-console-vc-quiet.patch` | Host: BQL relief (no-op `vt100_update_cursor`) |
 | `qemu/patches/12-hvf-vcpu-qos.patch` | Host: `QOS_CLASS_USER_INTERACTIVE` on HVF VCPU threads |
-| `crates/cdj3k-emu-runtime/src/config.rs` | `-audiodev coreaudio,out.buffer-length=5000,out.device-uid=…` |
-| `crates/cdj3k-emu-platform/src/audio_devices.rs` | HAL output device enumeration for the UI picker |
-| `crates/cdj3k-emu-platform/src/menu.rs` | Audio → Output Device submenu, 5 s refresh |
+| `qemu/patches/14-pipewire-bypass.patch` | Host: the bypass ring drained from PipeWire's process callback |
+| `crates/cdj3k-emu-platform/src/host/{macos,linux}.rs` | `-audiodev` driver, options and device selector per host |
+| `crates/cdj3k-emu-platform/src/audio/{coreaudio,pipewire}.rs` | Output device enumeration for the UI picker |
+| `crates/cdj3k-emu-platform/src/menu/service.rs` | Audio → Output Device submenu, 5 s refresh |
 | `crates/cdj3k-emu-storage/src/settings/instance.rs` | Per-instance `audio_device_uid` persistence |
 
 ---
@@ -506,3 +509,29 @@ To restore EP122 after the test, restart the QEMU instance via the
   pre-filter still folds some near-Nyquist content into the audible
   band. Setting the device to 96 kHz in Audio MIDI Setup hits the
   passthrough fast path and removes the downsample step.
+
+---
+
+## Linux (PipeWire)
+
+The guest side and patch 08's bypass ring are the same; the host end differs.
+
+| | macOS | Linux |
+|---|---|---|
+| `-audiodev` | `coreaudio,out.buffer-length=5000,out.device-uid=<UID>` | `pipewire,out.fixed-settings=off,out.name=<node>` |
+| Ring drained by | the CoreAudio IOProc (patch 07) | the stream's process callback (patch 14) |
+| Stream rate | the device's; the bypass writer resamples | the guest's (96 kHz); PipeWire resamples once to the device |
+| Real-time threads | Mach time-constraint policy, QoS (patches 09, 12) | PipeWire's own data thread |
+| Device list | CoreAudio HAL | `pw-dump` |
+
+Patch 14 plays all or nothing per quantum, as the IOProc does. After an
+underrun it waits for the ring to refill to a 20 ms cushion
+(`PW_BYPASS_CUSHION_MS`) before playing again, and gives up on the cushion
+after 50 silent callbacks (`PW_BYPASS_STARVED_MAX`) for a guest whose buffer is
+smaller. The reported pipeline depth is PipeWire's graph delay plus what the
+stream's resampler holds.
+
+Under software emulation the guest runs a 512-frame ALSA period
+(`cdj3k.snd_period=512`, read by `insmod-virtio-snd`) instead of the player's
+64; each TX buffer stays 1024 frames, so every threshold counted in periods
+keeps its duration.

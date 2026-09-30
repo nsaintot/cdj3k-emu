@@ -21,7 +21,7 @@ runs locally and writes only into the user's app-data directory.
 
 ---
 
-## App data layout (macOS)
+## App data layout
 
 ```
 ~/Library/Application Support/com.cdj3k.emu/
@@ -80,8 +80,8 @@ A slot with firmware but no `model` setting holds a CDJ-3000;
 
 The directory name is the macOS bundle identifier (reverse-DNS), not the
 display name - see `cdj3k_emu_storage::app_data_dir` and
-`cdj3k_emu_platform::app_meta::BUNDLE_ID`. On non-macOS hosts the base is
-`$XDG_DATA_HOME` / `~/.local/share`.
+`cdj3k_emu_platform::app_meta::BUNDLE_ID`. The tree above is macOS's; on Linux
+the base is `$XDG_DATA_HOME` / `~/.local/share`.
 
 USB images created by the in-app "Create blank USB" path are written to a
 user-chosen location, not inside the app data directory.
@@ -226,7 +226,7 @@ so the virtio-blk device shows up to the guest even when empty.
 
 ### Hot-swap protocol
 
-`UsbManager` (`runtime/src/usb.rs`) drives the swap via QMP:
+`UsbManager` (`runtime/src/disk/mod.rs`) drives the swap via QMP:
 
 1. `blockdev-change-medium id=usb0 filename=<new> format=raw` swaps the
    backing file with QEMU running.
@@ -241,33 +241,37 @@ so the virtio-blk device shows up to the guest even when empty.
 Detach is the reverse: `cfgd` runs `usb detach` (writes `umount /dev/sdb`
 to `/proc/udev_usb1`, lazy-unmounts), 400 ms wait, then the placeholder is
 swapped back in. If the previous medium was a physical disk, the host
-remounts it on macOS.
+remounts it.
 
 ### Virtual mode
 
-User picks a `.img` file (or runs "Create blank USB" which makes an
-exFAT-formatted raw image via macOS `hdiutil attach -nomount` +
-`diskutil eraseDisk ExFAT REKORDBOX MBR`). The path is persisted as
+User picks a `.img` file (or runs "Create blank USB", which makes a raw
+image with one MBR exFAT partition labelled REKORDBOX: `hdiutil attach
+-nomount` + `diskutil eraseDisk` on macOS, `sfdisk` + `mkfs.exfat` on the file
+on Linux). The path is persisted as
 `usb_virtual_path` in the per-instance `settings.txt`.
 
 ### Physical mode
 
-User picks a macOS BSD disk (`disk2`). The host-side flow (`usb.rs`):
+User picks a removable disk (`disk2`, `sdb`). `UsbManager::attach_physical`
+(`runtime/src/disk/mod.rs`):
 
-1. `MacOsDiskProvider::unmount_host` - `diskutil unmountDisk` so QEMU can
-   open the device O_EXCL.
-2. Probe `O_RDWR` from the runtime process. `/dev/diskN` is mode `0640`;
-   on `EACCES` the runtime prompts via `osascript` for an admin-privilege
-   `chmod 660 <dev>`. The dev path is regex-validated
-   (`is_valid_bsd_disk_path`) before being interpolated
-   into the AppleScript shell command.
-3. `blockdev-change-medium` against `/dev/diskN`. On failure the host
-   volume is remounted to leave the system clean.
+1. `unmount_host` frees the disk: `diskutil unmountDisk` on macOS,
+   `udisksctl unmount` per partition on Linux. A busy mount names the
+   processes holding it (`/proc/*/cwd`, `/proc/*/fd`).
+2. The host adapter's `open_raw`:
+   - **macOS** probes `O_RDWR` on `/dev/diskN` (mode `0640`); on `EACCES`
+     it asks via `osascript` for an admin `chmod 660 <dev>`, the path
+     validated by `is_valid_bsd_disk_path` first. QEMU opens the node.
+   - **Linux** opens the whole disk `O_RDWR|O_EXCL` itself, through udisks
+     `Block.OpenDevice` under polkit when the node is `root:disk`, and hands
+     the fd to QEMU with QMP `add-fd` on `qmp-fd.sock`. The medium is a
+     `raw` over `host_device` on `/dev/fdset/N`. While the fd is held the host
+     cannot mount the disk; eject releases it with `remove-fd`.
+3. `blockdev-change-medium`. On failure the host volume is remounted to
+   leave the system clean.
 4. The BSD name is persisted as `usb_physical_bsd` so the choice survives
    restarts (the disk is re-attached on next launch if still present).
-
-`MacOsDiskProvider` lives in `runtime/src/macos_disk.rs` and exposes
-`list_removable`, `unmount_disk` and `mount_disk`.
 
 ---
 
@@ -279,7 +283,7 @@ rely on QEMU's fcntl byte-range locks at offset 100.
 
 The locks fire on `open()` of qcow2/raw files. If the previous QEMU
 subprocess hasn't fully released its FDs by the time the new one starts
-(common on rapid restart, since process teardown is async on macOS), the
+(common on rapid restart, since process teardown is asynchronous), the
 new process aborts with `Failed to lock byte 100`. Disabling them removes
 that race (see the comment in `runtime/src/config.rs`).
 
@@ -433,8 +437,9 @@ Nothing is committed to the repo or bundled in the `.dmg`.
 | `crates/cdj3k-emu-storage/src/settings/instance.rs` | `InstanceSettings` |
 | `crates/cdj3k-emu-storage/src/settings/panel.rs` | `PanelSettings` |
 | `crates/cdj3k-emu-storage/src/settings/identity.rs` | MAC and SoC-serial minting and validation |
-| `crates/cdj3k-emu-runtime/src/usb.rs` | `UsbManager` hot-swap, virtual + physical attach |
-| `crates/cdj3k-emu-runtime/src/macos_disk.rs` | `list_removable`, `unmount_disk`, `mount_disk` |
+| `crates/cdj3k-emu-runtime/src/disk/mod.rs` | `UsbManager` hot-swap, virtual + physical attach |
+| `crates/cdj3k-emu-runtime/src/disk/{macos,linux}.rs` | the host adapters: `open_raw`, `format_exfat`, retry prompt |
+| `crates/cdj3k-emu-runtime/src/disk/{macos,linux}_disk.rs` | `list_removable`, `unmount_disk`, `mount_disk` |
 | `crates/cdj3k-emu-runtime/src/config.rs` | `-drive` argv lines (USB then eMMC) |
 | `crates/cdj3k-emu-firmware/src/luks.rs` | LUKS1 decrypt of the .UPD payload |
 | `crates/cdj3k-emu-firmware/src/extract.rs` | Kernel + `FirmwareInfo` extraction, G2M reject |
