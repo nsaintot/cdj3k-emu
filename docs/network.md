@@ -15,13 +15,13 @@ guest's NIC has to sit on the **same L2 segment** as its peers:
 broadcasts and arrival-time semantics don't survive NAT.
 
 QEMU's default `-netdev user` (SLIRP) is a userspace NAT stack and
-cannot carry DJPL discovery / beat broadcasts between hosts. To get
-real LAN visibility on macOS we use either `vmnet.framework` - opened by
-QEMU itself, in-process - or a kernel TAP bridge.
+cannot carry DJPL discovery / beat broadcasts between hosts. For real LAN
+visibility, macOS uses `vmnet.framework` - opened by QEMU itself, in-process -
+or a kernel TAP bridge, and Linux a macvtap or a tap on a bridge.
 
 ---
 
-## Four modes
+## Modes
 
 | Mode             | QEMU netdev                                          | L2 reach                 | Needs root | Cleanup mechanism      |
 | ---------------- | ---------------------------------------------------- | ------------------------ | ---------- | ---------------------- |
@@ -29,8 +29,10 @@ QEMU itself, in-process - or a kernel TAP bridge.
 | **vmnet-bridged**| `vmnet-bridged,id=net0,ifname=<iface>`               | full L2 on iface         | no         | QEMU exit              |
 | **vmnet-host** (link-local) | `vmnet-host,id=net0,net-uuid=<UUID>`      | shared `bridgeN`, no NIC | no         | QEMU exit              |
 | **TAP bridge**   | `tap,id=net0,fd=<N>`                                 | full L2 via TAP          | yes        | heartbeat-file watcher |
+| **Linux link**   | `tap,id=net0,fd=<N>`                                 | full L2 on iface         | once per host boot | none: the link persists |
 
-Both vmnet modes are unprivileged: vmnet requires root *or* the
+vmnet and the TAP bridge are macOS; the Linux link is Linux. Both vmnet modes
+are unprivileged: vmnet requires root *or* the
 `com.apple.developer.networking.vmnet` entitlement, and the app carries it,
 authorised by `Contents/embedded.provisionprofile`. Entitlements are
 process-wide, so QEMU reaches vmnet from inside `libcdj3k-emu-qemu.dylib` -
@@ -49,9 +51,9 @@ goes unanswered while other traffic still flows; without it `bootpd` offers a
 processes see each other's broadcasts, which is what lets several instances
 share one DJ-Link segment with no daemon between them.
 
-Selection logic lives in `crates/cdj3k-emu-runtime/src/config.rs:274-298`:
-TAP fd wins if present, otherwise the vmnet socket path wins, otherwise
-user-mode falls through.
+`QemuConfig::build_argv` selects: a tap fd wins if present, otherwise a vmnet
+mode, otherwise user-mode. Which of those an interface gets is the host's
+`net::attach`.
 
 The device line is identical across modes:
 
@@ -97,9 +99,9 @@ There is no socket, no lease, no watchdog and no shared daemon to reap - the
 interface is released when QEMU exits. Bridged instances need no coordination
 at all: they are each on the real LAN.
 
-`VmnetMode` (`crates/cdj3k-emu-runtime/src/vmnet.rs`) carries the choice and
-renders the `-netdev` argument; interface names are checked against the BSD
-ifname grammar before they reach a command line.
+`VmnetMode` (`crates/cdj3k-emu-runtime/src/net/vmnet.rs`) carries the choice
+and renders the `-netdev` argument; interface names are checked
+(`platform::net::is_valid_iface`) before they reach a command line.
 
 ### Mode 3 - TAP bridge
 
@@ -113,7 +115,7 @@ host_tap (e.g. tap0)  ──┐
    other ifaces ────────┘
 ```
 
-Flow (`tapbridge.rs:57-118`):
+Flow (`TapBridge::setup`, `net/tapbridge.rs`):
 
 1. `cleanup_stale()` reads `<instance>/tapbridge.names` from a previous
    run; if present, `ifconfig destroy` the old bridge and tap via one
@@ -125,8 +127,8 @@ Flow (`tapbridge.rs:57-118`):
    interface, creates a `bridgeN`, adds the host tap with STP off,
    `chmod 0666 /dev/tapN`, closes fd 3, writes
    `<bridge>:<tap>\n` to the names file.
-5. Host process opens `/dev/<tap>` itself, clears `FD_CLOEXEC`
-   (`tapbridge.rs:110`), passes the fd to QEMU as `tap,fd=N`. The
+5. Host process opens `/dev/<tap>` itself, clears `FD_CLOEXEC`, passes the
+   fd to QEMU as `tap,fd=N`. The
    interface is **never DOWN** between bridge setup and the first
    packet - the fd is always held by someone.
 6. Watcher's Phase 1 polls until the tap shows `RUNNING` again (with
@@ -137,6 +139,25 @@ Flow (`tapbridge.rs:57-118`):
 Teardown: `chmod 0600 /dev/<tap>`, `ifconfig <tap> down`,
 `ifconfig <bridge> destroy`, remove the names and heartbeat files,
 remove the watcher script itself.
+
+### Mode 4 - Linux link
+
+`net/linux_net.rs` asks sysfs what the picked interface is
+(`platform::net::linux_kind`) and gives the guest:
+
+| Picked | Link | QEMU gets |
+|---|---|---|
+| a physical NIC | `cdj3k<slot>`, a macvtap in bridge mode on it, with the slot's MAC | `/dev/tap<ifindex>` |
+| a bridge | `cdj3k<slot>`, a tap enslaved to it | `/dev/net/tun` attached to the tap |
+| an existing tap | the tap itself | the tap, if this user can open it |
+
+The link is made once by an elevated script (`pkexec`, `linuxnet.sh`), owned
+by the user, and reused on the next launch when sysfs shows it up, on the same
+parent and with the slot's MAC. It goes when the host reboots or a later setup
+replaces it. A Wi-Fi station cannot carry either shape, so it is not offered.
+
+A macvtap cannot reach its own parent's host: rekordbox on the same machine
+does not see the deck. A bridge built by hand and picked does.
 
 ---
 
@@ -156,14 +177,14 @@ first byte forced to `02|LAA`:
 > `crates/cdj3k-emu-storage/src/settings/identity.rs:44` - `generate_mac()`
 
 The runtime substitutes a fallback `0a:00:00:00:00:<id&0xff>` if no
-persisted MAC is set (`config.rs:270-273`).
+persisted MAC is set (`QemuConfig::build_argv`).
 
 ---
 
 ## Elevation flow
 
-`run_elevated()` in `tapbridge.rs` is the single elevation primitive, and
-tapbridge is its only caller:
+`elevate::run_elevated` is the single elevation primitive; the TAP bridge and
+the Linux link are its callers. On macOS it is AuthorizationServices:
 
 ```
 AuthorizationCreate(NULL, NULL, kAuthorizationFlagDefaults, &auth)
@@ -181,6 +202,9 @@ AuthorizationFree(auth, kAuthorizationFlagDefaults)
 (TouchID / Apple Watch / password). The shell that runs under
 `AuthorizationExecuteWithPrivileges` has no controlling tty - fine
 for our scripts, which only spawn backgrounded daemons + watchdogs.
+
+On Linux it is `pkexec /bin/sh -c <cmd>`, answered by the desktop's polkit
+agent; it needs a local seat.
 
 ### Why a watcher and not direct lifetime ownership
 
@@ -208,10 +232,12 @@ ssh -p $((2222 + INSTANCE_ID)) root@localhost
 scp -P $((2222 + INSTANCE_ID)) file root@localhost:/tmp/
 ```
 
-Default port for instance 0 is `2222`. Inside the guest, dropbear is
-enabled at boot via `initramfs-patch/patch-rootfs.d/03-dropbear-enable.sh`.
+Default port for instance 0 is `2222`. The guest runs dropbear only when the
+setup window's **Developer / Root SSH** option was ticked at provisioning: the
+provisioning boot gets `cdj3k.ssh=1`, which the patch dispatcher reads as
+`ENABLE_SSH` for `02`-`05` in `initramfs-patch/patch-rootfs.d/`.
 
-### Bridged (vmnet or TAP)
+### Bridged (vmnet, TAP or Linux link)
 
 The guest gets a DHCP lease on the host LAN. Find it by MAC:
 
@@ -252,25 +278,19 @@ Two facts that matter for this doc:
 The runtime never feeds an interface name to an elevated shell
 without two layers of filtering:
 
-- **`is_valid_iface()`** in `vmnet.rs:44-48`:
+- **`platform::net::is_valid_iface`**: 1 to 15 bytes of ASCII
+  alphanumerics, `.`, `_` and `-`, and not `.` or `..`. Checked by
+  `VmnetMode::bridged`, `TapBridge::setup` and `LinuxBridge::setup`;
+  `LinuxBridge::setup` also checks the MAC (`is_valid_mac`).
+- **`elevate::sh_quote`**: wraps the argument in single quotes and escapes
+  embedded `'` as `'\''`, for everything interpolated into an elevated
+  script.
 
-  ```
-  non-empty && len <= 16 && ASCII alnum / '_' / '-' only
-  ```
-
-  Matches the BSD ifname grammar. Used by both `SocketVmnet::start_bridged`
-  (`vmnet.rs:56-61`) and `TapBridge::setup` (`tapbridge.rs:58-63`).
-
-- **`sh_quote()`** in `vmnet.rs:311-313`: wraps the argument in single
-  quotes and escapes embedded `'` as `'\''`. Sufficient on its own
-  for `/bin/sh -c` and shell scripts - `is_valid_iface` is the
-  belt-and-braces check so that even an `sh_quote` regression cannot
-  hand the elevated shell a metacharacter-bearing iface name.
-
-Per-instance state is rooted in `runtime_paths::instance_dir(id)` -
-heartbeat, names file, watcher script, vmnet socket path. The host
-app process owns this directory; root scripts only read from it, and
-the unlink-to-shutdown signal exploits exactly that asymmetry.
+Per-instance state is rooted in `runtime_paths::instance_dir(id)`: the
+TAP bridge's heartbeat, names file and watcher script, and the Linux link's
+script and ready file. The host app process owns this directory; root scripts
+only read from it, and the TAP bridge's unlink-to-shutdown signal relies on
+that.
 
 ---
 
@@ -279,9 +299,13 @@ the unlink-to-shutdown signal exploits exactly that asymmetry.
 | Path                                                       | Role                                              |
 | ---------------------------------------------------------- | ------------------------------------------------- |
 | `crates/cdj3k-emu-runtime/src/config.rs`                   | `-netdev` / `-device` selection                   |
-| `crates/cdj3k-emu-runtime/src/vmnet.rs`                    | `VmnetMode` -> `-netdev` argument, network UUID    |
-| `crates/cdj3k-emu-runtime/src/tapbridge.rs`                | bridgeN + tapM watcher, stale cleanup, elevation  |
+| `crates/cdj3k-emu-runtime/src/net/`                        | `attach` per host, `NetAttachment`                |
+| `crates/cdj3k-emu-runtime/src/net/vmnet.rs`                | `VmnetMode` -> `-netdev` argument, network UUID    |
+| `crates/cdj3k-emu-runtime/src/net/tapbridge.rs`            | bridgeN + tapM watcher, stale cleanup (macOS)     |
+| `crates/cdj3k-emu-runtime/src/net/linux_net.rs`            | macvtap / tap-on-bridge / existing tap (Linux)    |
+| `crates/cdj3k-emu-runtime/src/elevate/`                    | `run_elevated` per host, `sh_quote`               |
+| `crates/cdj3k-emu-platform/src/net/`                       | interfaces offered, validators, `linux_kind`      |
 | `crates/cdj3k-emu-storage/src/settings/`                   | persisted `mac`, `net_iface`, MAC generator       |
-| `crates/cdj3k-emu-platform/src/runtime_paths.rs`           | socket / instance-dir layout                      |
+| `crates/cdj3k-emu-platform/src/runtime_paths/`             | socket / instance-dir layout                      |
 | `qemu/build.sh`                                            | QEMU build (unrelated to runtime networking)      |
 | `initramfs-patch/patch-rootfs.d/03-dropbear-enable.sh`     | enables in-guest SSH for both modes               |

@@ -17,14 +17,15 @@ subucom SPI wire format is documented in `docs/subucom.md`.
 | Config (cfg) | virtio-serial (Unix socket)    | bidirectional   | `{sock_dir}/cfg.sock`                 |
 
 `sock_dir` follows the multi-instance convention
-`/tmp/cdj3k-emu/instance-{id}/` (see
-`crates/cdj3k-emu-platform/src/runtime_paths.rs`). Authoritative QEMU args
-live in `crates/cdj3k-emu-runtime/src/config.rs` around lines 300-337.
+`/tmp/cdj3k-emu-{uid}/instance-{id}/`. `crates/cdj3k-emu-platform/src/runtime_paths/`
+is the source of truth for the layout and the length limit on it; the copies in
+`boot.sh` and `tools/midi-driver/link.c` must agree with it. Authoritative QEMU
+args are `QemuConfig::build_argv` in `crates/cdj3k-emu-runtime/src/config.rs`.
 
-The legacy virtio-serial main/jog/sub layout (`main.sock`, `jog.sock`,
-`sub.sock`, `/dev/vport0p[012]`) is gone. Main is now shm + dirty-rect
-publish, jog is ivshmem zero-copy, and the third virtio-serial port has
-been deleted (subucom now multiplexes onto `ctrl.sock`).
+QEMU's monitor is `-qmp tcp:localhost:<4445 + slot>`. Where the disk adapter
+hands a raw USB disk to QEMU as a descriptor (Linux), a second monitor listens
+on `{sock_dir}/qmp-fd.sock`: `add-fd` needs a Unix socket to carry the
+descriptor.
 
 ---
 
