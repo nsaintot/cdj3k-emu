@@ -8,6 +8,8 @@ use super::NetIf;
 
 pub const HOST_ONLY: bool = true;
 
+pub use super::unix::exists;
+
 pub fn enumerate() -> Vec<NetIf> {
     super::unix::walk(bridgeable)
 }

@@ -10,3 +10,7 @@ pub const HOST_ONLY: bool = false;
 pub fn enumerate() -> Vec<NetIf> {
     Vec::new()
 }
+
+pub fn exists(_name: &str) -> bool {
+    false
+}

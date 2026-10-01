@@ -299,6 +299,20 @@ mod tests {
     use std::io::Write;
     use std::os::unix::fs::FileExt;
 
+    /// An open file under a directory makes this process one of its holders.
+    #[test]
+    fn an_open_file_names_its_holder() {
+        use super::super::linux_disk::holders_of;
+        let dir = std::env::temp_dir().join(format!("cdj3k-holders-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = std::fs::File::create(dir.join("held")).unwrap();
+        let me = std::fs::read_to_string("/proc/self/comm").unwrap().trim().to_string();
+        assert!(holders_of(&dir).contains(&me));
+        drop(file);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!holders_of(&dir).contains(&me));
+    }
+
     #[test]
     fn accepts_the_shapes_lsblk_emits() {
         for ok in ["/dev/sdb", "/dev/sdb1", "/dev/nvme0n1p3", "/dev/mmcblk0"] {

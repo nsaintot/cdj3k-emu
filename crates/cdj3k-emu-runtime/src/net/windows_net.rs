@@ -28,7 +28,7 @@ use std::io;
 
 use cdj3k_emu_platform::bundled;
 use cdj3k_emu_platform::net::windows_kind::is_valid_adapter_name;
-use cdj3k_emu_platform::net::{adapters, is_valid_mac};
+use cdj3k_emu_platform::net::{enumerate_interfaces, interface_exists, is_valid_mac};
 use cdj3k_emu_platform::runtime_paths;
 
 use super::lease::Lease;
@@ -58,23 +58,16 @@ impl WindowsBridge {
         if !is_valid_mac(mac) {
             return Err(invalid(format!("invalid MAC: {mac:?}")));
         }
-        let all = adapters();
-        let nic = all
-            .iter()
-            .find(|a| a.friendly_name == iface && !a.is_tap() && !a.is_bridge())
-            .ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, format!("no adapter named {iface:?}"))
-            })?;
-        if nic.is_wifi() {
-            eprintln!(
-                "cdj3k-emu: {iface} is Wi-Fi; bridging a guest over 802.11 is unreliable \
-                 (access points accept one MAC per station), so DJ-Link may not see the deck"
-            );
+        if !enumerate_interfaces().iter().any(|i| i.name == iface) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no adapter named {iface:?}"),
+            ));
         }
 
         let tap = winbridge::tap_name(instance_id);
         let dir = runtime_paths::instance_dir(instance_id);
-        let have_tap = all.iter().any(|a| a.is_tap() && a.friendly_name == tap);
+        let have_tap = interface_exists(&tap);
         let inf = bundled::resources().join(TAP_INF);
         if !have_tap && !inf.is_file() {
             return Err(io::Error::new(

@@ -8,7 +8,7 @@
 //!   Both are portable and know nothing about how the menu is drawn.
 //! * A [`provider::MenuProvider`] draws a [`model::MenuModel`] and reports the
 //!   [`id::MenuId`]s that were clicked: the native bar through `muda` on
-//!   macOS, the in-window strip ([`egui_provider`]) on Linux.
+//!   macOS, the in-window strip ([`egui_provider`]) elsewhere.
 //!
 //! Adding a menu entry therefore means touching the service and nothing else.
 
@@ -24,6 +24,21 @@ mod service;
 
 #[cfg(target_os = "macos")]
 mod muda_provider;
+
+#[cfg(target_os = "macos")]
+#[path = "macos.rs"]
+mod imp;
+#[cfg(target_os = "linux")]
+#[path = "linux.rs"]
+mod imp;
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod imp;
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+#[path = "unsupported.rs"]
+mod imp;
+
+use imp::{draws_in_window, host_provider};
 
 pub use action::ActionEffect;
 pub use id::MenuId;
@@ -45,37 +60,6 @@ thread_local! {
     static MENU: RefCell<Option<Menu>> = const { RefCell::new(None) };
 }
 
-/// Select the in-window menu on a host that has a native one.
-///
-/// Lets the Linux and Windows menu be exercised on a Mac; the shipped menu is
-/// unaffected. Elsewhere the in-window menu is the only one.
-#[cfg(target_os = "macos")]
-const IN_WINDOW_ENV: &str = "CDJ3K_MENU_IN_WINDOW";
-
-#[cfg(target_os = "macos")]
-fn forced_in_window() -> bool {
-    std::env::var_os(IN_WINDOW_ENV).is_some_and(|v| v != "0")
-}
-
-#[cfg(target_os = "macos")]
-fn host_provider() -> Box<dyn MenuProvider> {
-    if forced_in_window() {
-        return Box::<egui_provider::EguiProvider>::default();
-    }
-    Box::<muda_provider::MudaProvider>::default()
-}
-
-/// Linux desktops own no menu bar a client can rely on.
-#[cfg(target_os = "linux")]
-fn host_provider() -> Box<dyn MenuProvider> {
-    Box::<egui_provider::EguiProvider>::default()
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn host_provider() -> Box<dyn MenuProvider> {
-    Box::<egui_provider::EguiProvider>::default()
-}
-
 /// Height the in-window menu takes out of the window, or 0 where the menu is
 /// the host's own.
 ///
@@ -88,21 +72,6 @@ pub fn in_window_bar_height() -> f32 {
     } else {
         0.0
     }
-}
-
-#[cfg(target_os = "macos")]
-fn draws_in_window() -> bool {
-    forced_in_window()
-}
-
-#[cfg(target_os = "linux")]
-fn draws_in_window() -> bool {
-    true
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn draws_in_window() -> bool {
-    true
 }
 
 /// Draw the in-window menu. Call once per frame, before the chassis; a no-op

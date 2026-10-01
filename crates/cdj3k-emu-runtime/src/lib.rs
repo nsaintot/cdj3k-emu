@@ -2,7 +2,6 @@ pub mod cfg;
 pub mod config;
 pub mod disk;
 pub mod elevate;
-pub mod ffi;
 pub mod instance;
 pub mod net;
 pub mod pc_link;

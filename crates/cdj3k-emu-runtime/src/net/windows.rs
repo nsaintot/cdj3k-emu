@@ -38,3 +38,17 @@ pub fn attach(iface: &str, mac: &str, instance_id: u32) -> io::Result<NetAttachm
 pub fn tap_netdev(id: &str, iface: Option<&str>, _fd: Option<i32>) -> Option<String> {
     iface.map(|name| format!("tap,id={id},ifname={name}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tap_netdev_is_the_adapter() {
+        assert_eq!(
+            tap_netdev("net0", Some("cdj3k-emu-0"), None).as_deref(),
+            Some("tap,id=net0,ifname=cdj3k-emu-0")
+        );
+        assert_eq!(tap_netdev("net0", None, None), None);
+    }
+}

@@ -11,6 +11,8 @@ use super::NetIf;
 
 pub const HOST_ONLY: bool = false;
 
+pub use super::unix::exists;
+
 pub fn enumerate() -> Vec<NetIf> {
     let mut out = super::unix::walk(bridgeable);
 

@@ -5,6 +5,15 @@ use std::process::Command;
 
 use super::QemuCommand;
 
+// libcdj3k-emu-qemu.dylib. `cdj3k_emu_qemu_run` blocks until QEMU exits; QMP
+// "quit" → qemu_cleanup() → exit() → dylib interpose → longjmp → return.
+unsafe extern "C" {
+    fn cdj3k_emu_qemu_run(argc: libc::c_int, argv: *const *const libc::c_char) -> libc::c_int;
+    /// Clears the longjmp flag and calls _exit(0), so QEMU's threads never run
+    /// on state freed by the longjmp.
+    fn cdj3k_emu_qemu_abort();
+}
+
 /// How to start QEMU on this host: a re-exec of this binary, whose worker
 /// runs the QEMU linked into it. `keep_fd` is inherited by the child.
 pub fn qemu_command(keep_fd: Option<i32>) -> io::Result<QemuCommand> {
@@ -51,7 +60,7 @@ pub fn run_worker_if_asked(args: &[String]) {
             eprintln!("cdj3k-emu-worker: parent gone, aborting");
             // SAFETY: ends the process; QEMU's threads go with it.
             unsafe {
-                crate::ffi::cdj3k_emu_qemu_abort();
+                cdj3k_emu_qemu_abort();
                 libc::_exit(0)
             };
         }
@@ -65,7 +74,7 @@ pub fn run_worker_if_asked(args: &[String]) {
         .collect();
     let c_ptrs: Vec<*const libc::c_char> = c_strings.iter().map(|cs| cs.as_ptr()).collect();
     // SAFETY: `c_ptrs` points into `c_strings`, which outlives the call.
-    let code = unsafe { crate::ffi::cdj3k_emu_qemu_run(c_ptrs.len() as libc::c_int, c_ptrs.as_ptr()) };
+    let code = unsafe { cdj3k_emu_qemu_run(c_ptrs.len() as libc::c_int, c_ptrs.as_ptr()) };
     // QEMU returns through a longjmp out of `exit`, leaving its threads
     // running; `_exit` ends them all at once.
     unsafe { libc::_exit(code) };

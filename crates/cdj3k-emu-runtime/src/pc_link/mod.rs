@@ -24,17 +24,17 @@ pub mod gadget;
 /// macOS-only: vends the endpoints over a UNIX socket, which needs
 /// `std::os::unix::net`.
 #[cfg(target_os = "macos")]
-pub mod transport;
+mod transport;
 
 #[cfg(target_os = "macos")]
-pub mod hid;
+mod hid;
 #[cfg(target_os = "macos")]
-pub mod midi_driver;
+mod midi_driver;
 
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
 mod imp;
-#[cfg(not(any(target_os = "macos")))]
+#[cfg(not(target_os = "macos"))]
 #[path = "unsupported.rs"]
 mod imp;
 

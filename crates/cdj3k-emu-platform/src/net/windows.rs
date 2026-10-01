@@ -1,8 +1,6 @@
-//! Windows: the adapter list from `GetIfTable2`, with IPv4 addresses from
-//! `GetAdaptersAddresses`, filtered by [`super::windows_kind`].
-//!
-//! `GetIfTable2` because a bridge member has no IP binding of its own, and
-//! `GetAdaptersAddresses` lists IP interfaces only.
+//! Windows: the adapter list from `GetIfTable2`, which includes bridge
+//! members, with IPv4 addresses from `GetAdaptersAddresses`, filtered by
+//! [`super::windows_kind`].
 
 use std::collections::HashMap;
 
@@ -17,7 +15,6 @@ use windows::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
 use super::NetIf;
 use super::windows_kind::Adapter;
 
-/// A guest is bridged onto a physical NIC; there is no host-only network.
 pub const HOST_ONLY: bool = false;
 
 pub fn enumerate() -> Vec<NetIf> {
@@ -41,8 +38,12 @@ pub fn enumerate() -> Vec<NetIf> {
 /// filter layered over another interface, listed under its own row.
 const FILTER_INTERFACE: u8 = 1 << 1;
 
+pub fn exists(name: &str) -> bool {
+    adapters().iter().any(|a| a.friendly_name == name)
+}
+
 /// Every adapter the host has, with no filtering beyond NDIS filter layers.
-pub fn adapters() -> Vec<Adapter> {
+fn adapters() -> Vec<Adapter> {
     let addrs = ipv4_by_luid();
     let mut table: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
     // SAFETY: on success `table` points at a table the call allocated, freed

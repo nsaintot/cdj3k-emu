@@ -5,8 +5,7 @@
 //! Linux asks the kernel. So the walk lives in [`unix`] and takes the host's
 //! filter as a parameter, and each host supplies its own.
 //!
-//! Windows has neither: `GetAdaptersAddresses` lists adapters with their
-//! driver descriptions, filtered by [`windows_kind`].
+//! Windows lists adapters with `GetIfTable2`, filtered by [`windows_kind`].
 //!
 //! A host with none of these enumerates nothing (`unsupported.rs`).
 
@@ -29,11 +28,6 @@ mod imp;
 
 pub mod linux_kind;
 pub mod windows_kind;
-
-/// Every adapter the host has, unfiltered: the bridging code looks up the tap
-/// adapter and the bridge among them.
-#[cfg(target_os = "windows")]
-pub use imp::adapters;
 
 /// Whether the host offers a host-only network (vmnet's), which a QEMU built
 /// without it has no netdev for.
@@ -93,6 +87,11 @@ pub fn is_valid_mac(mac: &str) -> bool {
 /// and others cannot.
 pub fn enumerate_interfaces() -> Vec<NetIf> {
     imp::enumerate()
+}
+
+/// Whether the host has an interface named `name`, offered or not.
+pub fn interface_exists(name: &str) -> bool {
+    imp::exists(name)
 }
 
 #[cfg(test)]

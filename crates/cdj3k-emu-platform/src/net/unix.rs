@@ -6,6 +6,15 @@
 
 use super::NetIf;
 
+/// Whether the kernel knows an interface named `name`.
+pub fn exists(name: &str) -> bool {
+    let Ok(name) = std::ffi::CString::new(name) else {
+        return false;
+    };
+    // SAFETY: `name` is a NUL-terminated string that outlives the call.
+    unsafe { libc::if_nametoindex(name.as_ptr()) != 0 }
+}
+
 /// Non-loopback, up, IPv4 interfaces whose name `keep` accepts, plus its
 /// prefix length from the netmask.
 pub fn walk(keep: fn(&str) -> bool) -> Vec<NetIf> {
