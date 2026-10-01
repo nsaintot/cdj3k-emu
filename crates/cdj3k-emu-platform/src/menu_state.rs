@@ -284,6 +284,23 @@ pub fn set_slot_note_fn(f: SlotNoteFn) {
     *SLOT_NOTE_FN.lock().unwrap() = Some(f);
 }
 
+/// Whether another process has slot `n` open, by the same locks the setup
+/// window reads; registered by the app for the same reason as [`SlotNoteFn`].
+pub type SlotBusyFn = fn(u32) -> bool;
+
+static SLOT_BUSY_FN: Mutex<Option<SlotBusyFn>> = Mutex::new(None);
+
+pub fn set_slot_busy_fn(f: SlotBusyFn) {
+    *SLOT_BUSY_FN.lock().unwrap() = Some(f);
+}
+
+/// Whether slot `n` is open in another process; `false` until
+/// [`set_slot_busy_fn`] has run.
+pub fn slot_busy(n: u32) -> bool {
+    let f = *SLOT_BUSY_FN.lock().unwrap();
+    f.is_some_and(|busy| busy(n))
+}
+
 /// What slot `n` holds, or `None` for an empty slot - and for every slot
 /// until [`set_slot_note_fn`] has run.
 pub fn slot_note(n: u32) -> Option<String> {
