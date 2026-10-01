@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 /// QEMU while it's spinning up its virtio-serial port, short enough that the
 /// "first frame" UX (latency label, USB state) lights up promptly.
 const RECONNECT_DELAY: Duration = Duration::from_millis(500);
+const PING_PERIOD: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug)]
 pub struct Latency {
@@ -83,11 +84,17 @@ impl CfgClient {
         let shared = Arc::new(Mutex::new(Shared::default()));
 
         let path = sock_path.clone();
-        let shared_clone = Arc::clone(&shared);
+        let weak = Arc::downgrade(&shared);
         thread::Builder::new()
             .name("cfg-stream".into())
-            .spawn(move || reader_loop(path, shared_clone))
+            .spawn(move || reader_loop(path, weak))
             .expect("spawn cfg-stream thread");
+
+        let weak = Arc::downgrade(&shared);
+        thread::Builder::new()
+            .name("cfg-ping".into())
+            .spawn(move || ping_loop(weak))
+            .expect("spawn cfg-ping thread");
 
         Self { shared }
     }
@@ -213,8 +220,13 @@ impl CfgClient {
     }
 }
 
-fn reader_loop(sock_path: PathBuf, shared: Arc<Mutex<Shared>>) {
+/// Connect, read cfgd's lines, reconnect after QEMU goes; ends once the client
+/// is dropped, since QEMU serves one connection on the socket.
+fn reader_loop(sock_path: PathBuf, shared: std::sync::Weak<Mutex<Shared>>) {
     loop {
+        if shared.strong_count() == 0 {
+            return;
+        }
         let stream = match UnixStream::connect(&sock_path) {
             Ok(s) => s,
             Err(_) => {
@@ -224,10 +236,15 @@ fn reader_loop(sock_path: PathBuf, shared: Arc<Mutex<Shared>>) {
         };
 
         // Stash a clone for writers.
-        if let Ok(write_clone) = stream.try_clone() {
-            if let Ok(mut s) = shared.lock() {
-                s.writer = Some(write_clone);
-                s.guest_ready = false;
+        {
+            let Some(shared) = shared.upgrade() else {
+                return;
+            };
+            if let Ok(write_clone) = stream.try_clone() {
+                if let Ok(mut s) = shared.lock() {
+                    s.writer = Some(write_clone);
+                    s.guest_ready = false;
+                }
             }
         }
 
@@ -236,18 +253,41 @@ fn reader_loop(sock_path: PathBuf, shared: Arc<Mutex<Shared>>) {
             let Ok(line) = line else {
                 break;
             };
+            let Some(shared) = shared.upgrade() else {
+                return;
+            };
             handle_line(&line, &shared);
         }
 
         // Disconnected: drop the writer and clear the pc_link echo so a QEMU
         // restart re-issues the command.
+        let Some(shared) = shared.upgrade() else {
+            return;
+        };
         if let Ok(mut s) = shared.lock() {
             s.writer = None;
             s.guest_ready = false;
             s.pc_link_state = None;
             s.pc_link_failures = 0;
         }
+        drop(shared);
         thread::sleep(RECONNECT_DELAY);
+    }
+}
+
+/// `ping` until cfgd answers on the current connection; cfgd's own pushes
+/// need the audio driver. Bypasses the queue. Ends when the client is dropped.
+fn ping_loop(shared: std::sync::Weak<Mutex<Shared>>) {
+    while let Some(shared) = shared.upgrade() {
+        if let Ok(mut s) = shared.lock() {
+            if !s.guest_ready {
+                if let Some(w) = s.writer.as_mut() {
+                    let _ = w.write_all(b"ping\n").and_then(|()| w.flush());
+                }
+            }
+        }
+        drop(shared);
+        thread::sleep(PING_PERIOD);
     }
 }
 
