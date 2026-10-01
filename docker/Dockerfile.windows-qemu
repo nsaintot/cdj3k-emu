@@ -1,9 +1,10 @@
-# Cross-builds the patched QEMU for Windows (x86_64 and aarch64)
+# Cross-builds the patched QEMU, and the app, for Windows (x86_64 and aarch64)
 # on a Linux host with llvm-mingw (clang, UCRT), one toolchain for both targets;
 # docker/windows-qemu-deps.sh builds the libraries for each.
 #
-# The image holds the toolchain and the libraries; the build runs through
-# `qemu/build.sh --windows <arch>`, which mounts the repo.
+# The image holds the toolchain and the libraries; the builds run through
+# `qemu/build.sh --windows <arch>` and `packaging/windows/cross-build.sh <arch>`,
+# which mount the repo.
 FROM ubuntu:22.04
 
 ARG LLVM_MINGW_VERSION=20260922
@@ -34,5 +35,14 @@ ENV PATH=/opt/llvm-mingw/bin:$PATH
 COPY docker/windows-qemu-deps.sh /usr/local/bin/windows-qemu-deps.sh
 RUN windows-qemu-deps.sh x86_64
 RUN windows-qemu-deps.sh aarch64
+
+# Rust for the app's <arch>-pc-windows-gnullvm targets, which link with
+# llvm-mingw. Read-only at run time: the build sets its own CARGO_HOME.
+ARG RUST_VERSION=1.93.0
+ENV RUSTUP_HOME=/opt/rustup PATH=/opt/cargo/bin:$PATH
+RUN curl -fsSL https://sh.rustup.rs | env CARGO_HOME=/opt/cargo sh -s -- -y \
+        --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
+        --target x86_64-pc-windows-gnullvm --target aarch64-pc-windows-gnullvm \
+    && chmod -R a+rX /opt/rustup /opt/cargo
 
 WORKDIR /work
