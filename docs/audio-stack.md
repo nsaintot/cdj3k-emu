@@ -162,6 +162,7 @@ re-applied in numerical order, and `qemu-system-aarch64` is rebuilt.
 | `11-console-vc-quiet.patch` | `ui/console-vc.c` (no-op `vt100_update_cursor`) |
 | `12-hvf-vcpu-qos.patch` | `accel/hvf/hvf-accel-ops.c` (QoS on VCPU threads) |
 | `14-pipewire-bypass.patch` | `audio/pwaudio.c` (bypass drain on Linux) |
+| `21-virtio-snd-parked-release.patch` | `hw/audio/virtio-snd.c`: a buffer parked before START is released at once (`end_head` 0; the reader takes whole periods and can stop short of the head), and RELEASE flushes the deferred-return list |
 
 (Patches 01-06 are unrelated infrastructure: ivshmem and the shm
 display backend used for the LCD framebuffer.)

@@ -96,6 +96,9 @@ QEMU is built by `qemu/build.sh` at the pinned `QEMU_REF` with
 `qemu/patches/*.patch` applied in order: `--enable-hvf --enable-cocoa` on
 macOS, `--enable-kvm --enable-pipewire` on Linux.
 
+Patch 21 releases a TX buffer that reaches the bypass writer before the
+stream's START at once, and has RELEASE flush the deferred-return list.
+
 winit comes the same way: `winit/fetch.sh` downloads the pinned crates.io
 release, checks its sha256, and applies `winit/patches/*.patch` into
 `winit/src`, which `[patch.crates-io]` points at. Every cargo command needs it
