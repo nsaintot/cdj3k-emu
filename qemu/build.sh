@@ -6,12 +6,23 @@
 #
 # Usage:
 #   cd <repo-root>
-#   bash qemu/build.sh
+#   bash qemu/build.sh                      # for this host
+#   bash qemu/build.sh --windows x86_64     # Windows x86_64 (TCG), cross-built in Docker
+#   bash qemu/build.sh --windows aarch64    # Windows arm64 (WHPX), cross-built in Docker
+#
+# On Windows, run it from an MSYS2 shell: UCRT64 for x86_64, CLANGARM64 for
+# arm64 (`--windows` is optional there and must match the shell). Packages:
+#   UCRT64:      pacman -S --needed git base-devel mingw-w64-ucrt-x86_64-{toolchain,python,ninja,pkgconf,glib2,pixman,libslirp,zlib}
+#   CLANGARM64:  pacman -S --needed git base-devel mingw-w64-clang-aarch64-{toolchain,python,ninja,pkgconf,glib2,pixman,libslirp,zlib}
 #
 # Output:
-#   qemu/src/        - QEMU source tree
-#   qemu/build/      - build artefacts
-#   qemu/install/    - installed binaries (qemu-system-aarch64 lives here)
+#   qemu/src/                      - QEMU source tree
+#   qemu/build/                    - build artefacts
+#   qemu/install/                  - installed binaries (qemu-system-aarch64 lives here)
+#   qemu/build-windows-<arch>/     - Windows build artefacts
+#   qemu/install-windows-<arch>/   - qemu-system-aarch64.exe, qemu-img.exe,
+#                                    every DLL they load and QEMU's COPYING,
+#                                    in one directory
 #
 # Re-running is idempotent: clone and patch steps are skipped if already done.
 
@@ -20,10 +31,59 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PATCHES_DIR="${SCRIPT_DIR}/patches"
 SHIM_DIR="${SCRIPT_DIR}/shim"
-HOST_OS="$(uname -s)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SRC_DIR="${SCRIPT_DIR}/src"
-BUILD_DIR="${SCRIPT_DIR}/build"
-INSTALL_DIR="${SCRIPT_DIR}/install"
+
+# What this run builds for:
+#   HOST_OS=Darwin|Linux   the machine running the script
+#   HOST_OS=Windows        an MSYS2 shell (native build)
+#   HOST_OS=WindowsCross   inside the image of docker/Dockerfile.windows-qemu
+# WIN_ARCH is x86_64 or aarch64 for both Windows kinds.
+WIN_ARCH=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --windows)
+            WIN_ARCH="${2:-}"
+            case "${WIN_ARCH}" in
+                x86_64|aarch64) shift 2 ;;
+                *) echo "ERROR: --windows takes x86_64 or aarch64" >&2; exit 1 ;;
+            esac
+            ;;
+        *) echo "ERROR: unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+
+WIN_DOCKER=0
+if [ -n "${CDJ3K_WINDOWS_CROSS:-}" ]; then
+    HOST_OS="WindowsCross"
+    WIN_ARCH="${CDJ3K_WINDOWS_CROSS}"
+elif [ -n "${MSYSTEM:-}" ]; then
+    HOST_OS="Windows"
+    case "${MSYSTEM}" in
+        UCRT64)     msys_arch="x86_64" ;;
+        CLANGARM64) msys_arch="aarch64" ;;
+        *) echo "ERROR: MSYSTEM=${MSYSTEM}; use the UCRT64 (x86_64) or CLANGARM64 (arm64) shell" >&2
+           exit 1 ;;
+    esac
+    if [ -n "${WIN_ARCH}" ] && [ "${WIN_ARCH}" != "${msys_arch}" ]; then
+        echo "ERROR: --windows ${WIN_ARCH} does not match the ${MSYSTEM} shell" >&2
+        exit 1
+    fi
+    WIN_ARCH="${msys_arch}"
+else
+    HOST_OS="$(uname -s)"
+    if [ -n "${WIN_ARCH}" ]; then
+        WIN_DOCKER=1
+    fi
+fi
+
+if [ -n "${WIN_ARCH}" ]; then
+    BUILD_DIR="${SCRIPT_DIR}/build-windows-${WIN_ARCH}"
+    INSTALL_DIR="${SCRIPT_DIR}/install-windows-${WIN_ARCH}"
+else
+    BUILD_DIR="${SCRIPT_DIR}/build"
+    INSTALL_DIR="${SCRIPT_DIR}/install"
+fi
 
 # Pinned to a master snapshot that includes the HVF in-kernel GIC support
 # (Mohamed Mediouni's series, merged 2026-05-05). Stable QEMU 11.0.0 was cut
@@ -117,6 +177,35 @@ if [ "${patch_changed}" = "1" ] && [ -f "${BUILD_DIR}/build.ninja" ]; then
 fi
 
 # --------------------------------------------------------------------------
+# 2b. Windows cross build: hand the rest of the script to the container
+#
+# The image (docker/Dockerfile.windows-qemu) holds llvm-mingw and the
+# libraries for both architectures. The repo is mounted at /work, so the
+# patched source tree and the output stay on the host. The container runs
+# this same script with CDJ3K_WINDOWS_CROSS set.
+# --------------------------------------------------------------------------
+
+if [ "${WIN_DOCKER}" = "1" ]; then
+    WIN_IMAGE="${CDJ3K_WINDOWS_QEMU_IMAGE:-cdj3k-emu-windows-qemu}"
+    command -v docker >/dev/null || { echo "ERROR: docker not found" >&2; exit 1; }
+    if ! docker image inspect "${WIN_IMAGE}" >/dev/null 2>&1; then
+        echo "==> Building ${WIN_IMAGE} (llvm-mingw + libraries, first run only) …"
+        docker build -f "${REPO_ROOT}/docker/Dockerfile.windows-qemu" \
+            -t "${WIN_IMAGE}" "${REPO_ROOT}"
+    fi
+    echo "==> Cross-building for Windows ${WIN_ARCH} in ${WIN_IMAGE} …"
+    docker run --rm \
+        --user "$(id -u):$(id -g)" \
+        -e HOME=/tmp \
+        -e CDJ3K_WINDOWS_CROSS="${WIN_ARCH}" \
+        -e JOBS="${JOBS:-}" \
+        -v "${REPO_ROOT}:/work" \
+        "${WIN_IMAGE}" \
+        bash qemu/build.sh
+    exit 0
+fi
+
+# --------------------------------------------------------------------------
 # 3. Configure
 #
 # --disable-pvg: ParavirtualizedGraphics.framework (3D passthrough to the host
@@ -133,12 +222,40 @@ mkdir -p "${BUILD_DIR}"
 #          though the display is the shm one.
 #   Linux: KVM, PipeWire, and no UI backend: the display is the shm one, and
 #          GTK/SDL would add to the package's dependency list.
+#   Windows: WHPX on arm64 (the guest is aarch64, so an x86_64 host runs TCG),
+#          slirp for user-mode networking, and no UI backend.
+EXE=""
+CROSS_FLAGS=()
+# configure writes `werror = true` into the machine file of a Windows build from
+# a git checkout, overriding --disable-werror.
+EXTRA_WARN_FLAGS=""
 case "${HOST_OS}" in
     Darwin)
         HOST_FLAGS=(--enable-hvf --enable-cocoa --disable-pvg)
         ;;
     Linux)
         HOST_FLAGS=(--enable-kvm --enable-pipewire)
+        ;;
+    Windows|WindowsCross)
+        EXE=".exe"
+        EXTRA_WARN_FLAGS=" -Wno-error"
+        HOST_FLAGS=(--enable-slirp)
+        if [ "${WIN_ARCH}" = "aarch64" ]; then
+            HOST_FLAGS+=(--enable-whpx)
+        else
+            HOST_FLAGS+=(--disable-whpx)
+        fi
+        if [ "${HOST_OS}" = "WindowsCross" ]; then
+            triple="${WIN_ARCH}-w64-mingw32"
+            WIN_DEPS="/opt/llvm-mingw/${triple}"
+            export PKG_CONFIG=pkg-config
+            export PKG_CONFIG_LIBDIR="${WIN_DEPS}/lib/pkgconfig:${WIN_DEPS}/share/pkgconfig"
+            CROSS_FLAGS=(
+                --cross-prefix="${triple}-"
+                --cc="${triple}-clang"
+                --cxx="${triple}-clang++"
+            )
+        fi
         ;;
     *)
         echo "ERROR: unsupported build host: ${HOST_OS}" >&2
@@ -156,6 +273,7 @@ if [ ! -f "${BUILD_DIR}/build.ninja" ]; then
             --prefix="${INSTALL_DIR}"   \
             --target-list=aarch64-softmmu \
             "${HOST_FLAGS[@]}"          \
+            ${CROSS_FLAGS[@]+"${CROSS_FLAGS[@]}"} \
             --disable-gtk               \
             --disable-sdl               \
             --disable-curses            \
@@ -168,7 +286,7 @@ if [ ! -f "${BUILD_DIR}/build.ninja" ]; then
             --disable-install-blobs     \
             --enable-trace-backends=nop \
             --disable-werror            \
-            --extra-cflags="-O2"
+            --extra-cflags="-O2${EXTRA_WARN_FLAGS}"
     )
 else
     echo "==> Build already configured - skipping configure"
@@ -202,11 +320,14 @@ WANTED=(
 # keymaps exist only where qemu-keymap does, which is where xkbcommon does.
 WANTED_UNDER=( pc-bios/keymaps/ )
 
+# A patch or a changed meson.build makes ninja reconfigure; list the targets
+# after that, not before.
+ninja -C "${BUILD_DIR}" build.ninja
 KNOWN="$(ninja -C "${BUILD_DIR}" -t targets all | cut -d: -f1)"
 declare -a TARGETS
 for t in "${WANTED[@]}"; do
-    if grep -qxF "${t}" <<<"${KNOWN}"; then
-        TARGETS+=("${t}")
+    if grep -qxF "${t}${EXE}" <<<"${KNOWN}"; then
+        TARGETS+=("${t}${EXE}")
     else
         echo "    (skipping ${t} - not a target on this host)"
     fi
@@ -230,10 +351,30 @@ echo "==> Installing …"
 # pulls in test binaries (e.g. tests/audio/test-audio) that don't link
 # virtio-snd.c.o and therefore can't resolve our coreaudio.m bypass refs.
 # Meson is bundled inside the build dir's pyvenv (no system meson).
-"${BUILD_DIR}/pyvenv/bin/meson" install -C "${BUILD_DIR}" --no-rebuild
+# The venv keeps its scripts in bin/ or, for a native Windows Python, Scripts/.
+MESON=""
+for m in "${BUILD_DIR}/pyvenv/bin/meson" "${BUILD_DIR}/pyvenv/Scripts/meson.exe" \
+         "${BUILD_DIR}/pyvenv/Scripts/meson"; do
+    if [ -x "${m}" ]; then MESON="${m}"; break; fi
+done
+if [ -z "${MESON}" ]; then
+    echo "ERROR: no meson in ${BUILD_DIR}/pyvenv" >&2
+    exit 1
+fi
+INSTALL_OPTS=(--no-rebuild)
+if [ -n "${WIN_ARCH}" ]; then
+    INSTALL_OPTS+=(--strip)
+fi
+"${MESON}" install -C "${BUILD_DIR}" "${INSTALL_OPTS[@]}"
 
+# Windows installs into the prefix itself, with no bin/.
+if [ -n "${WIN_ARCH}" ]; then
+    QEMU_BIN_DIR="${INSTALL_DIR}"
+else
+    QEMU_BIN_DIR="${INSTALL_DIR}/bin"
+fi
 echo ""
-echo "Done. Binary at: ${INSTALL_DIR}/bin/qemu-system-aarch64"
+echo "Done. Binary at: ${QEMU_BIN_DIR}/qemu-system-aarch64${EXE}"
 
 # --------------------------------------------------------------------------
 # 6. Build embedding dylib (libcdj3k-emu-qemu.dylib)
@@ -247,6 +388,28 @@ echo "Done. Binary at: ${INSTALL_DIR}/bin/qemu-system-aarch64"
 # macOS only: there QEMU is linked into the app so a launch is a re-exec of
 # ourselves rather than a second binary. Elsewhere the installed
 # qemu-system-aarch64 is what ships, and there is nothing further to do.
+if [ -n "${WIN_ARCH}" ]; then
+    # Windows looks for a DLL beside the executable first, so every DLL the
+    # binaries load goes into the directory they are in.
+    echo "==> Collecting DLLs …"
+    if [ "${HOST_OS}" = "WindowsCross" ]; then
+        DLL_DIRS=("${WIN_DEPS}/bin")
+    else
+        DLL_DIRS=("${MSYSTEM_PREFIX}/bin")
+    fi
+    bash "${REPO_ROOT}/scripts/bundle-dlls.sh" "${QEMU_BIN_DIR}" "${DLL_DIRS[@]}" -- \
+        "${QEMU_BIN_DIR}/qemu-system-aarch64.exe" "${QEMU_BIN_DIR}/qemu-img.exe"
+    cp "${SRC_DIR}/COPYING" "${QEMU_BIN_DIR}/COPYING"
+    # libfdt's headers and static library, the tools other than qemu-img, and
+    # share/ (keymaps, icons, other machines' device trees) are not part of the
+    # tree that ships.
+    rm -rf "${QEMU_BIN_DIR}/include" "${QEMU_BIN_DIR}/lib" "${QEMU_BIN_DIR}/share"
+    rm -f "${QEMU_BIN_DIR}"/qemu-{edid,io,nbd,storage-daemon}.exe
+    echo ""
+    echo "Done. ${QEMU_BIN_DIR} holds qemu-system-aarch64.exe and its DLLs."
+    exit 0
+fi
+
 if [ "${HOST_OS}" != "Darwin" ]; then
     echo ""
     echo "Done. ${HOST_OS} ships the binary directly - no embedding library needed."

@@ -1,0 +1,1374 @@
+diff --git a/accel/tcg/tcg-accel-ops-mttcg.c b/accel/tcg/tcg-accel-ops-mttcg.c
+index 4160e2b..8fa88de 100644
+--- a/accel/tcg/tcg-accel-ops-mttcg.c
++++ b/accel/tcg/tcg-accel-ops-mttcg.c
+@@ -70,6 +70,11 @@ static void *mttcg_cpu_thread_fn(void *arg)
+     assert(tcg_enabled());
+     g_assert(!icount_enabled());
+ 
++#ifdef _WIN32
++    /* cdj3k-emu: a preempted vCPU thread stalls the guest clock. */
++    qemu_thread_win32_boost();
++#endif
++
+     rcu_register_thread();
+     force_rcu.notifier.notify = mttcg_force_rcu;
+     force_rcu.cpu = cpu;
+diff --git a/accel/whpx/whpx-accel-ops.c b/accel/whpx/whpx-accel-ops.c
+index b8f4154..2ffe1da 100644
+--- a/accel/whpx/whpx-accel-ops.c
++++ b/accel/whpx/whpx-accel-ops.c
+@@ -25,6 +25,11 @@ static void *whpx_cpu_thread_fn(void *arg)
+     CPUState *cpu = arg;
+     int r;
+ 
++#ifdef _WIN32
++    /* cdj3k-emu: a preempted vCPU thread stalls the guest clock. */
++    qemu_thread_win32_boost();
++#endif
++
+     rcu_register_thread();
+ 
+     bql_lock();
+diff --git a/audio/audio.c b/audio/audio.c
+index 6f10ee4..042e4f2 100644
+--- a/audio/audio.c
++++ b/audio/audio.c
+@@ -218,6 +218,9 @@ static void audio_create_pdos(Audiodev *dev)
+ #endif
+ #ifdef CONFIG_SPICE
+         CASE(SPICE, spice, );
++#endif
++#ifdef CONFIG_AUDIO_WASAPI
++        CASE(WASAPI, wasapi, Wasapi);
+ #endif
+         CASE(WAV, wav, );
+ 
+@@ -315,6 +318,10 @@ static AudiodevPerDirectionOptions *audio_get_pdo_out(Audiodev *dev)
+ #ifdef CONFIG_SPICE
+     case AUDIODEV_DRIVER_SPICE:
+         return dev->u.spice.out;
++#endif
++#ifdef CONFIG_AUDIO_WASAPI
++    case AUDIODEV_DRIVER_WASAPI:
++        return qapi_AudiodevWasapiPerDirectionOptions_base(dev->u.wasapi.out);
+ #endif
+     case AUDIODEV_DRIVER_WAV:
+         return dev->u.wav.out;
+@@ -374,6 +381,10 @@ static AudiodevPerDirectionOptions *audio_get_pdo_in(Audiodev *dev)
+ #ifdef CONFIG_SPICE
+     case AUDIODEV_DRIVER_SPICE:
+         return dev->u.spice.in;
++#endif
++#ifdef CONFIG_AUDIO_WASAPI
++    case AUDIODEV_DRIVER_WASAPI:
++        return qapi_AudiodevWasapiPerDirectionOptions_base(dev->u.wasapi.in);
+ #endif
+     case AUDIODEV_DRIVER_WAV:
+         return dev->u.wav.in;
+diff --git a/audio/audio_template.h b/audio/audio_template.h
+index 398a727..8a11bc7 100644
+--- a/audio/audio_template.h
++++ b/audio/audio_template.h
+@@ -385,6 +385,10 @@ AudiodevPerDirectionOptions *glue(audio_get_pdo_, TYPE)(Audiodev *dev)
+ #ifdef CONFIG_SPICE
+     case AUDIODEV_DRIVER_SPICE:
+         return dev->u.spice.TYPE;
++#endif
++#ifdef CONFIG_AUDIO_WASAPI
++    case AUDIODEV_DRIVER_WASAPI:
++        return qapi_AudiodevWasapiPerDirectionOptions_base(dev->u.wasapi.TYPE);
+ #endif
+     case AUDIODEV_DRIVER_WAV:
+         return dev->u.wav.TYPE;
+diff --git a/audio/meson.build b/audio/meson.build
+index 0e33b6f..600e955 100644
+--- a/audio/meson.build
++++ b/audio/meson.build
+@@ -16,6 +16,7 @@ foreach m : [
+   ['alsa', alsa, files('alsaaudio.c')],
+   ['coreaudio', coreaudio, files('coreaudio.m')],
+   ['dsound', dsound, files('dsoundaudio.c', 'audio_win_int.c')],
++  ['wasapi', wasapi, files('wasapiaudio.c')],
+   ['oss', oss, files('ossaudio.c')],
+   ['pa', pulse, files('paaudio.c')],
+   ['sdl', sdl, files('sdlaudio.c')],
+diff --git a/audio/wasapiaudio.c b/audio/wasapiaudio.c
+new file mode 100644
+index 0000000..493a804
+--- /dev/null
++++ b/audio/wasapiaudio.c
+@@ -0,0 +1,929 @@
++/*
++ * QEMU WASAPI audio driver
++ *
++ * Shared-mode, event-driven render client. One thread per output voice owns
++ * every COM object of the stream, opens it, renders it and reopens it when
++ * the endpoint goes away.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "qemu/audio.h"
++#include "qemu/error-report.h"
++#include "qemu/thread.h"
++#include "qapi/error.h"
++#include "qom/object.h"
++
++#define COBJMACROS
++#include <windows.h>
++#include <objbase.h>
++#include <mmreg.h>
++#include <mmdeviceapi.h>
++#include <audioclient.h>
++#include <avrt.h>
++#include <math.h>
++#include <stdatomic.h>
++
++#include "audio_int.h"
++
++/*
++ * cdj3k-emu: virtio-snd's bypass ring (hw/audio/virtio-snd.c). While
++ * virtio-snd has it active, the render thread drains it directly and the
++ * mixer and this backend's own ring are skipped. Weak so that a build
++ * without virtio-snd still links.
++ */
++extern int virtio_snd_bypass_is_active(void) __attribute__((weak));
++extern size_t virtio_snd_bypass_avail(void) __attribute__((weak));
++extern size_t virtio_snd_bypass_read(void *dst, size_t bytes)
++    __attribute__((weak));
++extern void virtio_snd_bypass_note_underrun(uint32_t frames)
++    __attribute__((weak));
++
++/* What virtio-snd reads back about the pipeline after the ring. */
++static _Atomic uint32_t wasapi_bypass_rate;
++static _Atomic uint32_t wasapi_bypass_depth_us;
++static _Atomic uint32_t wasapi_bypass_static_frames;
++static atomic_int wasapi_bypass_streams;
++
++unsigned wasapi_get_active_samplerate(void);
++uint32_t wasapi_get_pipeline_depth_us(void);
++uint32_t wasapi_get_static_latency_frames(void);
++int wasapi_bypass_ready(void);
++
++/* The stream's rate. The ring is written at this rate, so it matching the
++ * guest's is what keeps virtio-snd on its passthrough path. */
++unsigned wasapi_get_active_samplerate(void)
++{
++    return atomic_load_explicit(&wasapi_bypass_rate, memory_order_relaxed);
++}
++
++/* Frames already queued in the endpoint buffer when the last period was
++ * filled, as time: how long the first frame written then waited to play. */
++uint32_t wasapi_get_pipeline_depth_us(void)
++{
++    return atomic_load_explicit(&wasapi_bypass_depth_us, memory_order_relaxed);
++}
++
++/* IAudioClient::GetStreamLatency plus one period. */
++uint32_t wasapi_get_static_latency_frames(void)
++{
++    return atomic_load_explicit(&wasapi_bypass_static_frames,
++                                memory_order_relaxed);
++}
++
++/* Whether a render thread exists to drain the ring. */
++int wasapi_bypass_ready(void)
++{
++    return atomic_load_explicit(&wasapi_bypass_streams,
++                                memory_order_acquire) > 0;
++}
++
++/* What the ring has to hold before playback resumes after an underrun. It
++ * absorbs late guest batches and adds this much to the reported depth. */
++#define WASAPI_BYPASS_CUSHION_MS  20
++/* Silent periods after which any whole period resumes play, for a guest
++ * whose buffer is smaller than the cushion. */
++#define WASAPI_BYPASS_STARVED_MAX 50
++
++/* No render event for this long means the endpoint is wedged. */
++#define WASAPI_STALL_MS           1000
++/* Wake interval while the endpoint is gone. */
++#define WASAPI_DOWN_TICK_MS       10
++/* Between failed reopen attempts. */
++#define WASAPI_RETRY_MS           200
++#define WASAPI_OPEN_TIMEOUT_MS    10000
++
++/* The mixer path's own ring, in bytes. */
++#define WASAPI_RING_BYTES         (1u << 20)
++#define WASAPI_RING_MASK          (WASAPI_RING_BYTES - 1)
++#define WASAPI_FRAME_BYTES        8   /* interleaved stereo F32 */
++
++#define REFTIMES_PER_SEC          10000000LL
++
++static const GUID wasapi_clsid_enumerator = { 0xbcde0395, 0xe52f, 0x467c,
++    { 0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e } };
++static const GUID wasapi_iid_enumerator = { 0xa95664d2, 0x9614, 0x4f35,
++    { 0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6 } };
++static const GUID wasapi_iid_client = { 0x1cb9ad4c, 0xdbfa, 0x4c32,
++    { 0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2 } };
++static const GUID wasapi_iid_client3 = { 0x7ed4ee07, 0x8e67, 0x4cd4,
++    { 0x8c, 0x1a, 0x2b, 0x7a, 0x59, 0x87, 0xad, 0x42 } };
++static const GUID wasapi_iid_render = { 0xf294acfc, 0x3146, 0x4483,
++    { 0xa7, 0xbf, 0xad, 0xdc, 0xa7, 0xc2, 0x60, 0xe2 } };
++static const GUID wasapi_subtype_pcm = { 0x00000001, 0x0000, 0x0010,
++    { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
++static const GUID wasapi_subtype_float = { 0x00000003, 0x0000, 0x0010,
++    { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 } };
++
++#define WASAPI_SPEAKER_FRONT_LEFT  0x1
++#define WASAPI_SPEAKER_FRONT_RIGHT 0x2
++
++#define TYPE_AUDIO_WASAPI "audio-wasapi"
++OBJECT_DECLARE_SIMPLE_TYPE(AudioWasapi, AUDIO_WASAPI)
++
++static AudioBackendClass *audio_wasapi_parent_class;
++
++struct AudioWasapi {
++    AudioMixengBackend parent_obj;
++};
++
++/* The sample layout of the stream as the endpoint takes it. */
++typedef struct WasapiFormat {
++    uint32_t rate;
++    uint32_t channels;
++    uint32_t bits;       /* container size of one sample */
++    bool is_float;
++    /* Channels carrying the stereo pair; the others get silence. */
++    uint32_t ch_l, ch_r;
++    /* Stereo F32 that the ring's bytes can be handed over untouched. */
++    bool direct;
++} WasapiFormat;
++
++typedef struct WasapiVoiceOut {
++    HWVoiceOut hw;
++
++    /* Set before the thread starts. */
++    WCHAR *dev_id;              /* endpoint ID; NULL = default render endpoint */
++    bool bypass_capable;        /* counted in wasapi_bypass_streams */
++    HANDLE thread;
++    HANDLE stop_event;
++    HANDLE ctl_event;           /* want_run changed */
++    HANDLE open_event;          /* first open finished */
++    HANDLE render_event;
++    atomic_bool stop;
++    atomic_bool want_run;
++    bool open_ok;
++
++    /* The mixer path's ring: the main loop writes, the render thread reads. */
++    uint8_t *ring;
++    size_t highwater;
++    _Atomic uint64_t ring_head;
++    _Atomic uint64_t ring_tail;
++
++    /* Render thread only. */
++    bool bypass_primed;         /* the ring holds a cushion and is being played */
++    uint32_t bypass_starved;    /* silent periods since the last underrun */
++    IMMDeviceEnumerator *enumerator;
++    IAudioClient *client;
++    IAudioRenderClient *render;
++    WasapiFormat fmt;
++    UINT32 buffer_frames;
++    float *scratch;             /* stereo F32, when fmt is not direct */
++    UINT32 scratch_frames;
++    bool started;
++    bool on_fallback;           /* the preferred endpoint was not usable */
++    int64_t next_retry_us;      /* g_get_monotonic_time() */
++    int64_t down_last_us;       /* last discard while the endpoint is gone */
++    uint32_t rate;              /* the rate the voice reported; fixed after the first open */
++} WasapiVoiceOut;
++
++#define WASAPI_VOICE_OUT(hw) ((WasapiVoiceOut *)(hw))
++
++static void wasapi_fill_format(WasapiFormat *f, const WAVEFORMATEX *wf)
++{
++    const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)wf;
++    DWORD mask = 0;
++    uint32_t idx = 0;
++
++    f->rate = wf->nSamplesPerSec;
++    f->channels = wf->nChannels;
++    f->bits = wf->wBitsPerSample;
++    f->is_float = wf->wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
++    if (wf->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
++        f->is_float = IsEqualGUID(&ext->SubFormat, &wasapi_subtype_float);
++        mask = ext->dwChannelMask;
++    }
++
++    f->ch_l = 0;
++    f->ch_r = f->channels > 1 ? 1 : 0;
++    for (uint32_t bit = 0; mask && bit < 32 && idx < f->channels; bit++) {
++        if (!(mask & (1u << bit))) {
++            continue;
++        }
++        if ((1u << bit) == WASAPI_SPEAKER_FRONT_LEFT) {
++            f->ch_l = idx;
++        } else if ((1u << bit) == WASAPI_SPEAKER_FRONT_RIGHT) {
++            f->ch_r = idx;
++        }
++        idx++;
++    }
++    f->direct = f->is_float && f->bits == 32 && f->channels == 2 &&
++                f->ch_l == 0 && f->ch_r == 1;
++}
++
++/* Whether wasapi_convert can produce this layout. */
++static bool wasapi_format_supported(const WAVEFORMATEX *wf)
++{
++    WasapiFormat f;
++
++    if (wf->nChannels == 0 || wf->nSamplesPerSec == 0) {
++        return false;
++    }
++    if (wf->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
++        const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)wf;
++        if (!IsEqualGUID(&ext->SubFormat, &wasapi_subtype_float) &&
++            !IsEqualGUID(&ext->SubFormat, &wasapi_subtype_pcm)) {
++            return false;
++        }
++    } else if (wf->wFormatTag != WAVE_FORMAT_IEEE_FLOAT &&
++               wf->wFormatTag != WAVE_FORMAT_PCM) {
++        return false;
++    }
++    wasapi_fill_format(&f, wf);
++    if (f.is_float) {
++        return f.bits == 32;
++    }
++    return f.bits == 16 || f.bits == 24 || f.bits == 32;
++}
++
++static inline void wasapi_put_sample(uint8_t *dst, float x,
++                                     const WasapiFormat *f)
++{
++    if (f->is_float) {
++        memcpy(dst, &x, sizeof(x));
++        return;
++    }
++    x = x > 1.0f ? 1.0f : (x < -1.0f ? -1.0f : x);
++    switch (f->bits) {
++    case 16: {
++        int16_t s = (int16_t)lrintf(x * 32767.0f);
++        memcpy(dst, &s, sizeof(s));
++        break;
++    }
++    case 24: {
++        int32_t s = (int32_t)lrintf(x * 8388607.0f);
++        dst[0] = s & 0xff;
++        dst[1] = (s >> 8) & 0xff;
++        dst[2] = (s >> 16) & 0xff;
++        break;
++    }
++    default: {
++        int32_t s = (int32_t)lrint((double)x * 2147483647.0);
++        memcpy(dst, &s, sizeof(s));
++        break;
++    }
++    }
++}
++
++/* Stereo F32 to the stream's layout. */
++static void wasapi_convert(const WasapiFormat *f, const float *src,
++                           uint8_t *dst, UINT32 frames)
++{
++    uint32_t step = f->bits / 8;
++
++    for (UINT32 i = 0; i < frames; i++) {
++        float l = src[2 * i], r = src[2 * i + 1];
++
++        for (uint32_t c = 0; c < f->channels; c++) {
++            float x;
++
++            if (f->channels == 1) {
++                x = 0.5f * (l + r);
++            } else if (c == f->ch_l) {
++                x = l;
++            } else if (c == f->ch_r) {
++                x = r;
++            } else {
++                x = 0.0f;
++            }
++            wasapi_put_sample(dst, x, f);
++            dst += step;
++        }
++    }
++}
++
++static void wasapi_release(WasapiVoiceOut *v)
++{
++    if (v->render) {
++        IAudioRenderClient_Release(v->render);
++        v->render = NULL;
++    }
++    if (v->client) {
++        if (v->started) {
++            IAudioClient_Stop(v->client);
++        }
++        IAudioClient_Release(v->client);
++        v->client = NULL;
++    }
++    v->started = false;
++}
++
++/* Resolves the preferred endpoint, or the default render endpoint when that
++ * one is not there or cannot host a client, and activates an IAudioClient on
++ * it. */
++static IAudioClient *wasapi_activate(WasapiVoiceOut *v, IMMDevice **devp)
++{
++    IMMDevice *dev = NULL;
++    IAudioClient *client = NULL;
++    HRESULT hr = E_FAIL;
++
++    if (v->dev_id) {
++        hr = IMMDeviceEnumerator_GetDevice(v->enumerator, v->dev_id, &dev);
++        if (SUCCEEDED(hr)) {
++            hr = IMMDevice_Activate(dev, &wasapi_iid_client, CLSCTX_ALL, NULL,
++                                    (void **)&client);
++        }
++        if (FAILED(hr) && !v->on_fallback) {
++            error_report("wasapi: preferred endpoint not usable (0x%08lx), "
++                         "using the default render endpoint", (long)hr);
++        }
++        v->on_fallback = FAILED(hr);
++        if (FAILED(hr) && dev) {
++            IMMDevice_Release(dev);
++            dev = NULL;
++        }
++    }
++    if (!client) {
++        hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(v->enumerator, eRender,
++                                                         eConsole, &dev);
++        if (SUCCEEDED(hr)) {
++            hr = IMMDevice_Activate(dev, &wasapi_iid_client, CLSCTX_ALL, NULL,
++                                    (void **)&client);
++        }
++        if (!client && dev) {
++            IMMDevice_Release(dev);
++            dev = NULL;
++        }
++    }
++    *devp = dev;
++    return client;
++}
++
++/*
++ * Opens the stream on the preferred endpoint.
++ *
++ * In the mix format: IAudioClient3::InitializeSharedAudioStream at the
++ * engine's minimum period, else IAudioClient::Initialize at the default
++ * period. When the mix format is one wasapi_convert does not produce, or its
++ * rate differs from the rate the voice already reported, the stream is stereo
++ * F32 at the voice's rate with AUTOCONVERTPCM: the ring's rate never changes
++ * under virtio-snd's resampler.
++ */
++static bool wasapi_open(WasapiVoiceOut *v)
++{
++    WAVEFORMATEXTENSIBLE custom;
++    WAVEFORMATEX *mix = NULL;
++    const WAVEFORMATEX *use;
++    IMMDevice *dev = NULL;
++    IAudioClient *client = NULL;
++    REFERENCE_TIME def_period = 0, min_period = 0, latency = 0;
++    DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
++    UINT32 period_frames = 0;
++    bool low_latency = false;
++    bool native;
++    HRESULT hr;
++
++    client = wasapi_activate(v, &dev);
++    if (!client) {
++        return false;
++    }
++    hr = IAudioClient_GetMixFormat(client, &mix);
++    if (FAILED(hr) || !mix) {
++        goto fail;
++    }
++
++    native = wasapi_format_supported(mix) &&
++             (v->rate == 0 || v->rate == mix->nSamplesPerSec);
++    if (native) {
++        use = mix;
++        wasapi_fill_format(&v->fmt, mix);
++    } else {
++        uint32_t rate = v->rate ? v->rate : mix->nSamplesPerSec;
++
++        memset(&custom, 0, sizeof(custom));
++        custom.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
++        custom.Format.nChannels = 2;
++        custom.Format.nSamplesPerSec = rate;
++        custom.Format.wBitsPerSample = 32;
++        custom.Format.nBlockAlign = 8;
++        custom.Format.nAvgBytesPerSec = rate * 8;
++        custom.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) -
++                               sizeof(WAVEFORMATEX);
++        custom.Samples.wValidBitsPerSample = 32;
++        custom.dwChannelMask = WASAPI_SPEAKER_FRONT_LEFT |
++                               WASAPI_SPEAKER_FRONT_RIGHT;
++        custom.SubFormat = wasapi_subtype_float;
++        use = &custom.Format;
++        wasapi_fill_format(&v->fmt, use);
++        flags |= AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
++                 AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
++    }
++
++    if (native) {
++        UINT32 default_frames, fundamental, min_frames, max_frames;
++
++        IAudioClient3 *client3 = NULL;
++
++        /* A failed Initialize leaves the client unusable, so the attempt
++         * gets a client of its own. */
++        hr = IMMDevice_Activate(dev, &wasapi_iid_client3, CLSCTX_ALL, NULL,
++                                (void **)&client3);
++        if (SUCCEEDED(hr)) {
++            hr = IAudioClient3_GetSharedModeEnginePeriod(client3, mix,
++                     &default_frames, &fundamental, &min_frames, &max_frames);
++            if (SUCCEEDED(hr)) {
++                hr = IAudioClient3_InitializeSharedAudioStream(client3,
++                         flags, min_frames, mix, NULL);
++            }
++            if (SUCCEEDED(hr)) {
++                IAudioClient_Release(client);
++                client = (IAudioClient *)client3;
++                period_frames = min_frames;
++                low_latency = true;
++            } else {
++                IAudioClient3_Release(client3);
++            }
++        }
++    }
++
++    if (!low_latency) {
++        hr = IAudioClient_GetDevicePeriod(client, &def_period, &min_period);
++        if (FAILED(hr)) {
++            goto fail;
++        }
++        hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_SHARED, flags,
++                                     def_period, 0, use, NULL);
++        if (FAILED(hr)) {
++            error_report("wasapi: IAudioClient::Initialize failed (0x%08lx)",
++                         (long)hr);
++            goto fail;
++        }
++        period_frames = (UINT32)((def_period * v->fmt.rate +
++                                  REFTIMES_PER_SEC / 2) / REFTIMES_PER_SEC);
++    }
++
++    hr = IAudioClient_SetEventHandle(client, v->render_event);
++    if (FAILED(hr)) {
++        goto fail;
++    }
++    hr = IAudioClient_GetBufferSize(client, &v->buffer_frames);
++    if (FAILED(hr)) {
++        goto fail;
++    }
++    hr = IAudioClient_GetService(client, &wasapi_iid_render,
++                                 (void **)&v->render);
++    if (FAILED(hr)) {
++        goto fail;
++    }
++    IAudioClient_GetStreamLatency(client, &latency);
++
++    if (v->scratch_frames < v->buffer_frames) {
++        g_free(v->scratch);
++        v->scratch = g_new0(float, 2 * (size_t)v->buffer_frames);
++        v->scratch_frames = v->buffer_frames;
++    }
++
++    /* Silence fills the buffer before the first start. */
++    {
++        BYTE *data;
++
++        hr = IAudioRenderClient_GetBuffer(v->render, v->buffer_frames, &data);
++        if (SUCCEEDED(hr)) {
++            hr = IAudioRenderClient_ReleaseBuffer(v->render, v->buffer_frames,
++                                                  AUDCLNT_BUFFERFLAGS_SILENT);
++        }
++        if (FAILED(hr)) {
++            goto fail;
++        }
++    }
++
++    v->client = client;
++    v->rate = v->fmt.rate;
++    v->bypass_primed = false;
++    v->bypass_starved = 0;
++    v->down_last_us = 0;
++    atomic_store_explicit(&wasapi_bypass_rate, v->fmt.rate,
++                          memory_order_relaxed);
++    atomic_store_explicit(&wasapi_bypass_static_frames,
++                          (uint32_t)(latency * v->fmt.rate / REFTIMES_PER_SEC) +
++                          period_frames, memory_order_relaxed);
++    fprintf(stderr,
++            "wasapi: %s, %u Hz, %u ch %s%u, period %u frames, buffer %u "
++            "frames, stream latency %lld us\n",
++            low_latency ? "low-latency shared stream" : "shared stream",
++            v->fmt.rate, v->fmt.channels, v->fmt.is_float ? "F" : "S",
++            v->fmt.bits, period_frames, v->buffer_frames,
++            (long long)(latency / 10));
++    CoTaskMemFree(mix);
++    IMMDevice_Release(dev);
++    return true;
++
++fail:
++    if (v->render) {
++        IAudioRenderClient_Release(v->render);
++        v->render = NULL;
++    }
++    if (mix) {
++        CoTaskMemFree(mix);
++    }
++    IAudioClient_Release(client);
++    IMMDevice_Release(dev);
++    return false;
++}
++
++/*
++ * Fills `frames` stereo F32 frames from the bypass ring, or else from the
++ * mixer path's ring, padding with silence.
++ *
++ * The bypass read is all or nothing; after an underrun the ring refills to
++ * a cushion before play resumes.
++ */
++static void wasapi_fill_stereo(WasapiVoiceOut *v, float *dst, UINT32 frames)
++{
++    size_t bytes = (size_t)frames * WASAPI_FRAME_BYTES;
++
++    if (v->bypass_capable && virtio_snd_bypass_is_active()) {
++        size_t avail = virtio_snd_bypass_avail();
++        size_t cushion = (size_t)v->fmt.rate * WASAPI_BYPASS_CUSHION_MS / 1000 *
++                         WASAPI_FRAME_BYTES;
++
++        if (!v->bypass_primed &&
++            (avail >= MAX(cushion, bytes) ||
++             (v->bypass_starved >= WASAPI_BYPASS_STARVED_MAX &&
++              avail >= bytes))) {
++            v->bypass_primed = true;
++        }
++        if (v->bypass_primed && avail >= bytes) {
++            virtio_snd_bypass_read(dst, bytes);
++            v->bypass_starved = 0;
++        } else {
++            memset(dst, 0, bytes);
++            virtio_snd_bypass_note_underrun(frames);
++            v->bypass_primed = false;
++            v->bypass_starved++;
++        }
++        return;
++    }
++
++    {
++        uint64_t head = atomic_load_explicit(&v->ring_head,
++                                             memory_order_acquire);
++        uint64_t tail = atomic_load_explicit(&v->ring_tail,
++                                             memory_order_relaxed);
++        size_t n = MIN((size_t)(head - tail), bytes);
++        size_t off = (size_t)(tail & WASAPI_RING_MASK);
++        size_t first = MIN(n, WASAPI_RING_BYTES - off);
++
++        memcpy(dst, v->ring + off, first);
++        memcpy((uint8_t *)dst + first, v->ring, n - first);
++        if (n < bytes) {
++            memset((uint8_t *)dst + n, 0, bytes - n);
++        }
++        atomic_store_explicit(&v->ring_tail, tail + n, memory_order_release);
++    }
++}
++
++/* Discards what a live endpoint would have played, so the guest's clock keeps
++ * running while the endpoint is gone. */
++static void wasapi_discard(WasapiVoiceOut *v, UINT32 frames)
++{
++    float sink[512 * 2];
++
++    while (frames) {
++        UINT32 n = MIN(frames, 512);
++
++        if (v->bypass_capable && virtio_snd_bypass_is_active()) {
++            size_t avail = virtio_snd_bypass_avail();
++
++            virtio_snd_bypass_read(sink, MIN(avail, (size_t)n * WASAPI_FRAME_BYTES));
++        } else {
++            wasapi_fill_stereo(v, sink, n);
++        }
++        frames -= n;
++    }
++}
++
++/* Fills the free part of the endpoint buffer. False when the endpoint has to
++ * be reopened. */
++static bool wasapi_render(WasapiVoiceOut *v)
++{
++    UINT32 padding, frames;
++    BYTE *data;
++    float *stereo;
++    HRESULT hr;
++
++    hr = IAudioClient_GetCurrentPadding(v->client, &padding);
++    if (FAILED(hr)) {
++        goto lost;
++    }
++    if (padding >= v->buffer_frames) {
++        return true;
++    }
++    frames = v->buffer_frames - padding;
++
++    hr = IAudioRenderClient_GetBuffer(v->render, frames, &data);
++    if (FAILED(hr)) {
++        goto lost;
++    }
++
++    atomic_store_explicit(&wasapi_bypass_depth_us,
++                          (uint32_t)MIN((uint64_t)padding * 1000000ULL /
++                                        v->fmt.rate, 1000000),
++                          memory_order_relaxed);
++
++    stereo = v->fmt.direct ? (float *)data : v->scratch;
++    wasapi_fill_stereo(v, stereo, frames);
++    if (!v->fmt.direct) {
++        wasapi_convert(&v->fmt, stereo, data, frames);
++    }
++
++    hr = IAudioRenderClient_ReleaseBuffer(v->render, frames, 0);
++    if (FAILED(hr)) {
++        goto lost;
++    }
++    return true;
++
++lost:
++    if (hr == AUDCLNT_E_DEVICE_INVALIDATED) {
++        error_report("wasapi: endpoint invalidated, reopening");
++    } else {
++        error_report("wasapi: render failed (0x%08lx), reopening", (long)hr);
++    }
++    return false;
++}
++
++static DWORD WINAPI wasapi_render_thread(LPVOID opaque)
++{
++    WasapiVoiceOut *v = opaque;
++    HANDLE events[3] = { v->stop_event, v->ctl_event, v->render_event };
++    DWORD mmcss_task = 0;
++    HANDLE mmcss;
++    HRESULT hr;
++
++    hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
++    if (FAILED(hr)) {
++        v->open_ok = false;
++        SetEvent(v->open_event);
++        return 0;
++    }
++    mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &mmcss_task);
++    if (mmcss) {
++        AvSetMmThreadPriority(mmcss, AVRT_PRIORITY_HIGH);
++    } else {
++        qemu_thread_win32_boost();
++    }
++
++    hr = CoCreateInstance(&wasapi_clsid_enumerator, NULL, CLSCTX_ALL,
++                          &wasapi_iid_enumerator, (void **)&v->enumerator);
++    v->open_ok = SUCCEEDED(hr) && wasapi_open(v);
++    SetEvent(v->open_event);
++
++    while (v->open_ok &&
++           !atomic_load_explicit(&v->stop, memory_order_acquire)) {
++        if (v->client) {
++            bool want = atomic_load_explicit(&v->want_run,
++                                             memory_order_acquire);
++            DWORD w;
++
++            if (want != v->started) {
++                if (want) {
++                    v->bypass_primed = false;
++                    if (FAILED(IAudioClient_Start(v->client))) {
++                        wasapi_release(v);
++                        v->next_retry_us = 0;
++                        continue;
++                    }
++                    v->started = true;
++                } else {
++                    IAudioClient_Stop(v->client);
++                    IAudioClient_Reset(v->client);
++                    v->started = false;
++                }
++            }
++
++            w = WaitForMultipleObjects(v->started ? 3 : 2, events, FALSE,
++                                       v->started ? WASAPI_STALL_MS : INFINITE);
++            if (w == WAIT_OBJECT_0) {
++                break;
++            }
++            if (w == WAIT_OBJECT_0 + 2) {
++                if (!wasapi_render(v)) {
++                    wasapi_release(v);
++                    v->next_retry_us = 0;
++                }
++            } else if (w == WAIT_TIMEOUT) {
++                error_report("wasapi: no render event for %d ms, reopening",
++                             WASAPI_STALL_MS);
++                wasapi_release(v);
++                v->next_retry_us = 0;
++            }
++        } else {
++            DWORD w = WaitForMultipleObjects(2, events, FALSE,
++                                             WASAPI_DOWN_TICK_MS);
++            int64_t now = g_get_monotonic_time();
++
++            if (w == WAIT_OBJECT_0) {
++                break;
++            }
++            if (v->down_last_us &&
++                atomic_load_explicit(&v->want_run, memory_order_acquire)) {
++                wasapi_discard(v, (UINT32)((now - v->down_last_us) *
++                                           v->rate / 1000000));
++            }
++            v->down_last_us = now;
++            if (now >= v->next_retry_us && !wasapi_open(v)) {
++                v->next_retry_us = now + WASAPI_RETRY_MS * 1000;
++            }
++        }
++    }
++
++    wasapi_release(v);
++    if (v->enumerator) {
++        IMMDeviceEnumerator_Release(v->enumerator);
++        v->enumerator = NULL;
++    }
++    if (mmcss) {
++        AvRevertMmThreadCharacteristics(mmcss);
++    }
++    CoUninitialize();
++    return 0;
++}
++
++/* Stops the render thread and frees what init_out set up. Also the failure
++ * path of init_out, which the mixer does not follow with fini_out. */
++static void wasapi_teardown(WasapiVoiceOut *v)
++{
++    if (v->bypass_capable) {
++        v->bypass_capable = false;
++        atomic_fetch_sub_explicit(&wasapi_bypass_streams, 1,
++                                  memory_order_release);
++    }
++    if (v->thread) {
++        atomic_store_explicit(&v->stop, true, memory_order_release);
++        SetEvent(v->stop_event);
++        WaitForSingleObject(v->thread, INFINITE);
++        CloseHandle(v->thread);
++        v->thread = NULL;
++    }
++    if (v->stop_event) {
++        CloseHandle(v->stop_event);
++        v->stop_event = NULL;
++    }
++    if (v->ctl_event) {
++        CloseHandle(v->ctl_event);
++        v->ctl_event = NULL;
++    }
++    if (v->open_event) {
++        CloseHandle(v->open_event);
++        v->open_event = NULL;
++    }
++    if (v->render_event) {
++        CloseHandle(v->render_event);
++        v->render_event = NULL;
++    }
++    g_clear_pointer(&v->scratch, g_free);
++    g_clear_pointer(&v->ring, g_free);
++    g_clear_pointer(&v->dev_id, g_free);
++}
++
++static int wasapi_init_out(HWVoiceOut *hw, struct audsettings *as)
++{
++    WasapiVoiceOut *v = WASAPI_VOICE_OUT(hw);
++    AudiodevWasapiOptions *wopts =
++        &AUDIO_MIXENG_BACKEND(hw->s)->dev->u.wasapi;
++    AudiodevWasapiPerDirectionOptions *pdo = wopts->out;
++    struct audsettings obt_as = *as;
++    bool bypass_capable;
++
++    bypass_capable = virtio_snd_bypass_is_active &&
++                     virtio_snd_bypass_avail &&
++                     virtio_snd_bypass_read &&
++                     virtio_snd_bypass_note_underrun &&
++                     as->nchannels == 2;
++
++    if (pdo && pdo->dev && pdo->dev[0]) {
++        v->dev_id = (WCHAR *)g_utf8_to_utf16(pdo->dev, -1, NULL, NULL, NULL);
++        if (!v->dev_id) {
++            error_report("wasapi: out.dev is not valid UTF-8");
++            return -1;
++        }
++    }
++
++    v->ring = g_malloc0(WASAPI_RING_BYTES);
++    v->stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
++    v->ctl_event = CreateEventW(NULL, FALSE, FALSE, NULL);
++    v->open_event = CreateEventW(NULL, TRUE, FALSE, NULL);
++    v->render_event = CreateEventW(NULL, FALSE, FALSE, NULL);
++    if (!v->stop_event || !v->ctl_event || !v->open_event ||
++        !v->render_event) {
++        goto fail;
++    }
++
++    v->bypass_capable = bypass_capable;
++    v->thread = CreateThread(NULL, 0, wasapi_render_thread, v, 0, NULL);
++    if (!v->thread) {
++        v->bypass_capable = false;
++        goto fail;
++    }
++    if (WaitForSingleObject(v->open_event, WASAPI_OPEN_TIMEOUT_MS) !=
++        WAIT_OBJECT_0 || !v->open_ok) {
++        error_report("wasapi: could not open an output stream");
++        v->bypass_capable = false;
++        goto fail;
++    }
++
++    /* The mixer path delivers the stream's rate as stereo F32. */
++    obt_as.fmt = AUDIO_FORMAT_F32;
++    obt_as.big_endian = false;
++    obt_as.nchannels = 2;
++    obt_as.freq = v->rate;
++    audio_pcm_init_info(&hw->info, &obt_as);
++
++    hw->samples = audio_buffer_frames(
++        qapi_AudiodevWasapiPerDirectionOptions_base(pdo), &obt_as, 20000);
++    v->highwater = MIN((size_t)hw->samples * WASAPI_FRAME_BYTES,
++                       WASAPI_RING_BYTES);
++
++    if (v->bypass_capable) {
++        atomic_fetch_add_explicit(&wasapi_bypass_streams, 1,
++                                  memory_order_release);
++    }
++    return 0;
++
++fail:
++    wasapi_teardown(v);
++    return -1;
++}
++
++static void wasapi_fini_out(HWVoiceOut *hw)
++{
++    wasapi_teardown(WASAPI_VOICE_OUT(hw));
++}
++
++static size_t wasapi_buffer_get_free(HWVoiceOut *hw)
++{
++    WasapiVoiceOut *v = WASAPI_VOICE_OUT(hw);
++    uint64_t head = atomic_load_explicit(&v->ring_head, memory_order_relaxed);
++    uint64_t tail = atomic_load_explicit(&v->ring_tail, memory_order_acquire);
++    size_t used = (size_t)(head - tail);
++
++    return used < v->highwater ? v->highwater - used : 0;
++}
++
++static size_t wasapi_write(HWVoiceOut *hw, void *buf, size_t len)
++{
++    WasapiVoiceOut *v = WASAPI_VOICE_OUT(hw);
++    uint64_t head = atomic_load_explicit(&v->ring_head, memory_order_relaxed);
++    size_t off, first;
++
++    len = MIN(len, wasapi_buffer_get_free(hw));
++    len -= len % WASAPI_FRAME_BYTES;
++    off = (size_t)(head & WASAPI_RING_MASK);
++    first = MIN(len, WASAPI_RING_BYTES - off);
++
++    memcpy(v->ring + off, buf, first);
++    memcpy(v->ring, (uint8_t *)buf + first, len - first);
++    atomic_store_explicit(&v->ring_head, head + len, memory_order_release);
++    return len;
++}
++
++static void wasapi_enable_out(HWVoiceOut *hw, bool enable)
++{
++    WasapiVoiceOut *v = WASAPI_VOICE_OUT(hw);
++
++    atomic_store_explicit(&v->want_run, enable, memory_order_release);
++    SetEvent(v->ctl_event);
++}
++
++static bool audio_wasapi_realize(AudioBackend *abe, Audiodev *dev, Error **errp)
++{
++    assert(dev->driver == AUDIODEV_DRIVER_WASAPI);
++
++    return audio_wasapi_parent_class->realize(abe, dev, errp);
++}
++
++static void audio_wasapi_class_init(ObjectClass *klass, const void *data)
++{
++    AudioBackendClass *b = AUDIO_BACKEND_CLASS(klass);
++    AudioMixengBackendClass *k = AUDIO_MIXENG_BACKEND_CLASS(klass);
++
++    audio_wasapi_parent_class =
++        AUDIO_BACKEND_CLASS(object_class_get_parent(klass));
++
++    b->realize = audio_wasapi_realize;
++    k->max_voices_out = 1;
++    k->max_voices_in = 0;
++    k->voice_size_out = sizeof(WasapiVoiceOut);
++    k->voice_size_in = 0;
++
++    k->init_out = wasapi_init_out;
++    k->fini_out = wasapi_fini_out;
++    k->write = wasapi_write;
++    k->buffer_get_free = wasapi_buffer_get_free;
++    k->run_buffer_out = audio_generic_run_buffer_out;
++    k->enable_out = wasapi_enable_out;
++}
++
++static const TypeInfo audio_types[] = {
++    {
++        .name = TYPE_AUDIO_WASAPI,
++        .parent = TYPE_AUDIO_MIXENG_BACKEND,
++        .instance_size = sizeof(AudioWasapi),
++        .class_init = audio_wasapi_class_init,
++    },
++};
++
++DEFINE_TYPES(audio_types)
++module_obj(TYPE_AUDIO_WASAPI);
+diff --git a/hw/audio/virtio-snd.c b/hw/audio/virtio-snd.c
+index 0b7cc10..70f4d85 100644
+--- a/hw/audio/virtio-snd.c
++++ b/hw/audio/virtio-snd.c
+@@ -41,7 +41,7 @@ static void virtio_snd_pcm_buffer_free(VirtIOSoundPCMBuffer *buffer);
+ /* ============= Host audio bypass ring =============
+  * SPSC ring: virtio-snd writes (main loop), the host backend's real-time
+  * callback reads: CoreAudio's IOProc on macOS, PipeWire's process callback
+- * on Linux.
++ * on Linux, WASAPI's render thread on Windows.
+  * Bypasses QEMU's hw->buf_emul, eliminating ~15-20ms of mixer latency.
+  * Stereo, F32 or S32 (S32→F32 inline); the writer resamples when the
+  * guest and device rates differ. Output only.
+@@ -54,7 +54,8 @@ static VirtIOSound *vsnd_drain_target_dev;
+ 
+ /* The ring needs a backend that drains it from its own real-time callback;
+  * elsewhere the stubs below keep every call site unconditional. */
+-#if defined(CONFIG_DARWIN) || defined(CONFIG_AUDIO_PIPEWIRE)
++#if defined(CONFIG_DARWIN) || defined(CONFIG_AUDIO_PIPEWIRE) || \
++    defined(CONFIG_AUDIO_WASAPI)
+ #define VSND_HOST_BYPASS 1
+ #endif
+ 
+@@ -67,6 +68,8 @@ static VirtIOSound *vsnd_drain_target_dev;
+ #include <mach/mach.h>
+ #include <mach/mach_time.h>
+ #include <mach/thread_policy.h>
++#elif defined(_WIN32)
++#include <avrt.h>
+ #else
+ #include <sched.h>
+ #endif
+@@ -115,6 +118,19 @@ static void vsnd_writer_thread_set_rt(void)
+         fprintf(stderr,
+                 "virtio-snd: writer thread bound to Mach RT (0.5 ms / 2 ms)\n");
+     }
++#elif defined(_WIN32)
++    /* The MMCSS "Pro Audio" task schedules the writer ahead of ordinary
++     * threads for as long as it runs. */
++    DWORD task = 0;
++    HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task);
++    if (!mmcss) {
++        fprintf(stderr,
++                "virtio-snd: writer thread at normal priority "
++                "(MMCSS refused: %lu)\n", GetLastError());
++    } else {
++        AvSetMmThreadPriority(mmcss, AVRT_PRIORITY_HIGH);
++        fprintf(stderr, "virtio-snd: writer thread in MMCSS Pro Audio\n");
++    }
+ #else
+     /* Linux has no time-constraint class. SCHED_FIFO works where the
+      * process is allowed it (an rtkit grant, CAP_SYS_NICE, an rtprio
+@@ -321,6 +337,13 @@ extern unsigned coreaudio_get_active_samplerate(void);
+ #define host_audio_pipeline_depth_us     coreaudio_get_pipeline_depth_us
+ #define host_audio_static_latency_frames coreaudio_get_static_latency_frames
+ #define host_audio_active_samplerate     coreaudio_get_active_samplerate
++#elif defined(_WIN32)
++extern uint32_t wasapi_get_pipeline_depth_us(void);
++extern uint32_t wasapi_get_static_latency_frames(void);
++extern unsigned wasapi_get_active_samplerate(void);
++#define host_audio_pipeline_depth_us     wasapi_get_pipeline_depth_us
++#define host_audio_static_latency_frames wasapi_get_static_latency_frames
++#define host_audio_active_samplerate     wasapi_get_active_samplerate
+ #else
+ extern uint32_t pwaudio_get_pipeline_depth_us(void);
+ extern uint32_t pwaudio_get_static_latency_frames(void);
+@@ -783,9 +806,32 @@ static void *vsnd_writer_thread_fn(void *arg)
+ {
+     (void)arg;
+     vsnd_writer_thread_set_rt();
++#ifdef _WIN32
++    /* Sleep(1) rounds up to the system timer tick, 15.6 ms by default; a
++     * high-resolution waitable timer keeps the 1 ms cadence. */
++    HANDLE tick_timer = CreateWaitableTimerExW(NULL, NULL,
++                                               CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
++                                               TIMER_ALL_ACCESS);
++    if (!tick_timer) {
++        fprintf(stderr,
++                "virtio-snd: no high-resolution timer; writer tick is "
++                "the system timer tick\n");
++    }
++#else
+     const struct timespec tick = { .tv_sec = 0, .tv_nsec = 1000000 };
++#endif
+     while (atomic_load_explicit(&vsnd_writer_run, memory_order_acquire)) {
++#ifdef _WIN32
++        if (tick_timer) {
++            LARGE_INTEGER due = { .QuadPart = -10000 };
++            SetWaitableTimer(tick_timer, &due, 0, NULL, NULL, FALSE);
++            WaitForSingleObject(tick_timer, INFINITE);
++        } else {
++            Sleep(1);
++        }
++#else
+         nanosleep(&tick, NULL);
++#endif
+         if (!atomic_load_explicit(&vsnd_bypass_active, memory_order_acquire)) {
+             continue;
+         }
+@@ -801,6 +847,11 @@ static void *vsnd_writer_thread_fn(void *arg)
+             }
+         }
+     }
++#ifdef _WIN32
++    if (tick_timer) {
++        CloseHandle(tick_timer);
++    }
++#endif
+     return NULL;
+ }
+ 
+@@ -1020,10 +1071,13 @@ static void virtio_snd_bypass_set_active(int on, int src_fmt, uint32_t guest_rat
+     }
+ }
+ /* Whether a host consumer exists to drain the ring. CoreAudio's IOProc
+- * always does once the voice is open; PipeWire only when the audiodev is
+- * PipeWire, so a guest stream never fills a ring nobody reads. */
++ * always does once the voice is open; PipeWire and WASAPI only when the
++ * audiodev is theirs, so a guest stream never fills a ring nobody reads. */
+ #ifdef CONFIG_DARWIN
+ static inline int host_audio_bypass_ready(void) { return 1; }
++#elif defined(_WIN32)
++extern int wasapi_bypass_ready(void);
++static inline int host_audio_bypass_ready(void) { return wasapi_bypass_ready(); }
+ #else
+ extern int pwaudio_bypass_ready(void);
+ static inline int host_audio_bypass_ready(void) { return pwaudio_bypass_ready(); }
+diff --git a/include/qemu/thread.h b/include/qemu/thread.h
+index 98cc5c4..e8c552a 100644
+--- a/include/qemu/thread.h
++++ b/include/qemu/thread.h
+@@ -213,6 +213,11 @@ int qemu_thread_get_affinity(QemuThread *thread, unsigned long **host_cpus,
+                              unsigned long *nbits);
+ void *qemu_thread_join(QemuThread *thread);
+ void qemu_thread_get_self(QemuThread *thread);
++#ifdef _WIN32
++/* Raise the calling thread above normal priority and exempt it from power
++ * throttling (EcoQoS). */
++void qemu_thread_win32_boost(void);
++#endif
+ bool qemu_thread_is_self(QemuThread *thread);
+ G_NORETURN void qemu_thread_exit(void *retval);
+ void qemu_thread_set_name(const char *name);
+diff --git a/meson.build b/meson.build
+index 5f1bb74..9d4c926 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1785,6 +1785,20 @@ if not get_option('dsound').auto() or (host_os == 'windows' and have_system)
+   endif
+ endif
+ 
++wasapi = not_found
++if not get_option('wasapi').auto() or (host_os == 'windows' and have_system)
++  if cc.has_header('mmdeviceapi.h') and cc.has_header('audioclient.h') and \
++     cc.has_header('avrt.h')
++    wasapi = declare_dependency(link_args: ['-lole32', '-lavrt', '-luuid'])
++  endif
++
++  if not wasapi.found()
++    if get_option('wasapi').enabled()
++      error('WASAPI not found')
++    endif
++  endif
++endif
++
+ coreaudio = not_found
+ if not get_option('coreaudio').auto() or (host_os == 'darwin' and have_system)
+   coreaudio = dependency('appleframeworks', modules: 'CoreAudio',
+@@ -2299,6 +2313,7 @@ if have_system
+     'pipewire': pipewire.found(),
+     'sdl': sdl.found(),
+     'sndio': sndio.found(),
++    'wasapi': wasapi.found(),
+   }
+   foreach k, v: audio_drivers_available
+     config_host_data.set('CONFIG_AUDIO_' + k.to_upper(), v)
+@@ -2306,7 +2321,7 @@ if have_system
+ 
+   # Default to native drivers first, OSS second, SDL third
+   audio_drivers_priority = \
+-    [ 'pa', 'coreaudio', 'dsound', 'sndio', 'oss' ] + \
++    [ 'pa', 'coreaudio', 'dsound', 'wasapi', 'sndio', 'oss' ] + \
+     (host_os == 'linux' ? [] : [ 'sdl' ])
+   audio_drivers_default = []
+   foreach k: audio_drivers_priority
+@@ -4938,6 +4953,7 @@ elif host_os == 'darwin'
+   summary_info += {'CoreAudio support': coreaudio}
+ elif host_os == 'windows'
+   summary_info += {'DirectSound support': dsound}
++  summary_info += {'WASAPI support': wasapi}
+ endif
+ if host_os == 'linux'
+   summary_info += {'ALSA support':    alsa}
+diff --git a/meson_options.txt b/meson_options.txt
+index 2864611..4e88a7d 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -19,7 +19,7 @@ option('tls_priority', type : 'string', value : 'NORMAL',
+ option('default_devices', type : 'boolean', value : true,
+        description: 'Include a default selection of devices in emulators')
+ option('audio_drv_list', type: 'array', value: ['default'],
+-       choices: ['alsa', 'coreaudio', 'default', 'dsound', 'jack', 'oss', 'pa', 'pipewire', 'sdl', 'sndio'],
++       choices: ['alsa', 'coreaudio', 'default', 'dsound', 'jack', 'oss', 'pa', 'pipewire', 'sdl', 'sndio', 'wasapi'],
+        description: 'Set audio driver list')
+ option('block_drv_rw_whitelist', type : 'string', value : '',
+        description: 'set block driver read-write whitelist (by default affects only QEMU, not tools like qemu-img)')
+@@ -297,6 +297,8 @@ option('pipewire', type: 'feature', value: 'auto',
+        description: 'PipeWire sound support')
+ option('sndio', type: 'feature', value: 'auto',
+        description: 'sndio sound support')
++option('wasapi', type: 'feature', value: 'auto',
++       description: 'WASAPI sound support')
+ 
+ option('vhost_kernel', type: 'feature', value: 'auto',
+        description: 'vhost kernel backend support')
+diff --git a/qapi/audio.json b/qapi/audio.json
+index 38eb796..3f22007 100644
+--- a/qapi/audio.json
++++ b/qapi/audio.json
+@@ -206,6 +206,39 @@
+     '*out':     'AudiodevPerDirectionOptions',
+     '*latency': 'uint32' } }
+ 
++##
++# @AudiodevWasapiPerDirectionOptions:
++#
++# Options of the WASAPI backend that are used for both playback and
++# recording.
++#
++# @dev: endpoint ID of the audio device (IMMDevice::GetId).  Unset =
++#     default render endpoint.  Output only.
++#     cdj3k-emu extension.
++#
++# Since: 11.1
++##
++{ 'struct': 'AudiodevWasapiPerDirectionOptions',
++  'base': 'AudiodevPerDirectionOptions',
++  'data': {
++    '*dev': 'str' } }
++
++##
++# @AudiodevWasapiOptions:
++#
++# Options of the WASAPI audio backend.
++#
++# @in: options of the capture stream
++#
++# @out: options of the playback stream
++#
++# Since: 11.1
++##
++{ 'struct': 'AudiodevWasapiOptions',
++  'data': {
++    '*in':  'AudiodevWasapiPerDirectionOptions',
++    '*out': 'AudiodevWasapiPerDirectionOptions' } }
++
+ ##
+ # @AudiodevJackPerDirectionOptions:
+ #
+@@ -489,6 +522,7 @@
+             { 'name': 'sdl', 'if': 'CONFIG_AUDIO_SDL' },
+             { 'name': 'sndio', 'if': 'CONFIG_AUDIO_SNDIO' },
+             { 'name': 'spice', 'if': 'CONFIG_SPICE' },
++            { 'name': 'wasapi', 'if': 'CONFIG_AUDIO_WASAPI' },
+             'wav' ] }
+ 
+ ##
+@@ -535,6 +569,8 @@
+                    'if': 'CONFIG_AUDIO_SNDIO' },
+     'spice':     { 'type': 'AudiodevGenericOptions',
+                    'if': 'CONFIG_SPICE' },
++    'wasapi':    { 'type': 'AudiodevWasapiOptions',
++                   'if': 'CONFIG_AUDIO_WASAPI' },
+     'wav':       'AudiodevWavOptions' } }
+ 
+ ##
+diff --git a/scripts/meson-buildoptions.sh b/scripts/meson-buildoptions.sh
+index 80de8c4..483e499 100644
+--- a/scripts/meson-buildoptions.sh
++++ b/scripts/meson-buildoptions.sh
+@@ -2,7 +2,7 @@
+ meson_options_help() {
+   printf "%s\n" '  --audio-drv-list=CHOICES Set audio driver list [default] (choices: alsa/co'
+   printf "%s\n" '                           reaudio/default/dsound/jack/oss/pa/pipewire/sdl/s'
+-  printf "%s\n" '                           ndio)'
++  printf "%s\n" '                           ndio/wasapi)'
+   printf "%s\n" '  --bindir=VALUE           Executable directory [bin]'
+   printf "%s\n" '  --block-drv-ro-whitelist=VALUE'
+   printf "%s\n" '                           set block driver read-only whitelist (by default'
+@@ -225,6 +225,7 @@ meson_options_help() {
+   printf "%s\n" '  vte             vte support for the gtk UI'
+   printf "%s\n" '  vvfat           vvfat image format support'
+   printf "%s\n" '  werror          Treat warnings as errors'
++  printf "%s\n" '  wasapi          WASAPI sound support'
+   printf "%s\n" '  whpx            WHPX acceleration support'
+   printf "%s\n" '  xen             Xen backend support'
+   printf "%s\n" '  xen-pci-passthrough'
+@@ -577,6 +578,8 @@ _meson_option_parse() {
+     --disable-vvfat) printf "%s" -Dvvfat=disabled ;;
+     --enable-werror) printf "%s" -Dwerror=true ;;
+     --disable-werror) printf "%s" -Dwerror=false ;;
++    --enable-wasapi) printf "%s" -Dwasapi=enabled ;;
++    --disable-wasapi) printf "%s" -Dwasapi=disabled ;;
+     --enable-whpx) printf "%s" -Dwhpx=enabled ;;
+     --disable-whpx) printf "%s" -Dwhpx=disabled ;;
+     --x86-version=*) quote_sh "-Dx86_version=$2" ;;
+diff --git a/system/main.c b/system/main.c
+index 4255584..d56904f 100644
+--- a/system/main.c
++++ b/system/main.c
+@@ -72,6 +72,9 @@ static void *qemu_default_main(void *opaque)
+ #ifdef CONFIG_DARWIN
+     set_main_loop_rt();
+ #endif
++#ifdef _WIN32
++    qemu_thread_win32_boost();
++#endif
+ 
+     replay_mutex_lock();
+     bql_lock();
+diff --git a/util/qemu-thread-win32.c b/util/qemu-thread-win32.c
+index 3037732..f1cdfe6 100644
+--- a/util/qemu-thread-win32.c
++++ b/util/qemu-thread-win32.c
+@@ -31,6 +31,19 @@ qemu_thread_init(void)
+     qemu_thread_set_name("main");
+ }
+ 
++void qemu_thread_win32_boost(void)
++{
++    THREAD_POWER_THROTTLING_STATE state = {
++        .Version = THREAD_POWER_THROTTLING_CURRENT_VERSION,
++        .ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED,
++        .StateMask = 0,
++    };
++
++    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
++    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling,
++                         &state, sizeof(state));
++}
++
+ static bool load_thread_description(void)
+ {
+     static gsize _init_once = 0;

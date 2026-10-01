@@ -1,0 +1,79 @@
+diff --git a/system/cpus.c b/system/cpus.c
+--- a/system/cpus.c
++++ b/system/cpus.c
+@@ -44,6 +44,7 @@
+ #include "system/runstate.h"
+ #include "system/cpu-timers.h"
+ #include "system/whpx.h"
++#include "system/tcg.h"
+ #include "hw/core/boards.h"
+ #include "hw/core/hw-error.h"
+ #include "trace.h"
+@@ -457,13 +458,39 @@
+         qemu_cpu_stop(cpu, false);
+     }
+     process_queued_cpu_work(cpu);
++}
++
++#ifdef _WIN32
++/*
++ * cdj3k-emu: how long a halted vCPU polls for work before sleeping on its
++ * condition variable. A Windows wait and wake are a kernel round trip each;
++ * most halts end within the window.
++ */
++#define HALT_SPIN_NS (300 * SCALE_US)
++
++/* Poll, without the BQL, until the vCPU has work or the window closes. */
++static void halt_spin(CPUState *cpu)
++{
++    if (!tcg_enabled() || !cpu_thread_is_idle(cpu)) {
++        return;
++    }
++    int64_t deadline = get_clock() + HALT_SPIN_NS;
++    bql_unlock();
++    while (cpu_thread_is_idle(cpu) && get_clock() < deadline) {
++        YieldProcessor();
++    }
++    bql_lock();
+ }
++#endif
+ 
+ void qemu_process_cpu_events(CPUState *cpu)
+ {
+     bool slept = false;
+ 
+     qatomic_set(&cpu->exit_request, false);
++#ifdef _WIN32
++    halt_spin(cpu);
++#endif
+     while (cpu_thread_is_idle(cpu)) {
+         if (!slept) {
+             slept = true;
+diff --git a/util/qemu-thread-win32.c b/util/qemu-thread-win32.c
+--- a/util/qemu-thread-win32.c
++++ b/util/qemu-thread-win32.c
+@@ -90,11 +90,24 @@
+     mutex->initialized = false;
+     InitializeSRWLock(&mutex->lock);
+ }
++
++/*
++ * cdj3k-emu: tries at the lock before blocking on it. A contended SRW lock
++ * waits in the kernel; the BQL is mostly held for microseconds.
++ */
++#define LOCK_SPINS 4000
+ 
+ void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
+ {
+     assert(mutex->initialized);
+     qemu_mutex_pre_lock(mutex, file, line);
++    for (int i = LOCK_SPINS; i > 0; i--) {
++        if (TryAcquireSRWLockExclusive(&mutex->lock)) {
++            qemu_mutex_post_lock(mutex, file, line);
++            return;
++        }
++        YieldProcessor();
++    }
+     AcquireSRWLockExclusive(&mutex->lock);
+     qemu_mutex_post_lock(mutex, file, line);
+ }

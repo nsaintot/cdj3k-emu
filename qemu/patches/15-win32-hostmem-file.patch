@@ -1,0 +1,143 @@
+diff --git a/backends/hostmem-file.c b/backends/hostmem-file.c
+--- a/backends/hostmem-file.c
++++ b/backends/hostmem-file.c
+@@ -34,12 +34,111 @@
+     bool is_pmem;
+     bool readonly;
+     OnOffAuto rom;
++#ifdef _WIN32
++    void *win32_view;
++#endif
+ };
+ 
++#ifdef _WIN32
++/*
++ * share=on maps the file shared across processes; share=off maps a private
++ * copy-on-write view. The file is grown to the backend size, never shrunk.
++ */
+ static bool
++file_backend_memory_alloc_win32(HostMemoryBackend *backend, Error **errp)
++{
++    HostMemoryBackendFile *fb = MEMORY_BACKEND_FILE(backend);
++    g_autoptr(GError) gerr = NULL;
++    g_autofree gunichar2 *path_w = NULL;
++    g_autofree gchar *name = NULL;
++    LARGE_INTEGER cur_size, want_size;
++    HANDLE file, mapping;
++    void *view;
++
++    if (!backend->size) {
++        error_setg(errp, "can't create backend with size 0");
++        return false;
++    }
++    if (!fb->mem_path) {
++        error_setg(errp, "mem-path property not set");
++        return false;
++    }
++    if (fb->offset || fb->align || fb->readonly || fb->is_pmem ||
++        fb->rom == ON_OFF_AUTO_ON) {
++        error_setg(errp, "on Windows the file backend supports writable RAM "
++                   "at offset 0 only ('offset', 'align', 'readonly', 'pmem' "
++                   "and 'rom' are not supported)");
++        return false;
++    }
++
++    path_w = g_utf8_to_utf16(fb->mem_path, -1, NULL, NULL, &gerr);
++    if (!path_w) {
++        error_setg(errp, "can't convert backing store path '%s' to UTF-16: %s",
++                   fb->mem_path, gerr->message);
++        return false;
++    }
++
++    file = CreateFileW((LPCWSTR)path_w, GENERIC_READ | GENERIC_WRITE,
++                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++                       NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
++    if (file == INVALID_HANDLE_VALUE) {
++        error_setg_win32(errp, GetLastError(),
++                         "can't open backing store %s for guest RAM",
++                         fb->mem_path);
++        return false;
++    }
++
++    want_size.QuadPart = backend->size;
++    if (!GetFileSizeEx(file, &cur_size) ||
++        (cur_size.QuadPart < want_size.QuadPart &&
++         (!SetFilePointerEx(file, want_size, NULL, FILE_BEGIN) ||
++          !SetEndOfFile(file)))) {
++        error_setg_win32(errp, GetLastError(),
++                         "can't size backing store %s for guest RAM",
++                         fb->mem_path);
++        CloseHandle(file);
++        return false;
++    }
++
++    mapping = CreateFileMappingW(file, NULL,
++                                 backend->share ? PAGE_READWRITE
++                                                : PAGE_WRITECOPY,
++                                 0, 0, NULL);
++    CloseHandle(file);
++    if (!mapping) {
++        error_setg_win32(errp, GetLastError(),
++                         "can't create a mapping of backing store %s",
++                         fb->mem_path);
++        return false;
++    }
++
++    view = MapViewOfFile(mapping,
++                         backend->share ? FILE_MAP_READ | FILE_MAP_WRITE
++                                        : FILE_MAP_COPY,
++                         0, 0, backend->size);
++    CloseHandle(mapping);
++    if (!view) {
++        error_setg_win32(errp, GetLastError(),
++                         "can't map backing store %s for guest RAM",
++                         fb->mem_path);
++        return false;
++    }
++
++    backend->aligned = true;
++    name = host_memory_backend_get_name(backend);
++    memory_region_init_ram_ptr(&backend->mr, OBJECT(backend), name,
++                               backend->size, view);
++    fb->win32_view = view;
++    return true;
++}
++#endif /* _WIN32 */
++
++static bool
+ file_backend_memory_alloc(HostMemoryBackend *backend, Error **errp)
+ {
+-#ifndef CONFIG_POSIX
++#ifdef _WIN32
++    return file_backend_memory_alloc_win32(backend, errp);
++#elif !defined(CONFIG_POSIX)
+     error_setg(errp, "backend '%s' not supported on this host",
+                object_get_typename(OBJECT(backend)));
+     return false;
+@@ -309,6 +408,12 @@
+     HostMemoryBackendFile *fb = MEMORY_BACKEND_FILE(o);
+ 
+     g_free(fb->mem_path);
++#ifdef _WIN32
++    if (fb->win32_view) {
++        UnmapViewOfFile(fb->win32_view);
++        fb->win32_view = NULL;
++    }
++#endif
+ }
+ 
+ static const TypeInfo file_backend_info = {
+diff --git a/backends/meson.build b/backends/meson.build
+--- a/backends/meson.build
++++ b/backends/meson.build
+@@ -10,7 +10,9 @@
+   'confidential-guest-support.c',
+ ), numa])
+ 
+-if host_os != 'windows'
++if host_os == 'windows'
++  system_ss.add(files('hostmem-file.c'))
++else
+   system_ss.add(files('rng-random.c'))
+   if host_os != 'emscripten'
+     system_ss.add(files('hostmem-file.c'))

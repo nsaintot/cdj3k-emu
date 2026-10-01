@@ -1,0 +1,106 @@
+diff --git a/hw/misc/ivshmem-pci.c b/hw/misc/ivshmem-pci.c
+--- a/hw/misc/ivshmem-pci.c
++++ b/hw/misc/ivshmem-pci.c
+@@ -351,6 +351,10 @@
+ static void watch_vector_notifier(IVShmemState *s, EventNotifier *n,
+                                  int vector)
+ {
++#ifdef _WIN32
++    /* Peers exist only for ivshmem-doorbell, which Windows rejects. */
++    g_assert_not_reached();
++#else
+     int eventfd = event_notifier_get_fd(n);
+ 
+     assert(!s->msi_vectors[vector].pdev);
+@@ -358,6 +362,7 @@
+ 
+     qemu_set_fd_handler(eventfd, ivshmem_vector_notify,
+                         NULL, &s->msi_vectors[vector]);
++#endif
+ }
+ 
+ static void ivshmem_add_eventfd(IVShmemState *s, int posn, int i)
+@@ -479,6 +484,12 @@
+     return true;
+ }
+ 
++#ifdef _WIN32
++static void process_msg_shmem(IVShmemState *s, int fd, Error **errp)
++{
++    error_setg(errp, "ivshmem server messages are not supported on Windows");
++}
++#else
+ static void process_msg_shmem(IVShmemState *s, int fd, Error **errp)
+ {
+     struct stat buf;
+@@ -513,6 +524,7 @@
+ 
+     s->ivshmem_bar2 = &s->server_bar2;
+ }
++#endif /* _WIN32 */
+ 
+ static void process_msg_disconnect(IVShmemState *s, uint16_t posn,
+                                    Error **errp)
+@@ -525,6 +537,13 @@
+     close_peer_eventfds(s, posn);
+ }
+ 
++#ifdef _WIN32
++static void process_msg_connect(IVShmemState *s, uint16_t posn, int fd,
++                                Error **errp)
++{
++    error_setg(errp, "ivshmem server messages are not supported on Windows");
++}
++#else
+ static void process_msg_connect(IVShmemState *s, uint16_t posn, int fd,
+                                 Error **errp)
+ {
+@@ -561,6 +580,7 @@
+         ivshmem_add_eventfd(s, posn, vector);
+     }
+ }
++#endif /* _WIN32 */
+ 
+ static void process_msg(IVShmemState *s, int64_t msg, int fd, Error **errp)
+ {
+@@ -941,6 +961,7 @@
+     migrate_del_blocker(&s->migration_blocker);
+ 
+     if (memory_region_is_mapped(s->ivshmem_bar2)) {
++#ifndef _WIN32
+         if (!s->hostmem) {
+             void *addr = memory_region_get_ram_ptr(s->ivshmem_bar2);
+             int fd;
+@@ -953,6 +974,7 @@
+             fd = memory_region_get_fd(s->ivshmem_bar2);
+             close(fd);
+         }
++#endif
+ 
+         vmstate_unregister_ram(s->ivshmem_bar2, DEVICE(dev));
+     }
+@@ -1113,6 +1135,12 @@
+ {
+     IVShmemState *s = IVSHMEM_COMMON(dev);
+ 
++#ifdef _WIN32
++    /* The server hands out eventfds and shared-memory fds. */
++    error_setg(errp, "ivshmem-doorbell is not supported on Windows; "
++               "use ivshmem-plain");
++    return;
++#endif
+     if (!qemu_chr_fe_backend_connected(&s->server_chr)) {
+         error_setg(errp, "You must specify a 'chardev'");
+         return;
+diff --git a/meson.build b/meson.build
+--- a/meson.build
++++ b/meson.build
+@@ -4576,7 +4576,7 @@
+     endif
+   endif
+ 
+-  if have_ivshmem
++  if have_ivshmem and host_os != 'windows'
+     subdir('contrib/ivshmem-client')
+     subdir('contrib/ivshmem-server')
+   endif
