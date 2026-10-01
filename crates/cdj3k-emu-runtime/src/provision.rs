@@ -165,6 +165,7 @@ fn spawn_qemu(argv: &[String]) -> Result<String, String> {
         .spawn()
         .map_err(|e| format!("could not start the provisioning guest: {e}"))?;
 
+    crate::process::adopt(child.id());
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
     let started = std::time::Instant::now();

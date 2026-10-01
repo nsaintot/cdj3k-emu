@@ -26,3 +26,31 @@ cdj3k-emu-platform = { path = "../cdj3k-emu-platform" }
 # udisks' Block.OpenDevice: a raw USB disk as a descriptor, under polkit.
 # async-io, not tokio: the app runs no tokio runtime.
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
+# Windows: elevation, job objects, storage ioctls, VHDX, Restart Manager, TAP
+# adapter install (SetupAPI + registry).
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_Vhd",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_JobObjects",
+    "Win32_System_RestartManager",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }

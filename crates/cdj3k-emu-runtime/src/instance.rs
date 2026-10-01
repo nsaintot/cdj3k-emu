@@ -174,6 +174,7 @@ impl QemuInstance {
         let child = cmd.spawn().map_err(InstanceError::SockDir)?;
 
         let pid = child.id();
+        crate::process::adopt(pid);
         QEMU_CHILD_PID.store(pid as i32, Ordering::Relaxed);
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
@@ -192,6 +193,7 @@ impl QemuInstance {
             .expect("failed to spawn QEMU monitor thread");
 
         let qmp = QmpClient::connect_with_retry(config.qmp_port, Duration::from_secs(15))?;
+        crate::process::set_quit_channel(qmp.stream());
 
         Ok(Self {
             inner: Inner {
@@ -305,13 +307,7 @@ fn wait_or_kill(running: &Arc<AtomicBool>, pid: u32, timeout: Duration) {
 /// Used to prepare host-side mmaps so QEMU can map them at boot without
 /// `ftruncate` growing the file out from under any active reader.
 fn prefill_sparse(path: &Path, len: u64) -> std::io::Result<()> {
-    let f = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-    f.set_len(len)
+    cdj3k_emu_platform::sparse_file::create(path, len)
 }
 
 /// Kill any stale QEMU from a previous .app run and remove its socket files.
@@ -380,8 +376,8 @@ pub fn cleanup_qemu_files(sock_dir: &Path) {
 ///
 /// * `net.claim` and `net.released` are the link's lease (`net::lease`);
 ///   the elevated watcher takes the link down when the claim goes.
-/// * `tapbridge.*` and `linuxnet.*` are the macOS and Linux links' elevated
-///   scripts and hand-over files.
+/// * `tapbridge.*`, `linuxnet.*` and `winnet.*` are the macOS, Linux and
+///   Windows links' elevated scripts and hand-over files.
 /// * `midi-driver.sock` is bound by `MidiDriverLink` for as long as PC Link
 ///   is on, and the CoreMIDI plugin dials it by name.
 ///
@@ -391,6 +387,7 @@ fn app_owned(name: &str) -> bool {
         || name == crate::net::lease::RELEASED_FILE
         || name.starts_with("tapbridge.")
         || name.starts_with("linuxnet.")
+        || name.starts_with("winnet.")
         || name == "midi-driver.sock"
 }
 
@@ -448,6 +445,7 @@ mod cleanup_tests {
             for f in [
                 "net.claim",
                 "net.released",
+                "winnet.result",
                 "tapbridge.sh",
                 "tapbridge.names",
                 "linuxnet.sh",
@@ -463,6 +461,7 @@ mod cleanup_tests {
         cleanup_qemu_files_for_restart(&dir);
         assert!(dir.join("net.claim").exists(), "the lease must survive a restart");
         assert!(dir.join("net.released").exists());
+        assert!(dir.join("winnet.result").exists());
         assert!(dir.join("tapbridge.sh").exists());
         assert!(dir.join("tapbridge.names").exists());
         assert!(dir.join("linuxnet.sh").exists());

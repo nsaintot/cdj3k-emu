@@ -46,3 +46,30 @@ muda = "0.15"
 objc2 = { version = "0.5.2", features = ["relax-sign-encoding"] }
 objc2-app-kit = { version = "0.2.2", features = ["NSView", "NSWindow", "NSResponder", "NSOpenPanel", "NSPanel", "NSSavePanel", "NSApplication", "NSRunningApplication"] }
 objc2-foundation = { version = "0.2.2", features = ["NSGeometry", "NSString", "NSThread", "NSURL", "libc"] }
+
+# Windows: WHPX probe, build number, window subclass, audio endpoints,
+# adapters, AF_UNIX sockets, the eMMC lock.
+[target.'cfg(windows)'.dependencies]
+uds_windows = "1"
+windows = { version = "0.62", features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }

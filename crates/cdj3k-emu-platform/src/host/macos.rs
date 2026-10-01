@@ -61,6 +61,9 @@ fn darwin_major() -> u32 {
 pub const KEY_PRIMARY: &str = "⌘";
 pub const KEY_SHIFT: &str = "⇧";
 
+/// Extension of a new virtual USB image: a raw disk image.
+pub const VIRTUAL_IMAGE_EXT: &str = "img";
+
 #[cfg(test)]
 mod tests {
     use super::*;

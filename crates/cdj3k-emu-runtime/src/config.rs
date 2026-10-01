@@ -48,11 +48,12 @@ pub struct QemuConfig {
     /// `com.apple.developer.networking.vmnet` entitlement.
     pub net_vmnet: Option<crate::net::vmnet::VmnetMode>,
 
-    /// TAP interface name - informational only (e.g. for logs/display).
+    /// TAP interface name. Informational where QEMU is handed a descriptor;
+    /// the adapter QEMU opens where it is not (Windows).
     pub net_tap_iface: Option<String>,
 
     /// Open file descriptor for the QEMU-side TAP device.
-    /// When set, QEMU receives `-netdev tap,fd=<N>` instead of `ifname=`.
+    /// When set, QEMU receives `-netdev tap,fd=<N>`.
     /// The fd must have FD_CLOEXEC cleared before exec.
     pub net_tap_fd: Option<i32>,
 
@@ -332,10 +333,12 @@ impl QemuConfig {
             .mac
             .clone()
             .unwrap_or_else(|| format!("0a:00:00:00:00:{:02x}", self.instance_id & 0xff));
-        if let Some(fd) = self.net_tap_fd {
+        if let Some(netdev) =
+            crate::net::tap_netdev("net0", self.net_tap_iface.as_deref(), self.net_tap_fd)
+        {
             args.extend([
                 "-netdev".into(),
-                format!("tap,id=net0,fd={}", fd),
+                netdev,
                 "-device".into(),
                 format!("virtio-net-device,netdev=net0,mac={},mrg_rxbuf=off", mac),
             ]);

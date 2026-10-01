@@ -1,8 +1,8 @@
 //! The window layer through egui and winit: the window shape is asked for as
-//! viewport commands, the file picker is the desktop portal via rfd, and the
-//! process has no activation or naming hook to reach.
+//! viewport commands, the file picker is the host's native dialog via rfd,
+//! and the process has no activation or naming hook to reach.
 
-use super::{MIN_WINDOW_W, PICKER_SIZE, panel_initial_size};
+use super::{first_frame, MIN_WINDOW_W, PICKER_SIZE, panel_initial_size};
 use cdj3k_emu_panel::Model;
 
 /// Stands in for "no maximum" when clearing one.
@@ -27,8 +27,9 @@ pub fn on_creation_context(cc: &eframe::CreationContext<'_>) {
 }
 
 /// Turn the main window into the panel of `model`: user-resizable, restored
-/// to slot `instance_id`'s last saved panel frame for that model (or sized to
-/// the default), then aspect-locked to `ref_canvas`. The position comes back
+/// to slot `instance_id`'s last saved panel frame for that model (or the
+/// default size fitted to the monitor, centred where the picker was), then
+/// aspect-locked to `ref_canvas`. The position comes back
 /// only where the window system lets a client place itself (not Wayland).
 ///
 /// The aspect itself is held by [`apply_resize_constraints`], which also
@@ -55,9 +56,20 @@ pub fn enter_panel_window(
     ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min));
     let key = super::frame_key(instance_id, model);
     let saved = super::frame_store::load(&key);
-    let size = saved.map_or(egui::vec2(w, h + bar), |f| f.size.max(min));
+    let now = ctx.input(|i| i.viewport().clone());
+    let size = match saved {
+        Some(f) => f.size.max(min),
+        None => first_frame::fit_to_monitor(egui::vec2(w, h), bar, min, now.monitor_size),
+    };
     ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
-    if let Some(pos) = saved.and_then(|f| f.pos) {
+    let pos = match saved {
+        Some(f) => f.pos,
+        None => now
+            .outer_rect
+            .zip(now.inner_rect)
+            .map(|(outer, inner)| first_frame::centred_on(outer, inner, size)),
+    };
+    if let Some(pos) = pos {
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
     }
     super::frame_store::track(ctx, key, saved);
@@ -106,9 +118,8 @@ pub fn run_picker(
 /// Open the desktop's own file-open dialog and return the chosen path, or
 /// `None` if cancelled.
 ///
-/// The desktop portal, via rfd: a D-Bus request the desktop's own file
-/// manager answers, so no GUI toolkit is linked in and the dialog looks
-/// like every other one the user sees.
+/// Through rfd: the desktop portal (D-Bus) on Linux, the Win32 common dialog
+/// on Windows. No GUI toolkit is linked in.
 pub fn open_file_picker(title: &str, allowed_types: &[&str]) -> Option<std::path::PathBuf> {
     let mut dialog = rfd::FileDialog::new().set_title(title);
     if !allowed_types.is_empty() {

@@ -6,6 +6,17 @@ pub fn activate_process(_pid: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// Present on the display's refresh.
+pub const VSYNC: bool = true;
+
+pub fn announce_running() {}
+
+pub const CAPTION_IN_STRIP: bool = false;
+
+pub const OWN_WINDOW_ICON: bool = true;
+
+pub fn set_caption_area(_ctx: &egui::Context, _area: Option<super::CaptionArea>) {}
+
 pub fn set_app_name(_name: &str) -> Result<(), String> {
     Ok(())
 }

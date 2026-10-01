@@ -3,11 +3,14 @@
 #[cfg(unix)]
 #[path = "unix.rs"]
 mod imp;
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod imp;
+#[cfg(not(any(unix, windows)))]
 #[path = "unsupported.rs"]
 mod imp;
 
-pub use imp::{is_alive, keep_across_exec, kill, terminate};
+pub use imp::{adopt, is_alive, keep_across_exec, kill, set_quit_channel, terminate};
 
 /// Remove this instance's runtime files on every way out of the process that
 /// eframe's `on_exit` does not see, taking the QEMU child with it.

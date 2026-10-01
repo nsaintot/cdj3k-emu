@@ -4,7 +4,10 @@
 #[cfg(unix)]
 #[path = "unix.rs"]
 mod imp;
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod imp;
+#[cfg(not(any(unix, windows)))]
 #[path = "unsupported.rs"]
 mod imp;
 

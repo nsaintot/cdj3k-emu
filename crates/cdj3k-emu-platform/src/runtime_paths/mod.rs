@@ -14,9 +14,9 @@
 //! ```
 //!
 //! The root is per-user on every host, so no one else can create or replace
-//! state under it: `/tmp` needs an euid suffix plus mode 0700,
-//! `%LOCALAPPDATA%` is per-user by ACL. A process that is killed leaves its
-//! `instance-{id}` behind; whether a slot is open is the slot claim's to say
+//! state under it: `/tmp` takes an euid suffix and mode 0700, `%TEMP%` is
+//! per-user by ACL. A killed process leaves its `instance-{id}`
+//! behind; whether a slot is open is the slot claim's to say
 //! (`cdj3k_emu_storage::slot_in_use`).
 //!
 //! Socket paths stay under the host's UNIX-socket path limit, which C

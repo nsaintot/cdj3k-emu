@@ -35,7 +35,11 @@ pub(super) fn open_raw(_disk: &PhysicalDisk, _qmp_fd_socket: &Path) -> Result<Ra
     )))
 }
 
-pub fn format_exfat(_img_path: &Path) -> std::io::Result<()> {
+pub fn virtual_format(_img_path: &Path) -> &'static str {
+    "raw"
+}
+
+pub fn create_image(_img_path: &Path, _size_bytes: u64) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "no exFAT formatter for this host",

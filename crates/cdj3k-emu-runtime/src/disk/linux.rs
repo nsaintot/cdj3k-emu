@@ -154,6 +154,17 @@ fn is_valid_block_device_path(path: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// The format QEMU opens a virtual image with.
+pub fn virtual_format(_img_path: &Path) -> &'static str {
+    "raw"
+}
+
+/// Create a raw image of `size_bytes`, partitioned and formatted.
+pub fn create_image(img_path: &Path, size_bytes: u64) -> std::io::Result<()> {
+    super::create_raw_image(img_path, size_bytes)?;
+    format_exfat(img_path)
+}
+
 /// Format a raw image file as MBR + exFAT, the same layout macOS produces.
 ///
 /// All of it happens on the file: a `udisksctl loop-setup` node stays

@@ -1,8 +1,9 @@
 //! The in-window menu, for hosts with no native menu bar.
 //!
-//! A strip across the top of the emulation window — inside it, not replacing
-//! the title bar: a Linux desktop cannot be relied on to cede its decorations,
-//! so the window manager keeps them and this sits beneath.
+//! A strip across the top of the emulation window. On Linux it sits under the
+//! window manager's title bar. On Windows it is the title bar
+//! ([`desktop::CAPTION_IN_STRIP`]): it carries the app's name and the caption
+//! buttons, and its empty stretches drag the window.
 //!
 //! Three ways into the same [`MenuModel`]: a hamburger holding every menu, a
 //! pill per menu that also shows what that menu is set to, and an icon strip
@@ -22,6 +23,8 @@ use egui::{
     Vec2,
 };
 
+use crate::desktop::{self, CaptionArea, CAPTION_IN_STRIP};
+
 use super::id::MenuId;
 use super::model::{MenuIcon, MenuModel, MenuNode, NetKind, Notice, Predefined};
 use super::provider::MenuProvider;
@@ -40,6 +43,15 @@ const ICON_GAP: f32 = 2.0;
 const RESTART_RULE_W: f32 = 9.0;
 /// Air kept between the last pill and the first shortcut.
 const SHORTCUT_GUTTER: f32 = 12.0;
+/// A caption button, Windows' own size.
+const CAPTION_BTN: Vec2 = Vec2::new(46.0, 32.0);
+/// Space around the caption buttons: before them, and at the window's edge.
+const CAPTION_PAD_LEFT: f32 = 12.0;
+const CAPTION_PAD_RIGHT: f32 = 6.0;
+const CAPTION_W: f32 = CAPTION_PAD_LEFT + 3.0 * CAPTION_BTN.x + CAPTION_PAD_RIGHT;
+/// The strip width below which the wordmark is dropped: the wordmark, both
+/// pills and every shortcut.
+const WORDMARK_MIN_STRIP: f32 = 800.0;
 
 /// Width of a notice's hover card.
 const CARD_W: f32 = 280.0;
@@ -85,6 +97,8 @@ const ICON_RULE: Color32 = Color32::from_rgb(0x34, 0x33, 0x2E);
 const ACCENT: Color32 = Color32::from_rgb(0x38, 0x84, 0xFF);
 const OK_GREEN: Color32 = Color32::from_rgb(0x5F, 0xBE, 0x8A);
 const WARN_AMBER: Color32 = Color32::from_rgb(0xD9, 0xA2, 0x3C);
+/// Windows' close-button red.
+const CLOSE_RED: Color32 = Color32::from_rgb(0xC4, 0x2B, 0x1C);
 
 /// Draws the model as a strip, and collects what was clicked.
 #[derive(Default)]
@@ -99,6 +113,8 @@ pub struct EguiProvider {
     /// Where this frame's strip and open panels were drawn, so an effect
     /// painted over the whole window can leave them alone.
     chrome: Vec<Rect>,
+    /// This frame's widgets on the strip: where it does not drag the window.
+    widgets: Vec<Rect>,
 }
 
 impl MenuProvider for EguiProvider {
@@ -126,6 +142,7 @@ impl EguiProvider {
     /// Take the keyboard shortcuts without drawing anything.
     pub fn shortcuts_only(&mut self, ctx: &egui::Context) {
         self.chrome.clear();
+        desktop::set_caption_area(ctx, None);
         self.take_shortcuts(ctx);
     }
 
@@ -137,10 +154,14 @@ impl EguiProvider {
         }
         self.take_shortcuts(ctx);
         self.chrome.clear();
+        self.widgets.clear();
 
-        let frame = egui::Frame::none()
-            .fill(BAR_BG)
-            .inner_margin(egui::Margin::symmetric(BAR_PAD_X, 0.0));
+        let frame = egui::Frame::none().fill(BAR_BG).inner_margin(egui::Margin {
+            left: BAR_PAD_X,
+            right: if CAPTION_IN_STRIP { 0.0 } else { BAR_PAD_X },
+            top: 0.0,
+            bottom: 0.0,
+        });
         let strip = egui::TopBottomPanel::top("cdj3k_menu_bar")
             .exact_height(BAR_HEIGHT)
             .frame(frame)
@@ -148,6 +169,13 @@ impl EguiProvider {
                 ui.horizontal_centered(|ui| self.bar(ui));
             });
         self.chrome.push(strip.response.rect);
+        if CAPTION_IN_STRIP {
+            desktop::set_caption_area(ctx, Some(CaptionArea {
+                strip: strip.response.rect,
+                widgets: std::mem::take(&mut self.widgets),
+                pixels_per_point: ctx.pixels_per_point(),
+            }));
+        }
     }
 
     /// Run any action whose accelerator was pressed.
@@ -185,6 +213,9 @@ impl EguiProvider {
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             style_strip(ui);
             self.hamburger(ui, &mut open);
+            if CAPTION_IN_STRIP && ui.max_rect().width() >= WORDMARK_MIN_STRIP {
+                wordmark(ui);
+            }
 
             // Emulation and Instances get a pill that reads out their state:
             // which deck this window is, and which slot.
@@ -200,7 +231,8 @@ impl EguiProvider {
             // What the shortcuts get is whatever the pills left, less a
             // gutter. A narrow window sheds them rather than letting the
             // right-hand group draw over the pills.
-            let mut room = ui.available_width() - SHORTCUT_GUTTER;
+            let caption = if CAPTION_IN_STRIP { CAPTION_W } else { 0.0 };
+            let mut room = ui.available_width() - SHORTCUT_GUTTER - caption;
             let mut icons = Vec::new();
             for label in ["View", "Audio", "Network", "Storage"] {
                 if room < ICON_BTN.x + ICON_GAP {
@@ -216,6 +248,9 @@ impl EguiProvider {
             let restart = room >= ICON_BTN.x + RESTART_RULE_W;
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if CAPTION_IN_STRIP {
+                    self.caption_buttons(ui);
+                }
                 ui.spacing_mut().item_spacing.x = ICON_GAP;
                 // Right-to-left, so this reads backwards on screen: View is
                 // rightmost, Restart leads the group behind its own rule.
@@ -256,6 +291,7 @@ impl EguiProvider {
         if res.inner.is_some() {
             open.insert(HAMBURGER.into());
         }
+        self.widgets.push(res.response.rect);
         let c = res.response.rect.center();
         let s = Stroke::new(1.4_f32, TEXT);
         for dy in [-4.0, 0.0, 4.0] {
@@ -314,6 +350,7 @@ impl EguiProvider {
         }
 
         let rect = res.response.rect;
+        self.widgets.push(rect);
         if matches!(icon, Some(MenuIcon::Emulation)) {
             ui.painter().rect_filled(
                 Rect::from_min_size(
@@ -377,6 +414,7 @@ impl EguiProvider {
                 rect
             })
             .inner;
+        self.widgets.push(rect);
         if let Some(g) = glyph {
             paint_icon(ui, rect, g, *enabled);
         }
@@ -399,6 +437,7 @@ impl EguiProvider {
         if res.inner.is_some() {
             open.insert(NOTICE.into());
         }
+        self.widgets.push(res.response.rect);
         let pen = Pen::new(ui, res.response.rect, Vec2::splat(15.0), Vec2::splat(15.0), WARN_AMBER);
         pen.arc(7.5, 9.0, 6.0, 0.4286, 1.0714, 1.1);
         pen.line((7.5, 9.0), (4.0, 8.2), 1.3);
@@ -428,6 +467,7 @@ impl EguiProvider {
                     Sense::hover()
                 }),
         );
+        self.widgets.push(res.rect);
         paint_icon(ui, res.rect, MenuIcon::Restart { armed }, true);
         let res = res.on_hover_text(if armed {
             "Restart Emulation"
@@ -442,6 +482,46 @@ impl EguiProvider {
         if res.clicked() {
             self.clicked.push(MenuId::Restart);
         }
+    }
+
+    /// Minimise, maximise or restore, and close, at the strip's right end,
+    /// laid out right to left.
+    fn caption_buttons(&mut self, ui: &mut Ui) {
+        let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(CAPTION_PAD_RIGHT);
+        for button in [Caption::Close, Caption::Maximize, Caption::Minimize] {
+            let (rect, res) = ui.allocate_exact_size(CAPTION_BTN, Sense::click());
+            self.widgets.push(rect);
+            let (fill, glyph) = match (button, res.hovered()) {
+                (Caption::Close, true) => (CLOSE_RED, Color32::WHITE),
+                (_, true) => (STRIP_HOVER, TEXT),
+                _ => (Color32::TRANSPARENT, TEXT_MUTED),
+            };
+            ui.painter().rect_filled(rect, 3.0, fill);
+            let pen = Pen::new(ui, rect, Vec2::splat(11.0), Vec2::splat(11.0), glyph);
+            match button {
+                Caption::Minimize => pen.line((1.0, 5.5), (10.0, 5.5), 1.1),
+                Caption::Maximize if maximized => {
+                    pen.rect(1.3, 3.3, 6.4, 6.4, 1.0, 1.1);
+                    pen.poly(&[(3.3, 3.3), (3.3, 1.3), (9.7, 1.3), (9.7, 7.7), (7.7, 7.7)], 1.1);
+                }
+                Caption::Maximize => pen.rect(1.3, 1.3, 8.4, 8.4, 1.0, 1.1),
+                Caption::Close => {
+                    pen.line((1.6, 1.6), (9.4, 9.4), 1.2);
+                    pen.line((9.4, 1.6), (1.6, 9.4), 1.2);
+                }
+            }
+            if res.clicked() {
+                let cmd = match button {
+                    Caption::Minimize => egui::ViewportCommand::Minimized(true),
+                    Caption::Maximize => egui::ViewportCommand::Maximized(!maximized),
+                    Caption::Close => egui::ViewportCommand::Close,
+                };
+                ui.ctx().send_viewport_cmd(cmd);
+            }
+        }
+        ui.add_space(CAPTION_PAD_LEFT);
     }
 
     // ── Panels ────────────────────────────────────────────────────────────────
@@ -906,7 +986,24 @@ fn style_submenu(ui: &mut Ui, row_w: f32) {
     s.visuals.widgets.open.weak_bg_fill = ROW_HOVER;
 }
 
+#[derive(Clone, Copy)]
+enum Caption {
+    Minimize,
+    Maximize,
+    Close,
+}
+
 // ── Marks ─────────────────────────────────────────────────────────────────────
+
+/// The app's name, where the strip is the title bar, and the rule after it.
+fn wordmark(ui: &mut Ui) {
+    let mut job = egui::text::LayoutJob::default();
+    let mut format = tracked_fmt(FONT_PILL, TRACK_WORDMARK, TEXT);
+    format.font_id = FontId::new(FONT_PILL, egui::FontFamily::Name(crate::fonts::NIMBUS_SANS_BOLD.into()));
+    job.append(&crate::app_meta::APP_DISPLAY_NAME.to_uppercase(), 0.0, format);
+    ui.label(job);
+    vertical_rule(ui, 12.0, PILL_BORDER);
+}
 
 fn vertical_rule(ui: &mut Ui, h: f32, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, h), Sense::hover());

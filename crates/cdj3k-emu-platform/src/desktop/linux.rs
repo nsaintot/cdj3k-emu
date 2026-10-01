@@ -188,6 +188,21 @@ mod x11 {
 /// cannot place one.
 pub const PLACES_WINDOWS: bool = false;
 
+/// Present on the display's refresh.
+pub const VSYNC: bool = true;
+
+/// Nothing to do: no installer here looks for a running copy.
+pub fn announce_running() {}
+
+/// The window manager draws the title bar; the strip sits under it.
+pub const CAPTION_IN_STRIP: bool = false;
+
+/// X11 shows the icon the app gives its window; Wayland takes the desktop
+/// entry's.
+pub const OWN_WINDOW_ICON: bool = true;
+
+pub fn set_caption_area(_ctx: &egui::Context, _area: Option<super::CaptionArea>) {}
+
 #[cfg(test)]
 mod tests {
     use winit::dpi::LogicalSize;

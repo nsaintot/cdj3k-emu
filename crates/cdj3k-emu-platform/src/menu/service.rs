@@ -158,6 +158,13 @@ fn tcg_notice(why: SoftwareEmulation) -> Notice {
         SoftwareEmulation::KvmDenied => "/dev/kvm exists but this user cannot open it. Add \
              the user to the kvm group, then log in again."
             .to_string(),
+        SoftwareEmulation::NoWhpx => "The Windows Hypervisor Platform is not enabled. Turn it \
+             on under Windows Features, then restart."
+            .to_string(),
+        SoftwareEmulation::WindowsTooOld { build, ubr } => format!(
+            "Windows {build}.{ubr} predates arm64 hardware virtualization. Update to \
+             Windows 11 24H2 (build 26100.3915) or later."
+        ),
         SoftwareEmulation::Unsupported => {
             "No hardware accelerator is wired up for this operating system.".to_string()
         }
@@ -229,7 +236,7 @@ fn storage(snap: &Snapshot) -> MenuNode {
             "Eject Current Media",
             anything_mounted,
         ),
-        MenuNode::Section("Virtual (.img)".into()),
+        MenuNode::Section(format!("Virtual (.{})", crate::host::VIRTUAL_IMAGE_EXT)),
         MenuNode::item(MenuId::MountVirtualUsb, "Mount Image…"),
         MenuNode::item(MenuId::CreateVirtualUsb, "Create New…"),
         MenuNode::Section("Physical".into()),

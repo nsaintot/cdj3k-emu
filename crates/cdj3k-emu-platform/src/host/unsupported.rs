@@ -17,3 +17,6 @@ pub const RNG_OBJECT: &str = "rng-builtin,id=rng0";
 /// The primary and shift modifiers as a shortcut hint spells them.
 pub const KEY_PRIMARY: &str = "Ctrl ";
 pub const KEY_SHIFT: &str = "Shift ";
+
+/// Extension of a new virtual USB image: a raw disk image.
+pub const VIRTUAL_IMAGE_EXT: &str = "img";

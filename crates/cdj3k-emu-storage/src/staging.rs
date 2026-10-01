@@ -155,7 +155,8 @@ impl StagedFirmware {
         soc_serial: &str,
     ) -> io::Result<()> {
         for path in [&self.paths.kernel, &self.paths.initramfs, &self.paths.emmc] {
-            let f = std::fs::File::open(path).map_err(|e| {
+            // Writable: Windows refuses to flush a read-only handle.
+            let f = std::fs::OpenOptions::new().write(true).open(path).map_err(|e| {
                 io::Error::other(format!("{} was not written: {e}", path.display()))
             })?;
             f.sync_all()?;
