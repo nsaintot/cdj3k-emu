@@ -594,8 +594,17 @@ fn draw_slot_switch(
         ui.memory_mut(|m| m.toggle_popup(popup));
     }
     let mut picked = None;
+    // The popup takes its frame from the Ui it opens from; this one carries
+    // the setup's palette over the context's (in-window menu) style.
+    let mut host = egui::Ui::new(
+        ui.ctx().clone(),
+        ui.layer_id(),
+        id.with("menu_host"),
+        egui::UiBuilder::new().max_rect(ui.max_rect()),
+    );
+    theme::apply_setup_style(&mut host, pal);
     egui::popup::popup_below_widget(
-        ui,
+        &host,
         popup,
         &resp,
         egui::popup::PopupCloseBehavior::CloseOnClickOutside,

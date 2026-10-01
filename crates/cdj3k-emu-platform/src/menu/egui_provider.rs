@@ -358,23 +358,28 @@ impl EguiProvider {
             None => label.clone(),
         };
 
-        // A disabled menu keeps its place and its glyph, faded, and opens
-        // nothing.
-        ui.add_enabled_ui(*enabled, |ui| {
-            let res = egui::menu::menu_custom_button(ui, button, |ui| {
-                self.panel(ui, &children);
-            });
-            if res.inner.is_some() {
-                open.insert(label.clone());
-            }
-            if let Some(g) = glyph {
-                paint_icon(ui, res.response.rect, g);
-            }
-            res.response
-                .on_hover_cursor(CursorIcon::PointingHand)
-                .on_hover_text(tip)
-                .on_disabled_hover_text(format!("{label} — available once the deck has booted"));
-        });
+        // A disabled menu keeps its place and its glyph, greyed, and opens
+        // nothing. The glyph is painted outside the disabled scope, which
+        // would fade it.
+        let rect = ui
+            .add_enabled_ui(*enabled, |ui| {
+                let res = egui::menu::menu_custom_button(ui, button, |ui| {
+                    self.panel(ui, &children);
+                });
+                if res.inner.is_some() {
+                    open.insert(label.clone());
+                }
+                let rect = res.response.rect;
+                res.response
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(tip)
+                    .on_disabled_hover_text(format!("{label} — available once the deck has booted"));
+                rect
+            })
+            .inner;
+        if let Some(g) = glyph {
+            paint_icon(ui, rect, g, *enabled);
+        }
     }
 
     /// A condition flagged on the strip: the design's gauge glyph, whose card
@@ -423,7 +428,7 @@ impl EguiProvider {
                     Sense::hover()
                 }),
         );
-        paint_icon(ui, res.rect, MenuIcon::Restart { armed });
+        paint_icon(ui, res.rect, MenuIcon::Restart { armed }, true);
         let res = res.on_hover_text(if armed {
             "Restart Emulation"
         } else {
@@ -1037,9 +1042,11 @@ impl<'a> Pen<'a> {
 
 /// Which glyph stands for a state is this provider's business; the state
 /// itself came from the model. Each is the design canvas's own SVG, in its
-/// own coordinates.
-fn paint_icon(ui: &Ui, rect: Rect, icon: MenuIcon) {
+/// own coordinates. A disabled menu's glyph is drawn whole, in the disabled
+/// grey.
+fn paint_icon(ui: &Ui, rect: Rect, icon: MenuIcon, enabled: bool) {
     let sq = Vec2::splat(15.0);
+    let ink = |c: Color32| if enabled { c } else { TEXT_DISABLED };
     match icon {
         MenuIcon::Restart { armed } => {
             let pen = Pen::new(
@@ -1059,14 +1066,14 @@ fn paint_icon(ui: &Ui, rect: Rect, icon: MenuIcon) {
                 rect,
                 vb,
                 vb,
-                if mounted { TEXT_MUTED } else { TEXT_DISABLED },
+                ink(TEXT_MUTED),
             );
             // The connector shell and its two contacts, over the body.
             pen.rect(2.5, 0.5, 6.0, 4.0, 0.0, 1.0);
             pen.fill_rect(4.0, 2.0, 1.0, 1.0);
             pen.fill_rect(6.0, 2.0, 1.0, 1.0);
             pen.rect(0.5, 4.5, 10.0, 11.0, 2.0, 1.0);
-            if mounted {
+            if mounted && enabled {
                 pen.p.circle_filled(pen.at(5.5, 11.0), 1.75 * pen.k, OK_GREEN);
             }
         }
@@ -1078,16 +1085,16 @@ fn paint_icon(ui: &Ui, rect: Rect, icon: MenuIcon) {
                 "NAT",
                 9.0,
                 0.12,
-                TEXT_MUTED,
+                ink(TEXT_MUTED),
             ),
             NetKind::LinkLocal => {
-                let pen = Pen::new(ui, rect, sq, sq, TEXT_MUTED);
+                let pen = Pen::new(ui, rect, sq, sq, ink(TEXT_MUTED));
                 pen.rect(1.6, 4.6, 4.8, 5.8, 1.0, 1.1);
                 pen.rect(8.6, 4.6, 4.8, 5.8, 1.0, 1.1);
                 pen.line((6.4, 7.5), (8.6, 7.5), 1.1);
             }
             NetKind::Bridged => {
-                let pen = Pen::new(ui, rect, sq, sq, TEXT_MUTED);
+                let pen = Pen::new(ui, rect, sq, sq, ink(TEXT_MUTED));
                 pen.rect(5.1, 1.5, 4.8, 3.6, 0.8, 1.1);
                 pen.rect(1.3, 9.9, 4.8, 3.6, 0.8, 1.1);
                 pen.rect(8.9, 9.9, 4.8, 3.6, 0.8, 1.1);
@@ -1101,7 +1108,7 @@ fn paint_icon(ui: &Ui, rect: Rect, icon: MenuIcon) {
                 rect,
                 sq,
                 sq,
-                if on { TEXT_MUTED } else { TEXT_DISABLED },
+                ink(if on { TEXT_MUTED } else { TEXT_DISABLED }),
             );
             pen.closed_poly(
                 &[
@@ -1123,7 +1130,7 @@ fn paint_icon(ui: &Ui, rect: Rect, icon: MenuIcon) {
             }
         }
         MenuIcon::View | MenuIcon::Instances | MenuIcon::Emulation => {
-            let pen = Pen::new(ui, rect, sq, sq, TEXT_MUTED);
+            let pen = Pen::new(ui, rect, sq, sq, ink(TEXT_MUTED));
             pen.rect(1.8, 2.8, 8.6, 6.4, 1.1, 1.1);
             pen.rect(4.8, 5.8, 8.6, 6.4, 1.1, 1.1);
         }
