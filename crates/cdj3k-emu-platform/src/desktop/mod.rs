@@ -70,6 +70,16 @@ const SNAP_TOL_PX: f32 = 1.5;
 /// settled window is already square and this does nothing.
 fn snap_when_settled(ctx: &egui::Context, state: &mut ResizeState, (ref_w, ref_h): (f32, f32)) {
     let size = ctx.screen_rect().size();
+    // A maximized or full-screen window takes the screen's shape; resizing it
+    // would take it out of that state.
+    let whole_screen = ctx.input(|i| {
+        let v = i.viewport();
+        v.maximized == Some(true) || v.fullscreen == Some(true)
+    });
+    if whole_screen {
+        state.last_size = size;
+        return;
+    }
     if (size - state.last_size).length_sq() >= STABLE_SIZE_TOL_SQ {
         state.changed_at = std::time::Instant::now();
     }
