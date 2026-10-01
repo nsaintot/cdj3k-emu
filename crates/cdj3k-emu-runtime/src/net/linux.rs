@@ -43,3 +43,19 @@ pub fn tap_netdev(id: &str, _iface: Option<&str>, fd: Option<i32>) -> Option<Str
 
 /// There is no privileged helper entry point on this host.
 pub fn run_helper_if_asked(_args: &[String]) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tap_netdev_is_the_descriptor() {
+        assert_eq!(tap_netdev("net0", Some("cdj3k0"), Some(7)).as_deref(), Some("tap,id=net0,fd=7"));
+        assert_eq!(tap_netdev("net0", None, None), None);
+    }
+
+    #[test]
+    fn a_hostile_mac_is_refused() {
+        assert!(attach("eno2", "0a:11:22:33:44:55; id", 1).is_err());
+    }
+}

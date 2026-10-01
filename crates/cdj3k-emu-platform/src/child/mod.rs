@@ -10,6 +10,8 @@ mod imp;
 #[path = "unsupported.rs"]
 mod imp;
 
+pub use imp::{EXTRA_TOOL_DIRS, is_runnable, set_runnable};
+
 use std::ffi::OsStr;
 use std::process::Command;
 

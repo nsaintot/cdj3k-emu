@@ -86,25 +86,16 @@ fn resources_for(over: Option<std::ffi::OsString>, exe: Option<PathBuf>) -> Path
 /// mount point moves every launch.
 pub const RESOURCES_ENV: &str = "CDJ3K_RESOURCES";
 
-/// Directories a desktop session's `PATH` leaves out, searched after it.
-///
-/// GNOME hands an app `PATH=/usr/local/bin:/usr/bin:/bin`, which misses
-/// `sfdisk`, `losetup` and `mkfs.*` in `/sbin`. Windows has no such split.
-#[cfg(unix)]
-const EXTRA_TOOL_DIRS: &[&str] = &["/usr/sbin", "/sbin", "/usr/local/sbin"];
-#[cfg(not(unix))]
-const EXTRA_TOOL_DIRS: &[&str] = &[];
-
 /// Find a system tool, including where a desktop session's `PATH` does not
-/// look ([`EXTRA_TOOL_DIRS`]). Anything the app shells out to for storage goes
-/// through here.
+/// look ([`crate::child::EXTRA_TOOL_DIRS`]). Storage tools the app shells out to
+/// go through here.
 ///
 /// Returns the bare name when nothing is found, so the caller's error says
 /// what is missing rather than where it looked.
 pub fn system_tool(name: &str) -> PathBuf {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let dirs = std::env::split_paths(&path)
-        .chain(EXTRA_TOOL_DIRS.iter().map(PathBuf::from))
+        .chain(crate::child::EXTRA_TOOL_DIRS.iter().map(PathBuf::from))
         .collect::<Vec<_>>();
     find_tool(&dirs, name)
 }
@@ -122,24 +113,10 @@ fn find_tool(dirs: &[PathBuf], name: &str) -> PathBuf {
 /// `name` as this host spells it in `dir`, when this host would run it.
 fn executable_in(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
     let candidate = dir.join(name);
-    if is_executable(&candidate) {
+    if crate::child::is_runnable(&candidate) {
         return Some(candidate);
     }
-    with_exe_suffix(dir, name).filter(|p| is_executable(p))
-}
-
-/// Whether this host would run `path` as a program.
-#[cfg(unix)]
-fn is_executable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-}
-
-/// Windows decides runnability by extension, which [`with_exe_suffix`] has
-/// already resolved, so any file is a candidate.
-#[cfg(not(unix))]
-fn is_executable(path: &std::path::Path) -> bool {
-    path.is_file()
+    with_exe_suffix(dir, name).filter(|p| crate::child::is_runnable(p))
 }
 
 #[cfg(test)]
@@ -186,19 +163,10 @@ mod tests {
         std::fs::create_dir_all(&later).unwrap();
         let tool = later.join(format!("mkfs.x{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&tool, b"").unwrap();
-        mark_executable(&tool);
+        crate::child::set_runnable(&tool).unwrap();
 
         assert_eq!(find_tool(&[first.clone(), later.clone()], "mkfs.x"), tool);
         assert_eq!(find_tool(&[first], "mkfs.x"), PathBuf::from("mkfs.x"));
         let _ = std::fs::remove_dir_all(&root);
     }
-
-    #[cfg(unix)]
-    fn mark_executable(path: &std::path::Path) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    #[cfg(not(unix))]
-    fn mark_executable(_path: &std::path::Path) {}
 }

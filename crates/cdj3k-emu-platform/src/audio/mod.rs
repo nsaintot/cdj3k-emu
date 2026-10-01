@@ -4,14 +4,23 @@
 //! addressed differs per backend — so [`AudioOutDevice::uid`] is whatever the
 //! host's own backend takes, and the two sources do not name devices alike.
 
+/// `pw-dump` parsing, compiled everywhere so it is tested everywhere.
 pub mod pipewire;
 
 #[cfg(target_os = "macos")]
-pub mod coreaudio;
-
+#[path = "coreaudio.rs"]
+mod imp;
+#[cfg(target_os = "linux")]
+#[path = "linux.rs"]
+mod imp;
 #[cfg(windows)]
 #[path = "windows.rs"]
-pub mod wasapi;
+mod imp;
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+#[path = "unsupported.rs"]
+mod imp;
+
+pub use imp::enumerate_output_devices;
 
 /// One output the guest can be pinned to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,18 +39,4 @@ pub struct AudioOutDevice {
     /// plays 96 kHz S32 and both backends resample, so a sink running at
     /// anything else is audible and otherwise invisible.
     pub sample_rate_hz: u32,
-}
-
-#[cfg(target_os = "macos")]
-pub use coreaudio::enumerate_output_devices;
-#[cfg(target_os = "linux")]
-pub use pipewire::enumerate_output_devices;
-#[cfg(windows)]
-pub use wasapi::enumerate_output_devices;
-
-/// Hosts with no enumeration source. The list stays empty, and the guest
-/// follows the system default.
-#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-pub fn enumerate_output_devices() -> Vec<AudioOutDevice> {
-    Vec::new()
 }

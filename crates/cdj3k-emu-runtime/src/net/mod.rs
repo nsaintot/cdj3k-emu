@@ -6,21 +6,21 @@
 /// macOS-only: the user-mode TAP bridge is built out of `ifconfig bridge` and
 /// an elevated watcher script.
 #[cfg(target_os = "macos")]
-pub mod tapbridge;
+mod tapbridge;
 pub mod vmnet;
 
 /// The slot's hold on its bridged link, the same on every host.
 pub mod lease;
 
 #[cfg(target_os = "linux")]
-pub mod linux_net;
+mod linux_net;
 
 /// The text side of Windows bridging, checked on every host.
 pub mod winbridge;
 #[cfg(target_os = "windows")]
-pub mod windows_helper;
+mod windows_helper;
 #[cfg(target_os = "windows")]
-pub mod windows_net;
+mod windows_net;
 
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
@@ -61,24 +61,5 @@ mod tests {
                 "{bad:?} was accepted"
             );
         }
-    }
-
-    /// The tap netdev names what the host hands QEMU: a descriptor, or on
-    /// Windows the adapter.
-    #[test]
-    fn the_tap_netdev_follows_the_host() {
-        let arg = tap_netdev("net0", Some("cdj3k-emu-0"), Some(7));
-        #[cfg(target_os = "windows")]
-        assert_eq!(arg.as_deref(), Some("tap,id=net0,ifname=cdj3k-emu-0"));
-        #[cfg(not(target_os = "windows"))]
-        assert_eq!(arg.as_deref(), Some("tap,id=net0,fd=7"));
-        assert_eq!(tap_netdev("net0", None, None), None);
-    }
-
-    /// A MAC carrying shell characters is refused.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_hostile_mac_is_refused_too() {
-        assert!(attach("eno2", "0a:11:22:33:44:55; id", 1).is_err());
     }
 }

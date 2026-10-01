@@ -119,7 +119,6 @@ fn install(model: &MenuModel) -> Installed {
         natives.push(native);
     }
 
-    #[cfg(target_os = "macos")]
     root.init_for_nsapp();
 
     Installed {

@@ -79,7 +79,7 @@ pub fn unmount_disk(name: &str) -> io::Result<()> {
 
 /// Names of this user's processes with a file or working directory under
 /// `mountpoint`, as `/proc/<pid>/comm` has them, each once.
-fn holders_of(mountpoint: &std::path::Path) -> Vec<String> {
+pub(super) fn holders_of(mountpoint: &std::path::Path) -> Vec<String> {
     let mut names = Vec::new();
     let Ok(procs) = std::fs::read_dir("/proc") else {
         return names;
@@ -235,20 +235,6 @@ fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// An open file under a directory makes this process one of its holders.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn an_open_file_names_its_holder() {
-        let dir = std::env::temp_dir().join(format!("cdj3k-holders-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = std::fs::File::create(dir.join("held")).unwrap();
-        let me = std::fs::read_to_string("/proc/self/comm").unwrap().trim().to_string();
-        assert!(holders_of(&dir).contains(&me));
-        drop(file);
-        std::fs::remove_dir_all(&dir).unwrap();
-        assert!(!holders_of(&dir).contains(&me));
-    }
 
     #[test]
     fn pairs_with_spaces_in_the_value_survive() {

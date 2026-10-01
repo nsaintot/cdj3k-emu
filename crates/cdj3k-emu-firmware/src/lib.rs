@@ -1,5 +1,6 @@
 pub mod cpio;
 pub mod extract;
+mod file_mode;
 pub mod initramfs;
 pub mod initramfs_guest;
 pub mod luks;

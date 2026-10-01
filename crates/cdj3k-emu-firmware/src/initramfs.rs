@@ -218,7 +218,7 @@ pub fn patch_initramfs(
                 bin_dst.join(&name)
             };
             std::fs::copy(&src, &dst)?;
-            set_executable(&dst)?;
+            crate::file_mode::set_executable(&dst)?;
         }
     }
 
@@ -402,17 +402,4 @@ fn tmp_dir(prefix: &str) -> io::Result<PathBuf> {
     let dir = std::env::temp_dir().join(format!("{prefix}-{pid}-{ts}"));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(perms.mode() | 0o111);
-    std::fs::set_permissions(path, perms)
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path) -> io::Result<()> {
-    Ok(())
 }
