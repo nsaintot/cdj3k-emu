@@ -15,10 +15,12 @@
 #        - card0 present  → exec X :0  (modesetting via 20-modesetting.conf)
 #        - no card0       → exec X :0 -configdir /etc/x11-headless-conf
 #      This makes both --gl (card0 from virtio_gpu.ko) and headless modes work
-#      without rebuilding the initramfs.  The stock CPU pin (taskset) is kept
-#      only when the guest has that CPU: the CDJ-3000X firmware pins Xorg to CPU 5
-#      of the RK3399's six cores, and on a guest with fewer cores
-#      `taskset -c 5` fails and Xorg never starts.  The emulator boots six.
+#      without rebuilding the initramfs.
+#   3. Drop the stock CPU pins: x11-only.sh's (taskset -c 3 on the CDJ-3000,
+#      -c 5 on the CDJ-3000X), and apl_start.sh's `taskset -pc 5` of Xorg and
+#      its InputThread (CDJ-3000X). apl_start.sh also sets
+#      sched_rt_runtime_us=-1, so under emulation the player's real-time
+#      threads on the pinned core starve Xorg.
 #
 # Note: the dummy_drv.so binary (Xorg ABI 24.0, Ubuntu 20.04 arm64) is deployed
 # to /usr/lib/xorg/modules/drivers/ by build-initramfs.sh.
@@ -52,30 +54,27 @@ EOF
 chmod 644 "$CONFDIR/xorg-headless.conf"
 echo "  -> /etc/x11-headless-conf/xorg-headless.conf written (Driver dummy)"
 
+APL_START="$ROOTFS/home/root/scripts/apl_start.sh"
+if [[ -f "$APL_START" ]] && grep -q 'taskset -pc 5 \${PID}' "$APL_START"; then
+    sed -i 's|/usr/bin/taskset -pc 5 \${PID}|:  # QEMU: Xorg stays unpinned|' "$APL_START"
+    echo "  -> $APL_START: Xorg and InputThread left unpinned"
+fi
+
 X11_SH="$ROOTFS/etc/systemd/system/x11-only.sh"
 if [[ ! -f "$X11_SH" ]]; then
     echo "  WARNING: $X11_SH not found - skipping x11-only.sh patch"
     exit 0
 fi
 
-# Rewrite x11-only.sh with runtime card0 detection.
-# Preserves the taskset CPU pin from the original script; falls back to CPU 3.
-TASKSET_CPU=3
-if grep -q 'taskset' "$X11_SH"; then
-    TASKSET_CPU=$(grep -oE 'taskset -c [0-9]+' "$X11_SH" | grep -oE '[0-9]+$' || echo 3)
-fi
-
-cat > "$X11_SH" << SHEOF
+# Rewrite x11-only.sh with runtime card0 detection and no CPU pin.
+cat > "$X11_SH" << 'SHEOF'
 #!/bin/sh
 # card0 present = virtio_gpu loaded (--gl mode); absent = headless.
-# The CPU pin applies only when the guest has CPU ${TASKSET_CPU}.
-PIN=""
-[ -d /sys/devices/system/cpu/cpu${TASKSET_CPU} ] && PIN="taskset -c ${TASKSET_CPU}"
 if [ -e /dev/dri/card0 ]; then
-    exec \$PIN X :0
+    exec X :0
 else
-    exec \$PIN X :0 -configdir /etc/x11-headless-conf
+    exec X :0 -configdir /etc/x11-headless-conf
 fi
 SHEOF
 chmod 755 "$X11_SH"
-echo "  -> $X11_SH rewritten: card0 detection (modesetting vs dummy), CPU ${TASKSET_CPU} pin guarded"
+echo "  -> $X11_SH rewritten: card0 detection (modesetting vs dummy), no CPU pin"
