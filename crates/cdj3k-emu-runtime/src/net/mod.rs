@@ -15,17 +15,27 @@ pub mod lease;
 #[cfg(target_os = "linux")]
 pub mod linux_net;
 
+/// The text side of Windows bridging, checked on every host.
+pub mod winbridge;
+#[cfg(target_os = "windows")]
+pub mod windows_helper;
+#[cfg(target_os = "windows")]
+pub mod windows_net;
+
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
 mod imp;
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
 mod imp;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+#[path = "windows.rs"]
+mod imp;
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 #[path = "unsupported.rs"]
 mod imp;
 
-pub use imp::{NetKeepAlive, attach, attach_host_only};
+pub use imp::{NetKeepAlive, attach, attach_host_only, run_helper_if_asked, tap_netdev};
 
 use vmnet::VmnetMode;
 
@@ -51,6 +61,18 @@ mod tests {
                 "{bad:?} was accepted"
             );
         }
+    }
+
+    /// The tap netdev names what the host hands QEMU: a descriptor, or on
+    /// Windows the adapter.
+    #[test]
+    fn the_tap_netdev_follows_the_host() {
+        let arg = tap_netdev("net0", Some("cdj3k-emu-0"), Some(7));
+        #[cfg(target_os = "windows")]
+        assert_eq!(arg.as_deref(), Some("tap,id=net0,ifname=cdj3k-emu-0"));
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(arg.as_deref(), Some("tap,id=net0,fd=7"));
+        assert_eq!(tap_netdev("net0", None, None), None);
     }
 
     /// A MAC carrying shell characters is refused.

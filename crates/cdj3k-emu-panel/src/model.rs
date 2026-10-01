@@ -53,7 +53,8 @@ impl Model {
     /// publishes it under - `CDJ3Kv322.UPD` is a CDJ-3000's. `None` when the
     /// name is not one of ours, which includes a file the user has renamed.
     pub fn from_firmware_file_name(name: &str) -> Option<Model> {
-        let stem = name.rsplit('/').next().unwrap_or(name);
+        // Either separator: the name can be a path from any host.
+        let stem = name.rsplit(['/', '\\']).next().unwrap_or(name);
         let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s);
         // Trim the version Pioneer appends: `v322`, `_119`.
         let stem = stem.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
@@ -183,6 +184,7 @@ mod firmware_file_name_tests {
             ("CDJ3Kv322.UPD", Some(Model::Cdj3k)),
             ("CDJ3Kv000.UPD", Some(Model::Cdj3k)),
             ("/a/b/CDJ3000Xv140.UPD", Some(Model::Cdj3kx)),
+            (r"C:\Users\u\Downloads\CDJ3Kv322.UPD", Some(Model::Cdj3k)),
             ("cdj3000xv140.upd", Some(Model::Cdj3kx)),
             // Other Pioneer products, and a name we cannot place.
             ("XDJAZv130.UPD", None),

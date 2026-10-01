@@ -35,6 +35,12 @@ pub fn kill(pid: i32) {
     unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
 }
 
+/// The exit hooks reach the child by pid, so it joins nothing.
+pub fn adopt(_pid: u32) {}
+
+/// `terminate` signals the pid; no monitor session is involved.
+pub fn set_quit_channel(_monitor: &std::net::TcpStream) {}
+
 /// Clear `FD_CLOEXEC` on `fd`, for a forked child about to exec.
 pub fn keep_across_exec(fd: i32) {
     // SAFETY: `fcntl` touches only the descriptor table.

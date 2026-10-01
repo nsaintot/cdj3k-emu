@@ -5,8 +5,10 @@
 //! Linux asks the kernel. So the walk lives in [`unix`] and takes the host's
 //! filter as a parameter, and each host supplies its own.
 //!
-//! A host with neither `getifaddrs` nor sysfs enumerates nothing
-//! (`unsupported.rs`).
+//! Windows has neither: `GetAdaptersAddresses` lists adapters with their
+//! driver descriptions, filtered by [`windows_kind`].
+//!
+//! A host with none of these enumerates nothing (`unsupported.rs`).
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[path = "unix.rs"]
@@ -18,11 +20,20 @@ mod imp;
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
 mod imp;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(target_os = "windows")]
+#[path = "windows.rs"]
+mod imp;
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 #[path = "unsupported.rs"]
 mod imp;
 
 pub mod linux_kind;
+pub mod windows_kind;
+
+/// Every adapter the host has, unfiltered: the bridging code looks up the tap
+/// adapter and the bridge among them.
+#[cfg(target_os = "windows")]
+pub use imp::adapters;
 
 /// Whether the host offers a host-only network (vmnet's), which a QEMU built
 /// without it has no netdev for.
@@ -40,8 +51,12 @@ pub struct NetIf {
 }
 
 impl NetIf {
-    /// Menu label: "192.168.1.42/24 (en0)"
+    /// Menu label: "192.168.1.42/24 (en0)", or the bare name for an interface
+    /// with no IPv4 address.
     pub fn label(&self) -> String {
+        if self.addr.is_empty() {
+            return self.name.clone();
+        }
         format!("{}/{} ({})", self.addr, self.prefix_len, self.name)
     }
 }

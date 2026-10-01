@@ -11,16 +11,21 @@ mod imp;
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
 mod imp;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod imp;
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 #[path = "unsupported.rs"]
 mod imp;
 
 #[cfg(target_os = "macos")]
 mod macos_disk;
 mod linux_disk;
+#[cfg(windows)]
+mod windows_disk;
+mod windows_parse;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use crate::qmp::{QmpClient, QmpError};
@@ -75,6 +80,25 @@ pub struct HostDiskProvider;
 /// The provider for this host.
 pub fn host_disk_provider() -> HostDiskProvider {
     HostDiskProvider
+}
+
+/// Create a raw image file of `size_bytes`, for the adapters that format one.
+// Adapters that make another kind of image do not call it.
+#[allow(dead_code)]
+pub(crate) fn create_raw_image(img_path: &Path, size_bytes: u64) -> std::io::Result<()> {
+    let status = cdj3k_emu_platform::child::command(cdj3k_emu_platform::bundled::tool("qemu-img"))
+        .args(["create", "-f", "raw"])
+        .arg(img_path)
+        .arg(size_bytes.to_string())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "qemu-img create failed (exit {:?})",
+            status.code()
+        )))
+    }
 }
 
 // ── UsbManager ───────────────────────────────────────────────────────────────
@@ -158,7 +182,7 @@ impl UsbManager {
         }
     }
 
-    /// Create an exFAT-formatted raw image at `img_path` then attach it as a virtual USB drive.
+    /// Create an exFAT-formatted image at `img_path` then attach it as a virtual USB drive.
     pub fn create_and_attach_virtual(
         &mut self,
         qmp: &mut QmpClient,
@@ -166,22 +190,11 @@ impl UsbManager {
         img_path: &Path,
         size_bytes: u64,
     ) -> Result<(), UsbError> {
-        let status = Command::new(cdj3k_emu_platform::bundled::tool("qemu-img"))
-            .args(["create", "-f", "raw"])
-            .arg(img_path)
-            .arg(size_bytes.to_string())
-            .status()?;
-        if !status.success() {
-            return Err(UsbError::Io(std::io::Error::other(format!(
-                "qemu-img create failed (exit {:?})",
-                status.code()
-            ))));
-        }
-        imp::format_exfat(img_path)?;
+        imp::create_image(img_path, size_bytes)?;
         self.attach_virtual(qmp, provider, img_path)
     }
 
-    /// Hot-swap the USB slot to a virtual `.img` file and notify the guest.
+    /// Hot-swap the USB slot to a virtual image file and notify the guest.
     /// Auto-ejects whatever was previously attached.
     pub fn attach_virtual(
         &mut self,
@@ -191,7 +204,7 @@ impl UsbManager {
     ) -> Result<(), UsbError> {
         self.detach(qmp, provider)?;
         let path_str = img_path.to_string_lossy().into_owned();
-        qmp.blockdev_change_medium(USB_DRIVE_ID, &path_str, Some("raw"))?;
+        qmp.blockdev_change_medium(USB_DRIVE_ID, &path_str, Some(imp::virtual_format(img_path)))?;
         self.guest_usb_attach()?;
         self.current = Some(ActiveUsb {
             mode: AttachedMode::Virtual,
@@ -211,7 +224,13 @@ impl UsbManager {
         self.detach(qmp, provider)?;
         // Unmount first so the device is free: desktops auto-mount removable
         // media, and a mounted disk cannot be opened for the guest.
-        provider.unmount_host(&disk.bsd_name)?;
+        provider.unmount_host(&disk.bsd_name).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                UsbError::PermissionDenied(disk.bsd_path.clone())
+            } else {
+                UsbError::Io(e)
+            }
+        })?;
 
         let medium = match imp::open_raw(disk, &self.qmp_fd_socket) {
             Ok(m) => m,

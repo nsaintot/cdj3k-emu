@@ -388,3 +388,17 @@ pub fn reveal_in_file_manager(path: &std::path::Path) {
 
 /// Whether a second window can be centred over the first.
 pub const PLACES_WINDOWS: bool = true;
+
+/// Present on the display's refresh.
+pub const VSYNC: bool = true;
+
+/// Nothing to do: no installer here looks for a running copy.
+pub fn announce_running() {}
+
+/// The window manager draws the title bar; the strip sits under it.
+pub const CAPTION_IN_STRIP: bool = false;
+
+/// The Dock takes the icon from the bundle's `CFBundleIconFile`.
+pub const OWN_WINDOW_ICON: bool = false;
+
+pub fn set_caption_area(_ctx: &egui::Context, _area: Option<super::CaptionArea>) {}

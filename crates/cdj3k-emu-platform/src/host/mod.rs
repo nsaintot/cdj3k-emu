@@ -10,11 +10,16 @@ mod imp;
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
 mod imp;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod imp;
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 #[path = "unsupported.rs"]
 mod imp;
 
-pub use imp::{AUDIO, KEY_PRIMARY, KEY_SHIFT, RNG_OBJECT};
+pub mod whpx;
+
+pub use imp::{AUDIO, KEY_PRIMARY, KEY_SHIFT, RNG_OBJECT, VIRTUAL_IMAGE_EXT};
 
 /// A hypervisor QEMU can accelerate the guest with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +42,10 @@ pub enum SoftwareEmulation {
     NoKvm,
     /// `/dev/kvm` exists but this user cannot open it.
     KvmDenied,
+    /// arm64 Windows without the Windows Hypervisor Platform feature.
+    NoWhpx,
+    /// This Windows build predates arm64 WHPX (see [`whpx::MIN_BUILD`]).
+    WindowsTooOld { build: u32, ubr: u32 },
     /// No accelerator is wired up for this OS.
     Unsupported,
 }

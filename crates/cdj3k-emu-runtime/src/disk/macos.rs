@@ -108,6 +108,17 @@ fn is_valid_bsd_disk_path(p: &str) -> bool {
     }
 }
 
+/// The format QEMU opens a virtual image with.
+pub fn virtual_format(_img_path: &Path) -> &'static str {
+    "raw"
+}
+
+/// Create a raw image of `size_bytes`, partitioned and formatted.
+pub fn create_image(img_path: &Path, size_bytes: u64) -> std::io::Result<()> {
+    super::create_raw_image(img_path, size_bytes)?;
+    format_exfat(img_path)
+}
+
 /// Format a raw image file as MBR + exFAT using macOS hdiutil + diskutil.
 ///
 /// Uses `hdiutil attach -nomount` to expose the file as a block device, then

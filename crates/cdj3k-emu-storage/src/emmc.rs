@@ -22,7 +22,6 @@
 use std::collections::BTreeMap;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crc::{Crc, CRC_32_ISO_HDLC};
 
@@ -235,14 +234,12 @@ fn stage_cabinet(
 }
 
 fn write_gpt_raw(raw_path: &Path, config: &EmmcConfig) -> std::io::Result<()> {
-    // Create sparse file at full virtual size.
+    // Sparse at full virtual size: only the GPT and the U-Boot env are written.
+    cdj3k_emu_platform::sparse_file::create(raw_path, EMMC_SIZE)?;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .create(true)
-        .truncate(true)
         .open(raw_path)?;
-    file.set_len(EMMC_SIZE)?;
 
     let disk_sectors = EMMC_SIZE / SECTOR;
     let data = linux_data_type();
@@ -298,7 +295,7 @@ fn write_gpt_raw(raw_path: &Path, config: &EmmcConfig) -> std::io::Result<()> {
 }
 
 fn convert_to_qcow2(raw: &Path, out: &Path) -> std::io::Result<()> {
-    let status = Command::new(cdj3k_emu_platform::bundled::tool("qemu-img"))
+    let status = cdj3k_emu_platform::child::command(cdj3k_emu_platform::bundled::tool("qemu-img"))
         .args([
             "convert",
             "-f",

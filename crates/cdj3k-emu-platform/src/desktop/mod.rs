@@ -11,7 +11,8 @@
 //! resizable, aspect-locked panel ([`enter_panel_window`]); "Switch
 //! Emulation" shrinks it back ([`enter_picker_window`]). Only the panel frame
 //! is persisted, per instance slot and model ([`frame_key`]), by each host's
-//! adapter: AppKit's frame autosave on macOS, a file of our own on Linux.
+//! adapter: AppKit's frame autosave on macOS, a file of our own on Linux and
+//! Windows.
 
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
@@ -19,21 +20,38 @@ mod imp;
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
 mod imp;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod imp;
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 #[path = "unsupported.rs"]
 mod imp;
 
 /// The window layer drawn through egui and winit, for an adapter whose host
 /// has no native one to call.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod portable;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod frame_store;
 
+pub mod aspect_fit;
+pub mod first_frame;
+
 pub use imp::{
-    activate_process, apply_resize_constraints, enter_panel_window, enter_picker_window,
-    on_creation_context, open_file_picker, reveal_in_file_manager, PLACES_WINDOWS,
+    activate_process, announce_running, apply_resize_constraints, enter_panel_window, enter_picker_window,
+    on_creation_context, open_file_picker, reveal_in_file_manager, set_caption_area, CAPTION_IN_STRIP,
+    OWN_WINDOW_ICON, PLACES_WINDOWS,
 };
+
+/// The in-window strip standing in for the title bar, where
+/// [`CAPTION_IN_STRIP`]: its rectangle and the widgets on it, in points. What
+/// is in `strip` and in none of `widgets` drags the window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaptionArea {
+    pub strip: egui::Rect,
+    pub widgets: Vec<egui::Rect>,
+    pub pixels_per_point: f32,
+}
 
 /// What holding a window to its aspect carries between frames: the settle
 /// snap's view of the size.
@@ -148,6 +166,7 @@ pub fn native_options(instance_id: u32) -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport,
         centered: true,
+        vsync: imp::VSYNC,
         ..Default::default()
     }
 }
@@ -155,8 +174,8 @@ pub fn native_options(instance_id: u32) -> eframe::NativeOptions {
 /// A file dialog the frame loop polls for its answer ([`PendingPick::take`]).
 ///
 /// How the dialog runs is the host's: on a thread of its own where blocking
-/// the UI thread would stop the app answering the compositor (Linux), on the
-/// UI thread where the toolkit requires it (AppKit).
+/// the UI thread would stop the app answering the desktop (Linux, Windows),
+/// on the UI thread where the toolkit requires it (AppKit).
 pub struct PendingPick {
     rx: std::sync::mpsc::Receiver<Option<std::path::PathBuf>>,
 }

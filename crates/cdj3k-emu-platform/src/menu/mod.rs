@@ -238,7 +238,9 @@ fn pick_image(create: bool) {
         .name("cdj3k-emu-file-dialog".into())
         .spawn(move || {
             let picked = if create {
-                rfd::FileDialog::new().set_file_name("usb.img").save_file()
+                rfd::FileDialog::new()
+                    .set_file_name(format!("usb.{}", crate::host::VIRTUAL_IMAGE_EXT))
+                    .save_file()
             } else {
                 rfd::FileDialog::new().pick_file()
             };

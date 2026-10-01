@@ -1,6 +1,7 @@
 //! Running one shell command as root.
 //!
-//! Every host runs `/bin/sh -c <cmd>` as root; only the prompt differs.
+//! Unix hosts run `/bin/sh -c <cmd>` as root, only the prompt differing;
+//! Windows runs `cmd.exe /C <cmd>` as administrator.
 //!
 //! Networking is the only caller: creating a bridge, tap or macvtap needs
 //! root, and no entitlement covers it.
@@ -16,7 +17,10 @@ mod imp;
 #[cfg(target_os = "linux")]
 #[path = "linux.rs"]
 mod imp;
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod imp;
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 #[path = "unsupported.rs"]
 mod imp;
 

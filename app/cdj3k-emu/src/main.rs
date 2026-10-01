@@ -1,3 +1,6 @@
+// No console window on Windows.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod launch;
 mod runtime_worker;
 
@@ -54,6 +57,11 @@ fn main() {
 
     // Started as the QEMU worker: runs QEMU and exits.
     cdj3k_emu_runtime::qemu_exec::run_worker_if_asked(&args);
+
+    // Started as the elevated network helper: does its work and exits.
+    cdj3k_emu_runtime::net::run_helper_if_asked(&args);
+
+    cdj3k_emu_platform::desktop::announce_running();
 
     // Slot 1 is the default for a fresh launch. Slots 2..=4 are reachable
     // via `--instance N` (the "Instances" menu launches us with `open -n`).
@@ -307,14 +315,15 @@ fn main() {
     // ── UI ────────────────────────────────────────────────────────────────
     let mut options = cdj3k_emu_platform::desktop::native_options(instance);
 
-    // Opt out of eframe's built-in default app icon (a white "e" on black,
-    // baked into eframe via `data/icon.png` and substituted whenever the
-    // viewport's `icon` field is None).  Passing an empty `IconData::default()`
-    // is the documented escape hatch: `AppTitleIconSetter::new` recognises
-    // it as equivalent to None and skips `NSApplication.setApplicationIconImage:`
-    // on macOS entirely, which lets the Dock read `CFBundleIconFile`
-    // (`cdj3k-emu.icns` in `Contents/Resources/`) from Info.plist.
-    options.viewport = std::mem::take(&mut options.viewport).with_icon(egui::IconData::default());
+    // Windows (title bar, taskbar) and X11 take the window's icon. macOS reads
+    // `CFBundleIconFile`; there an empty `IconData` keeps eframe from setting
+    // its built-in icon (`AppTitleIconSetter::new` treats it as None).
+    let icon = if cdj3k_emu_platform::desktop::OWN_WINDOW_ICON {
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon_256.png")).unwrap_or_default()
+    } else {
+        egui::IconData::default()
+    };
+    options.viewport = std::mem::take(&mut options.viewport).with_icon(icon);
 
     // Window close and Quit run eframe's `on_exit`; a signal or a plain
     // return run these.
