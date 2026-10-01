@@ -20,10 +20,8 @@ use xts_mode::Xts128;
 use super::crypto::{af_merge, af_split, pbkdf2_derive, random_bytes};
 use super::LUKS_SECTOR;
 
-/// PBKDF2 rounds for the keyslot we add.
-///
-/// The guest runs them once per boot on an emulated RK3399, so a high count
-/// only slows boot: this is a quarter of what the factory slot uses.
+/// PBKDF2 rounds for the keyslot we add, run once per boot by the guest; the
+/// factory slot's 2,868,880 take ~30 s under TCG on x86_64.
 const SLOT_ITERATIONS: u32 = 200_000;
 
 const SLOT_ACTIVE: u32 = 0x00AC_71F3;
@@ -254,14 +252,14 @@ pub fn vendor_passphrase(model_env: &str, images_tar_gz: &[u8]) -> Vec<u8> {
     hex::encode(outer).into_bytes()
 }
 
-/// Add a keyslot to `image` that opens with `unit_passphrase`, returning its
-/// index.
+/// Add a keyslot to `image` that opens with `unit_passphrase`, as slot 0.
 ///
 /// The master key is recovered first by opening a factory slot with
 /// `vendor_passphrase` ([`vendor_passphrase`]); a container no factory slot
-/// opens is refused rather than corrupted.  Only the free keyslot's own header
-/// entry and material region are written; the payload and the existing slots
-/// are untouched.
+/// opens is refused rather than corrupted.  The new slot's material goes in a
+/// free region, and its header entry trades places with slot 0's: cryptsetup
+/// tries active slots in order, and the factory slot costs 2,868,880 PBKDF2
+/// rounds.  The payload and the existing slots' material are untouched.
 pub fn add_keyslot(
     image: &mut [u8],
     vendor_passphrase: &[u8],
@@ -296,7 +294,20 @@ fn add_keyslot_with(
         unit_passphrase,
         iterations,
     )?;
-    Ok(index)
+    swap_slot_entries(image, 0, index);
+    Ok(0)
+}
+
+/// Exchange two keyslots' header entries; each keeps pointing at its own
+/// material.
+fn swap_slot_entries(image: &mut [u8], a: usize, b: usize) {
+    if a == b {
+        return;
+    }
+    let (lo, hi) = (a.min(b), a.max(b));
+    let at = |i: usize| SLOT_TABLE_OFFSET + i * SLOT_ENTRY_BYTES;
+    let (head, tail) = image.split_at_mut(at(hi));
+    head[at(lo)..at(lo) + SLOT_ENTRY_BYTES].swap_with_slice(&mut tail[..SLOT_ENTRY_BYTES]);
 }
 
 /// Key slot `index` of `image` for `passphrase`: fresh salt, PBKDF2 slot key,
@@ -547,7 +558,10 @@ mod tests {
             let unit = cabinet_passphrase("CDJ3000X", "0000000000000001").unwrap();
             let index = add_keyslot_with(&mut image, b"vendor", &unit, TEST_ITERATIONS)
                 .expect("keyslot added");
-            assert_eq!(index, 1, "slot 0 holds the vendor key");
+            assert_eq!(index, 0, "the unit key is tried first");
+            let layout = Luks1Layout::parse(&image).unwrap();
+            assert_eq!(layout.slots[0].iterations, TEST_ITERATIONS);
+            assert!(layout.slots[1].active, "the vendor slot moves to slot 1");
             assert_eq!(
                 &image[payload..],
                 &before_payload[..],
