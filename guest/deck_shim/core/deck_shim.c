@@ -3,7 +3,8 @@
  * deck_shim.c - LD_PRELOAD shim for /dev/dri/card* and peripheral devices
  *
  * Intercepts: open, open64, close, ioctl, read, write, mmap, mmap64, poll
- * No dlsym/libdl - all passthroughs use raw syscall() (GLIBC_2.17).
+ * No dlsym/libdl (GLIBC_2.17): passthroughs use raw syscall(), clock reads
+ * the vDSO (clock.c).
  * No pthread - fd tables use lockless atomics (see fd.c).
  *
  * --- subucom_spi ioctl sequence ---

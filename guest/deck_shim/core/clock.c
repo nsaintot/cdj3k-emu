@@ -31,6 +31,8 @@
  */
 
 #include "deck_shim.h"
+#include <elf.h>
+#include <sys/auxv.h>
 #include <sys/prctl.h>
 #include <sys/time.h>
 
@@ -124,8 +126,73 @@ static int classify_self_thread(void)
     return match;
 }
 
+/* A function exported by the kernel's vDSO, found through its ELF dynamic
+ * symbol table (the arm64 vDSO links with a SysV hash, whose nchain is the
+ * symbol count). NULL when the vDSO or the symbol is absent. */
+static void *vdso_sym(const char *name)
+{
+    unsigned long base = getauxval(AT_SYSINFO_EHDR);
+    if (!base) return NULL;
+    const Elf64_Ehdr *eh = (const Elf64_Ehdr *)base;
+    const unsigned char *ph = (const unsigned char *)base + eh->e_phoff;
+    unsigned long load = 0;
+    int have_load = 0;
+    const Elf64_Dyn *dyn = NULL;
+    for (int i = 0; i < eh->e_phnum; i++, ph += eh->e_phentsize) {
+        const Elf64_Phdr *p = (const Elf64_Phdr *)ph;
+        if (p->p_type == PT_LOAD && !have_load) {
+            load = base + p->p_offset - p->p_vaddr;
+            have_load = 1;
+        } else if (p->p_type == PT_DYNAMIC) {
+            dyn = (const Elf64_Dyn *)(base + p->p_offset);
+        }
+    }
+    if (!have_load || !dyn) return NULL;
+    const char *strtab = NULL;
+    const Elf64_Sym *symtab = NULL;
+    const Elf32_Word *hash = NULL;
+    for (; dyn->d_tag != DT_NULL; dyn++) {
+        switch (dyn->d_tag) {
+        case DT_STRTAB: strtab = (const char *)(load + dyn->d_un.d_ptr); break;
+        case DT_SYMTAB: symtab = (const Elf64_Sym *)(load + dyn->d_un.d_ptr); break;
+        case DT_HASH:   hash = (const Elf32_Word *)(load + dyn->d_un.d_ptr); break;
+        }
+    }
+    if (!strtab || !symtab || !hash) return NULL;
+    for (Elf32_Word i = 0; i < hash[1]; i++) {
+        const Elf64_Sym *sym = &symtab[i];
+        if (ELF64_ST_TYPE(sym->st_info) != STT_FUNC || sym->st_shndx == SHN_UNDEF)
+            continue;
+        if (strcmp(strtab + sym->st_name, name) == 0)
+            return (void *)(load + sym->st_value);
+    }
+    return NULL;
+}
+
+typedef int (*vdso_clock_gettime_fn)(clockid_t, struct timespec *);
+typedef int (*vdso_gettimeofday_fn)(struct timeval *, void *);
+
+static vdso_clock_gettime_fn g_vdso_clock_gettime;
+static vdso_gettimeofday_fn  g_vdso_gettimeofday;
+
+/* The vDSO entry points, so a passthrough reads the clock in user space; a
+ * raw syscall here would make every clock read of every thread a trap. */
+static void __attribute__((constructor)) shim_vdso_init(void)
+{
+    g_vdso_clock_gettime =
+        (vdso_clock_gettime_fn)vdso_sym("__kernel_clock_gettime");
+    g_vdso_gettimeofday =
+        (vdso_gettimeofday_fn)vdso_sym("__kernel_gettimeofday");
+}
+
+/* The vDSO returns 0 or a negative errno. */
 static int real_clock_gettime(clockid_t clk_id, struct timespec *tp)
 {
+    if (g_vdso_clock_gettime) {
+        int r = g_vdso_clock_gettime(clk_id, tp);
+        if (r < 0) { errno = -r; return -1; }
+        return 0;
+    }
     long r = syscall(SYS_clock_gettime, clk_id, tp);
     if (r < 0) return -1;   /* glibc syscall() already set errno */
     return 0;
@@ -197,8 +264,13 @@ int gettimeofday(struct timeval *tv, struct timezone *tz)
 int gettimeofday(struct timeval *tv, void *tz)
 #endif
 {
-    long r = syscall(SYS_gettimeofday, tv, tz);
-    if (r < 0) return -1;   /* glibc syscall() already set errno */
+    if (g_vdso_gettimeofday) {
+        int r = g_vdso_gettimeofday(tv, (void *)tz);
+        if (r < 0) { errno = -r; return -1; }
+    } else {
+        long r = syscall(SYS_gettimeofday, tv, tz);
+        if (r < 0) return -1;   /* glibc syscall() already set errno */
+    }
     if (!tv) return 0;
 
     if (g_thread_shift < 0)
