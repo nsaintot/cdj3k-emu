@@ -1,0 +1,22 @@
+diff --git a/block/file-win32.c b/block/file-win32.c
+index b63ce1c..85bf88f 100644
+--- a/block/file-win32.c
++++ b/block/file-win32.c
+@@ -802,9 +802,16 @@ static void hdev_parse_filename(const char *filename, QDict *options,
+ 
+ static void hdev_refresh_limits(BlockDriverState *bs, Error **errp)
+ {
++    BDRVRawState *s = bs->opaque;
++
+     /* XXX Does Windows support AIO on less than 512-byte alignment? */
+     bs->bl.request_alignment = 512;
+-    bs->bl.has_variable_length = true;
++    /*
++     * A variable length is queried on every request, for a disk through
++     * IOCTL_DISK_GET_DRIVE_GEOMETRY_EX (milliseconds on a USB stick). Only a
++     * CD-ROM's medium changes under an open handle.
++     */
++    bs->bl.has_variable_length = s->type == FTYPE_CD;
+ }
+ 
+ static int hdev_open(BlockDriverState *bs, QDict *options, int flags,

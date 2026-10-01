@@ -1,0 +1,4 @@
+# The image needs one script from the repo; the source tree is mounted at run
+# time. BuildKit prefers this file over the repo root's .dockerignore.
+*
+!docker/windows-qemu-deps.sh

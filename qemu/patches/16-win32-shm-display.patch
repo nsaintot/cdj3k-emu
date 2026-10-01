@@ -1,0 +1,143 @@
+diff --git a/ui/shm-display.c b/ui/shm-display.c
+--- a/ui/shm-display.c
++++ b/ui/shm-display.c
+@@ -35,8 +35,10 @@
+ #include "qemu/module.h"
+ #include "qemu/error-report.h"
+ 
++#ifndef _WIN32
+ #include <sys/mman.h>
+ #include <fcntl.h>
++#endif
+ 
+ /* ------------------------------------------------------------------ */
+ /* constants & types                                                    */
+@@ -73,38 +75,79 @@
+ /* shm file management                                                  */
+ /* ------------------------------------------------------------------ */
+ 
+-static int shm_remap(ShmDisplay *s, uint32_t width, uint32_t height,
+-                     uint32_t stride)
++static void shm_unmap(void *base, size_t size)
+ {
+-    size_t sz = SHM_PIXELS_OFFSET + (size_t)stride * height;
++#ifdef _WIN32
++    UnmapViewOfFile(base);
++#else
++    munmap(base, size);
++#endif
++}
+ 
+-    if (s->hdr && s->map_size == sz)
+-        return 0; /* already correct size */
++/*
++ * Map the first @sz bytes of the file at @path read/write and shared, creating
++ * the file and growing it to @sz when it is smaller. Returns NULL on error.
++ *
++ * The file is never shrunk: readers (cdj-ui) may hold a live shared mapping.
++ * Grown pages are zero-filled and existing mappings stay valid.
++ */
++static void *shm_map(const char *path, size_t sz)
++{
++#ifdef _WIN32
++    g_autofree gunichar2 *path_w = g_utf8_to_utf16(path, -1, NULL, NULL, NULL);
++    LARGE_INTEGER cur_size, want_size;
++    HANDLE file, mapping;
++    void *m;
+ 
+-    if (s->hdr) {
+-        munmap(s->hdr, s->map_size);
+-        s->hdr = NULL;
++    if (!path_w) {
++        error_report("shm-display: path '%s' is not valid UTF-8", path);
++        return NULL;
+     }
+-
+-    /*
+-     * Open without O_TRUNC - never shrink the file.
+-     * Readers (cdj-ui) may have a live MAP_SHARED mmap; truncating to 0
+-     * would give them SIGBUS on the next access.  Growing with ftruncate
+-     * is safe because the new pages are zero-filled and the old mapping
+-     * remains valid.  The header is zeroed explicitly below, so readers
+-     * always see a consistent state guarded by the generation counter.
+-     */
+-    int fd = open(s->path, O_RDWR | O_CREAT, 0600);
++    file = CreateFileW((LPCWSTR)path_w, GENERIC_READ | GENERIC_WRITE,
++                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++                       NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
++    if (file == INVALID_HANDLE_VALUE) {
++        error_report("shm-display: open '%s': error %lu", path,
++                     (unsigned long)GetLastError());
++        return NULL;
++    }
++    want_size.QuadPart = sz;
++    if (!GetFileSizeEx(file, &cur_size) ||
++        (cur_size.QuadPart < want_size.QuadPart &&
++         (!SetFilePointerEx(file, want_size, NULL, FILE_BEGIN) ||
++          !SetEndOfFile(file)))) {
++        error_report("shm-display: size '%s': error %lu", path,
++                     (unsigned long)GetLastError());
++        CloseHandle(file);
++        return NULL;
++    }
++    mapping = CreateFileMappingW(file, NULL, PAGE_READWRITE, 0, 0, NULL);
++    CloseHandle(file);
++    if (!mapping) {
++        error_report("shm-display: CreateFileMapping: error %lu",
++                     (unsigned long)GetLastError());
++        return NULL;
++    }
++    m = MapViewOfFile(mapping, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sz);
++    CloseHandle(mapping);
++    if (!m) {
++        error_report("shm-display: MapViewOfFile: error %lu",
++                     (unsigned long)GetLastError());
++        return NULL;
++    }
++    return m;
++#else
++    int fd = open(path, O_RDWR | O_CREAT, 0600);
+     if (fd < 0) {
+-        error_report("shm-display: open '%s': %s", s->path, strerror(errno));
+-        return -1;
++        error_report("shm-display: open '%s': %s", path, strerror(errno));
++        return NULL;
+     }
+     struct stat st;
+     if (fstat(fd, &st) < 0 || (size_t)st.st_size < sz) {
+         if (ftruncate(fd, (off_t)sz) < 0) {
+             error_report("shm-display: ftruncate: %s", strerror(errno));
+             close(fd);
+-            return -1;
++            return NULL;
+         }
+     }
+ 
+@@ -112,6 +155,27 @@
+     close(fd);
+     if (m == MAP_FAILED) {
+         error_report("shm-display: mmap: %s", strerror(errno));
++        return NULL;
++    }
++    return m;
++#endif
++}
++
++static int shm_remap(ShmDisplay *s, uint32_t width, uint32_t height,
++                     uint32_t stride)
++{
++    size_t sz = SHM_PIXELS_OFFSET + (size_t)stride * height;
++
++    if (s->hdr && s->map_size == sz)
++        return 0; /* already correct size */
++
++    if (s->hdr) {
++        shm_unmap(s->hdr, s->map_size);
++        s->hdr = NULL;
++    }
++
++    void *m = shm_map(s->path, sz);
++    if (!m) {
+         return -1;
+     }
+ 

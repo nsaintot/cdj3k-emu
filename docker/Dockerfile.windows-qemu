@@ -1,0 +1,38 @@
+# Cross-builds the patched QEMU for Windows (x86_64 and aarch64)
+# on a Linux host with llvm-mingw (clang, UCRT), one toolchain for both targets;
+# docker/windows-qemu-deps.sh builds the libraries for each.
+#
+# The image holds the toolchain and the libraries; the build runs through
+# `qemu/build.sh --windows <arch>`, which mounts the repo.
+FROM ubuntu:22.04
+
+ARG LLVM_MINGW_VERSION=20260922
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential git ninja-build python3 python3-venv python3-pip \
+        pkg-config flex bison ca-certificates curl xz-utils bzip2 perl \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --no-cache-dir meson==1.5.2 packaging tomli
+
+# sha256 per host architecture of the llvm-mingw-<version>-ucrt-ubuntu-22.04
+# tarball.
+RUN set -eux; \
+    case "$(uname -m)" in \
+        x86_64)  host=x86_64;  sum=bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21 ;; \
+        aarch64) host=aarch64; sum=07d21263c56bfe9a713db6fdb3f7434bf4c121a005e40397d3b4c0170fb06769 ;; \
+        *) echo "unsupported build host $(uname -m)"; exit 1 ;; \
+    esac; \
+    f="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-${host}.tar.xz"; \
+    curl -fsSL -o "/tmp/$f" "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/$f"; \
+    echo "$sum  /tmp/$f" | sha256sum -c -; \
+    mkdir -p /opt/llvm-mingw; \
+    tar xf "/tmp/$f" -C /opt/llvm-mingw --strip-components=1; \
+    rm "/tmp/$f"
+
+ENV PATH=/opt/llvm-mingw/bin:$PATH
+
+COPY docker/windows-qemu-deps.sh /usr/local/bin/windows-qemu-deps.sh
+RUN windows-qemu-deps.sh x86_64
+RUN windows-qemu-deps.sh aarch64
+
+WORKDIR /work
