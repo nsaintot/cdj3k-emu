@@ -13,13 +13,11 @@
 //!   tapbridge.* | linuxnet.*               bridge marker files
 //! ```
 //!
-//! Every host arm keeps two properties:
-//!
-//!   * **The root is per-user**, so no one else can create or replace state
-//!     under it: `/tmp` needs an euid suffix plus mode 0700,
-//!     `%LOCALAPPDATA%` is per-user by ACL.
-//!   * **`<root>/instance-{id}` existing means that slot is running.** The
-//!     Instances menu reads it as the liveness signal.
+//! The root is per-user on every host, so no one else can create or replace
+//! state under it: `/tmp` needs an euid suffix plus mode 0700,
+//! `%LOCALAPPDATA%` is per-user by ACL. A process that is killed leaves its
+//! `instance-{id}` behind; whether a slot is open is the slot claim's to say
+//! (`cdj3k_emu_storage::slot_in_use`).
 //!
 //! Socket paths stay under the host's UNIX-socket path limit, which C
 //! truncates at silently. [`SUN_PATH_LIMIT`] and its test enforce it;
@@ -91,9 +89,9 @@ mod tests {
         );
     }
 
-    /// `instance_dir` keeps the leaf name the menu's liveness probe reads.
+    /// `instance_dir` keeps the leaf name `boot.sh` and the MIDI driver build.
     #[test]
-    fn the_instance_dir_is_the_liveness_signal() {
+    fn the_instance_dir_is_named_by_slot() {
         assert_eq!(
             instance_dir(3).file_name().unwrap().to_string_lossy(),
             "instance-3"

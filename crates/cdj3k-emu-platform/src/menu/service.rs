@@ -27,6 +27,7 @@ pub struct MenuService {
     audio_device_last_refresh: Instant,
     net_version_seen: u32,
     slot_notes: Vec<Option<String>>,
+    slot_busy: Vec<bool>,
     slot_notes_read: Instant,
     /// Read once: neither the host nor the environment changes under a
     /// running window.
@@ -49,6 +50,7 @@ impl MenuService {
             audio_device_last_refresh: Instant::now(),
             net_version_seen: menu_state::lock().net_list_version,
             slot_notes: vec![None; menu_state::MAX_INSTANCES as usize],
+            slot_busy: vec![false; menu_state::MAX_INSTANCES as usize],
             // Older than the TTL, so the first build reads them.
             slot_notes_read: Instant::now() - SLOT_NOTE_TTL,
             software_emulation: crate::host::software_emulation(),
@@ -91,6 +93,9 @@ impl MenuService {
             for (i, note) in self.slot_notes.iter_mut().enumerate() {
                 *note = menu_state::slot_note(i as u32 + 1);
             }
+            for (i, busy) in self.slot_busy.iter_mut().enumerate() {
+                *busy = menu_state::slot_busy(i as u32 + 1);
+            }
             self.slot_notes_read = Instant::now();
         }
     }
@@ -100,7 +105,7 @@ impl MenuService {
         for i in 0..menu_state::MAX_INSTANCES {
             let n = i + 1;
             let is_self = n == snap.current_instance_id;
-            let running = crate::runtime_paths::instance_dir(n).exists();
+            let running = self.slot_busy[i as usize];
 
             let mut label = match self.slot_notes[i as usize].as_deref() {
                 Some(note) => format!("Slot {n} — {note}"),
@@ -179,8 +184,11 @@ fn emulation(snap: &Snapshot, deck: Option<String>) -> MenuNode {
         MenuNode::item_enabled(MenuId::Restart, "Restart Emulation", deck.is_some()),
         MenuNode::Separator,
         MenuNode::check(MenuId::ServiceMode, "Service Mode", snap.service_mode),
-        MenuNode::check(MenuId::Haptic, "Jog Haptics", snap.haptic_enabled),
     ];
+    // An actuator opened at startup: a Force Touch trackpad.
+    if crate::haptic::available() {
+        rows.push(MenuNode::check(MenuId::Haptic, "Jog Haptics", snap.haptic_enabled));
+    }
 
     // The cable needs host-side MIDI and HID endpoints.
     if snap.pc_link_supported {

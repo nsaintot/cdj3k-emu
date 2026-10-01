@@ -194,6 +194,7 @@ fn main() {
 
     // What the Instances menu writes beside a slot number. The menu lives a
     // crate below the settings, so it asks through this.
+    cdj3k_emu_platform::menu_state::set_slot_busy_fn(cdj3k_emu_storage::slot_in_use);
     cdj3k_emu_platform::menu_state::set_slot_note_fn(|n| {
         cdj3k_emu_storage::slot_summary(n).map(|(model, release)| match release {
             Some(rel) => format!("{} {rel}", model.title()),
