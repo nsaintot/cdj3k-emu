@@ -12,9 +12,10 @@ EP122 (Pioneer's CDJ firmware) is a JUCE app inside the QEMU guest. It
 writes audio via libasound to `/dev/snd/pcmC0D0p`, served by our in-tree
 `virtio_snd.ko`, which speaks virtio-sound to QEMU's patched
 `hw/audio/virtio-snd.c`. QEMU forwards to CoreAudio on macOS (patched
-`audio/coreaudio.m`) or PipeWire on Linux (patched `audio/pwaudio.c`). The hot
-path bypasses QEMU's audio mixer entirely. The diagram below is the macOS
-path; [Linux](#linux-pipewire) lists what differs.
+`audio/coreaudio.m`), PipeWire on Linux (patched `audio/pwaudio.c`) or WASAPI
+on Windows (`audio/wasapiaudio.c`, added by patch 18). The hot path bypasses
+QEMU's audio mixer entirely. The diagram below is the macOS path;
+[Linux](#linux-pipewire) and [Windows](#windows-wasapi) list what differs.
 
 ```
 EP122 (JUCE, SCHED_FIFO 98 on its own pinned core in the guest)
@@ -162,10 +163,13 @@ re-applied in numerical order, and `qemu-system-aarch64` is rebuilt.
 | `11-console-vc-quiet.patch` | `ui/console-vc.c` (no-op `vt100_update_cursor`) |
 | `12-hvf-vcpu-qos.patch` | `accel/hvf/hvf-accel-ops.c` (QoS on VCPU threads) |
 | `14-pipewire-bypass.patch` | `audio/pwaudio.c` (bypass drain on Linux) |
+| `18-wasapi-bypass.patch` | `audio/wasapiaudio.c` + `qapi/audio.json` (the `wasapi` audiodev, bypass drain on Windows), `hw/audio/virtio-snd.c` (MMCSS writer), thread priority on the main loop and vCPUs |
 | `21-virtio-snd-parked-release.patch` | `hw/audio/virtio-snd.c`: a buffer parked before START is released at once (`end_head` 0; the reader takes whole periods and can stop short of the head), and RELEASE flushes the deferred-return list |
 
 (Patches 01-06 are unrelated infrastructure: ivshmem and the shm
-display backend used for the LCD framebuffer.)
+display backend used for the LCD framebuffer. 15-17, 19 and 20 are the
+same for Windows: file-backed memory, the shm display's file mapping,
+`ivshmem-plain`, a fixed-length host disk, and vCPU halt polling.)
 
 ### Bypass ring (`08-virtio-snd-bypass.patch`)
 
@@ -412,8 +416,9 @@ in `docs/alc.md`.
 | `qemu/patches/11-console-vc-quiet.patch` | Host: BQL relief (no-op `vt100_update_cursor`) |
 | `qemu/patches/12-hvf-vcpu-qos.patch` | Host: `QOS_CLASS_USER_INTERACTIVE` on HVF VCPU threads |
 | `qemu/patches/14-pipewire-bypass.patch` | Host: the bypass ring drained from PipeWire's process callback |
-| `crates/cdj3k-emu-platform/src/host/{macos,linux}.rs` | `-audiodev` driver, options and device selector per host |
-| `crates/cdj3k-emu-platform/src/audio/{coreaudio,pipewire}.rs` | Output device enumeration for the UI picker |
+| `qemu/patches/18-wasapi-bypass.patch` | Host: the `wasapi` audiodev, draining the bypass ring from its MMCSS render thread |
+| `crates/cdj3k-emu-platform/src/host/{macos,linux,windows}.rs` | `-audiodev` driver, options and device selector per host |
+| `crates/cdj3k-emu-platform/src/audio/{coreaudio,pipewire,windows}.rs` | Output device enumeration for the UI picker |
 | `crates/cdj3k-emu-platform/src/menu/service.rs` | Audio → Output Device submenu, 5 s refresh |
 | `crates/cdj3k-emu-storage/src/settings/instance.rs` | Per-instance `audio_device_uid` persistence |
 
@@ -536,3 +541,43 @@ Under software emulation the guest runs a 512-frame ALSA period
 (`cdj3k.snd_period=512`, read by `insmod-virtio-snd`) instead of the player's
 64; each TX buffer stays 1024 frames, so every threshold counted in periods
 keeps its duration.
+
+---
+
+## Windows (WASAPI)
+
+The guest side and patch 08's bypass ring are the same. Patch 18 adds the
+`wasapi` audiodev QEMU does not have upstream: a shared-mode, event-driven
+render client, one thread per output voice owning every COM object of its
+stream.
+
+| | macOS | Windows |
+|---|---|---|
+| `-audiodev` | `coreaudio,out.buffer-length=5000,out.device-uid=<UID>` | `wasapi,out.dev=<endpoint id>` (the `IMMDevice::GetId` string; absent = the default render endpoint) |
+| Ring drained by | the CoreAudio IOProc (patch 07) | the voice's render thread, woken by the stream's event (patch 18) |
+| Stream rate | the device's; the bypass writer resamples | the endpoint's mix format; see below |
+| Real-time threads | Mach time-constraint policy, QoS (patches 09, 12) | MMCSS "Pro Audio" at `AVRT_PRIORITY_HIGH` for the render thread and the bypass writer; above-normal priority with power throttling off for the main loop and the TCG / WHPX vCPU threads |
+| Device list | CoreAudio HAL | `IMMDeviceEnumerator`, active render endpoints |
+
+The stream opens through `IAudioClient3::InitializeSharedAudioStream` at the
+engine's minimum period, in the endpoint's mix format, and falls back to
+`IAudioClient::Initialize` at the default period. When the mix format is one
+the converter does not produce, or the endpoint reopens at a rate other than
+the one the voice first reported, the stream is stereo F32 at the voice's rate
+(the mix rate on the first open) with `AUTOCONVERTPCM` and the engine's
+resampler, so the ring's rate never
+changes under the bypass writer's resampler. An invalidated endpoint is
+reopened; a missing preferred endpoint falls back to the default one. While no
+endpoint is open the ring is still drained, so the guest's clock keeps
+running.
+
+Each wake fills the free part of the endpoint buffer, and the bypass read is
+all or nothing per fill, as the IOProc's is. After an underrun the ring
+refills to a 20 ms cushion (`WASAPI_BYPASS_CUSHION_MS`) before play resumes,
+and gives up on the cushion after 50 silent fills
+(`WASAPI_BYPASS_STARVED_MAX`). The reported pipeline depth is the endpoint
+buffer's padding when the last period was filled; the static latency is
+`GetStreamLatency` plus one period.
+
+The bypass writer ticks on a high-resolution waitable timer: `Sleep(1)` rounds
+up to the system timer tick, 15.6 ms by default.
