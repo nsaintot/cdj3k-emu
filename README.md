@@ -1,6 +1,6 @@
 ![cdj3k-emu hero](docs/hero.png)
 
-A desktop app for macOS and Linux that boots CDJ's firmware inside QEMU,
+A desktop app for macOS, Linux and Windows that boots CDJ's firmware inside QEMU,
 surfacing the device's main LCD, jog LCD, jog wheel, faders, buttons, USB, PC-Link, and Pro DJ Link network in a native window.
 
 <table>
@@ -55,7 +55,7 @@ do with real CDJs on a physical LAN when you're on vacation.
 >   of the deck's firmware update file (`.UPD`) and decryption key at first launch.
 >   The in-app **Install Firmware** wizard decrypts it locally and provisions
 >   a per-instance eMMC qcow2 disk image under `~/Library/Application Support/com.cdj3k.emu/`
->   (`~/.local/share/com.cdj3k.emu/` on Linux).
+>   (`~/.local/share/com.cdj3k.emu/` on Linux, `%LOCALAPPDATA%\com.cdj3k.emu\` on Windows).
 >   Nothing Pioneer-owned is in this repository or the distributed bundle.
 > - Not endorsed by, affiliated with, or sponsored by AlphaTheta Corporation /
 >   Pioneer DJ. CDJ, rekordbox, and Pro DJ Link are trademarks of their
@@ -66,7 +66,7 @@ do with real CDJs on a physical LAN when you're on vacation.
 > - Not a turntable replacement. Jog wheel and rotary feel are reproduced via
 >   pointer drag + scroll wheel; there's no support for an external MIDI
 >   controller bridging into the emulated SPI bus.
-> - macOS on Apple silicon and Linux (aarch64, x86_64) only;
+> - macOS on Apple silicon, Linux (aarch64, x86_64) and Windows (arm64, x64) only;
 >   see [Platform support](docs/platform-support.md) for what differs.
 > - **Not compatible with pre-3.00 firmware.** See _Firmware compatibility_
 >   below — on the CDJ-3000, only firmware 3.00 and newer is accepted.
@@ -140,7 +140,20 @@ user's responsibility, by whatever means they are themselves entitled to.
   speed. **x86_64 runs under software emulation (TCG)**
 - `/dev/shm` with 3 GiB free, and 29.1 GB free for each slot's eMMC image.
 
-### Both
+### Windows
+
+- **Windows 10 2004 (build 19041) or newer**, x64 or arm64; one installer per
+  architecture.
+- **arm64 runs under WHPX** on Windows 11 24H2 build 26100.3915 or later with
+  the Windows Hypervisor Platform feature on (the installer enables it and asks
+  for a restart). **x64, and arm64 without either, run under software
+  emulation (TCG).**
+- Bridged Pro DJ Link through `netsh bridge` needs Windows 11 22H2 with
+  KB5030310; on older builds the Network Bridge is made by hand in Network
+  Connections.
+- 29.1 GB free for each slot's eMMC image.
+
+### Every host
 
 - Roughly 8 GB free RAM if you plan to run two instances at once
   (1.5 GB guest each + host overhead).
@@ -151,7 +164,7 @@ user's responsibility, by whatever means they are themselves entitled to.
 - Audio is not a bit-perfect reproduction of the real hardware. The CDJ-3000
   ships dedicated audio silicon with its own clock domain and DSP path; we
   re-route the firmware's PCM through `virtio_snd` -> a QEMU bypass ring ->
-  CoreAudio or PipeWire, which is a fundamentally different pipeline. Occasional pops
+  CoreAudio, PipeWire or WASAPI, which is a fundamentally different pipeline. Occasional pops
   and transient artifacts can occur, especially under host CPU pressure or
   when the host device clock drifts against the guest. A large amount
   of work has gone into mitigations (lock-free SPSC ring, dedicated RT
@@ -215,7 +228,7 @@ cd cdj3k-emu
 
 # 2. QEMU for this host: clones upstream at the pinned commit, applies
 #    qemu/patches/, and builds with HVF + Cocoa on macOS or KVM + PipeWire on
-#    Linux (~10 min).
+#    Linux (~10 min). Windows takes --windows, below.
 ./qemu/build.sh
 
 # 3. The guest payload (Docker): the aarch64 kernel, out-of-tree modules, the
@@ -260,6 +273,30 @@ packaging/linux/build.sh
 glibc floor, and `docker/Dockerfile.linux-host` the QEMU build dependencies.
 `stage.sh --qemu DIR` takes a QEMU built elsewhere (`DIR/bin/`).
 
+### Windows
+
+```bash
+# QEMU for Windows, into qemu/install-windows-<arch>/ with every DLL it loads
+# (scripts/bundle-dlls.sh). From Linux or macOS it cross-builds in the
+# docker/Dockerfile.windows-qemu image (llvm-mingw); in an MSYS2 UCRT64
+# (x86_64) or CLANGARM64 (aarch64) shell it builds natively.
+./qemu/build.sh --windows x86_64|aarch64
+
+# The app for <arch>-pc-windows-gnullvm, in the same image, with its DLLs:
+# dist/windows-bin-<arch>/.
+packaging/windows/cross-build.sh x64|arm64
+```
+
+```powershell
+# On Windows: stage the tree (stage.ps1) and compile the Inno Setup installer,
+# dist\cdj3k-emu-<version>-windows-<arch>-setup.exe.
+packaging\windows\build.ps1 -Arch x64 -QemuDir qemu\install-windows-x86_64
+```
+
+`build.ps1` needs Inno Setup 6.6 or newer, and `stage.ps1` Git for Windows: its
+bash builds the patch dispatcher. The installer is Authenticode-signed when
+`CDJ3K_SIGN_CERT_SHA1` holds a certificate thumbprint.
+
 ## First-run privilege prompts
 
 cdj3k-emu asks for elevation only when you ask it to do one of these.
@@ -286,6 +323,16 @@ The desktop's polkit agent asks, in two situations:
 | --- | --- |
 | Bridging onto a NIC or a bridge for Pro DJ Link | Creates a macvtap, or a tap on the bridge, through `pkexec`. The link lasts while the slot uses it, so each bridged start asks once. Picking an existing tap you own asks nothing. |
 | Attaching a physical USB drive in pass-through mode | udisks opens the disk exclusively for the app (`org.freedesktop.udisks2.open-device`) when your user cannot. The host cannot mount it while the deck holds it. |
+
+### Windows
+
+UAC asks, in three situations:
+
+| Action | Why it elevates |
+| --- | --- |
+| Bridging onto a NIC for Pro DJ Link | The app re-runs itself elevated (`--windows-net-helper`) to create the slot's TAP-Windows6 adapter and join it and the NIC to the Network Bridge. A watcher it leaves running takes both down when the slot quits or changes network, so each bridged start asks once. |
+| Attaching a physical USB drive in pass-through mode | When your user cannot open the disk, a PowerShell script grants it read and write on `\\.\PhysicalDriveN` and its volumes. The grant lasts until the disk is unplugged. |
+| Creating a blank virtual USB image | Attaching the new VHDX to partition and format it (`Mount-DiskImage`, `Format-Volume`) is admin-only. |
 
 ## Documentation and reference
 
@@ -316,10 +363,13 @@ guest/               C sources built for the guest:
   kernel-patches/      vanilla 6.6 patches + the guest kernel .config
 qemu/                upstream QEMU source + our overlay patches
 winit/               winit fetched from crates.io + our overlay patch
-docker/              Alpine + Ubuntu build pipeline for guest artefacts
+docker/              Alpine + Ubuntu build pipeline for guest artefacts, and
+                     the Linux and Windows host-build images
 packaging/linux/     staging, .deb/.rpm (nfpm) and AppImage
+packaging/windows/   cross-build, staging and the Inno Setup installer
 initramfs-patch/     numbered rootfs patch scripts (concatenated by bundle.sh)
-scripts/             bundle-dylibs.sh (self-contained .app)
+scripts/             bundle-dylibs.sh (self-contained .app), bundle-sos.sh
+                     (Linux $ORIGIN tree), bundle-dlls.sh (Windows DLLs)
 ```
 
 ## License

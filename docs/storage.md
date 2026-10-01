@@ -13,7 +13,7 @@ Three classes of persistent storage:
 | Class | Scope | Backing | Hot-swap |
 |---|---|---|---|
 | eMMC qcow2 | One per instance (1..4) | qcow2 file under app data | No (boot-time) |
-| USB drive slot | One per instance | virtual `.img` or physical `/dev/diskN` | Yes (QMP) |
+| USB drive slot | One per instance | virtual `.img` / `.vhdx` or a physical disk (`/dev/diskN`, `/dev/sdX`, `\\.\PhysicalDriveN`) | Yes (QMP) |
 | Settings | Per-instance | plain `key=value` text | n/a |
 
 Nothing Pioneer-owned is stored or shipped - the firmware install pipeline
@@ -50,6 +50,7 @@ selection are per slot.
 An install never touches the live files, so it runs beside a running
 emulation, in this window's slot or another's. It writes into
 `instance-N/.staging/` (`StagedFirmware`) while holding an exclusive `flock`
+(`LockFileEx` on Windows; `platform::file_lock`, as for every lock below)
 on `.staging/.lock`, and once every file is in place writes
 `.staging/complete`: the model, the firmware release and the SoC serial the
 new cabinet was keyed for. That record is the signal. The process that owns
@@ -68,6 +69,10 @@ The claim file holds its owner's pid (`slot_holder`): a second process
 started for a slot another one owns brings that one's window forward and
 exits.
 
+On Windows the lock is a `LockFileEx` on one byte at offset 2^62, past the end
+of the file: Windows enforces a byte-range lock on every other handle's I/O,
+and QEMU opens the same eMMC. Windows drops it when the last handle closes.
+
 An install that fails or is cancelled deletes what it wrote. One killed
 part way leaves files with no record and a lock nobody holds - the OS drops
 an `flock` with its process - and whoever finds them deletes them. A swap
@@ -81,7 +86,8 @@ A slot with firmware but no `model` setting holds a CDJ-3000;
 The directory name is the macOS bundle identifier (reverse-DNS), not the
 display name - see `cdj3k_emu_storage::app_data_dir` and
 `cdj3k_emu_platform::app_meta::BUNDLE_ID`. The tree above is macOS's; on Linux
-the base is `$XDG_DATA_HOME` / `~/.local/share`.
+the base is `$XDG_DATA_HOME` / `~/.local/share`, and on Windows
+`%LOCALAPPDATA%` (local, not roaming: the images belong to one machine).
 
 USB images created by the in-app "Create blank USB" path are written to a
 user-chosen location, not inside the app data directory.
@@ -194,9 +200,10 @@ index 1 → `/dev/sdb`. See the comment over the `-drive` lines in
 
 ### Sparseness
 
-qcow2 is created from a sparse raw scratch file by `qemu-img convert -O
-qcow2 -o preallocation=off` (`emmc::convert_to_qcow2`). Host disk usage stays
-near-zero until the guest writes data; only the GPT, the U-Boot env block,
+qcow2 is created from a sparse raw scratch file (`platform::sparse_file`;
+`FSCTL_SET_SPARSE` on Windows, whose NTFS files are not sparse otherwise) by
+`qemu-img convert -O qcow2 -o preallocation=off` (`emmc::convert_to_qcow2`).
+Host disk usage stays near-zero until the guest writes data; only the GPT, the U-Boot env block,
 and (after first boot) the ext4 superblocks consume sectors.
 
 ### `default_path`
@@ -245,20 +252,37 @@ remounts it.
 
 ### Virtual mode
 
-User picks a `.img` file (or runs "Create blank USB", which makes a raw
-image with one MBR exFAT partition labelled REKORDBOX: `hdiutil attach
--nomount` + `diskutil eraseDisk` on macOS, `sfdisk` + `mkfs.exfat` on the file
-on Linux). The path is persisted as
+User picks an image file (or runs "Create blank USB", which makes an image
+with one MBR exFAT partition labelled REKORDBOX: a raw image through `hdiutil
+attach -nomount` + `diskutil eraseDisk` on macOS, `sfdisk` + `mkfs.exfat` on
+the file on Linux). The path is persisted as
 `usb_virtual_path` in the per-instance `settings.txt`.
+
+On Windows a new image is a dynamic VHDX (`host::VIRTUAL_IMAGE_EXT`):
+`CreateVirtualDisk` makes it as the user, sized down to a whole MiB, then an
+elevated PowerShell script attaches it with no drive letter (`Mount-DiskImage
+-NoDriveLetter`), writes the MBR and a partition from 1 MiB to the end, formats
+it (`Format-Volume -FileSystem exFAT`) and detaches it
+(`windows_parse::format_script`). `virtual_format` hands QEMU `vhdx` for a
+file that starts with `vhdxfile` and `raw` for any other, so an image made on
+another host still attaches.
 
 ### Physical mode
 
-User picks a removable disk (`disk2`, `sdb`). `UsbManager::attach_physical`
-(`runtime/src/disk/mod.rs`):
+User picks a removable disk (`disk2`, `sdb`, `PhysicalDrive2`).
+`UsbManager::attach_physical` (`runtime/src/disk/mod.rs`):
 
 1. `unmount_host` frees the disk: `diskutil unmountDisk` on macOS,
    `udisksctl unmount` per partition on Linux. A busy mount names the
-   processes holding it (`/proc/*/cwd`, `/proc/*/fd`).
+   processes holding it (`/proc/*/cwd`, `/proc/*/fd`). On Windows the app
+   locks and dismounts every volume of the disk (`FSCTL_LOCK_VOLUME`, four
+   tries 400 ms apart, then `FSCTL_DISMOUNT_VOLUME`) and holds those handles
+   until the disk is remounted; a busy volume names its holders through the
+   Restart Manager. Before that, when the disk or a volume refuses this user a
+   read-write open, one elevated PowerShell script (`windows_parse::grant_script`)
+   adds an ACE for the user's SID to the disk, and to each volume that takes
+   it. A device object's security descriptor lasts until the device is
+   removed, so the grant covers every attach until the disk is unplugged.
 2. The host adapter's `open_raw`:
    - **macOS** probes `O_RDWR` on `/dev/diskN` (mode `0640`); on `EACCES`
      it asks via `osascript` for an admin `chmod 660 <dev>`, the path
@@ -268,10 +292,22 @@ User picks a removable disk (`disk2`, `sdb`). `UsbManager::attach_physical`
      the fd to QEMU with QMP `add-fd` on `qmp-fd.sock`. The medium is a
      `raw` over `host_device` on `/dev/fdset/N`. While the fd is held the host
      cannot mount the disk; eject releases it with `remove-fd`.
+   - **Windows** probes a read-write open of `\\.\PhysicalDriveN`, as QEMU
+     will, and names it as a `raw` over `host_device` on that path. QEMU opens
+     it; patch 19 gives the host disk a fixed length, so a request does not ask
+     the device its size.
 3. `blockdev-change-medium`. On failure the host volume is remounted to
-   leave the system clean.
-4. The BSD name is persisted as `usb_physical_bsd` so the choice survives
-   restarts (the disk is re-attached on next launch if still present).
+   leave the system clean. On Windows the remount releases the volume handles
+   and refreshes the disk's partition table (`IOCTL_DISK_UPDATE_PROPERTIES`),
+   which the guest may have rewritten.
+4. The disk name (`disk2`, `sdb`, `PhysicalDrive2`) is persisted as
+   `usb_physical_bsd` so the choice survives restarts (the disk is
+   re-attached on next launch if still present).
+
+On Windows `list_removable` probes `PhysicalDrive0` to `31` with a
+no-access open, which a standard user may do, and offers a disk on a USB, SD
+or MMC bus with a medium in it, never one the Windows directory lives on; when
+that cannot be told, nothing is offered.
 
 ---
 
@@ -328,15 +364,15 @@ lose each other's fields.
 | `mac` | `xx:xx:xx:xx:xx:xx` | generated LAA | First byte forced to `02` (LAA unicast). Generated on first load if absent or invalid. |
 | `soc_serial` | 16 hex digits | generated | The guest's `/proc/cpuinfo` `Serial` line. Minted on first load, replaced by an applied install, fixed otherwise - see below. |
 | `audio_enabled` | `0` / `1` | `0` | Gates `virtio-snd` in argv |
-| `audio_device_uid` | CoreAudio UID or empty | empty | Output device for `-audiodev coreaudio,out.device-uid=...` |
+| `audio_device_uid` | the host's device id or empty | empty | Output device: CoreAudio UID (`out.device-uid=`), PipeWire node (`out.name=`), WASAPI endpoint id (`out.dev=`) |
 | `alc_enabled` | `0` / `1` | `1` | Pushes `audio_sync_enabled` to guest sysfs at boot |
 | `haptic_enabled` | `0` / `1` | `1` | Gates Force Touch detent clicks |
 | `model` | `cdj3k` / `cdj3kx` or empty | empty | The model the slot's installation is; the app opens the slot on it |
 | `firmware_release` | e.g. `3.20` or empty | empty | The release the installation came from, as `IMAGES/RELEASE.TXT` gives it |
 | `pc_link_enabled` | `0` / `1` | `0` | PC Link (USB-B) cable plugged in |
-| `net_iface` | `en0` etc. or empty | empty | Selected Pro DJ Link interface |
+| `net_iface` | `en0`, `Ethernet 2` etc. or empty | empty | Selected Pro DJ Link interface |
 | `usb_virtual_path` | path or empty | empty | Last attached virtual USB image |
-| `usb_physical_bsd` | `disk2` etc. or empty | empty | Last attached physical USB disk |
+| `usb_physical_bsd` | `disk2`, `sdb`, `PhysicalDrive2` etc. or empty | empty | Last attached physical USB disk |
 | `screen_extended` | `0` / `1` | `0` | Draw the LCD over the decoration around it |
 | `jog_adjust` | `f32` ∈ [0, 1] | `0.5` | JOG ADJUST rotary; picks the brake stop time |
 | `vinyl_speed` | `u8` | `0` | VINYL SPEED ADJUST rotary; rides every MISO frame |
@@ -438,8 +474,10 @@ Nothing is committed to the repo or bundled in the `.dmg`.
 | `crates/cdj3k-emu-storage/src/settings/panel.rs` | `PanelSettings` |
 | `crates/cdj3k-emu-storage/src/settings/identity.rs` | MAC and SoC-serial minting and validation |
 | `crates/cdj3k-emu-runtime/src/disk/mod.rs` | `UsbManager` hot-swap, virtual + physical attach |
-| `crates/cdj3k-emu-runtime/src/disk/{macos,linux}.rs` | the host adapters: `open_raw`, `format_exfat`, retry prompt |
-| `crates/cdj3k-emu-runtime/src/disk/{macos,linux}_disk.rs` | `list_removable`, `unmount_disk`, `mount_disk` |
+| `crates/cdj3k-emu-runtime/src/disk/{macos,linux,windows}.rs` | the host adapters: `open_raw`, `create_image`, retry prompt |
+| `crates/cdj3k-emu-runtime/src/disk/{macos,linux,windows}_disk.rs` | `list_removable`, `unmount_disk`, `mount_disk`; on Windows also the ACL grant and VHDX creation |
+| `crates/cdj3k-emu-runtime/src/disk/windows_parse.rs` | Windows descriptor parsing, eligibility, the elevated PowerShell scripts; every host |
+| `crates/cdj3k-emu-platform/src/file_lock/` | the slot, staging and eMMC locks: `flock`, `LockFileEx` |
 | `crates/cdj3k-emu-runtime/src/config.rs` | `-drive` argv lines (USB then eMMC) |
 | `crates/cdj3k-emu-firmware/src/luks.rs` | LUKS1 decrypt of the .UPD payload |
 | `crates/cdj3k-emu-firmware/src/extract.rs` | Kernel + `FirmwareInfo` extraction, G2M reject |

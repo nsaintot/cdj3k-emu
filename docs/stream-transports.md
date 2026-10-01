@@ -17,15 +17,23 @@ subucom SPI wire format is documented in `docs/subucom.md`.
 | Config (cfg) | virtio-serial (Unix socket)    | bidirectional   | `{sock_dir}/cfg.sock`                 |
 
 `sock_dir` follows the multi-instance convention
-`/tmp/cdj3k-emu-{uid}/instance-{id}/`. `crates/cdj3k-emu-platform/src/runtime_paths/`
+`/tmp/cdj3k-emu-{uid}/instance-{id}/` (`%TEMP%\cdj3k-emu\instance-{id}\` on
+Windows). `crates/cdj3k-emu-platform/src/runtime_paths/`
 is the source of truth for the layout and the length limit on it; the copies in
 `boot.sh` and `tools/midi-driver/link.c` must agree with it. Authoritative QEMU
 args are `QemuConfig::build_argv` in `crates/cdj3k-emu-runtime/src/config.rs`.
 
+The sockets are AF_UNIX on Windows too (Windows 10 1803 and later; the host
+side is `uds_windows`, `platform::local_socket`), so the chardev lines are the
+same on every host; the path limit there is 108 bytes. Patches 15-17 give
+Windows QEMU `memory-backend-file` (behind `jog.shm`), the shm display's file
+mapping (`main.shm`) and `ivshmem-plain`; `ivshmem-doorbell` is refused there.
+
 QEMU's monitor is `-qmp tcp:localhost:<4445 + slot>`. Where the disk adapter
 hands a raw USB disk to QEMU as a descriptor (Linux), a second monitor listens
 on `{sock_dir}/qmp-fd.sock`: `add-fd` needs a Unix socket to carry the
-descriptor.
+descriptor, and is Unix only (`qmp/fd_passing/`). The Windows adapter does
+not pass descriptors (`PASSES_FDS = false`); QEMU opens the disk by path.
 
 ---
 

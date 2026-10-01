@@ -1,7 +1,7 @@
 # cdj3k-emu - Network Stack
 
 > Reference for how the emulator exposes a NIC to the guest, with a focus
-> on Pro DJ Link (DJPL) reach. Three modes, trading ease against L2
+> on Pro DJ Link (DJPL) reach. The modes trade ease against L2
 > visibility. Companion to `docs/audio-stack.md` and `docs/alc.md`.
 
 ---
@@ -17,7 +17,8 @@ broadcasts and arrival-time semantics don't survive NAT.
 QEMU's default `-netdev user` (SLIRP) is a userspace NAT stack and
 cannot carry DJPL discovery / beat broadcasts between hosts. For real LAN
 visibility, macOS uses `vmnet.framework` - opened by QEMU itself, in-process -
-or a kernel TAP bridge, and Linux a macvtap or a tap on a bridge.
+or a kernel TAP bridge, Linux a macvtap or a tap on a bridge, and Windows a
+TAP-Windows6 adapter in the Network Bridge.
 
 ---
 
@@ -30,9 +31,10 @@ or a kernel TAP bridge, and Linux a macvtap or a tap on a bridge.
 | **vmnet-host** (link-local) | `vmnet-host,id=net0,net-uuid=<UUID>`      | shared `bridgeN`, no NIC | no         | QEMU exit              |
 | **TAP bridge**   | `tap,id=net0,fd=<N>`                                 | full L2 via TAP          | once per start | lease watcher      |
 | **Linux link**   | `tap,id=net0,fd=<N>`                                 | full L2 on iface         | once per start | lease watcher      |
+| **Windows link** | `tap,id=net0,ifname=<adapter>`                       | full L2 on iface         | once per start | lease watcher      |
 
-vmnet and the TAP bridge are macOS; the Linux link is Linux. Both vmnet modes
-are unprivileged: vmnet requires root *or* the
+vmnet and the TAP bridge are macOS; the Linux link is Linux; the Windows link
+is Windows. Both vmnet modes are unprivileged: vmnet requires root *or* the
 `com.apple.developer.networking.vmnet` entitlement, and the app carries it,
 authorised by `Contents/embedded.provisionprofile`. Entitlements are
 process-wide, so QEMU reaches vmnet from inside `libcdj3k-emu-qemu.dylib` -
@@ -51,7 +53,8 @@ goes unanswered while other traffic still flows; without it `bootpd` offers a
 processes see each other's broadcasts, which is what lets several instances
 share one DJ-Link segment with no daemon between them.
 
-`QemuConfig::build_argv` selects: a tap fd wins if present, otherwise a vmnet
+`QemuConfig::build_argv` selects: a tap wins if present (an fd, or on Windows
+an adapter name; `net::tap_netdev` renders it per host), otherwise a vmnet
 mode, otherwise user-mode. Which of those an interface gets is the host's
 `net::attach`.
 
@@ -161,6 +164,77 @@ deleted. A Wi-Fi station cannot carry either shape, so it is not offered.
 A macvtap cannot reach its own parent's host: rekordbox on the same machine
 does not see the deck. A bridge built by hand and picked does.
 
+### Mode 5 - Windows link
+
+```
+NIC (e.g. "Ethernet") ──┐
+                         ├── Network Bridge ── cdj3k-emu-<slot> (TAP-Windows6) ── QEMU guest
+   other members ───────┘
+```
+
+QEMU opens the slot's TAP-Windows6 adapter by connection name,
+`cdj3k-emu-<slot>` (`winbridge::tap_name`). The Windows Network Bridge joins
+it to the picked NIC; the guest keeps the MAC QEMU's `-device` gives it, and
+nothing is written onto the adapter.
+
+Flow (`WindowsBridge::setup`, `net/windows_net.rs`):
+
+1. The app takes the slot's lease ([Link lifetime](#link-lifetime)) and
+   re-runs itself through `run_elevated` as
+   `--windows-net-helper <instance dir> <tap> <nic> <inf|-> <pid> <claim> <mac>`
+   (`winbridge::Request`; `-` when the install has no INF).
+2. The helper (`net/windows_helper.rs`) creates the adapter when there is
+   none: a root-enumerated `tap0901` device through SetupAPI, the steps
+   `devcon install` takes, since TAP-Windows6 9.27.0 ships no `tapctl`. The
+   INF goes to the driver store (`SetupCopyOEMInfW`) and the best compatible
+   driver is installed on that device alone (`DIF_INSTALLDEVICE`), so the
+   other slots' taps keep theirs. It writes the connection name under the
+   network class key, where QEMU looks adapters up, and renames the interface
+   alias (`Rename-NetAdapter`), which the registry write alone leaves at
+   "Local Area Connection" until the next boot.
+   The adapter gets `AllowNonAdmin` "1", without which only administrators
+   can open it, and a fixed MAC (`NetworkAddress`, `winbridge::tap_mac`: the
+   guest's with the first octet 02), and is restarted when either changed.
+3. It joins the tap and the NIC to the host's Network Bridge: `netsh bridge
+   create <tap> <nic>` when `netsh bridge list` shows none (the bridge takes
+   the tap's MAC, so the host's address on it keeps its DHCP lease from one
+   start to the next), recording its GUID in
+   `%ProgramData%\cdj3k-emu\bridge-owned`, then `netsh bridge add` for each
+   one not yet bridged (`create` reports success with only its first adapter
+   joined). Windows has one Network Bridge, so an existing one is joined,
+   never replaced.
+4. Membership of both is checked again, the helper starts a copy of the app
+   as `--windows-net-watch` with the same request, and the verdict goes to
+   `<instance>/winnet.result` (`ok`, `tap` or `bridge`, then the message;
+   `winbridge::Outcome`).
+5. The watcher holds the link for the lease. When the lease goes it takes
+   the tap out of the bridge, or destroys the bridge when `bridge-owned` names
+   it and no other `cdj3k-emu-*` tap is in it, which gives the NIC its address
+   back (`winbridge::teardown`). It answers the lease, then removes the tap
+   device once its media goes disconnected: TAP-Windows6 reports connected
+   while QEMU holds it open.
+
+Setup and teardown hold the `Global\cdj3k-emu-bridge` mutex. A watcher whose
+claim was replaced by a later setup for the same slot leaves the link to it.
+A link survives only a host reboot, which ends the watcher; the next bridged
+start of the slot reuses it. The uninstaller removes adapters named
+`cdj3k-emu-*` and destroys the bridge `bridge-owned` names. `netsh bridge`
+needs Windows 11 22H2 with KB5030310; on older builds the bridge is made by
+hand in Network Connections.
+
+The adapter list comes from `GetIfTable2`, with addresses from
+`GetAdaptersAddresses`: a bridge member has no IP binding of its own and drops
+out of `GetAdaptersAddresses`, and shows the bridge's address instead
+(`platform::net::windows`). `windows_kind::Adapter::bridgeable` keeps
+Ethernet and Wi-Fi adapters that are up and whose name or description matches
+no virtual, tunnel, tap or bridge driver. A Wi-Fi adapter is offered; an
+access point accepts one MAC per station, so DJ-Link may not see the deck
+through it.
+
+The driver comes from the installer: `OemVista.inf`, `tap0901.sys` and
+`tap0901.cat` under `<resources>/tap-windows6/`, added to the driver store
+through `pnputil`.
+
 ---
 
 ## MAC addresses
@@ -185,8 +259,9 @@ persisted MAC is set (`QemuConfig::build_argv`).
 
 ## Elevation flow
 
-`elevate::run_elevated` is the single elevation primitive; the TAP bridge and
-the Linux link are its callers. On macOS it is AuthorizationServices:
+`elevate::run_elevated` is the single elevation primitive; the TAP bridge,
+the Linux link and the Windows link are its callers. On macOS it is
+AuthorizationServices:
 
 ```
 AuthorizationCreate(NULL, NULL, kAuthorizationFlagDefaults, &auth)
@@ -208,6 +283,10 @@ for our scripts, which only spawn backgrounded daemons + watchdogs.
 On Linux it is `pkexec /bin/sh -c <cmd>`, answered by the desktop's polkit
 agent; it needs a local seat.
 
+On Windows it is UAC: `ShellExecuteExW` with the `runas` verb on
+`cmd.exe /C <cmd>`, hidden, waited on; the exit code is the result, and a
+declined prompt is `PermissionDenied`.
+
 ### Link lifetime
 
 A link the app makes lasts as long as the slot uses it, on every host
@@ -218,7 +297,7 @@ watcher:
    `<instance>/net.claim` (`Lease::take`), and passes the claim and its pid to
    the watcher.
 2. The watcher holds the link while `net.claim` still reads that claim and
-   the app process is alive (`kill -0`).
+   the app process is alive (`kill -0`; on Windows a wait on the process).
 3. Dropping the `Lease` removes the claim: the slot switched network, stopped
    or quit. A crash ends the process instead. Either way the watcher takes
    the link down and writes the claim to `<instance>/net.released`.
@@ -229,9 +308,11 @@ watcher:
 |---|---|---|
 | macOS (TAP bridge) | `tapbridge.sh`, backgrounded | the tap, and the shared bridge once it holds no other tap |
 | Linux | the background half of `linuxnet.sh` | `cdj3k<slot>` |
+| Windows | the app, `--windows-net-watch` | the tap from the bridge, the bridge it made once no slot's tap is left, then the adapter |
 
-A host shutdown ends a watcher without its teardown; the kernel's interfaces
-go with it.
+A host shutdown ends a watcher without its teardown. On macOS and Linux the
+kernel's interfaces go with it; on Windows the adapter and the bridge stay, and
+the next bridged start of the slot uses them.
 
 vmnet needs none of this: QEMU owns the interface and the kernel releases it
 when QEMU exits.
@@ -252,7 +333,7 @@ setup window's **Developer / Root SSH** option was ticked at provisioning: the
 provisioning boot gets `cdj3k.ssh=1`, which the patch dispatcher reads as
 `ENABLE_SSH` for `02`-`05` in `initramfs-patch/patch-rootfs.d/`.
 
-### Bridged (vmnet, TAP or Linux link)
+### Bridged (vmnet, TAP, Linux or Windows link)
 
 The guest gets a DHCP lease on the host LAN. Find it by MAC:
 
@@ -297,16 +378,22 @@ without two layers of filtering:
   alphanumerics, `.`, `_` and `-`, and not `.` or `..`. Checked by
   `VmnetMode::bridged`, `TapBridge::setup` and `LinuxBridge::setup`;
   `LinuxBridge::setup` also checks the MAC (`is_valid_mac`).
+- **`windows_kind::is_valid_adapter_name`** on Windows, where connection names
+  hold spaces and any script's letters: 1 to 64 characters of alphanumerics,
+  space, `.`, `_` and `-`, no edge spaces. `WindowsBridge::setup` checks it
+  and the MAC, and the helper re-checks every part of its request
+  (`Request::parse`), paths included (`is_cmd_safe_path`: no `"`, `%`, `&`,
+  `|`, `<`, `>`, `^` or line breaks).
 - **`elevate::sh_quote`**: wraps the argument in single quotes and escapes
   embedded `'` as `'\''`, for everything interpolated into an elevated
   script.
 
 Per-instance state is rooted in `runtime_paths::instance_dir(id)`: the
-lease's claim and answer, the TAP bridge's names file and watcher script, and
-the Linux link's script and ready file. The host app process owns this
-directory; the elevated halves only read from it, except for the files they
-report through (the names, ready and answer files). The lease relies on that:
-only the app can change the claim.
+lease's claim and answer, the TAP bridge's names file and watcher script, the
+Linux link's script and ready file, and the Windows helper's verdict. The host
+app process owns this directory; the elevated halves only read from it, except
+for the files they report through (the names, ready, verdict and answer
+files). The lease relies on that: only the app can change the claim.
 
 ---
 
@@ -320,8 +407,11 @@ only the app can change the claim.
 | `crates/cdj3k-emu-runtime/src/net/lease.rs`                | the slot's lease on its link; every host          |
 | `crates/cdj3k-emu-runtime/src/net/tapbridge.rs`            | bridgeN + tapM watcher, stale cleanup (macOS)     |
 | `crates/cdj3k-emu-runtime/src/net/linux_net.rs`            | macvtap / tap-on-bridge / existing tap (Linux)    |
+| `crates/cdj3k-emu-runtime/src/net/windows_net.rs`          | `WindowsBridge`: claim, elevation, verdict, release (Windows) |
+| `crates/cdj3k-emu-runtime/src/net/windows_helper.rs`       | the elevated helper and watcher: SetupAPI tap, `netsh bridge` (Windows) |
+| `crates/cdj3k-emu-runtime/src/net/winbridge.rs`            | helper request / result, `netsh bridge` parsing, teardown plan; every host |
 | `crates/cdj3k-emu-runtime/src/elevate/`                    | `run_elevated` per host, `sh_quote`               |
-| `crates/cdj3k-emu-platform/src/net/`                       | interfaces offered, validators, `linux_kind`      |
+| `crates/cdj3k-emu-platform/src/net/`                       | interfaces offered, validators, `linux_kind`, `windows_kind` |
 | `crates/cdj3k-emu-storage/src/settings/`                   | persisted `mac`, `net_iface`, MAC generator       |
 | `crates/cdj3k-emu-platform/src/runtime_paths/`             | socket / instance-dir layout                      |
 | `qemu/build.sh`                                            | QEMU build (unrelated to runtime networking)      |
