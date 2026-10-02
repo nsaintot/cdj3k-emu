@@ -1,0 +1,452 @@
+# Build, package and smoke-test every platform's artefacts.
+#
+#   push to main                     build everything; artefacts on the run
+#   pull request into main           the same, when it touches the build
+#   workflow_dispatch                the same; `notarize` notarizes the macOS build
+#   push of a v<version> tag         a release: the tag must be on main and match
+#                                    Cargo.toml's version; macOS is notarized and
+#                                    every artefact lands in a draft GitHub
+#                                    release, published by hand. A version with
+#                                    a hyphen (0.3.0-rc1) is a pre-release.
+#
+# macOS is signed with the Developer ID in the repository secrets when they are
+# present (see .github/scripts/macos-signing.sh), ad hoc otherwise. A release
+# refuses to run without them.
+name: CD
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/**"
+      - build.sh
+      - Cargo.lock
+      - docker/**
+      - guest/**
+      - packaging/**
+      - qemu/**
+      - scripts/**
+      - tools/midi-driver/**
+      - winit/**
+  workflow_dispatch:
+    inputs:
+      notarize:
+        description: Notarize the macOS build
+        type: boolean
+        default: false
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      notarize: ${{ steps.plan.outputs.notarize }}
+      release: ${{ steps.plan.outputs.release }}
+      sign: ${{ steps.plan.outputs.sign }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          IN_NOTARIZE: ${{ inputs.notarize }}
+          HAVE_CERT: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 != '' }}
+          HAVE_NOTARY: ${{ secrets.NOTARY_API_KEY_BASE64 != '' }}
+        run: |
+          version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          release=false
+          notarize=false
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+              if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+                  echo "::error::tag $GITHUB_REF_NAME does not match the Cargo.toml version $version"
+                  exit 1
+              fi
+              if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+                  echo "::error::tag $GITHUB_REF_NAME is not on main; release tags go on main only"
+                  exit 1
+              fi
+              if [[ "$HAVE_CERT" != true || "$HAVE_NOTARY" != true ]]; then
+                  echo "::error::a release needs the macOS signing and notary secrets"
+                  exit 1
+              fi
+              release=true
+              notarize=true
+          elif [[ "$IN_NOTARIZE" == true ]]; then
+              if [[ "$HAVE_CERT" != true || "$HAVE_NOTARY" != true ]]; then
+                  echo "::error::notarizing needs the macOS signing and notary secrets"
+                  exit 1
+              fi
+              notarize=true
+          fi
+          if [[ "$HAVE_CERT" != true ]]; then
+              echo "::warning::no signing certificate in the secrets; macOS is signed ad hoc"
+          fi
+          {
+              echo "notarize=$notarize"
+              echo "release=$release"
+              echo "sign=$HAVE_CERT"
+          } >> "$GITHUB_OUTPUT"
+          echo "version $version, sign $HAVE_CERT, notarize $notarize, release $release" >> "$GITHUB_STEP_SUMMARY"
+
+  # Kernel, out-of-tree modules, the shim and the guest tools: build.sh's
+  # Docker stage, native on arm64. No Pioneer firmware is involved. The
+  # finished payload is cached on everything that goes into it; on a miss the
+  # Docker layer cache rebuilds only the stages whose inputs changed, so the
+  # kernel recompiles only for a new LINUX_TAG, patch or config.
+  guest:
+    name: Guest payload
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Cache
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: guest-payload.tar
+          key: guest-${{ hashFiles('build.sh', 'docker/Dockerfile', '.dockerignore', 'guest/**') }}
+      # Gives buildx the runtime token the gha cache backend needs.
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: crazy-max/ghaction-github-runtime@v4
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          CDJ3K_DOCKER_CACHE: gha
+        run: |
+          ./build.sh --artifacts-only
+          tar -cf guest-payload.tar build/Image build/docker-out guest/out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: guest-payload
+          path: guest-payload.tar
+          retention-days: 7
+
+  qemu-linux:
+    name: QEMU (Linux ${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Cache
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: qemu-linux
+          key: qemu-linux-${{ matrix.arch }}-${{ hashFiles('qemu/build.sh', 'qemu/patches/**', 'qemu/shim/**', 'docker/Dockerfile.linux-host*') }}
+      - name: Build
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          docker buildx build -f docker/Dockerfile.linux-host --target qemu-artifacts \
+              --output type=local,dest=qemu-linux/bin .
+      - run: tar -cf qemu-linux.tar qemu-linux
+      - uses: actions/upload-artifact@v7
+        with:
+          name: qemu-linux-${{ matrix.arch }}
+          path: qemu-linux.tar
+          retention-days: 7
+
+  # QEMU and the app for Windows, cross-built with llvm-mingw in
+  # docker/Dockerfile.windows-qemu.
+  windows-cross:
+    name: Cross-build (Windows ${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - { arch: x64, qemu: x86_64 }
+          - { arch: arm64, qemu: aarch64 }
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Toolchain image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile.windows-qemu
+          tags: cdj3k-emu-windows-qemu
+          load: true
+          cache-from: type=gha,scope=windows-qemu
+          cache-to: type=gha,scope=windows-qemu,mode=max
+      - name: Cache QEMU
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: qemu/install-windows-${{ matrix.qemu }}
+          key: qemu-windows-${{ matrix.qemu }}-${{ hashFiles('qemu/build.sh', 'qemu/patches/**', 'docker/Dockerfile.windows-qemu', 'docker/windows-qemu-deps.sh', 'scripts/bundle-dlls.sh') }}
+      # qemu/build.sh uses the image already loaded.
+      - name: QEMU
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: ./qemu/build.sh --windows ${{ matrix.qemu }}
+      # cross-build.sh's own outer half rebuilds the image with the local
+      # builder; its inner half runs here in the image loaded above.
+      - name: App
+        run: |
+          ./winit/fetch.sh
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+              -e CDJ3K_WINDOWS_CROSS_INNER=1 -v "$PWD:/work" \
+              cdj3k-emu-windows-qemu bash packaging/windows/cross-build.sh ${{ matrix.arch }}
+      - run: tar -cf windows-cross.tar qemu/install-windows-${{ matrix.qemu }} dist/windows-bin-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-cross-${{ matrix.arch }}
+          path: windows-cross.tar
+          retention-days: 7
+
+  # One QEMU per slice of the universal .app, each against static libraries.
+  qemu-macos:
+    name: QEMU (macOS ${{ matrix.arch }})
+    strategy:
+      matrix:
+        arch: [arm64, x86_64]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/qemu-macos
+        with:
+          arch: ${{ matrix.arch }}
+      - run: tar -cf qemu-macos.tar qemu/install-macos-${{ matrix.arch }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: qemu-macos-${{ matrix.arch }}
+          path: qemu-macos.tar
+          retention-days: 7
+
+  package-macos:
+    name: Package (macOS universal)
+    needs: [plan, guest, qemu-macos]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: guest-payload
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: qemu-macos-*
+      - run: |
+          tar -xf guest-payload.tar && rm guest-payload.tar
+          for t in qemu-macos-*/qemu-macos.tar; do tar -xf "$t"; done
+          rm -rf qemu-macos-*
+      - uses: ./.github/actions/rust
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Signing identity
+        if: needs.plan.outputs.sign == 'true'
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_PROVISION_PROFILE_BASE64: ${{ secrets.MACOS_PROVISION_PROFILE_BASE64 }}
+          NOTARY_API_KEY_BASE64: ${{ secrets.NOTARY_API_KEY_BASE64 }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: .github/scripts/macos-signing.sh setup
+      - name: Stage
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          ./winit/fetch.sh
+          packaging/macos/stage.sh --arch universal --version "$VERSION" --build "$GITHUB_RUN_NUMBER"
+      - name: Sign and package
+        env:
+          NOTARIZE: ${{ needs.plan.outputs.notarize }}
+        run: |
+          args=(--dmg)
+          if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then args+=(--sign "$CODESIGN_IDENTITY"); fi
+          if [[ "$NOTARIZE" == true ]]; then args+=(--notarize); fi
+          packaging/macos/build.sh "${args[@]}"
+      - name: Check
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          NOTARIZE: ${{ needs.plan.outputs.notarize }}
+        run: |
+          app="dist/CDJ3K Emulator.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          # Both slices in every binary, and nothing linked from outside the
+          # bundle and the OS.
+          bad=0
+          for f in "$app"/Contents/MacOS/*; do
+              archs=$(lipo -archs "$f")
+              echo "$(basename "$f"): $archs"
+              [[ "$archs" == *arm64* && "$archs" == *x86_64* ]] || { echo "::error::$f is not universal"; bad=1; }
+              if otool -L "$f" | tail -n +2 | grep -E '/(opt/homebrew|usr/local)/'; then bad=1; fi
+          done
+          [[ $bad -eq 0 ]] || exit 1
+          "$app/Contents/MacOS/qemu-img" --version
+          if [[ "$NOTARIZE" == true ]]; then
+              xcrun stapler validate "$app"
+              xcrun stapler validate "dist/CDJ3K-Emulator-$VERSION.dmg"
+          fi
+          mv "dist/CDJ3K-Emulator-$VERSION.dmg" "dist/CDJ3K-Emulator-$VERSION-macos-universal.dmg"
+      - name: Remove signing identity
+        if: always() && needs.plan.outputs.sign == 'true'
+        run: .github/scripts/macos-signing.sh cleanup
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-macos-universal
+          path: dist/*.dmg
+          compression-level: 0
+
+  package-linux:
+    name: Package (Linux ${{ matrix.arch }})
+    needs: [plan, guest, qemu-linux]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: guest-payload
+      - uses: actions/download-artifact@v8
+        with:
+          name: qemu-linux-${{ matrix.arch }}
+      - run: |
+          tar -xf guest-payload.tar && tar -xf qemu-linux.tar
+          rm guest-payload.tar qemu-linux.tar
+      - uses: docker/setup-buildx-action@v4
+      - name: Packaging image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile.linux-pkg
+          tags: cdj3k-emu-linux-pkg
+          load: true
+          cache-from: type=gha,scope=linux-pkg-${{ matrix.arch }}
+          cache-to: type=gha,scope=linux-pkg-${{ matrix.arch }},mode=max
+      - name: Stage and package
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          docker run --rm -v "$PWD:/work" cdj3k-emu-linux-pkg \
+              "packaging/linux/stage.sh --qemu /work/qemu-linux && packaging/linux/build.sh --version $VERSION"
+          sudo chown -R "$(id -u):$(id -g)" dist
+      # The deb and the rpm each installed on a clean system of their family,
+      # which also checks their declared dependencies; the AppImage unpacked.
+      - name: Smoke test
+        run: |
+          check=/ci/linux-installed-check.sh
+          docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/.github/scripts:/ci:ro" debian:bookworm \
+              bash -ec "apt-get update -qq && apt-get install -y -qq /dist/*.deb >/dev/null && $check"
+          docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/.github/scripts:/ci:ro" fedora:latest \
+              bash -ec "dnf install -y -q /dist/*.rpm >/dev/null && $check"
+          appimage=$(ls dist/*.AppImage)
+          (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
+          "$RUNNER_TEMP/squashfs-root/opt/cdj3k-emu/bin/qemu-img" --version
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-linux-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+          compression-level: 0
+
+  package-windows:
+    name: Package (Windows ${{ matrix.arch }})
+    needs: [plan, guest, windows-cross]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, qemu: x86_64, runner: windows-2025 }
+          - { arch: arm64, qemu: aarch64, runner: windows-11-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: guest-payload
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-cross-${{ matrix.arch }}
+      - shell: bash
+        run: |
+          tar -xf guest-payload.tar && tar -xf windows-cross.tar
+          rm guest-payload.tar windows-cross.tar
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $installer
+          $sum = (Get-FileHash $installer -Algorithm SHA256).Hash
+          if ($sum -ne '9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732') { throw "innosetup.exe sha256 $sum" }
+          $p = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-'
+          if ($p.ExitCode -ne 0) { throw "Inno Setup installer exited with $($p.ExitCode)" }
+      - name: Stage and build the installer
+        shell: powershell
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          & packaging\windows\build.ps1 -Arch ${{ matrix.arch }} `
+              -QemuDir qemu\install-windows-${{ matrix.qemu }} `
+              -Binary dist\windows-bin-${{ matrix.arch }} -Version $env:VERSION
+      # Native on each architecture: every DLL the staged executables load is
+      # in the tree.
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $bin = 'dist\windows-${{ matrix.arch }}\bin'
+          foreach ($t in 'qemu-img.exe', 'qemu-system-aarch64.exe') {
+              & (Join-Path $bin $t) --version
+              if ($LASTEXITCODE -ne 0) { throw "$t exited with $LASTEXITCODE" }
+          }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: package-windows-${{ matrix.arch }}
+          path: dist/*-setup.exe
+          compression-level: 0
+
+  release:
+    name: Release
+    needs: [plan, package-macos, package-linux, package-windows]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: package-*
+          path: dist
+          merge-multiple: true
+      # A draft, so nothing is public until it is published by hand. A rerun
+      # replaces the draft's files.
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+              gh release upload "$GITHUB_REF_NAME" --clobber -- *
+          else
+              args=(--draft --verify-tag --title "CDJ3K Emulator $VERSION" --generate-notes)
+              if [[ "$VERSION" == *-* ]]; then args+=(--prerelease); fi
+              gh release create "$GITHUB_REF_NAME" "${args[@]}" -- *
+          fi
+          echo "Draft: $(gh release view "$GITHUB_REF_NAME" --json url -q .url)" >> "$GITHUB_STEP_SUMMARY"

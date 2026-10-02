@@ -1,0 +1,115 @@
+# Lint and test on every host. The packaged builds are cd.yml.
+name: CI
+
+# Lint, Test (Linux), Test (macOS) and Test (Windows) are the checks the "Main"
+# ruleset requires before a merge.
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # The code branches on the OS, never on the architecture: one test job per
+  # OS, and the lint, Windows clippy and MSRV checks in one job on Linux.
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/rust
+        with:
+          components: rustfmt,clippy
+          targets: x86_64-pc-windows-gnullvm
+      - run: rustup toolchain install 1.88 --profile minimal
+      - run: ./winit/fetch.sh
+      - name: rustfmt
+        run: cargo fmt --all --check
+      # The Windows code is type-checked from Linux: clippy compiles no C for
+      # that target, so no mingw toolchain is needed.
+      - name: clippy (Linux)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: clippy (Windows)
+        run: cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-gnullvm -- -D warnings
+      - name: MSRV (1.88)
+        run: cargo +1.88 check --workspace --all-targets --locked
+      - name: actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color
+
+  test-linux:
+    name: Test (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              libwayland-dev libxkbcommon-dev libx11-dev libgl1-mesa-dev libegl1-mesa-dev
+      - uses: ./.github/actions/rust
+      - run: ./winit/fetch.sh
+      - run: cargo test --workspace --locked
+
+  test-macos:
+    name: Test (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/rust
+        with:
+          components: clippy
+      # cdj3k-emu-runtime links libcdj3k-emu-qemu.dylib on macOS.
+      - uses: ./.github/actions/qemu-macos
+        with:
+          arch: arm64
+      # The test binaries carry no rpath to it; dyld's fallback path finds it.
+      - run: |
+          lib="$PWD/qemu/install-macos-arm64/lib"
+          echo "CDJ3K_EMU_QEMU_LIB_DIR=$lib" >> "$GITHUB_ENV"
+          echo "DYLD_FALLBACK_LIBRARY_PATH=$lib" >> "$GITHUB_ENV"
+      - run: ./winit/fetch.sh
+      - name: clippy (macOS)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+
+  test-windows:
+    name: Test (Windows)
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: bash
+    env:
+      LLVM_MINGW: llvm-mingw-20260922-ucrt-x86_64
+    steps:
+      - uses: actions/checkout@v7
+      # The release links with llvm-mingw (x86_64-pc-windows-gnullvm); the
+      # tests do the same, with the version docker/Dockerfile.windows-qemu pins.
+      - name: llvm-mingw
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/llvm-mingw.zip" \
+              "https://github.com/mstorsjo/llvm-mingw/releases/download/20260922/${LLVM_MINGW}.zip"
+          unzip -q "$RUNNER_TEMP/llvm-mingw.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/${LLVM_MINGW}/bin" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/rust
+        with:
+          targets: x86_64-pc-windows-gnullvm
+      - run: ./winit/fetch.sh
+      - name: cargo test
+        env:
+          CARGO_BUILD_TARGET: x86_64-pc-windows-gnullvm
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER: x86_64-w64-mingw32-clang
+          CC_x86_64_pc_windows_gnullvm: x86_64-w64-mingw32-clang
+          AR_x86_64_pc_windows_gnullvm: llvm-ar
+        run: cargo test --workspace --locked

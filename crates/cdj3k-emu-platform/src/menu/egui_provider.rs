@@ -1339,6 +1339,25 @@ mod tests {
 mod frame_tests {
     use super::*;
 
+    /// A context with the app's named families bound to egui's own fonts: the
+    /// strip draws the wordmark in one of them where it is the title bar.
+    fn test_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        let base = fonts.families[&egui::FontFamily::Proportional].clone();
+        for name in [
+            crate::fonts::NIMBUS_SANS,
+            crate::fonts::NIMBUS_SANS_BOLD,
+            crate::fonts::NIMBUS_SANS_CONDENSED,
+        ] {
+            fonts
+                .families
+                .insert(egui::FontFamily::Name(name.into()), base.clone());
+        }
+        ctx.set_fonts(fonts);
+        ctx
+    }
+
     /// Everything the strip painted this frame, as (text, rect) pairs.
     ///
     /// Rows are painted rather than built from widgets, so tests locate them
@@ -1401,7 +1420,7 @@ mod frame_tests {
     /// action — the whole path a menu click takes, without a window.
     #[test]
     fn clicking_a_row_in_the_opened_menu_raises_its_action() {
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let mut p = EguiProvider::default();
         p.apply(&model());
 
@@ -1453,7 +1472,7 @@ mod frame_tests {
     /// The strip's pills read out state rather than menu names.
     #[test]
     fn the_strip_shows_the_deck_not_the_word_emulation() {
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let mut p = EguiProvider::default();
         p.apply(&MenuModel {
             roots: vec![MenuNode::submenu("Emulation", vec![])
@@ -1471,7 +1490,7 @@ mod frame_tests {
     /// A notice adds its glyph to the strip; without one, nothing is drawn.
     #[test]
     fn a_notice_puts_its_badge_on_the_strip() {
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let shapes = |notice: Option<Notice>| {
             let mut p = EguiProvider::default();
             p.apply(&MenuModel {
@@ -1491,7 +1510,7 @@ mod frame_tests {
     /// The strip reports itself as chrome, so a whole-window pass can skip it.
     #[test]
     fn the_strip_is_chrome() {
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let mut p = EguiProvider::default();
         p.apply(&model());
         let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
@@ -1508,7 +1527,7 @@ mod frame_tests {
     /// a separator in it too.
     #[test]
     fn a_panel_fits_its_rows_rather_than_the_window() {
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let mut measured = (0.0, 0.0);
         let _ = ctx.run(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -1562,7 +1581,7 @@ mod frame_tests {
             input
         }
 
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let mut p = EguiProvider::default();
         p.apply(&model());
 
@@ -1591,7 +1610,7 @@ mod frame_tests {
     /// rest — not a second copy of them.
     #[test]
     fn the_sandwich_leaves_out_what_the_pills_already_reach() {
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let mut p = EguiProvider::default();
         p.apply(&MenuModel {
             roots: vec![
@@ -1638,7 +1657,7 @@ mod frame_tests {
             input.events.push(egui::Event::PointerMoved(pos));
             input
         }
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let mut p = EguiProvider::default();
         p.apply(&MenuModel {
             roots: vec![
@@ -1677,10 +1696,12 @@ mod frame_tests {
             }
             x += 2.0;
         }
-        // Sandwich, the Emulation pill, Restart, View.
+        // Sandwich, the Emulation pill, Restart, View; where the strip is the
+        // title bar, minimise and maximise too (close lights red).
+        let caption_buttons = if CAPTION_IN_STRIP { 2 } else { 0 };
         assert_eq!(
             lit_rects.len(),
-            4,
+            4 + caption_buttons,
             "only these lit: {:?}",
             lit_rects.iter().map(|r| r.x_range()).collect::<Vec<_>>()
         );
@@ -1692,7 +1713,7 @@ mod frame_tests {
     /// different entry from the four a hover walks through.
     #[test]
     fn a_disabled_shortcut_has_no_border() {
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let mut p = EguiProvider::default();
         p.apply(&MenuModel {
             roots: vec![MenuNode::submenu(
@@ -1756,7 +1777,7 @@ mod frame_tests {
             "{rows:?}"
         );
 
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let mut p = EguiProvider::default();
         p.apply(&with_quit);
         let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
@@ -1771,7 +1792,7 @@ mod frame_tests {
     #[test]
     fn the_shortcuts_give_way_to_the_pills() {
         fn strip_at(width: f32) -> Vec<Rect> {
-            let ctx = egui::Context::default();
+            let ctx = test_ctx();
             let mut p = EguiProvider::default();
             p.apply(&MenuModel {
                 roots: vec![
@@ -1853,7 +1874,7 @@ mod frame_tests {
             (MenuId::DebugScreen, "Debug Panel"),
         ];
         for (id, label) in &rows {
-            let ctx = egui::Context::default();
+            let ctx = test_ctx();
             let mut p = EguiProvider::default();
             p.apply(&MenuModel {
                 roots: vec![MenuNode::submenu(
@@ -1890,7 +1911,7 @@ mod frame_tests {
     /// box. The marks that do not are painted; these are the ones that are not.
     #[test]
     fn the_typed_glyphs_all_exist() {
-        let ctx = egui::Context::default();
+        let ctx = test_ctx();
         let _ = ctx.run(Default::default(), |_| {});
         let font = FontId::proportional(FONT_ROW);
         for s in ["CDJ3K EMULATOR", "NAT", "Ctrl Q", "141 ms", "·", "—", "…"] {

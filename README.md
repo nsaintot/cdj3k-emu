@@ -310,6 +310,36 @@ packaging\windows\build.ps1 -Arch x64 -QemuDir qemu\install-windows-x86_64
 bash builds the patch dispatcher. The installer is Authenticode-signed when
 `CDJ3K_SIGN_CERT_SHA1` holds a certificate thumbprint.
 
+### CI and releases
+
+| Workflow | Runs on | Does |
+|---|---|---|
+| `.github/workflows/ci.yml` | pull requests into `main` | rustfmt; clippy `-D warnings` for Linux and Windows, `cargo check` at the MSRV, actionlint; `cargo test` on Linux, macOS (with clippy) and Windows (gnullvm) |
+| `.github/workflows/cd.yml` | pushes to `main`, `v*` tags, manual runs, pull requests into `main` touching the build | the guest payload (`build.sh --artifacts-only`, no Pioneer firmware), QEMU for every target, the universal `.dmg`, `.deb`/`.rpm`/AppImage for x86_64 and aarch64, the Windows x64 and arm64 installers; each smoke-tested, all kept on the run |
+
+`main` takes changes through pull requests only: the four CI jobs must pass and
+one review approve, which an admin can bypass. Only an admin creates `v*` tags.
+
+A release is a tag on `main` matching the `Cargo.toml` version. Its CD run
+notarizes the macOS build and puts every artefact, with `SHA256SUMS.txt`, in a
+draft release, published by hand; a version with a hyphen is a pre-release:
+
+```bash
+git tag v0.2.0 origin/main && git push origin v0.2.0
+```
+
+The macOS build is signed with the Developer ID when the repository secrets
+hold it, ad hoc otherwise; a release refuses to run without it.
+
+| Secret | Content |
+|---|---|
+| `MACOS_CERTIFICATE_P12_BASE64` | `base64 -i cert.p12`: the Developer ID Application certificate and key |
+| `MACOS_CERTIFICATE_PASSWORD` | the `.p12` export password |
+| `MACOS_PROVISION_PROFILE_BASE64` | optional: `base64 -i cdj3k-emu.provisionprofile` (vmnet, virtual HID) |
+| `NOTARY_API_KEY_BASE64` | `base64 -i AuthKey_<id>.p8`: an App Store Connect API key (Users and Access → Integrations, Developer role) |
+| `NOTARY_API_KEY_ID` | that key's ID |
+| `NOTARY_API_ISSUER_ID` | the issuer ID shown above the keys |
+
 ## First-run privilege prompts
 
 cdj3k-emu asks for elevation only when you ask it to do one of these.

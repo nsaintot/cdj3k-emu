@@ -275,11 +275,11 @@ pub fn adopt_unrecorded_slot(instance_id: u32) {
     }
 }
 
-/// A throwaway `HOME` for a test that reads or writes the app data dir.
+/// A throwaway data root for a test that reads or writes the app data dir.
 ///
-/// Every path here derives from `HOME`, so the guard also serialises the
-/// tests that use one: two at once would read each other's slots. The
-/// directory goes when it drops.
+/// Every path here derives from it, so the guard also serialises the tests
+/// that use one: two at once would read each other's slots. The directory
+/// goes when it drops.
 #[cfg(test)]
 pub(crate) struct TestHome {
     _lock: std::sync::MutexGuard<'static, ()>,
@@ -294,7 +294,11 @@ impl TestHome {
         let path = std::env::temp_dir().join(format!("cdj3k-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
-        std::env::set_var("HOME", &path);
+        // Each host's app_data_dir() root: macOS $HOME, Linux $XDG_DATA_HOME
+        // (else $HOME), Windows %LOCALAPPDATA%.
+        for var in ["HOME", "XDG_DATA_HOME", "LOCALAPPDATA"] {
+            std::env::set_var(var, &path);
+        }
         Self { _lock: lock, path }
     }
 }

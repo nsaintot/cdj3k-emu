@@ -394,7 +394,11 @@ for t in "${WANTED[@]}"; do
     fi
 done
 for prefix in "${WANTED_UNDER[@]}"; do
-    mapfile -t under < <(grep "^${prefix}" <<<"${KNOWN}" || true)
+    # A read loop, not mapfile: macOS ships bash 3.2.
+    under=()
+    while IFS= read -r t; do
+        under+=("${t}")
+    done < <(grep "^${prefix}" <<<"${KNOWN}" || true)
     if [[ ${#under[@]} -gt 0 ]]; then
         TARGETS+=("${under[@]}")
         echo "    (${#under[@]} targets under ${prefix})"
