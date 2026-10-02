@@ -18,9 +18,9 @@ mod imp;
 #[path = "unsupported.rs"]
 mod imp;
 
+mod linux_disk;
 #[cfg(target_os = "macos")]
 mod macos_disk;
-mod linux_disk;
 #[cfg(windows)]
 mod windows_disk;
 mod windows_parse;
@@ -129,7 +129,11 @@ impl std::fmt::Display for UsbError {
             UsbError::Qmp(e) => write!(f, "QMP error: {e:?}"),
             UsbError::Io(e) => write!(f, "I/O error: {e}"),
             UsbError::PermissionDenied(dev) => {
-                write!(f, "Permission denied opening {dev}. {}", imp::PERMISSION_HINT)
+                write!(
+                    f,
+                    "Permission denied opening {dev}. {}",
+                    imp::PERMISSION_HINT
+                )
             }
         }
     }

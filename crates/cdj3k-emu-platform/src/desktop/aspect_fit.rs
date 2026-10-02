@@ -143,7 +143,13 @@ mod tests {
 
     #[test]
     fn a_fitted_rect_fits_as_itself() {
-        for edge in [Edge::Left, Edge::Right, Edge::Top, Edge::Bottom, Edge::BottomRight] {
+        for edge in [
+            Edge::Left,
+            Edge::Right,
+            Edge::Top,
+            Edge::Bottom,
+            Edge::BottomRight,
+        ] {
             for w in (300..1500).step_by(37) {
                 let once = fit(edge, rect(w, 777), CHROME, RATIO);
                 assert_eq!(fit(edge, once, CHROME, RATIO), once, "{edge:?} {w}");
@@ -156,7 +162,10 @@ mod tests {
         let r = rect(10, 10);
         assert_eq!(fit(Edge::Right, r, CHROME, RATIO), r);
         let none = Ratio { width: 0, ..RATIO };
-        assert_eq!(fit(Edge::Right, rect(800, 600), CHROME, none), rect(800, 600));
+        assert_eq!(
+            fit(Edge::Right, rect(800, 600), CHROME, none),
+            rect(800, 600)
+        );
     }
 
     #[test]

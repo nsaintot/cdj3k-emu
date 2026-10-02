@@ -102,7 +102,6 @@ pub fn reveal_in_file_manager(path: &std::path::Path) {
     }
 }
 
-
 mod wayland {
     use std::ffi::c_void;
     use std::ptr::NonNull;
@@ -262,6 +261,9 @@ mod tests {
     fn degenerate_input_is_left_alone() {
         assert_eq!(fit(500, 44), LogicalSize::new(500, 44));
         let none = AspectRatio { width: 0, ..PANEL };
-        assert_eq!(none.fit(LogicalSize::new(640, 480), MIN), LogicalSize::new(640, 480));
+        assert_eq!(
+            none.fit(LogicalSize::new(640, 480), MIN),
+            LogicalSize::new(640, 480)
+        );
     }
 }

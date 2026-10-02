@@ -138,7 +138,10 @@ impl Host {
             (idx, name)
         };
         let attempt = if initial_net_idx == menu_state::NET_SEL_VMNET_HOST {
-            Some(("host-only".to_string(), cdj3k_emu_runtime::net_attach_host_only()))
+            Some((
+                "host-only".to_string(),
+                cdj3k_emu_runtime::net_attach_host_only(),
+            ))
         } else {
             iface_name.map(|name| {
                 let r = cdj3k_emu_runtime::net_attach(&name, &inst_settings.mac, instance);

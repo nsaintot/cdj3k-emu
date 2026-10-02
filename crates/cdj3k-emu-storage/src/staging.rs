@@ -156,9 +156,12 @@ impl StagedFirmware {
     ) -> io::Result<()> {
         for path in [&self.paths.kernel, &self.paths.initramfs, &self.paths.emmc] {
             // Writable: Windows refuses to flush a read-only handle.
-            let f = std::fs::OpenOptions::new().write(true).open(path).map_err(|e| {
-                io::Error::other(format!("{} was not written: {e}", path.display()))
-            })?;
+            let f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .map_err(|e| {
+                    io::Error::other(format!("{} was not written: {e}", path.display()))
+                })?;
             f.sync_all()?;
         }
         let dir = self.paths.dir().to_path_buf();

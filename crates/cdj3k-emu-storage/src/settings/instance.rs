@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use cdj3k_emu_panel::Model;
 
 use super::identity::{generate_mac, generate_soc_serial, is_valid_soc_serial};
-use cdj3k_emu_platform::net::is_valid_mac;
 use super::kv::{instance_path, locked, read_kv, write_kv, SLOT_KEYS};
+use cdj3k_emu_platform::net::is_valid_mac;
 
 #[derive(Debug, Clone)]
 pub struct InstanceSettings {

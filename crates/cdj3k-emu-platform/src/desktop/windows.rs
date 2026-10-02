@@ -26,11 +26,9 @@ use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 };
 use windows::Win32::Graphics::Gdi::ScreenToClient;
-use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::Shell::{
-    DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass,
-};
+use windows::Win32::UI::HiDpi::{GetDpiForWindow, GetSystemMetricsForDpi};
+use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnableMenuItem, GetClientRect, GetSystemMenu, GetWindowRect, IsZoomed, PostMessageW,
     SetMenuDefaultItem, TrackPopupMenu, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION, HTCLIENT,
@@ -62,9 +60,8 @@ fn hold(hwnd: isize, ratio: Option<Ratio>) {
     if current.is_none() {
         // SAFETY: called from the thread that owns the window (the UI
         // thread), with a procedure that lives for the whole process.
-        let installed = unsafe {
-            SetWindowSubclass(HWND(hwnd as *mut _), Some(subclass_proc), SUBCLASS_ID, 0)
-        };
+        let installed =
+            unsafe { SetWindowSubclass(HWND(hwnd as *mut _), Some(subclass_proc), SUBCLASS_ID, 0) };
         if !installed.as_bool() {
             return;
         }
@@ -152,7 +149,11 @@ pub fn set_caption_area(ctx: &egui::Context, area: Option<super::CaptionArea>) {
     };
     let next = area.map(|a| Caption {
         strip: to_px(a.strip, a.pixels_per_point),
-        widgets: a.widgets.iter().map(|&w| to_px(w, a.pixels_per_point)).collect(),
+        widgets: a
+            .widgets
+            .iter()
+            .map(|&w| to_px(w, a.pixels_per_point))
+            .collect(),
     });
     let mut current = CAPTION.lock().unwrap_or_else(|e| e.into_inner());
     if current.is_some() != next.is_some() {
@@ -200,7 +201,15 @@ unsafe fn system_menu(hwnd: HWND, lparam: LPARAM) {
             let _ = EnableMenuItem(menu, cmd, MF_BYCOMMAND | state);
         }
         let _ = SetMenuDefaultItem(menu, SC_CLOSE, 0);
-        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, Some(0), hwnd, None);
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            x,
+            y,
+            Some(0),
+            hwnd,
+            None,
+        );
         if cmd.0 != 0 {
             let _ = PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(cmd.0 as usize), LPARAM(0));
         }
@@ -232,7 +241,9 @@ unsafe fn caption_hit(hwnd: HWND, lparam: LPARAM) -> u32 {
     let mut pt = POINT { x, y };
     let mut client = RECT::default();
     // SAFETY: `pt` and `client` are locals; `hwnd` is a live window.
-    let ok = unsafe { ScreenToClient(hwnd, &mut pt).as_bool() && GetClientRect(hwnd, &mut client).is_ok() };
+    let ok = unsafe {
+        ScreenToClient(hwnd, &mut pt).as_bool() && GetClientRect(hwnd, &mut client).is_ok()
+    };
     if !ok {
         return HTCLIENT;
     }
@@ -325,8 +336,8 @@ pub fn apply_resize_constraints(
             .map(|(w, h)| Ratio {
                 width: (w * 16.0).round() as u32,
                 height: (h * 16.0).round() as u32,
-                base_height: (crate::menu::in_window_bar_height() * ctx.pixels_per_point())
-                    .round() as u32,
+                base_height: (crate::menu::in_window_bar_height() * ctx.pixels_per_point()).round()
+                    as u32,
             });
         hold(h.hwnd.get(), ratio);
     }

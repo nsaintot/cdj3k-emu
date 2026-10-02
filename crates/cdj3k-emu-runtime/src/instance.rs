@@ -459,7 +459,10 @@ mod cleanup_tests {
 
         seed();
         cleanup_qemu_files_for_restart(&dir);
-        assert!(dir.join("net.claim").exists(), "the lease must survive a restart");
+        assert!(
+            dir.join("net.claim").exists(),
+            "the lease must survive a restart"
+        );
         assert!(dir.join("net.released").exists());
         assert!(dir.join("winnet.result").exists());
         assert!(dir.join("tapbridge.sh").exists());

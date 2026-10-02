@@ -342,7 +342,12 @@ mod tests {
             Path::new("/tmp/tapbridge.sh"),
         );
         assert!(s.contains("CLAIM='4356-17'"), "{s}");
-        assert!(s.contains(r#"[ "$(cat "$CLAIM_FILE" 2>/dev/null)" = "$CLAIM" ] && kill -0 "$APP_PID""#), "{s}");
+        assert!(
+            s.contains(
+                r#"[ "$(cat "$CLAIM_FILE" 2>/dev/null)" = "$CLAIM" ] && kill -0 "$APP_PID""#
+            ),
+            "{s}"
+        );
         let hold = s.find("# Phase 2").unwrap();
         let deletem = s[hold..].find("deletem \"$TAP_QEMU\"").unwrap() + hold;
         let answer = s.find(r#"printf '%s' "$CLAIM" > "$RELEASED""#).unwrap();

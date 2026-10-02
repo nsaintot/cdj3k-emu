@@ -2,7 +2,7 @@
 //!
 //! Aspect-ratio resize is enforced with `NSWindow` methods, not in egui.
 
-use super::{PICKER_SIZE, panel_initial_size};
+use super::{panel_initial_size, PICKER_SIZE};
 use cdj3k_emu_panel::Model;
 
 fn ns_window_for_handle(
@@ -68,7 +68,9 @@ fn set_window_autosave_name(
 /// Stop AppKit frame persistence for this window (an empty autosave name).
 /// The frame saved so far stays in `NSUserDefaults` for the next
 /// [`set_window_autosave_name`].
-fn clear_window_autosave_name(handle: &impl raw_window_handle::HasWindowHandle) -> Result<(), String> {
+fn clear_window_autosave_name(
+    handle: &impl raw_window_handle::HasWindowHandle,
+) -> Result<(), String> {
     use objc2_foundation::{MainThreadMarker, NSString};
 
     MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
@@ -308,11 +310,7 @@ pub fn enter_panel_window(
 /// where the panel was.
 pub fn enter_picker_window(ctx: &egui::Context, frame: &eframe::Frame) {
     let _ = clear_window_autosave_name(frame);
-    let _ = set_window_content_size_centered(
-        frame,
-        PICKER_SIZE[0] as f64,
-        PICKER_SIZE[1] as f64,
-    );
+    let _ = set_window_content_size_centered(frame, PICKER_SIZE[0] as f64, PICKER_SIZE[1] as f64);
     let _ = set_window_resizable(frame, false);
     let _ = ctx;
 }

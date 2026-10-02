@@ -27,20 +27,20 @@ mod imp;
 #[path = "unsupported.rs"]
 mod imp;
 
+#[cfg(any(target_os = "linux", windows))]
+mod frame_store;
 /// The window layer drawn through egui and winit, for an adapter whose host
 /// has no native one to call.
 #[cfg(any(target_os = "linux", windows))]
 mod portable;
-#[cfg(any(target_os = "linux", windows))]
-mod frame_store;
 
 pub mod aspect_fit;
 pub mod first_frame;
 
 pub use imp::{
-    activate_process, announce_running, apply_resize_constraints, enter_panel_window, enter_picker_window,
-    on_creation_context, open_file_picker, reveal_in_file_manager, set_caption_area, CAPTION_IN_STRIP,
-    OWN_WINDOW_ICON, PLACES_WINDOWS,
+    activate_process, announce_running, apply_resize_constraints, enter_panel_window,
+    enter_picker_window, on_creation_context, open_file_picker, reveal_in_file_manager,
+    set_caption_area, CAPTION_IN_STRIP, OWN_WINDOW_ICON, PLACES_WINDOWS,
 };
 
 /// The in-window strip standing in for the title bar, where
@@ -114,7 +114,9 @@ fn snap_when_settled(ctx: &egui::Context, state: &mut ResizeState, (ref_w, ref_h
     let bar = crate::menu::in_window_bar_height();
     let want_w = (size.y - bar).max(1.0) * ref_w / ref_h;
     if (size.x - want_w).abs() > SNAP_TOL_PX {
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(want_w, size.y)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(
+            want_w, size.y,
+        )));
         state.changed_at = std::time::Instant::now();
     }
 }

@@ -55,7 +55,10 @@ fn beside(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
 /// The last entry is returned unchecked so a caller reports a missing file
 /// rather than a missing directory.
 pub fn resources() -> PathBuf {
-    resources_for(std::env::var_os(RESOURCES_ENV), std::env::current_exe().ok())
+    resources_for(
+        std::env::var_os(RESOURCES_ENV),
+        std::env::current_exe().ok(),
+    )
 }
 
 /// [`resources`] for a given override and executable path.
@@ -132,7 +135,10 @@ mod tests {
 
     #[test]
     fn an_override_wins_over_every_layout() {
-        let got = resources_for(Some("/somewhere/else".into()), Some("/opt/x/bin/app".into()));
+        let got = resources_for(
+            Some("/somewhere/else".into()),
+            Some("/opt/x/bin/app".into()),
+        );
         assert_eq!(got, PathBuf::from("/somewhere/else"));
     }
 
@@ -146,7 +152,10 @@ mod tests {
         std::fs::create_dir_all(opt.join("bin")).unwrap();
         std::fs::create_dir_all(opt.join("share/cdj3k-emu")).unwrap();
 
-        assert_eq!(resources_for(None, Some(app.join("MacOS/app"))), app.join("Resources"));
+        assert_eq!(
+            resources_for(None, Some(app.join("MacOS/app"))),
+            app.join("Resources")
+        );
         assert_eq!(
             resources_for(None, Some(opt.join("bin/app"))),
             opt.join("share/cdj3k-emu")

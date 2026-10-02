@@ -138,7 +138,10 @@ impl LinuxBridge {
         let node = wait_for_ready(&ready, Duration::from_secs(10))?;
         let mut bridge = Self::open(shape, &ours, &node)?;
         bridge.lease = Some(lease);
-        eprintln!("cdj3k-emu: {shape:?} up on {iface}  iface={ours}  fd={}", bridge.fd);
+        eprintln!(
+            "cdj3k-emu: {shape:?} up on {iface}  iface={ours}  fd={}",
+            bridge.fd
+        );
         Ok(bridge)
     }
 
@@ -358,7 +361,10 @@ mod tests {
         for shape in [Shape::Macvtap, Shape::TapOnBridge] {
             let s = script(shape, "eno2");
             let del = s.find("ip link del 'cdj3k1'").unwrap();
-            let add = s.find("ip link add").or_else(|| s.find("ip tuntap add")).unwrap();
+            let add = s
+                .find("ip link add")
+                .or_else(|| s.find("ip tuntap add"))
+                .unwrap();
             let ready = s.find("> '/run/ready'").unwrap();
             let watch = s.find("while ").unwrap();
             assert!(del < add && add < ready && ready < watch, "{shape:?}:\n{s}");
@@ -371,12 +377,20 @@ mod tests {
     fn the_watch_deletes_the_link_then_answers() {
         let s = script(Shape::Macvtap, "eno2");
         let watch = &s[s.find("while ").unwrap()..];
-        assert!(watch.contains("\"$(cat '/run/net.claim' 2>/dev/null)\" = '4356-17'"), "{s}");
+        assert!(
+            watch.contains("\"$(cat '/run/net.claim' 2>/dev/null)\" = '4356-17'"),
+            "{s}"
+        );
         assert!(watch.contains("kill -0 4356"), "{s}");
         let del = watch.find("ip link del 'cdj3k1'").unwrap();
-        let answer = watch.find("printf '%s' '4356-17' > '/run/net.released'").unwrap();
+        let answer = watch
+            .find("printf '%s' '4356-17' > '/run/net.released'")
+            .unwrap();
         assert!(del < answer, "{s}");
-        assert!(s.trim_end().ends_with('&'), "the watch must not hold up the prompt:\n{s}");
+        assert!(
+            s.trim_end().ends_with('&'),
+            "the watch must not hold up the prompt:\n{s}"
+        );
     }
 
     /// On a bridge the slot's MAC belongs to the guest alone. Given to the tap

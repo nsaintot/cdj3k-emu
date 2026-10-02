@@ -1,6 +1,5 @@
 //! Spawn-a-new-instance helper and the menu's alert dialogs.
 
-
 use crate::menu_state;
 
 pub(super) fn launch_instance(target: u32) {

@@ -397,7 +397,10 @@ impl CdjShell {
             && !matches!(self.setup, Some(SetupStep::StoppingToDelete))
             && cdj3k_emu_storage::take_delete_request(self.instance)
         {
-            eprintln!("cdj3k-emu: slot {}: emptied at another window's request", self.instance);
+            eprintln!(
+                "cdj3k-emu: slot {}: emptied at another window's request",
+                self.instance
+            );
             self.view_slot(self.instance);
             self.begin_delete();
             return;
@@ -440,7 +443,9 @@ impl CdjShell {
                 // empties the slot when it sees the request.
                 match cdj3k_emu_storage::request_delete(slot) {
                     Ok(()) => self.delete_asked = Some((slot, Instant::now())),
-                    Err(e) => eprintln!("cdj3k-emu: asking slot {slot}'s window to empty it failed: {e}"),
+                    Err(e) => {
+                        eprintln!("cdj3k-emu: asking slot {slot}'s window to empty it failed: {e}")
+                    }
                 }
             } else {
                 if let Err(e) = cdj3k_emu_storage::FirmwarePaths::new(slot).remove() {
@@ -542,7 +547,9 @@ impl CdjShell {
         let asked = self
             .delete_asked
             .filter(|&(slot, at)| {
-                slot == self.viewed_slot && installed.is_some() && at.elapsed() < Duration::from_secs(10)
+                slot == self.viewed_slot
+                    && installed.is_some()
+                    && at.elapsed() < Duration::from_secs(10)
             })
             .map(|_| "its window is stopping the emulation to empty the slot");
         PickerView {

@@ -77,7 +77,9 @@ pub fn bridged_names(show_adapter: &str) -> Vec<String> {
         .lines()
         .filter_map(|line| {
             let words: Vec<&str> = line.split_whitespace().collect();
-            if words.len() < 6 || !words[0].bytes().all(|b| b.is_ascii_digit()) || !is_guid(words[1])
+            if words.len() < 6
+                || !words[0].bytes().all(|b| b.is_ascii_digit())
+                || !is_guid(words[1])
             {
                 return None;
             }
@@ -167,7 +169,11 @@ impl Request {
 
     /// `exe` with `flag` and the request.
     pub fn command(&self, exe: &Path, flag: &str) -> String {
-        format!("\"{}\" {flag} {}", exe.display(), self.args().map(|a| format!("\"{a}\"")).join(" "))
+        format!(
+            "\"{}\" {flag} {}",
+            exe.display(),
+            self.args().map(|a| format!("\"{a}\"")).join(" ")
+        )
     }
 
     /// The request as the arguments after the flag.
@@ -220,13 +226,24 @@ impl Request {
 /// frames for a port's own address up to the host.
 pub fn tap_mac(guest_mac: &str) -> Option<String> {
     let octets: Vec<&str> = guest_mac.split([':', '-']).collect();
-    if octets.len() != 6 || !octets.iter().all(|o| o.len() == 2 && o.bytes().all(|b| b.is_ascii_hexdigit())) {
+    if octets.len() != 6
+        || !octets
+            .iter()
+            .all(|o| o.len() == 2 && o.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
         return None;
     }
     // 06 is the next locally administered unicast prefix, for a guest that
     // already wears 02.
-    let prefix = if octets[0].eq_ignore_ascii_case("02") { "06" } else { "02" };
-    Some(format!("{prefix}{}", octets[1..].concat().to_ascii_uppercase()))
+    let prefix = if octets[0].eq_ignore_ascii_case("02") {
+        "06"
+    } else {
+        "02"
+    };
+    Some(format!(
+        "{prefix}{}",
+        octets[1..].concat().to_ascii_uppercase()
+    ))
 }
 
 /// What the elevated copy leaves in `winnet.result`.
@@ -303,7 +320,9 @@ mod tests {
             dir: PathBuf::from(r"C:\Users\Jo Doe\AppData\Local\cdj3k-emu\instance-0"),
             tap: "cdj3k-emu-0".into(),
             nic: "Ethernet 2".into(),
-            inf: Some(PathBuf::from(r"C:\Program Files\cdj3k-emu\tap-windows6\OemVista.inf")),
+            inf: Some(PathBuf::from(
+                r"C:\Program Files\cdj3k-emu\tap-windows6\OemVista.inf",
+            )),
             pid: 4356,
             claim: "4356-1790933216403".into(),
             mac: "fe:a7:61:67:79:84".into(),
@@ -314,8 +333,15 @@ mod tests {
     #[test]
     fn the_command_line_is_wrapped_for_cmd() {
         let line = request().cmdline(Path::new(r"C:\Program Files\cdj3k-emu\cdj3k-emu.exe"));
-        assert!(line.starts_with("\"\"C:\\Program Files\\cdj3k-emu\\cdj3k-emu.exe\" --windows-net-helper "));
-        assert!(line.ends_with("OemVista.inf\" \"4356\" \"4356-1790933216403\" \"fe:a7:61:67:79:84\"\""), "{line}");
+        assert!(line.starts_with(
+            "\"\"C:\\Program Files\\cdj3k-emu\\cdj3k-emu.exe\" --windows-net-helper "
+        ));
+        assert!(
+            line.ends_with(
+                "OemVista.inf\" \"4356\" \"4356-1790933216403\" \"fe:a7:61:67:79:84\"\""
+            ),
+            "{line}"
+        );
         assert!(line.contains("\"Ethernet 2\""), "{line}");
     }
 
@@ -342,9 +368,18 @@ mod tests {
 
     #[test]
     fn the_tap_mac_is_the_guests_made_local() {
-        assert_eq!(tap_mac("fe:a7:61:67:79:84").as_deref(), Some("02A761677984"));
-        assert_eq!(tap_mac("02:a7:61:67:79:84").as_deref(), Some("06A761677984"));
-        assert_eq!(tap_mac("FE-A7-61-67-79-84").as_deref(), Some("02A761677984"));
+        assert_eq!(
+            tap_mac("fe:a7:61:67:79:84").as_deref(),
+            Some("02A761677984")
+        );
+        assert_eq!(
+            tap_mac("02:a7:61:67:79:84").as_deref(),
+            Some("06A761677984")
+        );
+        assert_eq!(
+            tap_mac("FE-A7-61-67-79-84").as_deref(),
+            Some("02A761677984")
+        );
         assert_eq!(tap_mac("fe:a7:61"), None);
         assert_eq!(tap_mac("fe:a7:61:67:79:zz"), None);
     }
@@ -371,7 +406,10 @@ mod tests {
 
     #[test]
     fn bridged_names_are_the_yes_rows() {
-        assert_eq!(bridged_names(TWO_SLOTS), ["cdj3k-emu-1", "Ethernet", "cdj3k-emu-2"]);
+        assert_eq!(
+            bridged_names(TWO_SLOTS),
+            ["cdj3k-emu-1", "Ethernet", "cdj3k-emu-2"]
+        );
         assert_eq!(bridged_names(SHOW_ADAPTER), ["cdj3k-emu-1"]);
     }
 
@@ -384,11 +422,17 @@ mod tests {
         );
         assert_eq!(
             teardown(TWO_SLOTS, &list, Some(G1), "cdj3k-emu-2"),
-            Teardown { remove_from: Some(G1.into()), destroy: None }
+            Teardown {
+                remove_from: Some(G1.into()),
+                destroy: None
+            }
         );
         assert_eq!(
             teardown(&one_left, &list, Some(G1), "cdj3k-emu-1"),
-            Teardown { remove_from: None, destroy: Some(G1.into()) }
+            Teardown {
+                remove_from: None,
+                destroy: Some(G1.into())
+            }
         );
     }
 
@@ -397,19 +441,31 @@ mod tests {
         let list = format!("Bridges:\n  {G1}\n");
         assert_eq!(
             teardown(TWO_SLOTS, &list, None, "cdj3k-emu-1"),
-            Teardown { remove_from: Some(G1.into()), destroy: None }
+            Teardown {
+                remove_from: Some(G1.into()),
+                destroy: None
+            }
         );
         assert_eq!(
             teardown(TWO_SLOTS, &list, Some(G2), "cdj3k-emu-1"),
-            Teardown { remove_from: Some(G1.into()), destroy: None }
+            Teardown {
+                remove_from: Some(G1.into()),
+                destroy: None
+            }
         );
         assert_eq!(
             teardown(TWO_SLOTS, &list, None, "cdj3k-emu-3"),
-            Teardown { remove_from: None, destroy: None }
+            Teardown {
+                remove_from: None,
+                destroy: None
+            }
         );
         assert_eq!(
             teardown("", "", Some(G1), "cdj3k-emu-1"),
-            Teardown { remove_from: None, destroy: None }
+            Teardown {
+                remove_from: None,
+                destroy: None
+            }
         );
     }
 

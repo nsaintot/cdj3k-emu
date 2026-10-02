@@ -28,10 +28,12 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SetupCopyOEMInfW, SetupDiBuildDriverInfoList, SetupDiCallClassInstaller,
     SetupDiCreateDeviceInfoList, SetupDiCreateDeviceInfoW, SetupDiDestroyDeviceInfoList,
     SetupDiEnumDeviceInfo, SetupDiGetClassDevsW, SetupDiOpenDevRegKey,
-    SetupDiSetDeviceRegistryPropertyW, DICD_GENERATE_ID, DICS_FLAG_GLOBAL, DIF_INSTALLDEVICE,
-    DIF_INSTALLINTERFACES, DIF_REGISTERDEVICE, DIF_REGISTER_COINSTALLERS, DIF_REMOVE,
-    DIF_PROPERTYCHANGE, DIF_SELECTBESTCOMPATDRV, DICS_PROPCHANGE, DIGCF_PRESENT, DIREG_DRV, GUID_DEVCLASS_NET, HDEVINFO,
-    SetupDiSetClassInstallParamsW, SPDIT_COMPATDRIVER, SPDRP_HARDWAREID, SP_CLASSINSTALL_HEADER, SP_PROPCHANGE_PARAMS, SPOST_PATH, SP_COPY_NOOVERWRITE, SP_DEVINFO_DATA,
+    SetupDiSetClassInstallParamsW, SetupDiSetDeviceRegistryPropertyW, DICD_GENERATE_ID,
+    DICS_FLAG_GLOBAL, DICS_PROPCHANGE, DIF_INSTALLDEVICE, DIF_INSTALLINTERFACES,
+    DIF_PROPERTYCHANGE, DIF_REGISTERDEVICE, DIF_REGISTER_COINSTALLERS, DIF_REMOVE,
+    DIF_SELECTBESTCOMPATDRV, DIGCF_PRESENT, DIREG_DRV, GUID_DEVCLASS_NET, HDEVINFO,
+    SPDIT_COMPATDRIVER, SPDRP_HARDWAREID, SPOST_PATH, SP_CLASSINSTALL_HEADER, SP_COPY_NOOVERWRITE,
+    SP_DEVINFO_DATA, SP_PROPCHANGE_PARAMS,
 };
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::NetworkManagement::IpHelper::{
@@ -47,9 +49,7 @@ use windows::Win32::System::Threading::{
 };
 
 use super::lease::{CLAIM_FILE, RELEASED_FILE};
-use super::winbridge::{
-    self, Outcome, Request, HELPER_FLAG, RESULT_FILE, WATCH_FLAG,
-};
+use super::winbridge::{self, Outcome, Request, HELPER_FLAG, RESULT_FILE, WATCH_FLAG};
 
 const TAP_HWID: &str = "tap0901";
 /// Where the class-keyed connection names live; QEMU looks adapters up here.
@@ -93,7 +93,8 @@ pub fn run_helper_if_asked(args: &[String]) {
 
 /// The file that records the bridge the app made: its GUID.
 fn owned_bridge_file() -> PathBuf {
-    let base = std::env::var_os("ProgramData").map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from);
+    let base = std::env::var_os("ProgramData")
+        .map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from);
     base.join("cdj3k-emu").join("bridge-owned")
 }
 
@@ -139,8 +140,9 @@ fn run(req: &Request) -> Outcome {
             if let Err(e) = netsh(&["bridge", "create", &req.tap, &req.nic]) {
                 return Outcome::BridgeFailed(e);
             }
-            let Some(bridge) =
-                winbridge::guids(&netsh(&["bridge", "list"]).unwrap_or_default()).into_iter().next()
+            let Some(bridge) = winbridge::guids(&netsh(&["bridge", "list"]).unwrap_or_default())
+                .into_iter()
+                .next()
             else {
                 return Outcome::BridgeFailed("netsh made no bridge".into());
             };
@@ -150,7 +152,10 @@ fn run(req: &Request) -> Outcome {
                 .map_or(Ok(()), fs::create_dir_all)
                 .and_then(|()| fs::write(&owned, &bridge));
             if let Err(e) = recorded {
-                eprintln!("cdj3k-emu: could not record the bridge in {}: {e}", owned.display());
+                eprintln!(
+                    "cdj3k-emu: could not record the bridge in {}: {e}",
+                    owned.display()
+                );
             }
             bridge
         }
@@ -176,9 +181,14 @@ fn run(req: &Request) -> Outcome {
     }
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
-        Err(e) => return Outcome::BridgeFailed(format!("cannot find the app to watch the link: {e}")),
+        Err(e) => {
+            return Outcome::BridgeFailed(format!("cannot find the app to watch the link: {e}"))
+        }
     };
-    let watcher = Request { inf: None, ..req.clone() };
+    let watcher = Request {
+        inf: None,
+        ..req.clone()
+    };
     if let Err(e) = cdj3k_emu_platform::child::command(&exe)
         .arg(WATCH_FLAG)
         .args(watcher.args())
@@ -197,7 +207,9 @@ fn watch(req: &Request) {
     // has already gone.
     let app = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, req.pid) }.ok();
     let app_alive = || {
-        app.is_some_and(|h| unsafe { WaitForSingleObject(h, WATCH_POLL.as_millis() as u32) } != WAIT_OBJECT_0)
+        app.is_some_and(
+            |h| unsafe { WaitForSingleObject(h, WATCH_POLL.as_millis() as u32) } != WAIT_OBJECT_0,
+        )
     };
     while claimed() && app_alive() {}
     if let Some(h) = app {
@@ -238,7 +250,12 @@ fn wait_openable(guid: &str) -> bool {
     let path = format!(r"\\.\Global\{guid}.tap");
     let deadline = Instant::now() + NET_CFG_WAIT;
     loop {
-        if fs::OpenOptions::new().read(true).write(true).open(&path).is_ok() {
+        if fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .is_ok()
+        {
             return true;
         }
         if Instant::now() >= deadline {
@@ -342,7 +359,8 @@ fn present_taps() -> Vec<String> {
     // SAFETY: the set and the device data outlive every call made with them;
     // `info.cbSize` is set before each use.
     unsafe {
-        let Ok(set) = SetupDiGetClassDevsW(Some(&class), PCWSTR::null(), None, DIGCF_PRESENT) else {
+        let Ok(set) = SetupDiGetClassDevsW(Some(&class), PCWSTR::null(), None, DIGCF_PRESENT)
+        else {
             return guids;
         };
         let set = DevInfoSet(set);
@@ -356,7 +374,8 @@ fn present_taps() -> Vec<String> {
                 return guids;
             }
             index += 1;
-            let Ok(key) = SetupDiOpenDevRegKey(set.0, &info, DICS_FLAG_GLOBAL.0, 0, DIREG_DRV, KEY_READ.0)
+            let Ok(key) =
+                SetupDiOpenDevRegKey(set.0, &info, DICS_FLAG_GLOBAL.0, 0, DIREG_DRV, KEY_READ.0)
             else {
                 continue;
             };
@@ -377,7 +396,9 @@ fn connection_name(guid: &str) -> Option<String> {
     let path = HSTRING::from(format!(r"{NETWORK_KEY}\{guid}\Connection"));
     let mut key = HKEY::default();
     // SAFETY: `key` receives the opened handle, closed below.
-    unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, &path, None, KEY_READ, &mut key) }.ok().ok()?;
+    unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, &path, None, KEY_READ, &mut key) }
+        .ok()
+        .ok()?;
     let name = read_string(key, w!("Name"));
     // SAFETY: opened above.
     let _ = unsafe { RegCloseKey(key) };
@@ -386,7 +407,10 @@ fn connection_name(guid: &str) -> Option<String> {
 
 /// Call `f` with the present network device whose `NetCfgInstanceId` is
 /// `guid`.
-fn with_device<T>(guid: &str, f: impl FnOnce(HDEVINFO, &SP_DEVINFO_DATA) -> io::Result<T>) -> io::Result<T> {
+fn with_device<T>(
+    guid: &str,
+    f: impl FnOnce(HDEVINFO, &SP_DEVINFO_DATA) -> io::Result<T>,
+) -> io::Result<T> {
     let class: GUID = GUID_DEVCLASS_NET;
     // SAFETY: the set and the device data outlive every call made with them;
     // `info.cbSize` is set before each use.
@@ -402,10 +426,14 @@ fn with_device<T>(guid: &str, f: impl FnOnce(HDEVINFO, &SP_DEVINFO_DATA) -> io::
                 ..Default::default()
             };
             if SetupDiEnumDeviceInfo(set.0, index, &mut info).is_err() {
-                return Err(io::Error::new(io::ErrorKind::NotFound, format!("no device {guid}")));
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("no device {guid}"),
+                ));
             }
             index += 1;
-            let Ok(key) = SetupDiOpenDevRegKey(set.0, &info, DICS_FLAG_GLOBAL.0, 0, DIREG_DRV, KEY_READ.0)
+            let Ok(key) =
+                SetupDiOpenDevRegKey(set.0, &info, DICS_FLAG_GLOBAL.0, 0, DIREG_DRV, KEY_READ.0)
             else {
                 continue;
             };
@@ -438,15 +466,26 @@ fn configure_tap(guid: &str, mac: &str) -> io::Result<()> {
         // SAFETY: `set` and `info` are the live device `with_device` found;
         // the key is closed before the restart.
         unsafe {
-            let key = SetupDiOpenDevRegKey(set, info, DICS_FLAG_GLOBAL.0, 0, DIREG_DRV, (KEY_READ | KEY_SET_VALUE).0)
-                .map_err(io::Error::from)?;
+            let key = SetupDiOpenDevRegKey(
+                set,
+                info,
+                DICS_FLAG_GLOBAL.0,
+                0,
+                DIREG_DRV,
+                (KEY_READ | KEY_SET_VALUE).0,
+            )
+            .map_err(io::Error::from)?;
             let mut changed = false;
             let mut written = Ok(());
             for (name, want) in [(w!("AllowNonAdmin"), "1"), (w!("NetworkAddress"), mac)] {
                 if read_string(key, name).is_some_and(|v| v.eq_ignore_ascii_case(want)) {
                     continue;
                 }
-                let value: Vec<u8> = want.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+                let value: Vec<u8> = want
+                    .encode_utf16()
+                    .chain([0])
+                    .flat_map(u16::to_le_bytes)
+                    .collect();
                 written = written.and(RegSetValueExW(key, name, None, REG_SZ, Some(&value)).ok());
                 changed = true;
             }
@@ -507,7 +546,10 @@ fn create_tap(inf: &Path, name: &str) -> io::Result<String> {
     if !inf.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("the TAP-Windows6 driver is not installed: {} is missing", inf.display()),
+            format!(
+                "the TAP-Windows6 driver is not installed: {} is missing",
+                inf.display()
+            ),
         ));
     }
     // SAFETY: a NUL-terminated path; no output buffers are asked for.
@@ -528,13 +570,22 @@ fn create_tap(inf: &Path, name: &str) -> io::Result<String> {
     // SAFETY: each call below is handed live handles and buffers that outlive
     // it; `info.cbSize` is set before it is passed anywhere.
     unsafe {
-        let set = DevInfoSet(SetupDiCreateDeviceInfoList(Some(&class), None).map_err(io::Error::from)?);
+        let set =
+            DevInfoSet(SetupDiCreateDeviceInfoList(Some(&class), None).map_err(io::Error::from)?);
         let mut info = SP_DEVINFO_DATA {
             cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
             ..Default::default()
         };
-        SetupDiCreateDeviceInfoW(set.0, w!("NET"), &class, PCWSTR::null(), None, DICD_GENERATE_ID, Some(&mut info))
-            .map_err(io::Error::from)?;
+        SetupDiCreateDeviceInfoW(
+            set.0,
+            w!("NET"),
+            &class,
+            PCWSTR::null(),
+            None,
+            DICD_GENERATE_ID,
+            Some(&mut info),
+        )
+        .map_err(io::Error::from)?;
 
         // A REG_MULTI_SZ: the id, its NUL, and the list's closing NUL.
         let hwid: Vec<u8> = TAP_HWID
@@ -544,31 +595,41 @@ fn create_tap(inf: &Path, name: &str) -> io::Result<String> {
             .collect();
         SetupDiSetDeviceRegistryPropertyW(set.0, &mut info, SPDRP_HARDWAREID, Some(&hwid))
             .map_err(io::Error::from)?;
-        SetupDiBuildDriverInfoList(set.0, Some(&mut info), SPDIT_COMPATDRIVER).map_err(io::Error::from)?;
-        SetupDiCallClassInstaller(DIF_SELECTBESTCOMPATDRV, set.0, Some(&info))
-            .map_err(|e| io::Error::other(format!("no TAP-Windows6 driver in the driver store: {e}")))?;
-        SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set.0, Some(&info)).map_err(io::Error::from)?;
+        SetupDiBuildDriverInfoList(set.0, Some(&mut info), SPDIT_COMPATDRIVER)
+            .map_err(io::Error::from)?;
+        SetupDiCallClassInstaller(DIF_SELECTBESTCOMPATDRV, set.0, Some(&info)).map_err(|e| {
+            io::Error::other(format!("no TAP-Windows6 driver in the driver store: {e}"))
+        })?;
+        SetupDiCallClassInstaller(DIF_REGISTERDEVICE, set.0, Some(&info))
+            .map_err(io::Error::from)?;
 
         // The device is registered; a failure from here removes it.
-        let installed = [DIF_REGISTER_COINSTALLERS, DIF_INSTALLINTERFACES, DIF_INSTALLDEVICE]
-            .into_iter()
-            .try_for_each(|step| SetupDiCallClassInstaller(step, set.0, Some(&info)));
+        let installed = [
+            DIF_REGISTER_COINSTALLERS,
+            DIF_INSTALLINTERFACES,
+            DIF_INSTALLDEVICE,
+        ]
+        .into_iter()
+        .try_for_each(|step| SetupDiCallClassInstaller(step, set.0, Some(&info)));
         if let Err(e) = installed {
             let _ = SetupDiCallClassInstaller(DIF_REMOVE, set.0, Some(&info));
-            return Err(io::Error::other(format!("installing the TAP driver failed: {e}")));
+            return Err(io::Error::other(format!(
+                "installing the TAP driver failed: {e}"
+            )));
         }
 
         // The network setup writes the interface GUID after the install
         // returns.
         let deadline = Instant::now() + NET_CFG_WAIT;
         let guid = loop {
-            let guid = SetupDiOpenDevRegKey(set.0, &info, DICS_FLAG_GLOBAL.0, 0, DIREG_DRV, KEY_READ.0)
-                .ok()
-                .and_then(|key| {
-                    let guid = read_string(key, w!("NetCfgInstanceId"));
-                    let _ = RegCloseKey(key);
-                    guid
-                });
+            let guid =
+                SetupDiOpenDevRegKey(set.0, &info, DICS_FLAG_GLOBAL.0, 0, DIREG_DRV, KEY_READ.0)
+                    .ok()
+                    .and_then(|key| {
+                        let guid = read_string(key, w!("NetCfgInstanceId"));
+                        let _ = RegCloseKey(key);
+                        guid
+                    });
             if guid.is_some() || Instant::now() >= deadline {
                 break guid;
             }
@@ -615,9 +676,8 @@ fn set_connection_name(guid: &str, name: &str) -> io::Result<()> {
     loop {
         let mut key = HKEY::default();
         // SAFETY: `key` receives the opened handle, closed below.
-        let opened = unsafe {
-            RegOpenKeyExW(HKEY_LOCAL_MACHINE, &path, None, KEY_SET_VALUE, &mut key)
-        };
+        let opened =
+            unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, &path, None, KEY_SET_VALUE, &mut key) };
         if opened.is_ok() {
             let value: Vec<u8> = name
                 .encode_utf16()
@@ -643,11 +703,20 @@ fn set_connection_name(guid: &str, name: &str) -> io::Result<()> {
 fn read_string(key: HKEY, value: PCWSTR) -> Option<String> {
     let mut len = 0u32;
     // SAFETY: a null data pointer asks only for the size.
-    unsafe { RegQueryValueExW(key, value, None, None, None, Some(&mut len)) }.ok().ok()?;
+    unsafe { RegQueryValueExW(key, value, None, None, None, Some(&mut len)) }
+        .ok()
+        .ok()?;
     let mut buf = vec![0u8; len as usize];
     // SAFETY: `buf` is `len` bytes.
     unsafe {
-        RegQueryValueExW(key, value, None, None, Some(buf.as_mut_ptr()), Some(&mut len))
+        RegQueryValueExW(
+            key,
+            value,
+            None,
+            None,
+            Some(buf.as_mut_ptr()),
+            Some(&mut len),
+        )
     }
     .ok()
     .ok()?;

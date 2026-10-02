@@ -70,7 +70,9 @@ pub fn unmount_disk(name: &str) -> io::Result<()> {
             };
             return Err(io::Error::new(
                 io::ErrorKind::ResourceBusy,
-                format!("{mountpoint} is in use by {by}. Close it there, then choose the disk again."),
+                format!(
+                    "{mountpoint} is in use by {by}. Close it there, then choose the disk again."
+                ),
             ));
         }
     }
@@ -86,7 +88,12 @@ pub(super) fn holders_of(mountpoint: &std::path::Path) -> Vec<String> {
     };
     for proc in procs.flatten() {
         let dir = proc.path();
-        if !proc.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+        if !proc
+            .file_name()
+            .to_string_lossy()
+            .bytes()
+            .all(|b| b.is_ascii_digit())
+        {
             continue;
         }
         let fds = std::fs::read_dir(dir.join("fd"))

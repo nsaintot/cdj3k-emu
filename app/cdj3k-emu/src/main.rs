@@ -319,7 +319,8 @@ fn main() {
     // `CFBundleIconFile`; there an empty `IconData` keeps eframe from setting
     // its built-in icon (`AppTitleIconSetter::new` treats it as None).
     let icon = if cdj3k_emu_platform::desktop::OWN_WINDOW_ICON {
-        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon_256.png")).unwrap_or_default()
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon_256.png"))
+            .unwrap_or_default()
     } else {
         egui::IconData::default()
     };

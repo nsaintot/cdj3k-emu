@@ -5,8 +5,8 @@
 //! storing the latest in `state`.  The write half is cloned and shared so
 //! `inject()` can send MISO frames from any thread.
 
-use std::io::{Read, Write};
 use cdj3k_emu_platform::local_socket::LocalStream as UnixStream;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
