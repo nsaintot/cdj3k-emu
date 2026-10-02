@@ -170,11 +170,14 @@ impl EguiProvider {
             });
         self.chrome.push(strip.response.rect);
         if CAPTION_IN_STRIP {
-            desktop::set_caption_area(ctx, Some(CaptionArea {
-                strip: strip.response.rect,
-                widgets: std::mem::take(&mut self.widgets),
-                pixels_per_point: ctx.pixels_per_point(),
-            }));
+            desktop::set_caption_area(
+                ctx,
+                Some(CaptionArea {
+                    strip: strip.response.rect,
+                    widgets: std::mem::take(&mut self.widgets),
+                    pixels_per_point: ctx.pixels_per_point(),
+                }),
+            );
         }
     }
 
@@ -337,7 +340,10 @@ impl EguiProvider {
         let mut button = egui::Button::new(job)
             .min_size(Vec2::new(0.0, PILL_H))
             .rounding(3.0)
-            .stroke(Stroke::new(1.0_f32, if was_open { TEXT } else { PILL_BORDER }));
+            .stroke(Stroke::new(
+                1.0_f32,
+                if was_open { TEXT } else { PILL_BORDER },
+            ));
         if was_open {
             button = button.fill(STRIP_HOVER);
         }
@@ -410,7 +416,9 @@ impl EguiProvider {
                 res.response
                     .on_hover_cursor(CursorIcon::PointingHand)
                     .on_hover_text(tip)
-                    .on_disabled_hover_text(format!("{label} — available once the deck has booted"));
+                    .on_disabled_hover_text(format!(
+                        "{label} — available once the deck has booted"
+                    ));
                 rect
             })
             .inner;
@@ -438,7 +446,13 @@ impl EguiProvider {
             open.insert(NOTICE.into());
         }
         self.widgets.push(res.response.rect);
-        let pen = Pen::new(ui, res.response.rect, Vec2::splat(15.0), Vec2::splat(15.0), WARN_AMBER);
+        let pen = Pen::new(
+            ui,
+            res.response.rect,
+            Vec2::splat(15.0),
+            Vec2::splat(15.0),
+            WARN_AMBER,
+        );
         pen.arc(7.5, 9.0, 6.0, 0.4286, 1.0714, 1.1);
         pen.line((7.5, 9.0), (4.0, 8.2), 1.3);
         pen.fill_circle(7.5, 9.0, 1.1);
@@ -504,7 +518,10 @@ impl EguiProvider {
                 Caption::Minimize => pen.line((1.0, 5.5), (10.0, 5.5), 1.1),
                 Caption::Maximize if maximized => {
                     pen.rect(1.3, 3.3, 6.4, 6.4, 1.0, 1.1);
-                    pen.poly(&[(3.3, 3.3), (3.3, 1.3), (9.7, 1.3), (9.7, 7.7), (7.7, 7.7)], 1.1);
+                    pen.poly(
+                        &[(3.3, 3.3), (3.3, 1.3), (9.7, 1.3), (9.7, 7.7), (7.7, 7.7)],
+                        1.1,
+                    );
                 }
                 Caption::Maximize => pen.rect(1.3, 1.3, 8.4, 8.4, 1.0, 1.1),
                 Caption::Close => {
@@ -999,8 +1016,15 @@ enum Caption {
 fn wordmark(ui: &mut Ui) {
     let mut job = egui::text::LayoutJob::default();
     let mut format = tracked_fmt(FONT_PILL, TRACK_WORDMARK, TEXT);
-    format.font_id = FontId::new(FONT_PILL, egui::FontFamily::Name(crate::fonts::NIMBUS_SANS_BOLD.into()));
-    job.append(&crate::app_meta::APP_DISPLAY_NAME.to_uppercase(), 0.0, format);
+    format.font_id = FontId::new(
+        FONT_PILL,
+        egui::FontFamily::Name(crate::fonts::NIMBUS_SANS_BOLD.into()),
+    );
+    job.append(
+        &crate::app_meta::APP_DISPLAY_NAME.to_uppercase(),
+        0.0,
+        format,
+    );
     ui.label(job);
     vertical_rule(ui, 12.0, PILL_BORDER);
 }
@@ -1158,20 +1182,15 @@ fn paint_icon(ui: &Ui, rect: Rect, icon: MenuIcon, enabled: bool) {
         }
         MenuIcon::Storage { mounted } => {
             let vb = Vec2::new(11.0, 16.0);
-            let pen = Pen::new(
-                ui,
-                rect,
-                vb,
-                vb,
-                ink(TEXT_MUTED),
-            );
+            let pen = Pen::new(ui, rect, vb, vb, ink(TEXT_MUTED));
             // The connector shell and its two contacts, over the body.
             pen.rect(2.5, 0.5, 6.0, 4.0, 0.0, 1.0);
             pen.fill_rect(4.0, 2.0, 1.0, 1.0);
             pen.fill_rect(6.0, 2.0, 1.0, 1.0);
             pen.rect(0.5, 4.5, 10.0, 11.0, 2.0, 1.0);
             if mounted && enabled {
-                pen.p.circle_filled(pen.at(5.5, 11.0), 1.75 * pen.k, OK_GREEN);
+                pen.p
+                    .circle_filled(pen.at(5.5, 11.0), 1.75 * pen.k, OK_GREEN);
             }
         }
         MenuIcon::Network(kind) => match kind {
@@ -1477,7 +1496,9 @@ mod frame_tests {
         p.apply(&model());
         let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
         assert!(
-            p.chrome().iter().any(|r| (r.height() - BAR_HEIGHT).abs() < 0.5),
+            p.chrome()
+                .iter()
+                .any(|r| (r.height() - BAR_HEIGHT).abs() < 0.5),
             "{:?}",
             p.chrome()
         );

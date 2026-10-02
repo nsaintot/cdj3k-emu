@@ -337,7 +337,11 @@ mod tests {
         // One left behind by a window that went away must not empty the slot
         // the next time its owner starts.
         let path = instance_dir(2).join(DELETE_REQUEST);
-        std::fs::write(&path, (unix_now() - DELETE_REQUEST_TTL_SECS - 5).to_string()).unwrap();
+        std::fs::write(
+            &path,
+            (unix_now() - DELETE_REQUEST_TTL_SECS - 5).to_string(),
+        )
+        .unwrap();
         assert!(!take_delete_request(2), "a stale request is ignored");
         assert!(!path.exists(), "and removed");
 

@@ -108,7 +108,12 @@ mod tests {
 
     #[test]
     fn physical_ethernet_and_wifi_are_kept() {
-        assert!(a("Ethernet", "Intel(R) Ethernet Connection I219-V", IF_TYPE_ETHERNET).bridgeable());
+        assert!(a(
+            "Ethernet",
+            "Intel(R) Ethernet Connection I219-V",
+            IF_TYPE_ETHERNET
+        )
+        .bridgeable());
         assert!(a("Wi-Fi", "Intel(R) Wi-Fi 6 AX201 160MHz", IF_TYPE_WIFI).bridgeable());
         assert!(a("Wi-Fi", "x", IF_TYPE_WIFI).is_wifi());
     }
@@ -116,15 +121,30 @@ mod tests {
     #[test]
     fn virtual_adapters_are_dropped() {
         for (name, desc) in [
-            ("vEthernet (Default Switch)", "Hyper-V Virtual Ethernet Adapter"),
+            (
+                "vEthernet (Default Switch)",
+                "Hyper-V Virtual Ethernet Adapter",
+            ),
             ("Ethernet 3", "TAP-Windows Adapter V9"),
             ("cdj3k-emu-0", "TAP-Windows Adapter V9 #2"),
             ("Network Bridge", "Microsoft MAC Bridge Virtual NIC"),
-            ("Network Bridge", "Microsoft Network Adapter Multiplexor Driver"),
-            ("VMware Network Adapter VMnet1", "VMware Virtual Ethernet Adapter for VMnet1"),
+            (
+                "Network Bridge",
+                "Microsoft Network Adapter Multiplexor Driver",
+            ),
+            (
+                "VMware Network Adapter VMnet1",
+                "VMware Virtual Ethernet Adapter for VMnet1",
+            ),
             ("Ethernet 4", "VirtualBox Host-Only Ethernet Adapter"),
-            ("Local Area Connection* 1", "Microsoft Wi-Fi Direct Virtual Adapter"),
-            ("Bluetooth Network Connection", "Bluetooth Device (Personal Area Network)"),
+            (
+                "Local Area Connection* 1",
+                "Microsoft Wi-Fi Direct Virtual Adapter",
+            ),
+            (
+                "Bluetooth Network Connection",
+                "Bluetooth Device (Personal Area Network)",
+            ),
         ] {
             assert!(!a(name, desc, IF_TYPE_ETHERNET).bridgeable(), "{name}");
         }
@@ -132,7 +152,12 @@ mod tests {
 
     #[test]
     fn both_bridge_adapter_names_are_recognised() {
-        assert!(a("Network Bridge", "Microsoft Network Adapter Multiplexor Driver", 6).is_bridge());
+        assert!(a(
+            "Network Bridge",
+            "Microsoft Network Adapter Multiplexor Driver",
+            6
+        )
+        .is_bridge());
         assert!(a("Network Bridge", "Microsoft MAC Bridge Virtual NIC", 6).is_bridge());
         assert!(!a("Ethernet", "Parallels VirtIO Ethernet Adapter", 6).is_bridge());
     }
@@ -156,7 +181,12 @@ mod tests {
     #[test]
     fn tap_and_bridge_are_recognised() {
         assert!(a("x", "TAP-Windows Adapter V9", IF_TYPE_ETHERNET).is_tap());
-        assert!(a("Network Bridge", "Microsoft MAC Bridge Virtual NIC", IF_TYPE_ETHERNET).is_bridge());
+        assert!(a(
+            "Network Bridge",
+            "Microsoft MAC Bridge Virtual NIC",
+            IF_TYPE_ETHERNET
+        )
+        .is_bridge());
         assert!(!a("Ethernet", "Realtek PCIe GbE", IF_TYPE_ETHERNET).is_tap());
     }
 

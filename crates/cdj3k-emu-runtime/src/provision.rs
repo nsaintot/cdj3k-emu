@@ -47,7 +47,9 @@ impl GuestRunner for QemuGuestRunner {
         // entitled and stops on the first rung.
         let mut output = String::new();
         for accel in self.ladder() {
-            output = spawn_qemu(&provisioning_argv(accel, kernel, initramfs, scratch, self.ssh))?;
+            output = spawn_qemu(&provisioning_argv(
+                accel, kernel, initramfs, scratch, self.ssh,
+            ))?;
             match refused(&output) {
                 Some(reason) => eprintln!("[provision] {accel:?} unavailable ({reason}), retrying"),
                 None => break,
@@ -62,7 +64,12 @@ impl GuestRunner for QemuGuestRunner {
 impl QemuGuestRunner {
     /// The rungs to try: each accelerator, then software emulation (`None`).
     fn ladder(&self) -> Vec<Option<Accelerator>> {
-        self.accelerators.iter().copied().map(Some).chain([None]).collect()
+        self.accelerators
+            .iter()
+            .copied()
+            .map(Some)
+            .chain([None])
+            .collect()
     }
 }
 
@@ -186,7 +193,11 @@ fn spawn_qemu(argv: &[String]) -> Result<String, String> {
             Err(e) => return Err(format!("waiting for the provisioning guest: {e}")),
         }
     }
-    Ok(format!("{}{}", stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default()))
+    Ok(format!(
+        "{}{}",
+        stdout.join().unwrap_or_default(),
+        stderr.join().unwrap_or_default()
+    ))
 }
 
 /// Read `pipe` to its end on a thread of its own.
@@ -305,8 +316,14 @@ mod tests {
     /// SSH is asked for on the kernel command line, and only when chosen.
     #[test]
     fn ssh_rides_the_command_line_only_when_asked() {
-        let (k, i, s) = (Path::new("/k/Image"), Path::new("/k/p.cpio.gz"), Path::new("/k/s.img"));
-        assert!(!provisioning_argv(TCG, k, i, s, false).join(" ").contains("cdj3k.ssh"));
+        let (k, i, s) = (
+            Path::new("/k/Image"),
+            Path::new("/k/p.cpio.gz"),
+            Path::new("/k/s.img"),
+        );
+        assert!(!provisioning_argv(TCG, k, i, s, false)
+            .join(" ")
+            .contains("cdj3k.ssh"));
         let on = provisioning_argv(TCG, k, i, s, true);
         let append = on.iter().skip_while(|a| *a != "-append").nth(1).unwrap();
         assert!(append.ends_with(" cdj3k.ssh=1"), "{append}");

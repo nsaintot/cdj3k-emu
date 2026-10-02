@@ -35,7 +35,7 @@ mod imp;
 #[path = "unsupported.rs"]
 mod imp;
 
-pub use imp::{NetKeepAlive, attach, attach_host_only, run_helper_if_asked, tap_netdev};
+pub use imp::{attach, attach_host_only, run_helper_if_asked, tap_netdev, NetKeepAlive};
 
 use vmnet::VmnetMode;
 

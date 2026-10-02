@@ -173,8 +173,7 @@ fn tcg_notice(why: SoftwareEmulation) -> Notice {
         title: "Software emulation (TCG)".into(),
         body: vec![
             reason,
-            "Expect a slower/unstable emulation, audio pops and tempo drift."
-                .into(),
+            "Expect a slower/unstable emulation, audio pops and tempo drift.".into(),
         ],
     }
 }
@@ -194,7 +193,11 @@ fn emulation(snap: &Snapshot, deck: Option<String>) -> MenuNode {
     ];
     // An actuator opened at startup: a Force Touch trackpad.
     if crate::haptic::available() {
-        rows.push(MenuNode::check(MenuId::Haptic, "Jog Haptics", snap.haptic_enabled));
+        rows.push(MenuNode::check(
+            MenuId::Haptic,
+            "Jog Haptics",
+            snap.haptic_enabled,
+        ));
     }
 
     // The cable needs host-side MIDI and HID endpoints.

@@ -33,7 +33,12 @@ mod tests {
 
     #[test]
     fn a_panel_that_fits_keeps_its_size() {
-        let size = fit_to_monitor(Vec2::new(1000.0, 800.0), 30.0, Vec2::ZERO, Some(Vec2::new(2560.0, 1440.0)));
+        let size = fit_to_monitor(
+            Vec2::new(1000.0, 800.0),
+            30.0,
+            Vec2::ZERO,
+            Some(Vec2::new(2560.0, 1440.0)),
+        );
         assert_eq!(size, Vec2::new(1000.0, 830.0));
         let size = fit_to_monitor(Vec2::new(1000.0, 800.0), 30.0, Vec2::ZERO, None);
         assert_eq!(size, Vec2::new(1000.0, 830.0));
@@ -50,7 +55,12 @@ mod tests {
     #[test]
     fn never_below_the_minimum() {
         let min = Vec2::new(200.0, 290.0);
-        let size = fit_to_monitor(Vec2::new(1000.0, 1300.0), 30.0, min, Some(Vec2::new(300.0, 200.0)));
+        let size = fit_to_monitor(
+            Vec2::new(1000.0, 1300.0),
+            30.0,
+            min,
+            Some(Vec2::new(300.0, 200.0)),
+        );
         assert_eq!(size, min);
     }
 
@@ -59,6 +69,9 @@ mod tests {
         let outer = Rect::from_min_size(Pos2::new(100.0, 50.0), Vec2::new(762.0, 631.0));
         let inner = Rect::from_min_size(Pos2::new(101.0, 80.0), Vec2::new(760.0, 600.0));
         let pos = centred_on(outer, inner, Vec2::new(500.0, 400.0));
-        assert_eq!(pos, Pos2::new(100.0 + (762.0 - 502.0) / 2.0, 50.0 + (631.0 - 431.0) / 2.0));
+        assert_eq!(
+            pos,
+            Pos2::new(100.0 + (762.0 - 502.0) / 2.0, 50.0 + (631.0 - 431.0) / 2.0)
+        );
     }
 }

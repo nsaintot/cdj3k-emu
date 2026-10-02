@@ -75,9 +75,21 @@ mod tests {
         assert_eq!(Kind::of(&root, "eth0"), Some(Kind::Ethernet));
         assert_eq!(Kind::of(&root, "lan"), Some(Kind::Bridge));
         assert_eq!(Kind::of(&root, "vpn0"), Some(Kind::Tap));
-        assert_eq!(Kind::of(&root, "wlo1"), None, "a Wi-Fi station cannot carry the guest");
-        assert_eq!(Kind::of(&root, "en_veth"), None, "no backing device, not a NIC");
-        assert_eq!(Kind::of(&root, "cdj3k1"), None, "our own macvtap is not a parent");
+        assert_eq!(
+            Kind::of(&root, "wlo1"),
+            None,
+            "a Wi-Fi station cannot carry the guest"
+        );
+        assert_eq!(
+            Kind::of(&root, "en_veth"),
+            None,
+            "no backing device, not a NIC"
+        );
+        assert_eq!(
+            Kind::of(&root, "cdj3k1"),
+            None,
+            "our own macvtap is not a parent"
+        );
         assert_eq!(Kind::of(&root, "absent"), None);
 
         let _ = std::fs::remove_dir_all(&root);

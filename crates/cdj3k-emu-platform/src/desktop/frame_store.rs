@@ -43,7 +43,10 @@ fn path() -> PathBuf {
 /// The saved frame for `key`, if there is one.
 pub(super) fn load(key: &str) -> Option<Frame> {
     let text = std::fs::read_to_string(path()).ok()?;
-    parse(&text).into_iter().find(|(k, _)| k == key).map(|(_, f)| f)
+    parse(&text)
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, f)| f)
 }
 
 /// Start watching the window as `key`'s panel.

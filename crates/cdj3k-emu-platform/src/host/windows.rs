@@ -1,9 +1,9 @@
 //! Windows: WHPX on arm64, WASAPI.
 
+use windows::core::PCWSTR;
 use windows::core::{s, w, BOOL};
 use windows::Win32::Foundation::FreeLibrary;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
-use windows::core::PCWSTR;
 use windows::Win32::System::Registry::{
     RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };

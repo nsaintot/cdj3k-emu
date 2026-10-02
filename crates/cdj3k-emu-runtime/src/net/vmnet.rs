@@ -46,7 +46,8 @@ impl VmnetMode {
     /// Bridged onto `iface`, or `None` when the name is not one to put on a
     /// command line.
     pub fn bridged(iface: &str) -> Option<Self> {
-        cdj3k_emu_platform::net::is_valid_iface(iface).then(|| VmnetMode::Bridged(iface.to_string()))
+        cdj3k_emu_platform::net::is_valid_iface(iface)
+            .then(|| VmnetMode::Bridged(iface.to_string()))
     }
 
     /// The `-netdev` argument for this mode.

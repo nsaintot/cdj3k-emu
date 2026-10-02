@@ -443,9 +443,10 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
 
             let attempt = match req.selected_iface {
                 menu_state::NET_SEL_NONE => None,
-                menu_state::NET_SEL_VMNET_HOST => {
-                    Some(("host-only".to_string(), cdj3k_emu_runtime::net_attach_host_only()))
-                }
+                menu_state::NET_SEL_VMNET_HOST => Some((
+                    "host-only".to_string(),
+                    cdj3k_emu_runtime::net_attach_host_only(),
+                )),
                 idx => menu_state::lock()
                     .net_ifaces
                     .get(idx as usize)

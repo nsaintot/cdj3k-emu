@@ -3,8 +3,8 @@
 
 use std::io;
 
-use super::NetAttachment;
 use super::linux_net::LinuxBridge;
+use super::NetAttachment;
 
 /// What an attachment keeps for as long as the guest runs.
 pub enum NetKeepAlive {
@@ -50,7 +50,10 @@ mod tests {
 
     #[test]
     fn the_tap_netdev_is_the_descriptor() {
-        assert_eq!(tap_netdev("net0", Some("cdj3k0"), Some(7)).as_deref(), Some("tap,id=net0,fd=7"));
+        assert_eq!(
+            tap_netdev("net0", Some("cdj3k0"), Some(7)).as_deref(),
+            Some("tap,id=net0,fd=7")
+        );
         assert_eq!(tap_netdev("net0", None, None), None);
     }
 

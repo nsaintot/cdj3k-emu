@@ -6,9 +6,7 @@ use std::io;
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, WAIT_OBJECT_0};
 use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
-use windows::Win32::UI::Shell::{
-    ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
-};
+use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 pub fn run_elevated(cmd: &str) -> io::Result<()> {
@@ -56,6 +54,8 @@ pub fn run_elevated(cmd: &str) -> io::Result<()> {
         Some(code) => Err(io::Error::other(format!(
             "elevated command failed with status {code}"
         ))),
-        None => Err(io::Error::other("could not read the elevated command's exit code")),
+        None => Err(io::Error::other(
+            "could not read the elevated command's exit code",
+        )),
     }
 }

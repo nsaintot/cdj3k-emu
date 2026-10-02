@@ -79,7 +79,9 @@ impl WindowsBridge {
             ));
         }
         if !winbridge::is_cmd_safe_path(&dir) {
-            return Err(invalid(format!("path not usable on a command line: {dir:?}")));
+            return Err(invalid(format!(
+                "path not usable on a command line: {dir:?}"
+            )));
         }
 
         runtime_paths::ensure_runtime_base_dir()?;

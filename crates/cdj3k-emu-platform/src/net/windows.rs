@@ -12,15 +12,18 @@ use windows::Win32::NetworkManagement::IpHelper::{
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows::Win32::Networking::WinSock::{AF_INET, AF_UNSPEC, SOCKADDR_IN};
 
-use super::NetIf;
 use super::windows_kind::Adapter;
+use super::NetIf;
 
 pub const HOST_ONLY: bool = false;
 
 pub fn enumerate() -> Vec<NetIf> {
     let all = adapters();
     // A bridge member's address is the bridge's: Windows has at most one.
-    let bridge_ipv4 = all.iter().find(|a| a.is_bridge()).and_then(|a| a.ipv4.clone());
+    let bridge_ipv4 = all
+        .iter()
+        .find(|a| a.is_bridge())
+        .and_then(|a| a.ipv4.clone());
     all.into_iter()
         .filter(Adapter::bridgeable)
         .map(|a| {
@@ -52,10 +55,8 @@ fn adapters() -> Vec<Adapter> {
         if GetIfTable2(&mut table).is_err() || table.is_null() {
             return Vec::new();
         }
-        let rows = std::slice::from_raw_parts(
-            (*table).Table.as_ptr(),
-            (*table).NumEntries as usize,
-        );
+        let rows =
+            std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize);
         let out = rows
             .iter()
             .filter(|r| r.InterfaceAndOperStatusFlags._bitfield & FILTER_INTERFACE == 0)
@@ -89,7 +90,8 @@ fn ipv4_by_luid() -> HashMap<u64, (String, u8)> {
         buf.resize((len as usize).div_ceil(8), 0);
         let head = buf.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
         // SAFETY: `head` points at at least `len` writable bytes.
-        let rc = unsafe { GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, Some(head), &mut len) };
+        let rc =
+            unsafe { GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, Some(head), &mut len) };
         if rc == ERROR_BUFFER_OVERFLOW.0 {
             continue;
         }

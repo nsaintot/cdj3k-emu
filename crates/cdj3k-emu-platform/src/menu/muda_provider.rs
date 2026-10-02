@@ -419,7 +419,10 @@ mod tests {
 
     #[test]
     fn a_notice_paragraph_wraps_at_spaces() {
-        let lines = wrap("Host is x86_64, target is arm64 and virtualizes only same-arch guests.", 24);
+        let lines = wrap(
+            "Host is x86_64, target is arm64 and virtualizes only same-arch guests.",
+            24,
+        );
         assert!(lines.iter().all(|l| l.chars().count() <= 24), "{lines:?}");
         assert_eq!(
             lines.join(" "),
@@ -429,6 +432,9 @@ mod tests {
 
     #[test]
     fn a_word_longer_than_the_line_stands_alone() {
-        assert_eq!(wrap("a CDJ3K_EMU_TCG_IS_SET b", 5), ["a", "CDJ3K_EMU_TCG_IS_SET", "b"]);
+        assert_eq!(
+            wrap("a CDJ3K_EMU_TCG_IS_SET b", 5),
+            ["a", "CDJ3K_EMU_TCG_IS_SET", "b"]
+        );
     }
 }

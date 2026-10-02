@@ -23,9 +23,9 @@
 //! / connect failure, the writer methods retry briefly while QEMU is still
 //! bringing the port up.
 
+use cdj3k_emu_platform::local_socket::LocalStream as UnixStream;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use cdj3k_emu_platform::local_socket::LocalStream as UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;

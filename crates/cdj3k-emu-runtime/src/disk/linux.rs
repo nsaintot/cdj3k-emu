@@ -270,7 +270,14 @@ fn splice_allocated(src: &Path, dst: &Path, dst_offset: u64) -> std::io::Result<
         let data = unsafe { libc::lseek(fd, pos as libc::off_t, libc::SEEK_DATA) };
         let (from, to) = if data >= 0 {
             let hole = unsafe { libc::lseek(fd, data, libc::SEEK_HOLE) };
-            (data as u64, if hole < 0 { end } else { (hole as u64).min(end) })
+            (
+                data as u64,
+                if hole < 0 {
+                    end
+                } else {
+                    (hole as u64).min(end)
+                },
+            )
         } else {
             match std::io::Error::last_os_error().raw_os_error() {
                 // Nothing allocated past `pos`: the rest is a hole.
@@ -306,7 +313,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cdj3k-holders-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = std::fs::File::create(dir.join("held")).unwrap();
-        let me = std::fs::read_to_string("/proc/self/comm").unwrap().trim().to_string();
+        let me = std::fs::read_to_string("/proc/self/comm")
+            .unwrap()
+            .trim()
+            .to_string();
         assert!(holders_of(&dir).contains(&me));
         drop(file);
         std::fs::remove_dir_all(&dir).unwrap();

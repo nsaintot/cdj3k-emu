@@ -2,7 +2,7 @@
 //! viewport commands, the file picker is the host's native dialog via rfd,
 //! and the process has no activation or naming hook to reach.
 
-use super::{first_frame, MIN_WINDOW_W, PICKER_SIZE, panel_initial_size};
+use super::{first_frame, panel_initial_size, MIN_WINDOW_W, PICKER_SIZE};
 use cdj3k_emu_panel::Model;
 
 /// Stands in for "no maximum" when clearing one.
@@ -52,7 +52,10 @@ pub fn enter_panel_window(
         NO_WINDOW_LIMIT,
         NO_WINDOW_LIMIT,
     )));
-    let min = egui::vec2(MIN_WINDOW_W, MIN_WINDOW_W * (ref_canvas.1 / ref_canvas.0) + bar);
+    let min = egui::vec2(
+        MIN_WINDOW_W,
+        MIN_WINDOW_W * (ref_canvas.1 / ref_canvas.0) + bar,
+    );
     ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(min));
     let key = super::frame_key(instance_id, model);
     let saved = super::frame_store::load(&key);

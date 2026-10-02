@@ -85,7 +85,10 @@ impl Drop for Lease {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        eprintln!("cdj3k-emu: the link's watcher did not answer within {}s", RELEASE_TIMEOUT.as_secs());
+        eprintln!(
+            "cdj3k-emu: the link's watcher did not answer within {}s",
+            RELEASE_TIMEOUT.as_secs()
+        );
     }
 }
 
@@ -113,8 +116,13 @@ mod tests {
         let dir = temp_dir("shape");
         let lease = Lease::take(&dir).unwrap();
         assert!(is_claim(lease.claim()), "{}", lease.claim());
-        assert!(lease.claim().starts_with(&format!("{}-", std::process::id())));
-        assert_eq!(fs::read_to_string(dir.join(CLAIM_FILE)).unwrap(), lease.claim());
+        assert!(lease
+            .claim()
+            .starts_with(&format!("{}-", std::process::id())));
+        assert_eq!(
+            fs::read_to_string(dir.join(CLAIM_FILE)).unwrap(),
+            lease.claim()
+        );
         drop(lease);
         let _ = fs::remove_dir_all(&dir);
     }
