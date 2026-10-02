@@ -18,6 +18,10 @@
 #   build/Image
 #   build/initramfs-patched.cpio.gz
 #
+# --artifacts-only stops after the Docker build: build/Image, build/docker-out/
+# and guest/out/, which is everything the packaging stagers take.
+# It needs no Pioneer rootfs.
+#
 # Prerequisites:
 #   docker with BuildKit support (Docker Desktop / OrbStack)
 
@@ -25,6 +29,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 CLEAN_AFTER_BUILD=0
+ARTIFACTS_ONLY=0
 # SSH access (dropbear on port 2222) is dev-only.  Off by default for shipping
 # builds: the SSH-related rootfs patches (02-dropbear-key, 03-dropbear-enable,
 # 04-root-password) are no-ops unless this is set.  Enabling SSH leaves a
@@ -35,15 +40,17 @@ for arg in "$@"; do
     case "$arg" in
         --clean)      CLEAN_AFTER_BUILD=1 ;;
         --enable-ssh) ENABLE_SSH=1 ;;
+        --artifacts-only) ARTIFACTS_ONLY=1 ;;
         -h|--help)
-            echo "Usage: ./build.sh [--clean] [--enable-ssh]"
-            echo "  --clean        remove unpacked rootfs workspace after build"
-            echo "  --enable-ssh   enable dropbear + passwordless root (dev only)"
+            echo "Usage: ./build.sh [--clean] [--enable-ssh] [--artifacts-only]"
+            echo "  --clean            remove unpacked rootfs workspace after build"
+            echo "  --enable-ssh       enable dropbear + passwordless root (dev only)"
+            echo "  --artifacts-only   kernel, modules and guest tools only; no initramfs"
             exit 0
             ;;
         *)
             echo "ERROR: unknown argument: $arg" >&2
-            echo "Usage: ./build.sh [--clean] [--enable-ssh]" >&2
+            echo "Usage: ./build.sh [--clean] [--enable-ssh] [--artifacts-only]" >&2
             exit 1
             ;;
     esac
@@ -56,8 +63,9 @@ DOCKER_OUT="$REPO_ROOT/build/docker-out"
 # with an unchanged Dockerfile. mode=max keeps intermediate layers, not just
 # the tiny scratch export stage. Requires a docker-container buildx builder
 # (see docker/ensure-buildx-builder.sh) - the default "docker" driver cannot
-# --cache-to type=local.
-DOCKER_CACHE="$REPO_ROOT/build/docker-cache"
+# --cache-to type=local. CDJ3K_DOCKER_CACHE overrides the directory; `gha` puts
+# the layers in the GitHub Actions cache instead.
+DOCKER_CACHE="${CDJ3K_DOCKER_CACHE-$REPO_ROOT/build/docker-cache}"
 DOCKER_BUILDER="$("$REPO_ROOT/docker/ensure-buildx-builder.sh")"
 WORKDIR="$REPO_ROOT/build/work"
 ROOTFS_DIR="$WORKDIR/rootfs"
@@ -70,7 +78,7 @@ echo "================================================================"
 echo ""
 
 # Ensure Pioneer rootfs source exists
-if [[ ! -f "$INITRAMFS_ORIG" ]]; then
+if [[ "$ARTIFACTS_ONLY" -eq 0 && ! -f "$INITRAMFS_ORIG" ]]; then
     echo "ERROR: source initramfs not found: $INITRAMFS_ORIG" >&2
     exit 1
 fi
@@ -78,14 +86,20 @@ fi
 # [1/5] Build kernel + modules + tools via Docker
 echo "[1/5] Building artifacts (docker/Dockerfile - target artifacts)..."
 rm -rf "$DOCKER_OUT"
-mkdir -p "$DOCKER_CACHE"
+if [[ "$DOCKER_CACHE" == gha ]]; then
+    CACHE_ARGS=(--cache-from "type=gha,scope=guest"
+                --cache-to "type=gha,scope=guest,mode=max")
+else
+    mkdir -p "$DOCKER_CACHE"
+    CACHE_ARGS=(--cache-from "type=local,src=$DOCKER_CACHE"
+                --cache-to "type=local,dest=$DOCKER_CACHE,mode=max")
+fi
 docker buildx build \
     --builder "$DOCKER_BUILDER" \
     --platform linux/arm64 \
     --provenance=false \
     --target artifacts \
-    --cache-from "type=local,src=$DOCKER_CACHE" \
-    --cache-to "type=local,dest=$DOCKER_CACHE,mode=max" \
+    "${CACHE_ARGS[@]}" \
     --output "type=local,dest=$DOCKER_OUT" \
     -f "$REPO_ROOT/docker/Dockerfile" \
     "$REPO_ROOT"
@@ -94,6 +108,23 @@ echo ""
 # Copy kernel image to canonical path
 cp "$DOCKER_OUT/Image" "$REPO_ROOT/build/Image"
 echo "  ✓  Image → build/Image"
+
+# Save tools to guest/out/ for the packaging stagers
+mkdir -p "$REPO_ROOT/guest/out"
+# Every one of these is required: packaging/macos/stage.sh refuses a bundle without cfgd or
+# pc_link_bridge, and the patch scripts abort the rootfs provision when a tool
+# they install is missing - long after a silently incomplete build looked fine
+# here.
+for bin in deck_shim.so subucom_forwarder_aarch64 subucom_live_aarch64 cfgd_aarch64 \
+           pc_link_bridge_aarch64; do
+    cp "$DOCKER_OUT/$bin" "$REPO_ROOT/guest/out/$bin"
+done
+
+if [[ "$ARTIFACTS_ONLY" -eq 1 ]]; then
+    echo ""
+    echo "  Artifacts: build/Image, build/docker-out/, guest/out/"
+    exit 0
+fi
 
 # [2/5] Restore Pioneer rootfs
 echo "[2/5] Restoring rootfs from: $INITRAMFS_ORIG"
@@ -133,16 +164,6 @@ mkdir -p "$ROOTFS_DIR/home/root"
 cp "$DOCKER_OUT/deck_shim.so" "$ROOTFS_DIR/home/root/deck_shim.so"
 chmod 755 "$ROOTFS_DIR/home/root/deck_shim.so"
 
-# Save tools to guest/out/ for the packaging stagers
-mkdir -p "$REPO_ROOT/guest/out"
-# Every one of these is required: packaging/macos/stage.sh refuses a bundle without cfgd or
-# pc_link_bridge, and the patch scripts abort the rootfs provision when a tool
-# they install is missing - long after a silently incomplete build looked fine
-# here.
-for bin in deck_shim.so subucom_forwarder_aarch64 subucom_live_aarch64 cfgd_aarch64 \
-           pc_link_bridge_aarch64; do
-    cp "$DOCKER_OUT/$bin" "$REPO_ROOT/guest/out/$bin"
-done
 
 USB_IMG_SRC="$REPO_ROOT/build/usb.img"
 if [[ -f "$USB_IMG_SRC" ]]; then

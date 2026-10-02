@@ -29,7 +29,8 @@
 #                    (prompts for an app-specific password from appleid.apple.com).
 #   --notary-profile NAME
 #                    keychain profile for --notarize (default: cdj3k-emu-notarization;
-#                    NOTARY_PROFILE env var overrides).
+#                    NOTARY_PROFILE env var overrides).  NOTARY_KEYCHAIN names the
+#                    keychain that holds it when that is not the default one.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
@@ -61,6 +62,7 @@ SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 MAKE_DMG=0
 NOTARIZE=0
 NOTARY_PROFILE="${NOTARY_PROFILE:-cdj3k-emu-notarization}"
+NOTARY_KEYCHAIN="${NOTARY_KEYCHAIN:-}"
 PROVISION_PROFILE="${PROVISION_PROFILE:-$REPO_ROOT/cdj3k-emu.provisionprofile}"
 
 while [[ $# -gt 0 ]]; do
@@ -78,6 +80,10 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
+if [[ -n "$NOTARY_KEYCHAIN" ]]; then
+    NOTARY_AUTH+=(--keychain "$NOTARY_KEYCHAIN")
+fi
 
 # Notarization is an Apple-side check of a Developer ID signature: it is
 # meaningless (and refused by notarytool) for ad-hoc or Apple Development
@@ -88,7 +94,7 @@ if [[ "$NOTARIZE" -eq 1 ]]; then
         echo "       (got: '${SIGN_IDENTITY:-ad-hoc}')" >&2
         exit 1
     fi
-    if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+    if ! xcrun notarytool history "${NOTARY_AUTH[@]}" >/dev/null 2>&1; then
         echo "ERROR: no notarytool credentials under keychain profile '$NOTARY_PROFILE'." >&2
         echo "       Store them once (needs an app-specific password from appleid.apple.com):" >&2
         echo "         xcrun notarytool store-credentials $NOTARY_PROFILE \\" >&2
@@ -224,14 +230,14 @@ notarize_path() {
     log=$(mktemp -t notary-log)
     TMP_CLEANUP+=("$log")
     echo "==> Notarizing $(basename "$what") (profile: $NOTARY_PROFILE)"
-    if ! xcrun notarytool submit "$what" --keychain-profile "$NOTARY_PROFILE" \
+    if ! xcrun notarytool submit "$what" "${NOTARY_AUTH[@]}" \
             --wait 2>&1 | tee "$log"; then
         local id
         id=$(awk '/^ *id:/{print $2; exit}' "$log")
         echo "ERROR: notarization of $(basename "$what") failed" >&2
         if [[ -n "$id" ]]; then
             echo "       Apple's log for submission $id:" >&2
-            xcrun notarytool log "$id" --keychain-profile "$NOTARY_PROFILE" >&2 || true
+            xcrun notarytool log "$id" "${NOTARY_AUTH[@]}" >&2 || true
         fi
         exit 1
     fi
