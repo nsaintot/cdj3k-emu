@@ -1,6 +1,6 @@
 # Platform support
 
-The emulator runs on **macOS** (Apple silicon), **Linux** (aarch64 and
+The emulator runs on **macOS** (Apple silicon and Intel, one universal app), **Linux** (aarch64 and
 x86_64) and **Windows** (arm64 and x64, native Win32). The guest is the same
 aarch64 payload everywhere (kernel `Image`, modules, shim, static tools) and is
 built once by `docker/Dockerfile`. Only the host half differs, and it differs
@@ -14,8 +14,8 @@ passthrough or native window integration.
 
 | Feature | macOS | Linux | Windows | Other hosts |
 | --- | --- | --- | --- | --- |
-| Accelerator | HVF; in-kernel vGIC on macOS 15+, emulated GIC otherwise | KVM on aarch64 with a readable `/dev/kvm` | WHPX on arm64 (Windows 11 24H2, build 26100.3915+, Hypervisor Platform on); in-kernel vGICv3 | none |
-| No accelerator | — | TCG on x86_64, or when `/dev/kvm` is missing or unreadable | TCG on x64, or when WHPX is off or the build is older | TCG |
+| Accelerator | HVF on Apple silicon; in-kernel vGIC, emulated GIC when refused | KVM on aarch64 with a readable `/dev/kvm` | WHPX on arm64 (Windows 11 24H2, build 26100.3915+, Hypervisor Platform on); in-kernel vGICv3 | none |
+| No accelerator | TCG on Intel | TCG on x86_64, or when `/dev/kvm` is missing or unreadable | TCG on x64, or when WHPX is off or the build is older | TCG |
 | QEMU process | re-exec of the app with `--qemu-worker`, QEMU linked as `libcdj3k-emu-qemu.dylib` | `qemu-system-aarch64` shipped beside the app | `qemu-system-aarch64.exe` in `bin\`, in a kill-on-close job object | shipped executable |
 | Audio backend | `coreaudio`, device by UID | `pipewire`, sink by node name, `out.fixed-settings=off` | `wasapi`, endpoint by IMMDevice id (`out.dev=`) | no `-audiodev` |
 | Low-latency path | host bypass ring (patch 08), drained by the IOProc | the same ring, drained by the PipeWire process callback (patch 14) | the same ring, drained by the WASAPI event thread (patch 18) | — |
@@ -40,7 +40,8 @@ serial over AF_UNIX sockets (Windows 10 1803+ included), the eMMC claim
 ## Software emulation (TCG)
 
 `host::software_emulation()` names why a host runs under TCG; the in-window
-strip shows it as a gauge beside the slot pill, with the reason on hover. A TCG guest gets
+strip shows it as a gauge beside the slot pill, with the reason on hover, and
+the macOS menu bar as a last `TCG` menu holding the same text. A TCG guest gets
 `cdj3k.snd_period=512` on its kernel command line: `insmod-virtio-snd` loads
 `virtio_snd` with a 512-frame ALSA period instead of the player's 64, which a
 TCG guest cannot wake for in time. Each QEMU TX buffer stays 1024 frames.
@@ -134,6 +135,20 @@ mirror).
 QEMU is built by `qemu/build.sh` at the pinned `QEMU_REF` with
 `qemu/patches/*.patch` applied in order: `--enable-hvf --enable-cocoa` on
 macOS, `--enable-kvm --enable-pipewire` on Linux.
+
+For the universal `.app`, `qemu/build.sh --macos arm64|x86_64` builds one
+slice into `qemu/install-macos-<arch>/`, cross-compiling when the arch is not
+the build Mac's (an empty `--cross-prefix` with `--cpu`, so the TCG backend
+follows the slice). HVF is on for arm64 only. `qemu/macos-deps.sh` first
+builds glib, pixman, libslirp and libusb as static archives into
+`qemu/deps-macos-<arch>/`; the slice links nothing outside the OS, and the
+libraries it does not build (gnutls, curl, libssh, capstone, zstd, png) are
+configured off. Everything is compiled for the 15.0 deployment target with
+`-Werror=unguarded-availability(-new)`, and a `HAVE_<call>` that a
+configure check found in a newer SDK (`pipe2` in the 27 SDK) is dropped from
+the generated `config.h`. `bundle.sh --universal` builds the app for both
+Rust targets against those slices and merges each file with `lipo`; the
+CoreMIDI plugin builds with both `-arch` flags.
 
 For Windows, `qemu/build.sh --windows x86_64|aarch64` builds `--enable-slirp`
 (plus `--enable-whpx` on aarch64) into `qemu/install-windows-<arch>/`:

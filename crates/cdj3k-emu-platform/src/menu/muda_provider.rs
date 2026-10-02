@@ -10,7 +10,7 @@ use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
 use super::id::MenuId;
-use super::model::{same_shape, MenuModel, MenuNode, Predefined};
+use super::model::{same_shape, MenuModel, MenuNode, Notice, Predefined};
 use super::provider::MenuProvider;
 
 /// A native menu has one text column, so a trailing value joins the label.
@@ -79,6 +79,8 @@ struct Installed {
     /// the `Rc` chain those pointers address.
     _root: Menu,
     natives: Vec<Native>,
+    /// The notice's menu, after the model's roots.
+    _notice: Option<Submenu>,
     /// What is currently on screen, to compare the next model against.
     shown: MenuModel,
 }
@@ -118,14 +120,57 @@ fn install(model: &MenuModel) -> Installed {
         append_to_root(&root, node, &native);
         natives.push(native);
     }
+    // The service reads the notice once per window, so it is built once.
+    let notice = model.notice.as_ref().map(notice_menu);
+    if let Some(menu) = &notice {
+        root.append(menu).ok();
+    }
 
     root.init_for_nsapp();
 
     Installed {
         _root: root,
         natives,
+        _notice: notice,
         shown: model.clone(),
     }
+}
+
+/// The strip's notice card as a menu: the title, then each paragraph as
+/// disabled rows, one line each.
+fn notice_menu(notice: &Notice) -> Submenu {
+    let menu = Submenu::new("TCG", true);
+    menu.append(&MenuItem::new(&notice.title, false, None)).ok();
+    for paragraph in &notice.body {
+        menu.append(&PredefinedMenuItem::separator()).ok();
+        for line in wrap(paragraph, NOTICE_LINE) {
+            menu.append(&MenuItem::new(line, false, None)).ok();
+        }
+    }
+    menu
+}
+
+/// Characters per notice row: a menu row does not wrap.
+const NOTICE_LINE: usize = 60;
+
+/// `text` broken at spaces into lines of at most `width` characters; a word
+/// longer than that is a line of its own.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 // ── Building ──────────────────────────────────────────────────────────────────
@@ -365,5 +410,25 @@ fn update(native: &mut Native, old: &MenuNode, new: &MenuNode) {
             reconcile_level(children, old_children, new_children, Some(&handle));
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_notice_paragraph_wraps_at_spaces() {
+        let lines = wrap("Host is x86_64, target is arm64 and virtualizes only same-arch guests.", 24);
+        assert!(lines.iter().all(|l| l.chars().count() <= 24), "{lines:?}");
+        assert_eq!(
+            lines.join(" "),
+            "Host is x86_64, target is arm64 and virtualizes only same-arch guests."
+        );
+    }
+
+    #[test]
+    fn a_word_longer_than_the_line_stands_alone() {
+        assert_eq!(wrap("a CDJ3K_EMU_TCG_IS_SET b", 5), ["a", "CDJ3K_EMU_TCG_IS_SET", "b"]);
     }
 }

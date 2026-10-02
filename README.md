@@ -66,7 +66,7 @@ do with real CDJs on a physical LAN when you're on vacation.
 > - Not a turntable replacement. Jog wheel and rotary feel are reproduced via
 >   pointer drag + scroll wheel; there's no support for an external MIDI
 >   controller bridging into the emulated SPI bus.
-> - macOS on Apple silicon, Linux (aarch64, x86_64) and Windows (arm64, x64) only;
+> - macOS (Apple silicon, Intel), Linux (aarch64, x86_64) and Windows (arm64, x64) only;
 >   see [Platform support](docs/platform-support.md) for what differs.
 > - **Not compatible with pre-3.00 firmware.** See _Firmware compatibility_
 >   below — on the CDJ-3000, only firmware 3.00 and newer is accepted.
@@ -122,16 +122,13 @@ user's responsibility, by whatever means they are themselves entitled to.
 
 ### macOS
 
-- **macOS 13 (Ventura) or newer**, Apple Silicon (M1/M2/M3/M4).
-- **macOS 15 (Sequoia) is strongly recommended.** cdj3k-emu auto-detects
-  the host version at every spawn:
-  - 15+ → QEMU uses Apple's **in-kernel ARM vGIC** (`hv_gic_create`).
-    Drops the per-IRQ vCPU-exit cost dramatically. EP122's chatty IRQ
-    pattern is the dominant cost driver for HVF guests, so this is a
-    big perf win on 15+.
-  - 13 / 14 → QEMU falls back to **userspace GIC emulation**
-    (`kernel-irqchip=off`). Functional but noticeably more CPU per
-    instance; you'll feel it most when running multiple slots at once.
+- **macOS 15 (Sequoia) or newer**, one universal app.
+- **Apple silicon runs under HVF** with Apple's **in-kernel ARM vGIC**
+  (`hv_gic_create`), which drops the per-IRQ vCPU-exit cost EP122's IRQ load
+  is dominated by. Should the vGIC be refused, QEMU falls back to
+  userspace GIC emulation (`kernel-irqchip=off`).
+- **Intel runs under software emulation (TCG)**: HVF virtualizes only x86
+  guests there.
 
 ### Linux
 
@@ -252,10 +249,18 @@ changes.
 ./bundle.sh --sign "Apple Development"                 # real cert (enables Full Disk Access)
 ./bundle.sh --sign "Developer ID Application" --dmg    # distributable .dmg
 
+# The universal .app (arm64 + x86_64): one QEMU per arch, built against static
+# libraries from qemu/macos-deps.sh at the macOS 15.0 deployment target, then
+# the two slices merged by lipo. Builds on either kind of Mac; needs
+# `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
+./qemu/build.sh --macos arm64
+./qemu/build.sh --macos x86_64
+./bundle.sh --universal --sign "Developer ID Application" --dmg
+
 # A release build: Developer ID, notarized and stapled .app and .dmg. Store the
 # notary credentials (an app-specific password from appleid.apple.com) once:
 xcrun notarytool store-credentials cdj3k-emu-notarization --apple-id <APPLE_ID> --team-id <TEAM_ID>
-./bundle.sh --sign "Developer ID Application" --dmg --notarize
+./bundle.sh --universal --sign "Developer ID Application" --dmg --notarize
 ```
 
 ### Linux

@@ -3,6 +3,8 @@
 PLUGIN  := CDJ3KEmuMIDI.plugin
 DEST    := $(HOME)/Library/Audio/MIDI Drivers
 CFLAGS  ?= -O2 -Wall -Wextra
+# bundle.sh --universal: -arch arm64 -arch x86_64
+ARCHFLAGS ?=
 LDLIBS  := -framework CoreMIDI -framework CoreFoundation
 
 SRCS    := plugin.c device.c link.c
@@ -19,7 +21,7 @@ $(PLUGIN): $(SRCS) driver.h Info.plist
 	 fi
 	mkdir -p "$(PLUGIN)/Contents/MacOS"
 	cp Info.plist "$(PLUGIN)/Contents/Info.plist"
-	$(CC) $(CFLAGS) -bundle -o "$(PLUGIN)/Contents/MacOS/CDJ3KEmuMIDI" \
+	$(CC) $(CFLAGS) $(ARCHFLAGS) -bundle -o "$(PLUGIN)/Contents/MacOS/CDJ3KEmuMIDI" \
 	    $(SRCS) $(LDLIBS)
 	codesign --force --sign - "$(PLUGIN)"
 
