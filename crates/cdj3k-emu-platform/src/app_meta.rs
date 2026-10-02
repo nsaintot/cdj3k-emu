@@ -1,6 +1,6 @@
 //! Single source of truth for human-facing app identity strings.
 //!
-//! `BUNDLE_ID` must stay in sync with `bundle.sh` (`CFBundleIdentifier`) —
+//! `BUNDLE_ID` must stay in sync with `packaging/macos/stage.sh` (`CFBundleIdentifier`) —
 //! it is the canonical macOS app-data directory name under
 //! `~/Library/Application Support/<BUNDLE_ID>/` (see `cdj3k-emu-storage`).
 
@@ -11,6 +11,6 @@ pub const APP_DISPLAY_NAME: &str = "CDJ3K Emulator";
 /// Window compositor identifier.
 pub const APP_ID: &str = "cdj3k-emu";
 
-/// macOS bundle identifier - mirrors `CFBundleIdentifier` in `bundle.sh`.
+/// macOS bundle identifier - mirrors `CFBundleIdentifier` in `packaging/macos/stage.sh`.
 /// Used as the per-user data directory name under `Application Support`.
 pub const BUNDLE_ID: &str = "com.cdj3k.emu";

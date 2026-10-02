@@ -16,7 +16,7 @@ set -euo pipefail
 : "${PATCH_ASSETS_DIR:?PATCH_ASSETS_DIR must be set by dispatcher}"
 : "${APP_NAME:?APP_NAME must be set by dispatcher}"
 
-# Locate the binary: bundle.sh stages it into PATCH_ASSETS_DIR, build.sh
+# Locate the binary: packaging/macos/stage.sh stages it into PATCH_ASSETS_DIR, build.sh
 # leaves it in guest/out/ (mirrors patch 21 for cfgd).
 if [[ -f "$PATCH_ASSETS_DIR/pc_link_bridge_aarch64" ]]; then
     BIN="$PATCH_ASSETS_DIR/pc_link_bridge_aarch64"

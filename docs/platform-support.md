@@ -80,7 +80,9 @@ does not see a deck bridged on a NIC. Pick a bridge built by hand instead.
 
 ## Packaging
 
-**macOS:** one `.app` in a DMG. The `--qemu-worker` re-exec keeps the vmnet
+**macOS:** one universal `.app` in a DMG. `packaging/macos/stage.sh` builds
+`dist/macos/CDJ3K Emulator.app` and `packaging/macos/build.sh` signs a copy in
+`dist/`, notarizes it and makes the DMG. The `--qemu-worker` re-exec keeps the vmnet
 entitlement on the process that opens vmnet; a nested helper binary cannot
 carry it.
 
@@ -146,7 +148,7 @@ libraries it does not build (gnutls, curl, libssh, capstone, zstd, png) are
 configured off. Everything is compiled for the 15.0 deployment target with
 `-Werror=unguarded-availability(-new)`, and a `HAVE_<call>` that a
 configure check found in a newer SDK (`pipe2` in the 27 SDK) is dropped from
-the generated `config.h`. `bundle.sh --universal` builds the app for both
+the generated `config.h`. `packaging/macos/stage.sh --arch universal` builds the app for both
 Rust targets against those slices and merges each file with `lipo`; the
 CoreMIDI plugin builds with both `-arch` flags.
 

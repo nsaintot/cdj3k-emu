@@ -14,9 +14,9 @@
 #
 # vanilla-modules/ is expected at $PATCH_ASSETS_DIR/vanilla-modules/ -
 #   staged by build-initramfs.sh (from build/docker-out/modules/)
-#   and by bundle.sh (into Contents/Resources/patch/vanilla-modules/).
+#   and by packaging/macos/stage.sh (into Contents/Resources/patch/vanilla-modules/).
 # dummy_drv.so is expected at $PATCH_ASSETS_DIR/dummy_drv.so -
-#   staged by build-initramfs.sh and copied by bundle.sh.
+#   staged by build-initramfs.sh and copied by packaging/macos/stage.sh.
 
 set -eu
 : "${APP_UNIT:?APP_UNIT must be set by dispatcher}"
@@ -83,7 +83,7 @@ done
 # 25-xorg-headless.sh configures X to fall back to Driver "dummy" when
 # /dev/dri/card0 is absent.  dummy_drv.so must be in the Xorg drivers dir.
 # build-initramfs.sh stages it at $PATCH_ASSETS_DIR/dummy_drv.so;
-# bundle.sh places it at Contents/Resources/patch/dummy_drv.so for the wizard.
+# packaging/macos/stage.sh places it at Contents/Resources/patch/dummy_drv.so for the wizard.
 DUMMY_SRC="${PATCH_ASSETS_DIR}/dummy_drv.so"
 DUMMY_DST="${ROOTFS}/usr/lib/xorg/modules/drivers/dummy_drv.so"
 if [ -f "$DUMMY_SRC" ]; then

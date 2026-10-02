@@ -121,7 +121,7 @@ echo "  ✓  staged dummy_drv.so"
 
 # Install shared tools into rootfs.  The Docker artifacts carry an `_aarch64`
 # suffix; strip it on install because the services (e.g. subucom-forwarder.service
-# ExecStart=/usr/bin/subucom_forwarder) reference the bare name.  bundle.sh's
+# ExecStart=/usr/bin/subucom_forwarder) reference the bare name.  packaging/macos/stage.sh's
 # .app path strips it the same way.
 mkdir -p "$ROOTFS_DIR/usr/bin"
 for tool in subucom_live subucom_forwarder; do
@@ -133,9 +133,9 @@ mkdir -p "$ROOTFS_DIR/home/root"
 cp "$DOCKER_OUT/deck_shim.so" "$ROOTFS_DIR/home/root/deck_shim.so"
 chmod 755 "$ROOTFS_DIR/home/root/deck_shim.so"
 
-# Save tools to guest/out/ for bundle.sh
+# Save tools to guest/out/ for the packaging stagers
 mkdir -p "$REPO_ROOT/guest/out"
-# Every one of these is required: bundle.sh refuses a bundle without cfgd or
+# Every one of these is required: packaging/macos/stage.sh refuses a bundle without cfgd or
 # pc_link_bridge, and the patch scripts abort the rootfs provision when a tool
 # they install is missing - long after a silently incomplete build looked fine
 # here.

@@ -7,7 +7,7 @@
 //! vmnet refuses both unless the calling process is root or carries the
 //! `com.apple.developer.networking.vmnet` entitlement.  That entitlement is
 //! signed onto `cdj3k-emu` and authorised by
-//! `Contents/embedded.provisionprofile` (see `bundle.sh`).  Entitlements are
+//! `Contents/embedded.provisionprofile` (see `packaging/macos/build.sh`).  Entitlements are
 //! process-wide, so QEMU reaches vmnet through them from inside
 //! libcdj3k-emu-qemu.dylib - the same arrangement HVF uses.
 //!
