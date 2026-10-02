@@ -151,25 +151,30 @@ fn provisioning_argv(
 }
 
 /// Run QEMU to completion and return everything it printed.
+///
+/// The pipes are read while QEMU runs: the guest console is on stdout, and a
+/// full pipe would stop QEMU mid-boot.
 fn spawn_qemu(argv: &[String]) -> Result<String, String> {
     let mut cmd = crate::qemu_exec::qemu_command(None)
         .map_err(|e| format!("locating QEMU: {e}"))?
         .with_argv(argv);
 
-    let child = cmd
+    let mut child = cmd
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not start the provisioning guest: {e}"))?;
 
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
     let started = std::time::Instant::now();
-    let mut child = child;
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) => {
                 if started.elapsed() > TIMEOUT {
                     let _ = child.kill();
+                    let _ = child.wait();
                     return Err(format!(
                         "the provisioning guest did not finish within {}s",
                         TIMEOUT.as_secs()
@@ -180,15 +185,18 @@ fn spawn_qemu(argv: &[String]) -> Result<String, String> {
             Err(e) => return Err(format!("waiting for the provisioning guest: {e}")),
         }
     }
+    Ok(format!("{}{}", stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default()))
+}
 
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("reading the provisioning guest's output: {e}"))?;
-    Ok(format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    ))
+/// Read `pipe` to its end on a thread of its own.
+fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    })
 }
 
 fn tail(s: &str, lines: usize) -> String {
