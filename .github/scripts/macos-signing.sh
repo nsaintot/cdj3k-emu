@@ -9,7 +9,7 @@
 #                              NOTARY_PROFILE and NOTARY_KEYCHAIN to $GITHUB_ENV
 #   macos-signing.sh cleanup   delete that keychain and the decoded files
 #
-# Inputs (environment, from repository secrets):
+# Inputs (environment, from the release environment's secrets):
 #   MACOS_CERTIFICATE_P12_BASE64     Developer ID Application certificate and key
 #   MACOS_CERTIFICATE_PASSWORD       its export password
 #   MACOS_PROVISION_PROFILE_BASE64   optional; grants vmnet and virtual HID
