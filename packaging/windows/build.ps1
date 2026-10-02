@@ -4,7 +4,7 @@
 #   build.ps1 -Arch x64|arm64 -QemuDir DIR [-Out DIR] [-Stage DIR] [-Version V]
 #             [-Binary DIR] [-SkipStage]
 #
-# Output: <Out>\cdj3k-emu-<version>-windows-<arch>-setup.exe (Out defaults to
+# Output: <Out>\CDJ3K-Emulator-<version>-windows-<arch>.exe (Out defaults to
 # dist\). Needs Inno Setup 6.6 or newer.
 #
 # Signing is on when CDJ3K_SIGN_CERT_SHA1 holds a certificate thumbprint:
@@ -83,6 +83,6 @@ Write-Host "==> ISCC ($Arch, $Version)"
 & $iscc @isccArgs
 if ($LASTEXITCODE -ne 0) { throw "ERROR: ISCC exited with $LASTEXITCODE" }
 
-$artefact = Join-Path $Out "cdj3k-emu-$Version-windows-$Arch-setup.exe"
+$artefact = Join-Path $Out "CDJ3K-Emulator-$Version-windows-$Arch.exe"
 if (-not (Test-Path $artefact)) { throw "ERROR: $artefact was not produced" }
 Write-Host "==> $artefact"

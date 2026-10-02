@@ -19,7 +19,9 @@
 #                    its granted entitlements are added to the signature.  Without
 #                    it the bundle signs with the free entitlements only.
 #   --dmg            also package the .app into a compressed .dmg,
-#                    CDJ3K-Emulator-<CFBundleShortVersionString>.dmg.
+#                    CDJ3K-Emulator-<version>-macos-<universal|arm64|x86_64>.dmg.
+#   --version V      the version in the .dmg's name and volume name (default:
+#                    CFBundleShortVersionString)
 #   --notarize       after signing with a "Developer ID Application" identity,
 #                    submit the .app (and the .dmg, with --dmg) to Apple's notary
 #                    service, wait for the verdict and staple the tickets.  Needs
@@ -60,6 +62,7 @@ OUT_DIR="$REPO_ROOT/dist"
 # Falls back to ad-hoc ("-") when not set.
 SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 MAKE_DMG=0
+DMG_VERSION=""
 NOTARIZE=0
 NOTARY_PROFILE="${NOTARY_PROFILE:-cdj3k-emu-notarization}"
 NOTARY_KEYCHAIN="${NOTARY_KEYCHAIN:-}"
@@ -72,6 +75,7 @@ while [[ $# -gt 0 ]]; do
         --sign)       SIGN_IDENTITY="$2"; shift ;;
         --profile)    PROVISION_PROFILE="$2"; shift ;;
         --dmg)        MAKE_DMG=1 ;;
+        --version)    DMG_VERSION="$2"; shift ;;
         --notarize)   NOTARIZE=1 ;;
         --notary-profile) NOTARY_PROFILE="$2"; shift ;;
         -h|--help)    sed -n '3,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -260,11 +264,18 @@ fi
 
 # ── DMG packaging (optional) ─────────────────────────────────────────────────
 if [[ "$MAKE_DMG" -eq 1 ]]; then
-    # Extract CFBundleShortVersionString so the DMG file matches the bundle's
-    # advertised version - keeps GitHub release asset names self-consistent.
-    VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
-        "$APP_DIR/Contents/Info.plist" 2>/dev/null || echo "0.0.0")
-    DMG_PATH="$OUT_DIR/CDJ3K-Emulator-${VERSION}.dmg"
+    VERSION="$DMG_VERSION"
+    if [[ -z "$VERSION" ]]; then
+        VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            "$APP_DIR/Contents/Info.plist" 2>/dev/null || echo "0.0.0")
+    fi
+    # The slices the app carries: both are the universal build.
+    ARCHS=$(lipo -archs "$MACOS_DIR/cdj3k-emu")
+    case "$ARCHS" in
+        *arm64*x86_64*|*x86_64*arm64*) DMG_ARCH=universal ;;
+        *) DMG_ARCH="$ARCHS" ;;
+    esac
+    DMG_PATH="$OUT_DIR/CDJ3K-Emulator-${VERSION}-macos-${DMG_ARCH}.dmg"
     DMG_STAGING=$(mktemp -d)
     TMP_CLEANUP+=("$DMG_STAGING")
 

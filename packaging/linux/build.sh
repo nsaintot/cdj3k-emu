@@ -58,7 +58,8 @@ if want deb || want rpm; then
         # From inside the tree: the recipe names its sources relatively, so it
         # carries no path from the machine that built it.
         (cd "$STAGE" && nfpm package --config "$RECIPE" \
-            --packager "$format" --target "$OUT")
+            --packager "$format" \
+            --target "$OUT/CDJ3K-Emulator-${VERSION}-linux-${APPIMAGE_ARCH}.$format")
     done
 fi
 
@@ -86,7 +87,7 @@ if want appimage; then
         "$APPDIR/cdj3k-emu.png"
 
     ARCH="$APPIMAGE_ARCH" appimagetool --no-appstream "$APPDIR" \
-        "$OUT/CDJ3K-Emulator-${VERSION}-${APPIMAGE_ARCH}.AppImage"
+        "$OUT/CDJ3K-Emulator-${VERSION}-linux-${APPIMAGE_ARCH}.AppImage"
     rm -rf "$APPDIR"
 fi
 

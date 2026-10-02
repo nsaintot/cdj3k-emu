@@ -302,7 +302,7 @@ packaging/windows/cross-build.sh x64|arm64
 
 ```powershell
 # On Windows: stage the tree (stage.ps1) and compile the Inno Setup installer,
-# dist\cdj3k-emu-<version>-windows-<arch>-setup.exe.
+# dist\CDJ3K-Emulator-<version>-windows-<arch>.exe.
 packaging\windows\build.ps1 -Arch x64 -QemuDir qemu\install-windows-x86_64
 ```
 

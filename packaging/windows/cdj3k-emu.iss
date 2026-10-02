@@ -58,7 +58,7 @@ ArchitecturesInstallIn64BitMode=arm64
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
 #endif
-OutputBaseFilename=cdj3k-emu-{#AppVersion}-windows-{#Arch}-setup
+OutputBaseFilename=CDJ3K-Emulator-{#AppVersion}-windows-{#Arch}
 SetupIconFile={#StageDir}\cdj3k-emu.ico
 UninstallDisplayIcon={app}\cdj3k-emu.ico
 UninstallDisplayName={#AppName}
