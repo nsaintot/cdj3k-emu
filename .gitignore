@@ -19,6 +19,7 @@ scripts/*.py
 # Track only build.sh, the overlay rsync'd onto src, and the shim sources.
 qemu/*
 !qemu/build.sh
+!qemu/macos-deps.sh
 !qemu/patches
 !qemu/shim
 

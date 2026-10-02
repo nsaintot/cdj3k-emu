@@ -3,12 +3,17 @@
 # bundle.sh - build and package cdj3k-emu as a macOS .app bundle.
 #
 # Usage:
-#   ./bundle.sh [--debug] [--no-build] [--out DIR] [--sign IDENTITY] [--dmg]
+#   ./bundle.sh [--debug] [--no-build] [--universal] [--out DIR] [--sign IDENTITY] [--dmg]
 #               [--version VERSION] [--build BUILD]
 #               [--notarize] [--notary-profile NAME] [--profile PATH]
 #
 #   --debug          build debug profile (default: release)
 #   --no-build       skip cargo build; reuse last build output
+#   --universal      arm64 + x86_64 in one .app (an Intel Mac runs the guest
+#                    under TCG).  Each slice links the QEMU of
+#                    `qemu/build.sh --macos <arch>` (qemu/install-macos-<arch>/)
+#                    and builds for the macOS 15.0 deployment target.
+#                    Without it the .app is this Mac's arch, from qemu/install/.
 #   --out DIR        output directory for cdj3k-emu.app (default: ./dist)
 #   --sign IDENTITY  codesign identity string (overrides CODESIGN_IDENTITY env var)
 #                    Use "Apple Development" to pick your only dev cert automatically.
@@ -36,19 +41,23 @@
 #                    NOTARY_PROFILE env var overrides).
 #
 # Prerequisites:
-#   - qemu/install/lib/libcdj3k-emu-qemu.dylib  (from qemu/build.sh)
-#   - qemu/install/bin/qemu-img             (from qemu/build.sh)
+#   - qemu/install/lib/libcdj3k-emu-qemu.dylib  (from qemu/build.sh), or
+#     qemu/install-macos-{arm64,x86_64}/        (from qemu/build.sh --macos <arch>)
+#     with --universal
+#   - qemu/install/bin/qemu-img             (likewise)
 #   - build/docker-out/modules/*.ko  (from build.sh)
 #   - guest/out/*_aarch64, guest/out/deck_shim.so  (from build.sh)
 #
 # The script:
-#   1. Builds tools/cdj3k-emu with cargo
-#   2. Creates cdj3k-emu.app/Contents/{MacOS,Resources}
-#   3. Copies cdj3k-emu, libcdj3k-emu-qemu.dylib and qemu-img into Contents/MacOS
+#   1. Builds tools/cdj3k-emu with cargo, once per arch
+#   2. Stages each arch's cdj3k-emu, libcdj3k-emu-qemu.dylib and qemu-img,
+#      with its Homebrew dylib graph beside them (@loader_path) so the .app
+#      runs without Homebrew installed
+#   3. Creates cdj3k-emu.app/Contents/{MacOS,Resources}; Contents/MacOS is the
+#      one slice, or both merged by lipo
 #   4. Populates Contents/Resources: patch/ (with vanilla-modules/*.ko), tools/, assets/
 #   5. Writes Info.plist
-#   6. Bundles the Homebrew dylib graph next to the binaries (@loader_path) so
-#      the .app is self-contained and runs without Homebrew installed
+#   6. Builds the CoreMIDI driver plugin for the same arches
 #   7. Codesigns the bundle (real identity when provided, ad-hoc otherwise)
 #   8. Optionally notarizes + staples the .app and the .dmg
 
@@ -85,6 +94,7 @@ MAKE_DMG=0
 APP_VERSION="0.2.0"
 APP_BUILD="1"
 NOTARIZE=0
+UNIVERSAL=0
 NOTARY_PROFILE="${NOTARY_PROFILE:-cdj3k-emu-notarization}"
 PROVISION_PROFILE="${PROVISION_PROFILE:-$REPO_ROOT/cdj3k-emu.provisionprofile}"
 
@@ -92,6 +102,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --debug)      PROFILE="debug"; CARGO_PROFILE_FLAG="" ;;
         --no-build)   DO_BUILD=0 ;;
+        --universal)  UNIVERSAL=1 ;;
         --out=*)      OUT_DIR="${1#--out=}" ;;
         --out)        OUT_DIR="$2"; shift ;;
         --sign=*)     SIGN_IDENTITY="${1#--sign=}" ;;
@@ -131,28 +142,60 @@ if [[ "$NOTARIZE" -eq 1 ]]; then
 fi
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-BINARY="$REPO_ROOT/target/$PROFILE/cdj3k-emu"
-DYLIB="$REPO_ROOT/qemu/install/lib/libcdj3k-emu-qemu.dylib"
-QEMU_IMG="$REPO_ROOT/qemu/install/bin/qemu-img"
 APP_DIR="$OUT_DIR/CDJ3K Emulator.app"
 MACOS_DIR="$APP_DIR/Contents/MacOS"
 RESOURCES_DIR="$APP_DIR/Contents/Resources"
 
+# A slice is one arch's cdj3k-emu, libcdj3k-emu-qemu.dylib and qemu-img;
+# the bundle's Contents/MacOS is its single slice, or both merged by lipo.
+if [[ "$UNIVERSAL" -eq 1 ]]; then
+    ARCHS=(arm64 x86_64)
+    export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
+else
+    ARCHS=("$(uname -m)")
+fi
+
+rust_triple() {
+    case "$1" in
+        arm64)  echo aarch64-apple-darwin ;;
+        x86_64) echo x86_64-apple-darwin ;;
+    esac
+}
+
+qemu_dir() {
+    if [[ "$UNIVERSAL" -eq 1 ]]; then
+        echo "$REPO_ROOT/qemu/install-macos-$1"
+    else
+        echo "$REPO_ROOT/qemu/install"
+    fi
+}
+
+binary_path() {
+    if [[ "$UNIVERSAL" -eq 1 ]]; then
+        echo "$REPO_ROOT/target/$(rust_triple "$1")/$PROFILE/cdj3k-emu"
+    else
+        echo "$REPO_ROOT/target/$PROFILE/cdj3k-emu"
+    fi
+}
+
 # ── Build ─────────────────────────────────────────────────────────────────────
 if [[ "$DO_BUILD" -eq 1 ]]; then
     "$REPO_ROOT/winit/fetch.sh"
-    echo "==> cargo build $CARGO_PROFILE_FLAG -p cdj3k-emu"
-    (cd "$REPO_ROOT" && cargo build $CARGO_PROFILE_FLAG -p cdj3k-emu)
-fi
-
-if [[ ! -f "$BINARY" ]]; then
-    echo "ERROR: binary not found: $BINARY"
-    exit 1
-fi
-if [[ ! -f "$DYLIB" ]]; then
-    echo "ERROR: libcdj3k-emu-qemu.dylib not found: $DYLIB"
-    echo "       Run: ./qemu/build.sh"
-    exit 1
+    for arch in "${ARCHS[@]}"; do
+        if [[ "$UNIVERSAL" -eq 1 ]]; then
+            triple=$(rust_triple "$arch")
+            echo "==> cargo build $CARGO_PROFILE_FLAG -p cdj3k-emu --target $triple"
+            # With MACOSX_DEPLOYMENT_TARGET set, a release proc-macro stripped
+            # of its debuginfo fails to load ("can't find crate"); proc-macros
+            # and build scripts stay unstripped.
+            (cd "$REPO_ROOT" && CDJ3K_EMU_QEMU_LIB_DIR="$(qemu_dir "$arch")/lib" \
+                CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=false \
+                cargo build $CARGO_PROFILE_FLAG -p cdj3k-emu --target "$triple")
+        else
+            echo "==> cargo build $CARGO_PROFILE_FLAG -p cdj3k-emu"
+            (cd "$REPO_ROOT" && cargo build $CARGO_PROFILE_FLAG -p cdj3k-emu)
+        fi
+    done
 fi
 
 # ── Assemble bundle ───────────────────────────────────────────────────────────
@@ -160,19 +203,74 @@ echo "==> Assembling $APP_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-cp "$BINARY"   "$MACOS_DIR/cdj3k-emu"
-cp "$DYLIB"    "$MACOS_DIR/libcdj3k-emu-qemu.dylib"
+# Each slice is staged and self-contained on its own: its Homebrew dylib graph
+# (if any) is copied beside it and every load command rewritten to
+# @loader_path, so the .app runs on a machine without Homebrew. The helper
+# ad-hoc-signs what it rewrites; the real codesign below re-seals everything
+# with the final identity.
+SLICES=()
+for arch in "${ARCHS[@]}"; do
+    binary=$(binary_path "$arch")
+    qemu=$(qemu_dir "$arch")
+    for f in "$binary" "$qemu/lib/libcdj3k-emu-qemu.dylib" "$qemu/bin/qemu-img"; do
+        if [[ ! -f "$f" ]]; then
+            echo "ERROR: $arch: not found: $f" >&2
+            if [[ "$UNIVERSAL" -eq 1 ]]; then
+                echo "       Run: bash qemu/build.sh --macos $arch" >&2
+            else
+                echo "       Run: ./qemu/build.sh  (configured with --enable-tools)" >&2
+            fi
+            exit 1
+        fi
+    done
+    slice=$(mktemp -d -t "cdj3k-slice-$arch")
+    TMP_CLEANUP+=("$slice")
+    cp "$binary" "$slice/cdj3k-emu"
+    cp "$qemu/lib/libcdj3k-emu-qemu.dylib" "$slice/"
+    # The firmware wizard provisions each slot's eMMC with qemu-img convert;
+    # a Finder-launched .app has no useful $PATH.
+    cp "$qemu/bin/qemu-img" "$slice/"
+    echo "==> Bundling the $arch slice's dylibs (self-contained)"
+    "$REPO_ROOT/scripts/bundle-dylibs.sh" "$slice" \
+        libcdj3k-emu-qemu.dylib qemu-img cdj3k-emu
+    SLICES+=("$slice")
+done
 
-if [[ ! -f "$QEMU_IMG" ]]; then
-    echo "ERROR: qemu-img not found at $QEMU_IMG"
-    echo "       The firmware wizard provisions each slot's eMMC by calling"
-    echo "       qemu-img convert; a Finder-launched .app has no useful \$PATH"
-    echo "       and will fail at the [emmc] step without a bundled copy."
-    echo "       Rebuild QEMU: ./qemu/build.sh  (configured with --enable-tools)."
+if [[ ${#SLICES[@]} -eq 1 ]]; then
+    cp "${SLICES[0]}"/* "$MACOS_DIR/"
+else
+    # A file in both slices becomes one universal file; a dylib only one
+    # slice links stays thin, since only that arch loads it.
+    for name in $(for s in "${SLICES[@]}"; do ls "$s"; done | sort -u); do
+        parts=()
+        for s in "${SLICES[@]}"; do
+            [[ -f "$s/$name" ]] && parts+=("$s/$name")
+        done
+        if [[ ${#parts[@]} -gt 1 ]]; then
+            lipo -create "${parts[@]}" -output "$MACOS_DIR/$name"
+        else
+            cp "${parts[0]}" "$MACOS_DIR/$name"
+        fi
+    done
+    echo "     merged ${ARCHS[*]}: $(lipo -archs "$MACOS_DIR/cdj3k-emu")"
+fi
+
+# Nothing in Contents/MacOS may still name a path outside the bundle or the
+# OS: a leftover /opt/homebrew reference is a crash on a clean machine.
+# (`grep -v` exits 1 when nothing is stray, which `set -e -o pipefail` would
+# otherwise turn into a silent exit of the whole script.)
+STRAY=$(for f in "$MACOS_DIR"/*; do
+            for arch in $(lipo -archs "$f"); do
+                otool -arch "$arch" -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' \
+                  | { grep -v '^/usr/lib/\|^/System/\|^@loader_path/\|^@rpath/\|^@executable_path/' || true; } \
+                  | sed "s|^|$(basename "$f") ($arch): |"
+            done
+        done)
+if [[ -n "$STRAY" ]]; then
+    echo "ERROR: unbundled dylib references remain:" >&2
+    echo "$STRAY" >&2
     exit 1
 fi
-cp "$QEMU_IMG" "$MACOS_DIR/qemu-img"
-echo "     bundled qemu-img"
 
 # ── Resources: patch scripts, guest modules and tools, PPM assets ────────────
 #
@@ -309,7 +407,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <string>${APP_VERSION}</string>
 
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>15.0</string>
 
     <key>NSHighResolutionCapable</key>
     <true/>
@@ -331,30 +429,6 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# ── Self-contain dylibs ──────────────────────────────────────────────────────
-# qemu-img and libcdj3k-emu-qemu.dylib link against /opt/homebrew libraries.
-# Copy that whole (transitive) dependency graph next to the binaries and rewrite
-# every load command to @loader_path so the .app runs on a machine without
-# Homebrew. The helper ad-hoc-signs what it rewrites; the real codesign below
-# re-seals everything with the final identity.
-echo "==> Bundling Homebrew dylibs into the app (self-contained)"
-"$REPO_ROOT/scripts/bundle-dylibs.sh" "$MACOS_DIR" \
-    libcdj3k-emu-qemu.dylib qemu-img cdj3k-emu
-# Nothing in Contents/MacOS may still name a path outside the bundle or the
-# OS: a leftover /opt/homebrew reference is a crash on a clean machine.
-# (`grep -v` exits 1 when nothing is stray, which `set -e -o pipefail` would
-# otherwise turn into a silent exit of the whole script.)
-STRAY=$(for f in "$MACOS_DIR"/*; do
-            otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' \
-              | { grep -v '^/usr/lib/\|^/System/\|^@loader_path/\|^@rpath/\|^@executable_path/' || true; } \
-              | sed "s|^|$(basename "$f"): |"
-        done)
-if [[ -n "$STRAY" ]]; then
-    echo "ERROR: unbundled dylib references remain:" >&2
-    echo "$STRAY" >&2
-    exit 1
-fi
-
 # ── CoreMIDI driver plugin ───────────────────────────────────────────────────
 # Host bundle (not a cargo/qemu artifact), so build it here regardless of
 # --no-build.  Shipped in Resources; pc_link::midi_driver::ensure_driver_installed
@@ -363,7 +437,9 @@ fi
 # explicitly before sealing the app.
 echo "==> Building CoreMIDI driver plugin"
 make -C "$REPO_ROOT/tools/midi-driver" clean >/dev/null 2>&1 || true
-make -C "$REPO_ROOT/tools/midi-driver"
+midi_archflags=""
+for arch in "${ARCHS[@]}"; do midi_archflags+=" -arch $arch"; done
+make -C "$REPO_ROOT/tools/midi-driver" ARCHFLAGS="$midi_archflags"
 cp -R "$REPO_ROOT/tools/midi-driver/CDJ3KEmuMIDI.plugin" "$RESOURCES_DIR/"
 echo "     bundled CDJ3KEmuMIDI.plugin"
 

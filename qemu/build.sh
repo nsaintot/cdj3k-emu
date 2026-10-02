@@ -9,6 +9,8 @@
 #   bash qemu/build.sh                      # for this host
 #   bash qemu/build.sh --windows x86_64     # Windows x86_64 (TCG), cross-built in Docker
 #   bash qemu/build.sh --windows aarch64    # Windows arm64 (WHPX), cross-built in Docker
+#   bash qemu/build.sh --macos x86_64       # one slice of the universal .app
+#   bash qemu/build.sh --macos arm64        #   (bundle.sh --universal)
 #
 # On Windows, run it from an MSYS2 shell: UCRT64 for x86_64, CLANGARM64 for
 # arm64 (`--windows` is optional there and must match the shell). Packages:
@@ -23,6 +25,10 @@
 #   qemu/install-windows-<arch>/   - qemu-system-aarch64.exe, qemu-img.exe,
 #                                    every DLL they load and QEMU's COPYING,
 #                                    in one directory
+#   qemu/build-macos-<arch>/       - macOS slice build artefacts
+#   qemu/install-macos-<arch>/     - bin/qemu-img and lib/libcdj3k-emu-qemu.dylib
+#                                    for one slice, linked against the static
+#                                    libraries of qemu/macos-deps.sh
 #
 # Re-running is idempotent: clone and patch steps are skipped if already done.
 
@@ -40,8 +46,17 @@ SRC_DIR="${SCRIPT_DIR}/src"
 #   HOST_OS=WindowsCross   inside the image of docker/Dockerfile.windows-qemu
 # WIN_ARCH is x86_64 or aarch64 for both Windows kinds.
 WIN_ARCH=""
+# MAC_ARCH is x86_64 or arm64 for a macOS slice build.
+MAC_ARCH=""
 while [ $# -gt 0 ]; do
     case "$1" in
+        --macos)
+            MAC_ARCH="${2:-}"
+            case "${MAC_ARCH}" in
+                x86_64|arm64) shift 2 ;;
+                *) echo "ERROR: --macos takes x86_64 or arm64" >&2; exit 1 ;;
+            esac
+            ;;
         --windows)
             WIN_ARCH="${2:-}"
             case "${WIN_ARCH}" in
@@ -77,9 +92,17 @@ else
     fi
 fi
 
+if [ -n "${MAC_ARCH}" ] && [ "${HOST_OS}" != "Darwin" ]; then
+    echo "ERROR: --macos builds on macOS only" >&2
+    exit 1
+fi
+
 if [ -n "${WIN_ARCH}" ]; then
     BUILD_DIR="${SCRIPT_DIR}/build-windows-${WIN_ARCH}"
     INSTALL_DIR="${SCRIPT_DIR}/install-windows-${WIN_ARCH}"
+elif [ -n "${MAC_ARCH}" ]; then
+    BUILD_DIR="${SCRIPT_DIR}/build-macos-${MAC_ARCH}"
+    INSTALL_DIR="${SCRIPT_DIR}/install-macos-${MAC_ARCH}"
 else
     BUILD_DIR="${SCRIPT_DIR}/build"
     INSTALL_DIR="${SCRIPT_DIR}/install"
@@ -222,6 +245,10 @@ mkdir -p "${BUILD_DIR}"
 #          though the display is the shm one.
 #   Linux: KVM, PipeWire, and no UI backend: the display is the shm one, and
 #          GTK/SDL would add to the package's dependency list.
+#   A macOS slice: HVF on arm64 only (an x86_64 Mac runs the guest under TCG),
+#          compiled for that arch at the deployment target against the static
+#          libraries of qemu/macos-deps.sh. An empty --cross-prefix makes it a
+#          cross build, so the TCG backend follows --cpu, not the build host.
 #   Windows: WHPX on arm64 (the guest is aarch64, so an x86_64 host runs TCG),
 #          slirp for user-mode networking, and no UI backend.
 EXE=""
@@ -232,6 +259,40 @@ EXTRA_WARN_FLAGS=""
 case "${HOST_OS}" in
     Darwin)
         HOST_FLAGS=(--enable-hvf --enable-cocoa --disable-pvg)
+        if [ -n "${MAC_ARCH}" ]; then
+            bash "${SCRIPT_DIR}/macos-deps.sh" "${MAC_ARCH}"
+            MAC_DEPS="${SCRIPT_DIR}/deps-macos-${MAC_ARCH}"
+            export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
+            export PKG_CONFIG="${MAC_DEPS}/pkg-config"
+            MAC_SDK="$(xcrun --sdk macosx --show-sdk-path)"
+            MAC_MIN="-isysroot ${MAC_SDK} -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}"
+            # As in macos-deps.sh: a call newer than the target is an error.
+            EXTRA_WARN_FLAGS=" ${MAC_MIN} -Werror=unguarded-availability -Werror=unguarded-availability-new"
+            CC_MAC="clang -arch ${MAC_ARCH}"
+            if [ "${MAC_ARCH}" = "arm64" ]; then
+                MAC_CPU=aarch64
+            else
+                HOST_FLAGS=(--disable-hvf --enable-cocoa --disable-pvg)
+                MAC_CPU=x86_64
+            fi
+            # The libraries macos-deps.sh does not build stay off, so nothing
+            # resolves outside the prefix and the OS.
+            HOST_FLAGS+=(
+                --enable-slirp --enable-libusb
+                --disable-gnutls --disable-nettle --disable-gcrypt --disable-curl
+                --disable-libssh --disable-capstone --disable-zstd --disable-png
+                --disable-lzo --disable-snappy --disable-bzip2 --disable-libnfs
+                --disable-libiscsi --disable-curses --disable-gettext
+            )
+            CROSS_FLAGS=(
+                --cross-prefix=
+                --cpu="${MAC_CPU}"
+                --cc="${CC_MAC}"
+                --cxx="clang++ -arch ${MAC_ARCH}"
+                --objcc="${CC_MAC}"
+                --extra-ldflags="${MAC_MIN}"
+            )
+        fi
         ;;
     Linux)
         HOST_FLAGS=(--enable-kvm --enable-pipewire)
@@ -425,7 +486,10 @@ DYLIB_OUT="${INSTALL_DIR}/lib/libcdj3k-emu-qemu.dylib"
 # Include paths matching QEMU's own compilation (same as -I flags in build.ninja).
 QEMU_CFLAGS="-O2 -I${BUILD_DIR} -I${SRC_DIR} -I${BUILD_DIR}/qapi -I${BUILD_DIR}/trace -I${BUILD_DIR}/ui"
 
-cc ${QEMU_CFLAGS} -c -o "${SHIM_OBJ}" "${SHIM_SRC}"
+# A slice build compiles and links for its arch at the deployment target.
+DYLIB_CC="${CC_MAC:-cc} ${MAC_MIN:-}"
+
+${DYLIB_CC} ${QEMU_CFLAGS} -c -o "${SHIM_OBJ}" "${SHIM_SRC}"
 echo "  shim compiled: ${SHIM_OBJ}"
 
 # Extract the object-file list and LINK_ARGS from build.ninja, then re-link
@@ -496,7 +560,7 @@ LINK_ARGS=$(printf '%s' "${LINK_ARGS}" \
 echo "  linking ${#OBJS[@]} objects → ${DYLIB_OUT}"
 (
     cd "${BUILD_DIR}"
-    cc -dynamiclib \
+    ${DYLIB_CC} -dynamiclib \
        -install_name @rpath/libcdj3k-emu-qemu.dylib \
        -o "${DYLIB_OUT}" \
        "${SHIM_OBJ}" \
