@@ -1,0 +1,32 @@
+name: QEMU for macOS
+description: >
+  Restore qemu/install-macos-<arch> (libcdj3k-emu-qemu.dylib, qemu-img; static
+  libraries, macOS 15.0 target) from the cache, or build it with
+  `qemu/build.sh --macos <arch>`.
+inputs:
+  arch:
+    description: arm64 or x86_64
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Build tools
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+        HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+      run: brew install --quiet ninja pkgconf
+    - name: Cache key
+      id: key
+      shell: bash
+      run: echo "sdk=$(xcrun --sdk macosx --show-sdk-version)" >> "$GITHUB_OUTPUT"
+    - name: Cache qemu/install-macos-${{ inputs.arch }}
+      id: cache
+      uses: actions/cache@v6
+      with:
+        path: qemu/install-macos-${{ inputs.arch }}
+        key: qemu-macos-${{ inputs.arch }}-sdk${{ steps.key.outputs.sdk }}-${{ hashFiles('qemu/build.sh', 'qemu/macos-deps.sh', 'qemu/patches/**', 'qemu/shim/**') }}
+    - name: Build QEMU
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: ./qemu/build.sh --macos ${{ inputs.arch }}
