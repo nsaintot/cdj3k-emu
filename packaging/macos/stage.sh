@@ -5,12 +5,13 @@
 #   stage.sh [--arch arm64|x86_64|universal] [--out DIR] [--debug] [--no-build]
 #            [--version V] [--build N]
 #
-#   --arch           the .app's architectures (default: this Mac's).
-#                    universal is arm64 + x86_64 (an Intel Mac runs the guest
-#                    under TCG); each slice links the QEMU of
+#   --arch           the release .app's architectures: arm64 (Apple silicon
+#                    only), x86_64, or universal (both; an Intel Mac runs the
+#                    guest under TCG).  Each slice links the QEMU of
 #                    `qemu/build.sh --macos <arch>` (qemu/install-macos-<arch>/)
-#                    and builds for the macOS 15.0 deployment target.  This
-#                    Mac's own arch alone links qemu/install/ (qemu/build.sh).
+#                    and builds for the macOS 15.0 deployment target.
+#                    Without it: a dev .app of this Mac's arch, linking
+#                    qemu/install/ (qemu/build.sh), for this Mac's macOS.
 #   --out DIR        where CDJ3K Emulator.app goes (default: dist/macos)
 #   --debug          build the debug profile (default: release)
 #   --no-build       skip cargo build; reuse the last build output
@@ -62,7 +63,7 @@ PROFILE="release"
 CARGO_PROFILE_FLAG="--release"
 DO_BUILD=1
 OUT_DIR="$REPO_ROOT/dist/macos"
-ARCH="$(uname -m)"
+ARCH=""
 APP_VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$REPO_ROOT/Cargo.toml" | head -n1)"
 APP_BUILD="1"
 
@@ -81,6 +82,7 @@ while [[ $# -gt 0 ]]; do
 done
 case "$ARCH" in
     arm64|x86_64|universal) ;;
+    "") ;;
     *) echo "ERROR: --arch takes arm64, x86_64 or universal" >&2; exit 1 ;;
 esac
 
@@ -91,17 +93,15 @@ RESOURCES_DIR="$APP_DIR/Contents/Resources"
 
 # A slice is one arch's cdj3k-emu, libcdj3k-emu-qemu.dylib and qemu-img;
 # the bundle's Contents/MacOS is its single slice, or both merged by lipo.
-# Only this Mac's own arch, alone, is the native build: qemu/install/ and
-# cargo's default target.
-if [[ "$ARCH" == "universal" ]]; then
-    ARCHS=(arm64 x86_64)
-else
-    ARCHS=("$ARCH")
-fi
-if [[ "$ARCH" == "$(uname -m)" ]]; then
-    NATIVE=1
-else
-    NATIVE=0
+# Without --arch it is the native build: qemu/install/ and cargo's default
+# target.
+NATIVE=0
+case "$ARCH" in
+    "")        NATIVE=1; ARCHS=("$(uname -m)") ;;
+    universal) ARCHS=(arm64 x86_64) ;;
+    *)         ARCHS=("$ARCH") ;;
+esac
+if [[ "$NATIVE" -eq 0 ]]; then
     export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
 fi
 
