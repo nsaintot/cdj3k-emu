@@ -21,11 +21,11 @@
 //!
 //! # Lifetime
 //!
-//! A link we create outlives the app: it is made once, elevated, owned by the
-//! user, and found again on the next launch, so only the first launch after a
-//! host boot (or after choosing another interface) asks for a password. Left
-//! behind with no guest on it, a macvtap or a tap carries no traffic. It goes
-//! when the host reboots, or when a later setup replaces it.
+//! A link we create lasts as long as the slot uses it ([`super::lease`]). The
+//! elevated script makes it, then stays running as its watcher and deletes it
+//! once the lease goes or the app exits, crash included. Each bridged start
+//! asks for a password once. A tap the user made is used as it is and left
+//! alone.
 
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -36,6 +36,7 @@ use std::{fs, thread};
 use cdj3k_emu_platform::net::linux_kind::{Kind, SYS_CLASS_NET};
 use cdj3k_emu_platform::runtime_paths;
 
+use super::lease::Lease;
 use crate::elevate::{run_elevated, sh_quote};
 
 /// How the guest is put on the LAN.
@@ -67,8 +68,8 @@ impl Shape {
     }
 }
 
-/// The guest's link for one instance. The link outlives it (module doc,
-/// Lifetime).
+/// The guest's link for one instance, deleted once this is dropped (module
+/// doc, Lifetime).
 pub struct LinuxBridge {
     /// The interface QEMU is attached through — ours, or the user's own tap.
     pub iface: String,
@@ -77,6 +78,8 @@ pub struct LinuxBridge {
     /// the link is never down between setup and the guest's first packet.
     pub fd: RawFd,
     _file: fs::File,
+    /// The link's lease, for a link we made.
+    lease: Option<Lease>,
 }
 
 impl LinuxBridge {
@@ -104,11 +107,6 @@ impl LinuxBridge {
         }
 
         let ours = our_iface_name(instance_id);
-        if let Some(bridge) = Self::reuse(shape, &ours, iface, mac) {
-            eprintln!("cdj3k-emu: {shape:?} reused on {iface}  iface={ours}  fd={}", bridge.fd);
-            return Ok(bridge);
-        }
-
         runtime_paths::ensure_runtime_base_dir()?;
         let dir = runtime_paths::instance_dir(instance_id);
         fs::create_dir_all(&dir)?;
@@ -116,51 +114,32 @@ impl LinuxBridge {
         let ready = PathBuf::from(format!("{}.ready", base.display()));
         let script = PathBuf::from(format!("{}.sh", base.display()));
         let _ = fs::remove_file(&ready);
-        fs::write(
-            &script,
-            create_script(shape, &ours, iface, mac, &ready, unsafe { libc::getuid() }),
-        )?;
+        let mut lease = Lease::take(&dir)?;
+        let link = Link {
+            shape,
+            ours: &ours,
+            parent: iface,
+            mac,
+            uid: unsafe { libc::getuid() },
+        };
+        let watch = Watch {
+            ready: &ready,
+            claim_file: &lease.claim_path(),
+            claim: lease.claim(),
+            released: &lease.released_path(),
+            app_pid: std::process::id(),
+        };
+        fs::write(&script, create_script(&link, &watch))?;
         run_elevated(&format!("/bin/sh {}", sh_quote(&script.to_string_lossy())))?;
+        lease.set_watched();
 
         // The script writes the device node's path once the link is up and
         // readable by us.
         let node = wait_for_ready(&ready, Duration::from_secs(10))?;
-        let bridge = Self::open(shape, &ours, &node)?;
+        let mut bridge = Self::open(shape, &ours, &node)?;
+        bridge.lease = Some(lease);
         eprintln!("cdj3k-emu: {shape:?} up on {iface}  iface={ours}  fd={}", bridge.fd);
         Ok(bridge)
-    }
-
-    /// The link a previous launch left, if it is still the one asked for: the
-    /// same parent, the slot's MAC, up, and openable without elevation.
-    fn reuse(shape: Shape, ours: &str, parent: &str, mac: &str) -> Option<Self> {
-        let dir = Path::new(SYS_CLASS_NET).join(ours);
-        let read = |f: &str| fs::read_to_string(dir.join(f)).ok().map(|s| s.trim().to_string());
-        let flags = read("flags").and_then(|f| u32::from_str_radix(f.trim_start_matches("0x"), 16).ok())?;
-        const IFF_UP: u32 = 0x1;
-        if flags & IFF_UP == 0 {
-            return None;
-        }
-        let node = match shape {
-            Shape::Macvtap => {
-                if !dir.join(format!("lower_{parent}")).exists()
-                    || !read("address")?.eq_ignore_ascii_case(mac)
-                {
-                    return None;
-                }
-                format!("/dev/tap{}", read("ifindex")?)
-            }
-            Shape::TapOnBridge => {
-                let master = fs::read_link(dir.join("master")).ok()?;
-                if !dir.join("tun_flags").exists()
-                    || master.file_name()? != std::ffi::OsStr::new(parent)
-                {
-                    return None;
-                }
-                String::from("/dev/net/tun")
-            }
-            Shape::ExistingTap => return None,
-        };
-        Self::open(shape, ours, &node).ok()
     }
 
     /// Open the link's device node for QEMU.
@@ -184,6 +163,7 @@ impl LinuxBridge {
             shape,
             fd,
             _file: file,
+            lease: None,
         })
     }
 
@@ -209,6 +189,7 @@ impl LinuxBridge {
             shape: Shape::ExistingTap,
             fd,
             _file: file,
+            lease: None,
         })
     }
 }
@@ -248,24 +229,43 @@ fn our_iface_name(instance_id: u32) -> String {
     format!("cdj3k{instance_id}")
 }
 
-/// The elevated half: replace any link of ours, make it, hand it to the user.
-/// All privileged work happens here.
-fn create_script(
+/// The link the elevated script makes.
+struct Link<'a> {
     shape: Shape,
-    ours: &str,
-    parent: &str,
-    mac: &str,
-    ready: &std::path::Path,
+    ours: &'a str,
+    parent: &'a str,
+    mac: &'a str,
+    /// The user the device node is handed to.
     uid: u32,
-) -> String {
-    let q_ours = sh_quote(ours);
-    let q_parent = sh_quote(parent);
-    let q_mac = sh_quote(mac);
-    let q_ready = sh_quote(&ready.to_string_lossy());
+}
+
+/// What the script reports to and watches.
+struct Watch<'a> {
+    /// Where the device node's path goes once the link is up.
+    ready: &'a Path,
+    claim_file: &'a Path,
+    claim: &'a str,
+    released: &'a Path,
+    app_pid: u32,
+}
+
+/// The elevated half: replace any link of ours, make it, hand it to the user,
+/// then watch the lease in the background and delete the link once it goes.
+/// All privileged work happens here.
+fn create_script(link: &Link, watch: &Watch) -> String {
+    let q_ours = sh_quote(link.ours);
+    let q_parent = sh_quote(link.parent);
+    let q_mac = sh_quote(link.mac);
+    let uid = link.uid;
+    let q_ready = sh_quote(&watch.ready.to_string_lossy());
+    let q_claim_file = sh_quote(&watch.claim_file.to_string_lossy());
+    let q_claim = sh_quote(watch.claim);
+    let q_released = sh_quote(&watch.released.to_string_lossy());
+    let pid = watch.app_pid;
 
     // macvtap's device node is /dev/tap<ifindex>; a plain tap is reached
     // through /dev/net/tun and bound by name, so only the first needs chown.
-    let create = match shape {
+    let create = match link.shape {
         Shape::Macvtap => format!(
             "ip link add link {q_parent} name {q_ours} address {q_mac} type macvtap mode bridge\n\
              ip link set {q_ours} up\n\
@@ -290,12 +290,17 @@ fn create_script(
 
     format!(
         "#!/bin/sh\n\
-         # cdj3k-emu: makes the guest's link. It stays after the app exits and\n\
-         # is reused by the next launch; a later run of this replaces it.\n\
+         # cdj3k-emu: makes the guest's link, then deletes it once the slot\n\
+         # lets it go or the app exits.\n\
          set -e\n\
          ip link del {q_ours} 2>/dev/null || true\n\
          {create}\
-         printf '%s' \"$node\" > {q_ready}\n"
+         printf '%s' \"$node\" > {q_ready}\n\
+         (\n\
+         while [ \"$(cat {q_claim_file} 2>/dev/null)\" = {q_claim} ] && kill -0 {pid} 2>/dev/null; do sleep 0.5; done\n\
+         ip link del {q_ours} 2>/dev/null || true\n\
+         printf '%s' {q_claim} > {q_released}\n\
+         ) </dev/null >/dev/null 2>&1 &\n"
     )
 }
 
@@ -328,25 +333,50 @@ mod tests {
         assert_eq!(Shape::of(None), Shape::Macvtap);
     }
 
+    fn script(shape: Shape, parent: &str) -> String {
+        let link = Link {
+            shape,
+            ours: "cdj3k1",
+            parent,
+            mac: "0e:12:b7:bc:af:b1",
+            uid: 1000,
+        };
+        let watch = Watch {
+            ready: Path::new("/run/ready"),
+            claim_file: Path::new("/run/net.claim"),
+            claim: "4356-17",
+            released: Path::new("/run/net.released"),
+            app_pid: 4356,
+        };
+        create_script(&link, &watch)
+    }
+
     /// A link of ours from an earlier run is replaced, never stacked on, and
-    /// the new one is left in place for the next launch.
+    /// the ready file is written before the watch starts.
     #[test]
-    fn the_script_replaces_and_keeps_the_link() {
+    fn the_script_replaces_the_link_then_reports_it() {
         for shape in [Shape::Macvtap, Shape::TapOnBridge] {
-            let s = create_script(
-                shape,
-                "cdj3k1",
-                "eno2",
-                "0e:12:b7:bc:af:b1",
-                std::path::Path::new("/run/ready"),
-                1000,
-            );
-            assert_eq!(s.matches("ip link del 'cdj3k1'").count(), 1, "{shape:?}:\n{s}");
-            let del = s.find("ip link del").unwrap();
+            let s = script(shape, "eno2");
+            let del = s.find("ip link del 'cdj3k1'").unwrap();
             let add = s.find("ip link add").or_else(|| s.find("ip tuntap add")).unwrap();
-            assert!(del < add, "{shape:?}: the old link must go first:\n{s}");
-            assert!(s.trim_end().ends_with("> '/run/ready'"), "{shape:?}:\n{s}");
+            let ready = s.find("> '/run/ready'").unwrap();
+            let watch = s.find("while ").unwrap();
+            assert!(del < add && add < ready && ready < watch, "{shape:?}:\n{s}");
         }
+    }
+
+    /// The link goes once the claim changes or the app exits, and the answer
+    /// is written after it has.
+    #[test]
+    fn the_watch_deletes_the_link_then_answers() {
+        let s = script(Shape::Macvtap, "eno2");
+        let watch = &s[s.find("while ").unwrap()..];
+        assert!(watch.contains("\"$(cat '/run/net.claim' 2>/dev/null)\" = '4356-17'"), "{s}");
+        assert!(watch.contains("kill -0 4356"), "{s}");
+        let del = watch.find("ip link del 'cdj3k1'").unwrap();
+        let answer = watch.find("printf '%s' '4356-17' > '/run/net.released'").unwrap();
+        assert!(del < answer, "{s}");
+        assert!(s.trim_end().ends_with('&'), "the watch must not hold up the prompt:\n{s}");
     }
 
     /// On a bridge the slot's MAC belongs to the guest alone. Given to the tap
@@ -354,14 +384,7 @@ mod tests {
     /// guest (a DHCP offer, the LINK handshake) is delivered to the host.
     #[test]
     fn a_bridge_tap_does_not_wear_the_guests_mac() {
-        let s = create_script(
-            Shape::TapOnBridge,
-            "cdj3k1",
-            "br0",
-            "0e:12:b7:bc:af:b1",
-            std::path::Path::new("/run/ready"),
-            1000,
-        );
+        let s = script(Shape::TapOnBridge, "br0");
         assert!(!s.contains("0e:12:b7:bc:af:b1"), "{s}");
         assert!(s.contains("master 'br0'"), "{s}");
     }
@@ -371,14 +394,7 @@ mod tests {
     /// every launch.
     #[test]
     fn the_slots_mac_reaches_the_link() {
-        let s = create_script(
-            Shape::Macvtap,
-            "cdj3k1",
-            "eno2",
-            "0e:12:b7:bc:af:b1",
-            std::path::Path::new("/run/ready"),
-            1000,
-        );
+        let s = script(Shape::Macvtap, "eno2");
         assert!(s.contains("address '0e:12:b7:bc:af:b1'"), "{s}");
     }
 }

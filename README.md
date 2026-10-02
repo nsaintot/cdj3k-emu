@@ -271,7 +271,7 @@ The admin password, in three situations:
 | Action                                                   | Why it elevates                                                                                                                                                                                                        |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Bridging a TAP interface (OpenVPN-style) for Pro DJ Link | Creates a macOS kernel bridge with `ifconfig`, which is root-only. vmnet modes need no prompt: QEMU opens the interface itself under the app's `com.apple.developer.networking.vmnet` entitlement.                     |
-| Selecting a TAP interface (OpenVPN etc.)                 | Creates a macOS `bridge` device + assigns a `tap` device to QEMU via Authorization Services. Torn down automatically when the app exits.                                                                               |
+| Selecting a TAP interface (OpenVPN etc.)                 | Creates a macOS `bridge` device + assigns a `tap` device to QEMU via Authorization Services. Torn down when the slot stops using it or the app exits.                                                                                  |
 | Attaching a physical USB drive in pass-through mode      | `chmod 660` on `/dev/diskN` so QEMU can open it `O_RDWR`. The exact device path is validated against `/dev/disk[0-9]+(s[0-9]+)?` before elevation — see `crates/cdj3k-emu-runtime/src/disk/macos.rs::is_valid_bsd_disk_path`. |
 
 All three use the native macOS password dialog (TouchID / Apple Watch eligible)
@@ -284,7 +284,7 @@ The desktop's polkit agent asks, in two situations:
 
 | Action | Why it elevates |
 | --- | --- |
-| Bridging onto a NIC or a bridge for Pro DJ Link | Creates a macvtap, or a tap on the bridge, through `pkexec`. The link persists until the host reboots, so later launches reuse it without asking. Picking an existing tap you own asks nothing. |
+| Bridging onto a NIC or a bridge for Pro DJ Link | Creates a macvtap, or a tap on the bridge, through `pkexec`. The link lasts while the slot uses it, so each bridged start asks once. Picking an existing tap you own asks nothing. |
 | Attaching a physical USB drive in pass-through mode | udisks opens the disk exclusively for the app (`org.freedesktop.udisks2.open-device`) when your user cannot. The host cannot mount it while the deck holds it. |
 
 ## Documentation and reference
