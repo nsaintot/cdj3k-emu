@@ -102,7 +102,7 @@ AppImage.
   needs host privileges a sandbox would take away.
 
 **Windows:** one Inno Setup 6.6+ installer per architecture,
-`cdj3k-emu-<version>-windows-{x64,arm64}-setup.exe`. The app is cross-built for
+`CDJ3K-Emulator-<version>-windows-{x64,arm64}.exe`. The app is cross-built for
 `<arch>-pc-windows-gnullvm` by `packaging/windows/cross-build.sh` in the
 `docker/Dockerfile.windows-qemu` image, into `dist/windows-bin-<arch>/` with
 the DLLs it loads; `packaging/windows/build.ps1` on Windows runs `stage.ps1`,

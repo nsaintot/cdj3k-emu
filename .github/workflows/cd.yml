@@ -280,16 +280,16 @@ jobs:
           packaging/macos/stage.sh --arch universal --version "$BUNDLE_VERSION" --build "$GITHUB_RUN_NUMBER"
       - name: Sign and package
         env:
+          CDJ3K_VERSION: ${{ needs.plan.outputs.version }}
           NOTARIZE: ${{ needs.plan.outputs.notarize }}
         run: |
           args=(--dmg)
           if [[ -n "${CODESIGN_IDENTITY:-}" ]]; then args+=(--sign "$CODESIGN_IDENTITY"); fi
           if [[ "$NOTARIZE" == true ]]; then args+=(--notarize); fi
-          packaging/macos/build.sh "${args[@]}"
+          packaging/macos/build.sh "${args[@]}" --version "$CDJ3K_VERSION"
       - name: Check
         env:
           VERSION: ${{ needs.plan.outputs.version }}
-          BUNDLE_VERSION: ${{ needs.plan.outputs.bundle-version }}
           NOTARIZE: ${{ needs.plan.outputs.notarize }}
         run: |
           app="dist/CDJ3K Emulator.app"
@@ -307,9 +307,8 @@ jobs:
           "$app/Contents/MacOS/qemu-img" --version
           if [[ "$NOTARIZE" == true ]]; then
               xcrun stapler validate "$app"
-              xcrun stapler validate "dist/CDJ3K-Emulator-$BUNDLE_VERSION.dmg"
+              xcrun stapler validate "dist/CDJ3K-Emulator-$VERSION-macos-universal.dmg"
           fi
-          mv "dist/CDJ3K-Emulator-$BUNDLE_VERSION.dmg" "dist/CDJ3K-Emulator-$VERSION-macos-universal.dmg"
       - name: Remove signing identity
         if: always() && needs.plan.outputs.sign == 'true'
         run: .github/scripts/macos-signing.sh cleanup
@@ -430,7 +429,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: package-windows-${{ matrix.arch }}
-          path: dist/*-setup.exe
+          path: dist/CDJ3K-Emulator-*.exe
           compression-level: 0
 
   release:
@@ -460,7 +459,7 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
               gh release upload "$GITHUB_REF_NAME" --clobber -- *
           else
-              args=(--draft --verify-tag --title "CDJ3K Emulator $VERSION" --generate-notes)
+              args=(--draft --verify-tag --title "$GITHUB_REF_NAME" --generate-notes)
               if [[ "$VERSION" == *-* ]]; then args+=(--prerelease); fi
               gh release create "$GITHUB_REF_NAME" "${args[@]}" -- *
           fi
