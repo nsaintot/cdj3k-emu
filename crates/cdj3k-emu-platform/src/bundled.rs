@@ -1,6 +1,6 @@
 //! Resolve helper-tool paths relative to the running executable.
 //!
-//! `bundle.sh` drops `qemu-img` and friends into
+//! `packaging/macos/stage.sh` drops `qemu-img` and friends into
 //! `<app>.app/Contents/MacOS/` alongside the main binary.  At runtime we
 //! prefer those bundled copies so end users don't need anything on `$PATH`.
 

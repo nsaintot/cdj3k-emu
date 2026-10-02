@@ -3,7 +3,7 @@
 PLUGIN  := CDJ3KEmuMIDI.plugin
 DEST    := $(HOME)/Library/Audio/MIDI Drivers
 CFLAGS  ?= -O2 -Wall -Wextra
-# bundle.sh --universal: -arch arm64 -arch x86_64
+# packaging/macos/stage.sh: one -arch per slice
 ARCHFLAGS ?=
 LDLIBS  := -framework CoreMIDI -framework CoreFoundation
 

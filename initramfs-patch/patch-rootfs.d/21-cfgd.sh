@@ -19,7 +19,7 @@ set -euo pipefail
 : "${PATCH_ASSETS_DIR:?PATCH_ASSETS_DIR must be set by dispatcher}"
 
 # cfgd_aarch64 lives in PATCH_ASSETS_DIR when called from the .app bundle
-# (bundle.sh copies it from guest/out/), or in guest/out/ when called
+# (packaging/macos/stage.sh copies it from guest/out/), or in guest/out/ when called
 # directly from build-initramfs.sh.
 if [[ -f "$PATCH_ASSETS_DIR/cfgd_aarch64" ]]; then
     CFGD_BIN="$PATCH_ASSETS_DIR/cfgd_aarch64"

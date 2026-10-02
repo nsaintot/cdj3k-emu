@@ -243,11 +243,10 @@ changes.
 ### macOS
 
 ```bash
-# The .app. The Homebrew dylibs QEMU links against are copied into the bundle
-# and rewritten to @loader_path, so it runs on a Mac without Homebrew.
-./bundle.sh                                            # ad-hoc signed (HVF works, FDA does not)
-./bundle.sh --sign "Apple Development"                 # real cert (enables Full Disk Access)
-./bundle.sh --sign "Developer ID Application" --dmg    # distributable .dmg
+# The staged .app, dist/macos/CDJ3K Emulator.app. The Homebrew dylibs QEMU
+# links against are copied into the bundle and rewritten to @loader_path, so it
+# runs on a Mac without Homebrew.
+packaging/macos/stage.sh                                  # this Mac's arch, from qemu/install/
 
 # The universal .app (arm64 + x86_64): one QEMU per arch, built against static
 # libraries from qemu/macos-deps.sh at the macOS 15.0 deployment target, then
@@ -255,12 +254,17 @@ changes.
 # `rustup target add aarch64-apple-darwin x86_64-apple-darwin`.
 ./qemu/build.sh --macos arm64
 ./qemu/build.sh --macos x86_64
-./bundle.sh --universal --sign "Developer ID Application" --dmg
+packaging/macos/stage.sh --arch universal
+
+# Sign the staged .app into dist/, optionally with a .dmg.
+packaging/macos/build.sh                                  # ad-hoc signed (HVF works, FDA does not)
+packaging/macos/build.sh --sign "Apple Development"       # real cert (enables Full Disk Access)
+packaging/macos/build.sh --sign "Developer ID Application" --dmg
 
 # A release build: Developer ID, notarized and stapled .app and .dmg. Store the
 # notary credentials (an app-specific password from appleid.apple.com) once:
 xcrun notarytool store-credentials cdj3k-emu-notarization --apple-id <APPLE_ID> --team-id <TEAM_ID>
-./bundle.sh --universal --sign "Developer ID Application" --dmg --notarize
+packaging/macos/build.sh --sign "Developer ID Application" --dmg --notarize
 ```
 
 ### Linux
@@ -370,9 +374,10 @@ qemu/                upstream QEMU source + our overlay patches
 winit/               winit fetched from crates.io + our overlay patch
 docker/              Alpine + Ubuntu build pipeline for guest artefacts, and
                      the Linux and Windows host-build images
+packaging/macos/     staging (universal or one arch), signing, notarization, .dmg
 packaging/linux/     staging, .deb/.rpm (nfpm) and AppImage
 packaging/windows/   cross-build, staging and the Inno Setup installer
-initramfs-patch/     numbered rootfs patch scripts (concatenated by bundle.sh)
+initramfs-patch/     numbered rootfs patch scripts (concatenated by the stagers)
 scripts/             bundle-dylibs.sh (self-contained .app), bundle-sos.sh
                      (Linux $ORIGIN tree), bundle-dlls.sh (Windows DLLs)
 ```

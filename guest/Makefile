@@ -182,7 +182,7 @@ deploy: $(DECK_SHIM)
 
 # Build via docker/Dockerfile (arm64v8/alpine:3.19 + ubuntu:18.04 shim stage);
 # extracts guest tools + kernel + modules to build/docker-out/, then copies
-# the user-space outputs into guest/out/ for `bundle.sh` to pick up.
+# the user-space outputs into guest/out/ for the packaging stagers to pick up.
 docker:
 	$(eval REPO_ROOT := $(shell git -C $(CURDIR) rev-parse --show-toplevel))
 	$(eval DOCKER_OUT := $(REPO_ROOT)/build/docker-out)
