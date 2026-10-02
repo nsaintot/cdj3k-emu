@@ -61,7 +61,7 @@ an A72, and under TCG every exception from EL0 then flushes the softmmu TLB.
 | udisks2 | USB passthrough and unmounting; polkit asks once per open |
 | `exfatprogs`, `sfdisk` | formatting a virtual USB image |
 | `kvm` group | acceleration on aarch64 |
-| a polkit agent on a local seat | bridged networking (`pkexec`), once per host boot |
+| a polkit agent on a local seat | bridged networking (`pkexec`), once per bridged start |
 
 A macvtap cannot reach its own host, so rekordbox on the same Linux machine
 does not see a deck bridged on a NIC. Pick a bridge built by hand instead.

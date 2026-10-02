@@ -9,6 +9,9 @@
 pub mod tapbridge;
 pub mod vmnet;
 
+/// The slot's hold on its bridged link, the same on every host.
+pub mod lease;
+
 #[cfg(target_os = "linux")]
 pub mod linux_net;
 

@@ -9,12 +9,10 @@
 //! (optional: other ifaces)─┘
 //!
 //! An elevated watcher script (run as root via Authorization Services) creates
-//! the bridge and the QEMU-side TAP, then loops on a heartbeat file.  When
-//! `TapBridge` is dropped, it removes the heartbeat; the watcher sees the file
-//! gone, tears everything down, and exits.  This guarantees cleanup on normal
-//! exit, panic, and SIGTERM.  The watcher also watches the app PID directly so
-//! SIGKILL / Ctrl+C without a handler still triggers teardown.  Stale interfaces
-//! from a previous unclean exit are detected and removed on the next launch.
+//! the bridge and the QEMU-side TAP, then holds them for as long as the slot's
+//! lease ([`super::lease`]) does and the app process lives. It then tears them
+//! down and answers the lease. Stale interfaces from a watcher that did not
+//! finish (a host shutdown) are removed on the next launch.
 
 use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -24,6 +22,7 @@ use std::{fs, thread};
 
 use cdj3k_emu_platform::runtime_paths;
 
+use super::lease::Lease;
 use crate::elevate::{run_elevated, sh_quote};
 
 fn tapbridge_base(instance_id: u32) -> String {
@@ -42,8 +41,8 @@ fn djpl_bridge() -> String {
     std::env::var("DJPL_BRIDGE").unwrap_or_else(|_| "bridge99".to_string())
 }
 
-/// A live macOS bridge + QEMU TAP pair managed by an elevated watcher process.
-/// Tearing down the bridge and TAP is automatic on drop.
+/// A live macOS bridge + QEMU TAP pair managed by an elevated watcher process,
+/// torn down once this is dropped.
 pub struct TapBridge {
     /// The macOS bridge interface created for this session (e.g. "bridge3").
     pub bridge_iface: String,
@@ -54,8 +53,8 @@ pub struct TapBridge {
     pub qemu_tap_fd: RawFd,
     /// Keeps the tap interface RUNNING until this struct is dropped.
     _tap_file: fs::File,
-    /// Removing this file signals the watcher to tear everything down.
-    heartbeat: PathBuf,
+    /// Dropping it lets the watcher tear everything down.
+    _lease: Lease,
 }
 
 impl TapBridge {
@@ -71,7 +70,7 @@ impl TapBridge {
                 format!("invalid host tap name: {host_tap:?}"),
             ));
         }
-        // The watcher script, heartbeat and names file all live in the instance
+        // The watcher script, lease and names file all live in the instance
         // dir, and `setup` runs before `QemuInstance::spawn` - the only other
         // thing that creates it - so on a fresh launch it is not there yet.
         runtime_paths::ensure_runtime_base_dir()?;
@@ -80,26 +79,30 @@ impl TapBridge {
         // Clean up any stale interfaces from a previous unclean exit first.
         cleanup_stale(instance_id);
 
-        let app_pid = std::process::id();
         let base = tapbridge_base(instance_id);
-        let heartbeat = PathBuf::from(format!("{}.alive", base));
         let names_file = PathBuf::from(format!("{}.names", base));
         let script_path = PathBuf::from(format!("{}.sh", base));
 
         // Remove any leftovers from a previous run.
-        let _ = fs::remove_file(&heartbeat);
         let _ = fs::remove_file(&names_file);
 
-        // Write the watcher script.
-        let script =
-            build_watcher_script(&heartbeat, host_tap, &names_file, app_pid, &djpl_bridge());
+        // The claim is written before the watcher starts, so it never races.
+        let mut lease = Lease::take(&runtime_paths::instance_dir(instance_id))?;
+        let script = build_watcher_script(
+            &Watch {
+                claim_file: &lease.claim_path(),
+                claim: lease.claim(),
+                released: &lease.released_path(),
+                app_pid: std::process::id(),
+            },
+            host_tap,
+            &names_file,
+            &djpl_bridge(),
+            &script_path,
+        );
         fs::write(&script_path, &script).map_err(|e| {
             io::Error::new(e.kind(), format!("failed to write watcher script: {e}"))
         })?;
-
-        // Touch the heartbeat before launching so the watcher never races.
-        fs::write(&heartbeat, b"")
-            .map_err(|e| io::Error::new(e.kind(), format!("failed to create heartbeat: {e}")))?;
 
         // Run the watcher script elevated and backgrounded.
         let cmd = format!(
@@ -107,6 +110,7 @@ impl TapBridge {
             sh_quote(&script_path.to_string_lossy()),
         );
         run_elevated(&cmd)?;
+        lease.set_watched();
 
         // Poll for the names file (watcher writes it after releasing the tap fd).
         let (bridge_iface, qemu_tap) = wait_for_names(&names_file, Duration::from_secs(8))?;
@@ -135,17 +139,14 @@ impl TapBridge {
             qemu_tap,
             qemu_tap_fd,
             _tap_file: tap_file,
-            heartbeat,
+            _lease: lease,
         })
     }
 }
 
 impl Drop for TapBridge {
+    /// Runs before the lease drops, which waits for the watcher's answer.
     fn drop(&mut self) {
-        // Signal the watcher to tear down bridge + tap.
-        let _ = fs::remove_file(&self.heartbeat);
-        // Brief wait so the elevated watcher can finish before the process exits.
-        thread::sleep(Duration::from_millis(600));
         eprintln!(
             "cdj3k-emu: tapbridge torn down  bridge={}  qemu_tap={}",
             self.bridge_iface, self.qemu_tap
@@ -155,21 +156,32 @@ impl Drop for TapBridge {
 
 // ── watcher script ────────────────────────────────────────────────────────────
 
+/// The lease the watcher holds the link for.
+struct Watch<'a> {
+    claim_file: &'a Path,
+    claim: &'a str,
+    released: &'a Path,
+    app_pid: u32,
+}
+
 fn build_watcher_script(
-    heartbeat: &Path,
+    watch: &Watch,
     host_tap: &str,
     names_file: &Path,
-    app_pid: u32,
     bridge: &str,
+    script_self: &Path,
 ) -> String {
     format!(
         r#"#!/bin/sh
 set -e
-HEARTBEAT={heartbeat}
+CLAIM_FILE={claim_file}
+CLAIM={claim}
+RELEASED={released}
 HOST_TAP={host_tap}
 NAMES_FILE={names_file}
 APP_PID={app_pid}
 BRIDGE={bridge}
+held() {{ [ "$(cat "$CLAIM_FILE" 2>/dev/null)" = "$CLAIM" ] && kill -0 "$APP_PID" 2>/dev/null; }}
 
 # tuntap kext: tap devices only appear in ifconfig after /dev/tapN is opened.
 # Claim the first free one by opening its device file on fd 3.
@@ -214,7 +226,7 @@ printf '%s:%s\n' "$BRIDGE" "$TAP_QEMU" > "$NAMES_FILE"
 # watcher releases it above and reappears when Rust opens it - we must add
 # the new instance, not the old one.
 DEADLINE=$(( $(date +%s) + 10 ))
-while [ -f "$HEARTBEAT" ] && kill -0 "$APP_PID" 2>/dev/null; do
+while held; do
     if ifconfig "$TAP_QEMU" 2>/dev/null | grep -q RUNNING; then
         ifconfig "$BRIDGE" addm "$TAP_QEMU" 2>/dev/null || true
         ifconfig "$BRIDGE" -stp "$TAP_QEMU" 2>/dev/null || true
@@ -224,8 +236,8 @@ while [ -f "$HEARTBEAT" ] && kill -0 "$APP_PID" 2>/dev/null; do
     sleep 0.2
 done
 
-# Phase 2: Heartbeat loop.
-while [ -f "$HEARTBEAT" ] && kill -0 "$APP_PID" 2>/dev/null; do
+# Phase 2: hold the link for the lease.
+while held; do
     sleep 0.5
 done
 
@@ -239,14 +251,17 @@ if [ "$REMAIN" = "0" ]; then
     ifconfig "$BRIDGE" deletem "$HOST_TAP" 2>/dev/null || true
     ifconfig "$BRIDGE" destroy 2>/dev/null || true
 fi
-rm -f "$NAMES_FILE" "$HEARTBEAT" {script_self}
+rm -f "$NAMES_FILE" {script_self}
+printf '%s' "$CLAIM" > "$RELEASED"
 "#,
-        heartbeat = sh_quote(&heartbeat.to_string_lossy()),
+        claim_file = sh_quote(&watch.claim_file.to_string_lossy()),
+        claim = sh_quote(watch.claim),
+        released = sh_quote(&watch.released.to_string_lossy()),
         host_tap = sh_quote(host_tap),
         names_file = sh_quote(&names_file.to_string_lossy()),
-        app_pid = app_pid,
+        app_pid = watch.app_pid,
         bridge = sh_quote(bridge),
-        script_self = sh_quote(&heartbeat.with_extension("sh").to_string_lossy()),
+        script_self = sh_quote(&script_self.to_string_lossy()),
     )
 }
 
@@ -304,4 +319,33 @@ fn cleanup_stale(instance_id: u32) {
     );
     // Best-effort - ignore elevation cancellation.
     let _ = run_elevated(&cmd);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The watcher holds the link while the claim is the slot's and the app
+    /// lives, and answers the lease only after the teardown.
+    #[test]
+    fn the_watcher_tears_down_then_answers() {
+        let s = build_watcher_script(
+            &Watch {
+                claim_file: Path::new("/tmp/net.claim"),
+                claim: "4356-17",
+                released: Path::new("/tmp/net.released"),
+                app_pid: 4356,
+            },
+            "tap0",
+            Path::new("/tmp/tapbridge.names"),
+            "bridge99",
+            Path::new("/tmp/tapbridge.sh"),
+        );
+        assert!(s.contains("CLAIM='4356-17'"), "{s}");
+        assert!(s.contains(r#"[ "$(cat "$CLAIM_FILE" 2>/dev/null)" = "$CLAIM" ] && kill -0 "$APP_PID""#), "{s}");
+        let hold = s.find("# Phase 2").unwrap();
+        let deletem = s[hold..].find("deletem \"$TAP_QEMU\"").unwrap() + hold;
+        let answer = s.find(r#"printf '%s' "$CLAIM" > "$RELEASED""#).unwrap();
+        assert!(hold < deletem && deletem < answer, "{s}");
+    }
 }

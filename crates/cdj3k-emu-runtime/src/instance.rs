@@ -378,16 +378,20 @@ pub fn cleanup_qemu_files(sock_dir: &Path) {
 /// restart clears it. These outlive a respawn and a restart must not touch
 /// them:
 ///
-/// * `tapbridge.*` are the macOS tap bridge's heartbeat, script and hand-over
-///   files. Its elevated watcher destroys the bridge when the heartbeat goes,
-///   so deleting it would take the link QEMU is being handed.
-/// * `linuxnet.*` are the Linux link's elevated script and hand-over file.
+/// * `net.claim` and `net.released` are the link's lease (`net::lease`);
+///   the elevated watcher takes the link down when the claim goes.
+/// * `tapbridge.*` and `linuxnet.*` are the macOS and Linux links' elevated
+///   scripts and hand-over files.
 /// * `midi-driver.sock` is bound by `MidiDriverLink` for as long as PC Link
 ///   is on, and the CoreMIDI plugin dials it by name.
 ///
 /// A new bridge back end names its files here.
 fn app_owned(name: &str) -> bool {
-    name.starts_with("tapbridge.") || name.starts_with("linuxnet.") || name == "midi-driver.sock"
+    name == crate::net::lease::CLAIM_FILE
+        || name == crate::net::lease::RELEASED_FILE
+        || name.starts_with("tapbridge.")
+        || name.starts_with("linuxnet.")
+        || name == "midi-driver.sock"
 }
 
 /// Restart-time cleanup: empties the sock dir but keeps the directory, which
@@ -442,7 +446,8 @@ mod cleanup_tests {
         let seed = || {
             std::fs::create_dir_all(&dir).unwrap();
             for f in [
-                "tapbridge.alive",
+                "net.claim",
+                "net.released",
                 "tapbridge.sh",
                 "tapbridge.names",
                 "linuxnet.sh",
@@ -456,10 +461,8 @@ mod cleanup_tests {
 
         seed();
         cleanup_qemu_files_for_restart(&dir);
-        assert!(
-            dir.join("tapbridge.alive").exists(),
-            "heartbeat must survive a restart"
-        );
+        assert!(dir.join("net.claim").exists(), "the lease must survive a restart");
+        assert!(dir.join("net.released").exists());
         assert!(dir.join("tapbridge.sh").exists());
         assert!(dir.join("tapbridge.names").exists());
         assert!(dir.join("linuxnet.sh").exists());

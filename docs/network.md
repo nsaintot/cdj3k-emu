@@ -28,8 +28,8 @@ or a kernel TAP bridge, and Linux a macvtap or a tap on a bridge.
 | **User-mode**    | `user,id=net0,hostfwd=tcp::<2222+id>-:22`            | NAT only                 | no         | n/a                    |
 | **vmnet-bridged**| `vmnet-bridged,id=net0,ifname=<iface>`               | full L2 on iface         | no         | QEMU exit              |
 | **vmnet-host** (link-local) | `vmnet-host,id=net0,net-uuid=<UUID>`      | shared `bridgeN`, no NIC | no         | QEMU exit              |
-| **TAP bridge**   | `tap,id=net0,fd=<N>`                                 | full L2 via TAP          | yes        | heartbeat-file watcher |
-| **Linux link**   | `tap,id=net0,fd=<N>`                                 | full L2 on iface         | once per host boot | none: the link persists |
+| **TAP bridge**   | `tap,id=net0,fd=<N>`                                 | full L2 via TAP          | once per start | lease watcher      |
+| **Linux link**   | `tap,id=net0,fd=<N>`                                 | full L2 on iface         | once per start | lease watcher      |
 
 vmnet and the TAP bridge are macOS; the Linux link is Linux. Both vmnet modes
 are unprivileged: vmnet requires root *or* the
@@ -120,8 +120,8 @@ Flow (`TapBridge::setup`, `net/tapbridge.rs`):
 1. `cleanup_stale()` reads `<instance>/tapbridge.names` from a previous
    run; if present, `ifconfig destroy` the old bridge and tap via one
    elevated call.
-2. Write watcher script to `<instance>/tapbridge.sh`, touch
-   `<instance>/tapbridge.alive` (heartbeat).
+2. Take the slot's lease ([Link lifetime](#link-lifetime)) and write the
+   watcher script to `<instance>/tapbridge.sh`.
 3. `run_elevated()` launches the script.
 4. Watcher picks a free `tapN`, opens it on fd 3 to materialise the
    interface, creates a `bridgeN`, adds the host tap with STP off,
@@ -133,12 +133,12 @@ Flow (`TapBridge::setup`, `net/tapbridge.rs`):
    packet - the fd is always held by someone.
 6. Watcher's Phase 1 polls until the tap shows `RUNNING` again (with
    the new host fd), then `addm` to the bridge with STP off.
-7. Phase 2: heartbeat loop. `Drop` removes the heartbeat;
-   `kill -0 <app_pid>` also gates the loop for unclean exits.
+7. Phase 2: the watcher holds the link for the lease.
 
-Teardown: `chmod 0600 /dev/<tap>`, `ifconfig <tap> down`,
-`ifconfig <bridge> destroy`, remove the names and heartbeat files,
-remove the watcher script itself.
+Teardown: `chmod 0600 /dev/<tap>`, `ifconfig <bridge> deletem <tap>`,
+`ifconfig <tap> down`, and `ifconfig <bridge> destroy` once no other tap is
+on the shared bridge; then remove the names file and the watcher script, and
+answer the lease.
 
 ### Mode 4 - Linux link
 
@@ -151,10 +151,12 @@ remove the watcher script itself.
 | a bridge | `cdj3k<slot>`, a tap enslaved to it | `/dev/net/tun` attached to the tap |
 | an existing tap | the tap itself | the tap, if this user can open it |
 
-The link is made once by an elevated script (`pkexec`, `linuxnet.sh`), owned
-by the user, and reused on the next launch when sysfs shows it up, on the same
-parent and with the slot's MAC. It goes when the host reboots or a later setup
-replaces it. A Wi-Fi station cannot carry either shape, so it is not offered.
+An elevated script (`pkexec`, `<instance>/linuxnet.sh`) deletes any
+`cdj3k<slot>` left over, makes the link, hands its device node to the user and
+writes the node's path to `<instance>/linuxnet.ready`. It then holds the link
+for the slot's lease in the background and deletes it (`ip link del`) when
+the lease goes. An existing tap is used as it is: nothing is made, elevated or
+deleted. A Wi-Fi station cannot carry either shape, so it is not offered.
 
 A macvtap cannot reach its own parent's host: rekordbox on the same machine
 does not see the deck. A bridge built by hand and picked does.
@@ -206,20 +208,33 @@ for our scripts, which only spawn backgrounded daemons + watchdogs.
 On Linux it is `pkexec /bin/sh -c <cmd>`, answered by the desktop's polkit
 agent; it needs a local seat.
 
-### Why a watcher and not direct lifetime ownership
+### Link lifetime
 
-A user-level process can `kill()` only processes it owns. The bridge and
-TAP are created by a root shell after elevation, so if the host app crashes
-the kernel cannot send them a teardown signal. Hence the watcher: it polls
-the cdj3k-emu PID and a heartbeat file (`build_watcher_script` in
-`tapbridge.rs`) and tears the interfaces down when either goes away.
+A link the app makes lasts as long as the slot uses it, on every host
+(`net/lease.rs`). The elevated half that makes it stays running as its
+watcher:
 
-vmnet needs none of this - QEMU owns the interface and the kernel releases
-it when QEMU exits.
+1. Before elevating, the app writes a claim, `<pid>-<ms>`, to
+   `<instance>/net.claim` (`Lease::take`), and passes the claim and its pid to
+   the watcher.
+2. The watcher holds the link while `net.claim` still reads that claim and
+   the app process is alive (`kill -0`).
+3. Dropping the `Lease` removes the claim: the slot switched network, stopped
+   or quit. A crash ends the process instead. Either way the watcher takes
+   the link down and writes the claim to `<instance>/net.released`.
+4. The dropped `Lease` waits up to 15 s for that answer, so a setup that
+   follows finds the host settled.
 
-The signal is race-free: the host app holds an open fd to the
-heartbeat / socket inode for its lifetime, and `kill -0 <pid>` is
-atomic against process exit.
+| Host | Watcher | Takes down |
+|---|---|---|
+| macOS (TAP bridge) | `tapbridge.sh`, backgrounded | the tap, and the shared bridge once it holds no other tap |
+| Linux | the background half of `linuxnet.sh` | `cdj3k<slot>` |
+
+A host shutdown ends a watcher without its teardown; the kernel's interfaces
+go with it.
+
+vmnet needs none of this: QEMU owns the interface and the kernel releases it
+when QEMU exits.
 
 ---
 
@@ -287,10 +302,11 @@ without two layers of filtering:
   script.
 
 Per-instance state is rooted in `runtime_paths::instance_dir(id)`: the
-TAP bridge's heartbeat, names file and watcher script, and the Linux link's
-script and ready file. The host app process owns this directory; root scripts
-only read from it, and the TAP bridge's unlink-to-shutdown signal relies on
-that.
+lease's claim and answer, the TAP bridge's names file and watcher script, and
+the Linux link's script and ready file. The host app process owns this
+directory; the elevated halves only read from it, except for the files they
+report through (the names, ready and answer files). The lease relies on that:
+only the app can change the claim.
 
 ---
 
@@ -301,6 +317,7 @@ that.
 | `crates/cdj3k-emu-runtime/src/config.rs`                   | `-netdev` / `-device` selection                   |
 | `crates/cdj3k-emu-runtime/src/net/`                        | `attach` per host, `NetAttachment`                |
 | `crates/cdj3k-emu-runtime/src/net/vmnet.rs`                | `VmnetMode` -> `-netdev` argument, network UUID    |
+| `crates/cdj3k-emu-runtime/src/net/lease.rs`                | the slot's lease on its link; every host          |
 | `crates/cdj3k-emu-runtime/src/net/tapbridge.rs`            | bridgeN + tapM watcher, stale cleanup (macOS)     |
 | `crates/cdj3k-emu-runtime/src/net/linux_net.rs`            | macvtap / tap-on-bridge / existing tap (Linux)    |
 | `crates/cdj3k-emu-runtime/src/elevate/`                    | `run_elevated` per host, `sh_quote`               |
