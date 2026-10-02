@@ -246,7 +246,7 @@ changes.
 # The staged .app, dist/macos/CDJ3K Emulator.app. The Homebrew dylibs QEMU
 # links against are copied into the bundle and rewritten to @loader_path, so it
 # runs on a Mac without Homebrew.
-packaging/macos/stage.sh                                  # this Mac's arch, from qemu/install/
+packaging/macos/stage.sh                                  # dev: this Mac's arch, from qemu/install/
 
 # The universal .app (arm64 + x86_64): one QEMU per arch, built against static
 # libraries from qemu/macos-deps.sh at the macOS 15.0 deployment target, then
@@ -255,6 +255,10 @@ packaging/macos/stage.sh                                  # this Mac's arch, fro
 ./qemu/build.sh --macos arm64
 ./qemu/build.sh --macos x86_64
 packaging/macos/stage.sh --arch universal
+
+# Apple silicon only: the arm64 slice alone.
+./qemu/build.sh --macos arm64
+packaging/macos/stage.sh --arch arm64
 
 # Sign the staged .app into dist/, optionally with a .dmg.
 packaging/macos/build.sh                                  # ad-hoc signed (HVF works, FDA does not)
