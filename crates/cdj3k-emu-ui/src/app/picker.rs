@@ -16,8 +16,12 @@ const K_MAX: f32 = 1.40;
 use super::theme;
 use theme::Palette;
 
-/// The build, at the quiet end of the action bar.
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The build, at the quiet end of the action bar: the release's tag when CD
+/// sets CDJ3K_VERSION, the workspace version otherwise.
+const VERSION: &str = match option_env!("CDJ3K_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 const ANIM_TIME: f32 = 0.13;
 

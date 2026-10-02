@@ -320,16 +320,19 @@ bash builds the patch dispatcher. The installer is Authenticode-signed when
 `main` takes changes through pull requests only: the four CI jobs must pass and
 one review approve, which an admin can bypass. Only an admin creates `v*` tags.
 
-A release is a tag on `main` matching the `Cargo.toml` version. Its CD run
-notarizes the macOS build and puts every artefact, with `SHA256SUMS.txt`, in a
-draft release, published by hand; a version with a hyphen is a pre-release:
+A release is a `v<major>.<minor>.<patch>[-<pre>]` tag on `main`; the tag is
+the version every artefact and the app itself carry (`CDJ3K_VERSION` at build
+time), so nothing is bumped first. Its CD run notarizes the macOS build and puts
+every artefact, with `SHA256SUMS.txt`, in a draft release, published by hand; a
+version with a hyphen is a pre-release:
 
 ```bash
 git tag v0.2.0 origin/main && git push origin v0.2.0
 ```
 
-The macOS build is signed with the Developer ID when the repository secrets
-hold it, ad hoc otherwise; a release refuses to run without it.
+The macOS build is signed with the Developer ID held in the `release`
+environment's secrets; pull requests do not get that environment and are signed
+ad hoc, and a release refuses to run without it.
 
 | Secret | Content |
 |---|---|

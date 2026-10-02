@@ -3,15 +3,17 @@
 #   push to main                     build everything; artefacts on the run
 #   pull request into main           the same, when it touches the build
 #   workflow_dispatch                the same; `notarize` notarizes the macOS build
-#   push of a v<version> tag         a release: the tag must be on main and match
-#                                    Cargo.toml's version; macOS is notarized and
-#                                    every artefact lands in a draft GitHub
-#                                    release, published by hand. A version with
-#                                    a hyphen (0.3.0-rc1) is a pre-release.
+#   push of a v<version> tag         a release: the tag must be on main and is the
+#                                    version every artefact carries; macOS is
+#                                    notarized and every artefact lands in a draft
+#                                    GitHub release, published by hand. A version
+#                                    with a hyphen (0.3.0-rc1) is a pre-release.
 #
-# macOS is signed with the Developer ID in the repository secrets when they are
-# present (see .github/scripts/macos-signing.sh), ad hoc otherwise. A release
-# refuses to run without them.
+# Other builds carry Cargo.toml's version, which nothing bumps.
+#
+# macOS is signed with the Developer ID in the release environment's secrets
+# (see .github/scripts/macos-signing.sh); a pull request, which does not get
+# that environment, is signed ad hoc. A release refuses to run without them.
 name: CD
 
 on:
@@ -51,9 +53,13 @@ env:
 jobs:
   plan:
     name: Plan
+    # The signing and notary secrets live in the release environment, which a
+    # pull request does not get: its macOS build is signed ad hoc.
+    environment: ${{ github.event_name != 'pull_request' && 'release' || '' }}
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.plan.outputs.version }}
+      bundle-version: ${{ steps.plan.outputs.bundle-version }}
       notarize: ${{ steps.plan.outputs.notarize }}
       release: ${{ steps.plan.outputs.release }}
       sign: ${{ steps.plan.outputs.sign }}
@@ -68,12 +74,12 @@ jobs:
           HAVE_NOTARY: ${{ secrets.NOTARY_API_KEY_BASE64 != '' }}
         run: |
           version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
           release=false
           notarize=false
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
-              if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
-                  echo "::error::tag $GITHUB_REF_NAME does not match the Cargo.toml version $version"
+              version="${GITHUB_REF_NAME#v}"
+              if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+                  echo "::error::tag $GITHUB_REF_NAME is not v<major>.<minor>.<patch>[-<pre>]"
                   exit 1
               fi
               if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
@@ -97,6 +103,9 @@ jobs:
               echo "::warning::no signing certificate in the secrets; macOS is signed ad hoc"
           fi
           {
+              echo "version=$version"
+              # CFBundleShortVersionString takes the numeric part only.
+              echo "bundle-version=${version%%-*}"
               echo "notarize=$notarize"
               echo "release=$release"
               echo "sign=$HAVE_CERT"
@@ -167,6 +176,7 @@ jobs:
   # docker/Dockerfile.windows-qemu.
   windows-cross:
     name: Cross-build (Windows ${{ matrix.arch }})
+    needs: plan
     strategy:
       matrix:
         include:
@@ -198,10 +208,12 @@ jobs:
       # cross-build.sh's own outer half rebuilds the image with the local
       # builder; its inner half runs here in the image loaded above.
       - name: App
+        env:
+          CDJ3K_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           ./winit/fetch.sh
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-              -e CDJ3K_WINDOWS_CROSS_INNER=1 -v "$PWD:/work" \
+              -e CDJ3K_WINDOWS_CROSS_INNER=1 -e CDJ3K_VERSION -v "$PWD:/work" \
               cdj3k-emu-windows-qemu bash packaging/windows/cross-build.sh ${{ matrix.arch }}
       - run: tar -cf windows-cross.tar qemu/install-windows-${{ matrix.qemu }} dist/windows-bin-${{ matrix.arch }}
       - uses: actions/upload-artifact@v7
@@ -232,6 +244,7 @@ jobs:
   package-macos:
     name: Package (macOS universal)
     needs: [plan, guest, qemu-macos]
+    environment: ${{ github.event_name != 'pull_request' && 'release' || '' }}
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -260,10 +273,11 @@ jobs:
         run: .github/scripts/macos-signing.sh setup
       - name: Stage
         env:
-          VERSION: ${{ needs.plan.outputs.version }}
+          CDJ3K_VERSION: ${{ needs.plan.outputs.version }}
+          BUNDLE_VERSION: ${{ needs.plan.outputs.bundle-version }}
         run: |
           ./winit/fetch.sh
-          packaging/macos/stage.sh --arch universal --version "$VERSION" --build "$GITHUB_RUN_NUMBER"
+          packaging/macos/stage.sh --arch universal --version "$BUNDLE_VERSION" --build "$GITHUB_RUN_NUMBER"
       - name: Sign and package
         env:
           NOTARIZE: ${{ needs.plan.outputs.notarize }}
@@ -275,6 +289,7 @@ jobs:
       - name: Check
         env:
           VERSION: ${{ needs.plan.outputs.version }}
+          BUNDLE_VERSION: ${{ needs.plan.outputs.bundle-version }}
           NOTARIZE: ${{ needs.plan.outputs.notarize }}
         run: |
           app="dist/CDJ3K Emulator.app"
@@ -292,9 +307,9 @@ jobs:
           "$app/Contents/MacOS/qemu-img" --version
           if [[ "$NOTARIZE" == true ]]; then
               xcrun stapler validate "$app"
-              xcrun stapler validate "dist/CDJ3K-Emulator-$VERSION.dmg"
+              xcrun stapler validate "dist/CDJ3K-Emulator-$BUNDLE_VERSION.dmg"
           fi
-          mv "dist/CDJ3K-Emulator-$VERSION.dmg" "dist/CDJ3K-Emulator-$VERSION-macos-universal.dmg"
+          mv "dist/CDJ3K-Emulator-$BUNDLE_VERSION.dmg" "dist/CDJ3K-Emulator-$VERSION-macos-universal.dmg"
       - name: Remove signing identity
         if: always() && needs.plan.outputs.sign == 'true'
         run: .github/scripts/macos-signing.sh cleanup
@@ -337,10 +352,10 @@ jobs:
           cache-to: type=gha,scope=linux-pkg-${{ matrix.arch }},mode=max
       - name: Stage and package
         env:
-          VERSION: ${{ needs.plan.outputs.version }}
+          CDJ3K_VERSION: ${{ needs.plan.outputs.version }}
         run: |
-          docker run --rm -v "$PWD:/work" cdj3k-emu-linux-pkg \
-              "packaging/linux/stage.sh --qemu /work/qemu-linux && packaging/linux/build.sh --version $VERSION"
+          docker run --rm -e CDJ3K_VERSION -v "$PWD:/work" cdj3k-emu-linux-pkg \
+              "packaging/linux/stage.sh --qemu /work/qemu-linux && packaging/linux/build.sh --version \"\$CDJ3K_VERSION\""
           sudo chown -R "$(id -u):$(id -g)" dist
       # The deb and the rpm each installed on a clean system of their family,
       # which also checks their declared dependencies; the AppImage unpacked.
