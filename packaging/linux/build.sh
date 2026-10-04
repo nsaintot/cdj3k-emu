@@ -55,6 +55,8 @@ if want deb || want rpm; then
     for format in deb rpm; do
         want "$format" || continue
         echo "==> $format"
+        mkdir -p "$STAGE/.package-kind"
+        echo "$format" > "$STAGE/.package-kind/$format"
         # From inside the tree: the recipe names its sources relatively, so it
         # carries no path from the machine that built it.
         (cd "$STAGE" && nfpm package --config "$RECIPE" \
@@ -74,6 +76,7 @@ if want appimage; then
     rm -rf "$APPDIR"
     mkdir -p "$APPDIR"
     cp -a "$STAGE/opt" "$APPDIR/opt"
+    echo appimage > "$APPDIR/opt/cdj3k-emu/share/cdj3k-emu/package-kind"
     install -m 0755 "$REPO_ROOT/packaging/linux/AppRun" "$APPDIR/AppRun"
     install -m 0644 "$REPO_ROOT/packaging/linux/cdj3k-emu.desktop" \
         "$APPDIR/cdj3k-emu.desktop"

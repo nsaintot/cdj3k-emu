@@ -14,14 +14,8 @@ const K_MIN: f32 = 0.70;
 const K_MAX: f32 = 1.40;
 
 use super::theme;
+use cdj3k_emu_platform::app_meta::VERSION;
 use theme::Palette;
-
-/// The build, at the quiet end of the action bar: the release's tag when CD
-/// sets CDJ3K_VERSION, the workspace version otherwise.
-const VERSION: &str = match option_env!("CDJ3K_VERSION") {
-    Some(v) => v,
-    None => env!("CARGO_PKG_VERSION"),
-};
 
 const ANIM_TIME: f32 = 0.13;
 
@@ -395,7 +389,8 @@ impl Pill {
 
 /// What the identity strip and the title block say for a step.
 pub(in crate::app) struct Header<'a> {
-    pub slot: u32,
+    /// The slot the step is about; `None` for a window about the whole app.
+    pub slot: Option<u32>,
     /// The deck this step is about, named in the strip beside its colour.
     pub model: Option<Model>,
     /// A word at the strip's right end while something is under way.
@@ -446,9 +441,13 @@ pub(in crate::app) fn draw_header(ui: &egui::Ui, head: &Header<'_>) -> HeaderOut
         pal.ink,
         theme::WORDMARK_TRACK * k,
     ) + STRIP_GAP * k;
-    x += strip_rule(p, x, cy, pal.line, k) + STRIP_GAP * k;
-    let (chip_w, switch_to) = draw_slot_switch(ui, x, cy, head, &micro, pal, k);
-    x += chip_w + STRIP_GAP * k;
+    let mut switch_to = None;
+    if let Some(slot) = head.slot {
+        x += strip_rule(p, x, cy, pal.line, k) + STRIP_GAP * k;
+        let (chip_w, picked) = draw_slot_switch(ui, x, cy, slot, head, &micro, pal, k);
+        switch_to = picked;
+        x += chip_w + STRIP_GAP * k;
+    }
     if let Some(model) = head.model {
         x += strip_rule(p, x, cy, pal.line, k) + STRIP_GAP * k;
         let s = STRIP_SWATCH * k;
@@ -524,16 +523,17 @@ pub(in crate::app) fn draw_header(ui: &egui::Ui, head: &Header<'_>) -> HeaderOut
 /// The slot chip: which slot this window is showing, and the way to the
 /// others. Picking one points the window at that slot; running it stays its
 /// own window's job. Returns the chip's width and any slot picked.
+#[allow(clippy::too_many_arguments)]
 fn draw_slot_switch(
     ui: &egui::Ui,
     x: f32,
     cy: f32,
+    slot: u32,
     head: &Header<'_>,
     font: &FontId,
     pal: &Palette,
     k: f32,
 ) -> (f32, Option<u32>) {
-    let slot = head.slot;
     let label = format!("SLOT {slot}");
     let p = ui.painter();
     let text_w = text_width(p, &label, font, theme::MICRO_TRACK * k);
@@ -799,7 +799,7 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
         None => "emulation model for the current slot".to_owned(),
     };
     let head = Header {
-        slot: view.slot,
+        slot: Some(view.slot),
         // The deck the slot holds, running or not - the strip says which slot
         // this is, and what is in it.
         model: view.running.or(view.installed),
@@ -949,7 +949,7 @@ fn draw_confirm(
         )
     };
     let head = Header {
-        slot: view.slot,
+        slot: Some(view.slot),
         model: view.installed,
         release: view.release,
         state: None,
@@ -1238,7 +1238,7 @@ pub(in crate::app) fn draw_delete_confirm(
         "The slot goes back to empty. Nothing is installed in its place."
     };
     let head = Header {
-        slot: view.slot,
+        slot: Some(view.slot),
         model: view.installed,
         release: view.release,
         state: None,

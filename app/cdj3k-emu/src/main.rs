@@ -100,6 +100,9 @@ fn main() {
     let mut no_spawn = std::env::var_os("CDJ3K_NO_SPAWN")
         .map(|v| v != "0" && !v.is_empty())
         .unwrap_or(false);
+    // `--after-update`: started by the updater while the build it replaced is
+    // still exiting, so the slot is waited for rather than found taken.
+    let mut after_update = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -161,6 +164,9 @@ fn main() {
             "--no-spawn" => {
                 no_spawn = true;
             }
+            "--after-update" => {
+                after_update = true;
+            }
             _ => {}
         }
         i += 1;
@@ -177,7 +183,12 @@ fn main() {
     // process without it never swaps an install into the slot.
     static SLOT_CLAIM: std::sync::OnceLock<cdj3k_emu_storage::SlotClaim> =
         std::sync::OnceLock::new();
-    match cdj3k_emu_storage::SlotClaim::take(instance) {
+    let claim = if after_update {
+        cdj3k_emu_storage::SlotClaim::take_within(instance, std::time::Duration::from_secs(60))
+    } else {
+        cdj3k_emu_storage::SlotClaim::take(instance)
+    };
+    match claim {
         Ok(Some(claim)) => {
             let _ = SLOT_CLAIM.set(claim);
         }
@@ -196,8 +207,7 @@ fn main() {
         Err(e) => eprintln!("cdj3k-emu: claiming slot {instance} failed: {e}"),
     }
 
-    // Every setting is per slot, so the app-wide settings file holds no keys
-    // and nothing else writes it.
+    // Keys older releases kept in the app-wide settings file.
     cdj3k_emu_storage::prune_app_file();
 
     // What the Instances menu writes beside a slot number. The menu lives a

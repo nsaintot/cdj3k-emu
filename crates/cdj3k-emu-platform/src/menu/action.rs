@@ -29,6 +29,9 @@ pub fn apply(s: &mut menu_state::AppState, id: &MenuId) -> ActionEffect {
         MenuId::ManageEmulation => {
             s.manage_emulation_requested = true;
         }
+        MenuId::CheckForUpdate => {
+            s.update_check_requested = true;
+        }
         MenuId::Restart => {
             s.shade_forced = true;
             s.restart_requested = true;

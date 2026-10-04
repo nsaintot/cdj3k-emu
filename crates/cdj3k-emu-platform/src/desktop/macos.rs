@@ -384,6 +384,11 @@ pub fn reveal_in_file_manager(path: &std::path::Path) {
         .spawn();
 }
 
+/// Open a web page in the default browser.
+pub fn open_url(url: &str) {
+    let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
+}
+
 /// Whether a second window can be centred over the first.
 pub const PLACES_WINDOWS: bool = true;
 

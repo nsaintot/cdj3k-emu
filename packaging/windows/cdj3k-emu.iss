@@ -102,7 +102,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""CDJ3K Emulator QEMU TCP"" program=""{app}\bin\{#QemuExe}"""; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""CDJ3K Emulator QEMU UDP"" dir=in action=allow protocol=UDP program=""{app}\bin\{#QemuExe}"" profile=any enable=yes"; StatusMsg: "Adding firewall rules..."; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""CDJ3K Emulator QEMU TCP"" dir=in action=allow protocol=TCP program=""{app}\bin\{#QemuExe}"" profile=any enable=yes"; Flags: runhidden
-Filename: "{app}\bin\cdj3k-emu.exe"; WorkingDir: "{app}\bin"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; Runs as the user who started Setup, not as Setup's elevated admin.
+Filename: "{app}\bin\cdj3k-emu.exe"; WorkingDir: "{app}\bin"; Description: "{cm:LaunchProgram,{#AppName}}"; Check: LaunchAtEnd; Flags: nowait postinstall runasoriginaluser
 
 [UninstallRun]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""CDJ3K Emulator QEMU UDP"" program=""{app}\bin\{#QemuExe}"""; Flags: runhidden; RunOnceId: "FirewallUdp"
@@ -117,6 +118,42 @@ var
   RestartPending: Boolean;
   // Uninstall: the user ticked "delete my data" in the confirmation dialog.
   DeleteData: Boolean;
+
+// The app's updater runs Setup as
+//   /SILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1
+// and exits; /UPDATE=1 starts the app again at the end, /UPDATE=0 (a quit)
+// does not.
+function UpdateParam(): String;
+begin
+  Result := ExpandConstant('{param:UPDATE|}');
+end;
+
+// Under /UPDATE the app is still exiting when Setup starts, and the AppMutex
+// check that follows this function aborts a silent Setup outright. Wait for
+// every instance to let the mutex go first.
+function InitializeSetup(): Boolean;
+var
+  Waited: Integer;
+begin
+  Result := True;
+  if UpdateParam() = '' then
+    Exit;
+  Waited := 0;
+  while CheckForMutexes('Global\cdj3k-emu') and (Waited < 60000) do
+  begin
+    Sleep(250);
+    Waited := Waited + 250;
+  end;
+  if Waited >= 60000 then
+    Log('Update: the app still holds its mutex after 60 s');
+end;
+
+// The launch at the end: offered on the finished page of an interactive
+// install, and run unattended by an update that asks for it.
+function LaunchAtEnd(): Boolean;
+begin
+  Result := (not WizardSilent()) or (UpdateParam() = '1');
+end;
 
 // Run one setup-helper.ps1 action with the native PowerShell; ExitCode is its
 // exit code. False when PowerShell itself could not start.

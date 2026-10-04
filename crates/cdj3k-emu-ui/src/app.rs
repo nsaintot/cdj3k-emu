@@ -12,6 +12,7 @@ mod script;
 pub mod shell;
 mod theme;
 mod ui;
+mod updater;
 mod viewports;
 
 use std::collections::HashSet;

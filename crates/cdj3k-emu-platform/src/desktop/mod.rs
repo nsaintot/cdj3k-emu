@@ -39,7 +39,7 @@ pub mod first_frame;
 
 pub use imp::{
     activate_process, announce_running, apply_resize_constraints, enter_panel_window,
-    enter_picker_window, on_creation_context, open_file_picker, reveal_in_file_manager,
+    enter_picker_window, on_creation_context, open_file_picker, open_url, reveal_in_file_manager,
     set_caption_area, CAPTION_IN_STRIP, OWN_WINDOW_ICON, PLACES_WINDOWS,
 };
 

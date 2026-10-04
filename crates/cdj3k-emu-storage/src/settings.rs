@@ -1,4 +1,4 @@
-//! Persistent settings: one file per slot.
+//! Persistent settings: one file per slot, and one for the app.
 //!
 //! Layout (macOS):
 //!   ~/Library/Application Support/<BUNDLE_ID>/instance-N/settings.txt
@@ -8,7 +8,8 @@
 //! first, the deck's own knobs in the second. [`kv`] holds the file layer both
 //! go through - the paths, the per-file key registries and the locked atomic
 //! write - and [`identity`] mints and validates the two values a slot is known
-//! to the guest by.
+//! to the guest by. [`AppSettings`] is the app-wide file's: the updater's
+//! choices.
 //!
 //! Format is plain `key=value\n` lines. No serde dep; the value space is tiny
 //! and the file is human-editable for debugging.
@@ -19,11 +20,13 @@
 //! ([`InstanceSettings::update`]), so two threads cannot lose each other's
 //! fields.
 
+mod app;
 mod identity;
 mod instance;
 mod kv;
 mod panel;
 
+pub use app::AppSettings;
 pub use instance::InstanceSettings;
 pub use kv::prune_app_file;
 pub use panel::PanelSettings;

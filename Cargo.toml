@@ -9,6 +9,7 @@ members = [
   "app/cdj3k-emu",
   "crates/cdj3k-emu-storage",
   "crates/cdj3k-emu-firmware",
+  "crates/cdj3k-emu-update",
 ]
 # Patched dependencies, not members: see [patch.crates-io].
 exclude = ["winit/src"]

@@ -86,6 +86,12 @@ pub struct AppState {
     /// Fires once to open the setup window - the one place a slot's emulation
     /// is chosen and its firmware installed.
     pub manage_emulation_requested: bool,
+    /// Fires once to open the update window: a check for a newer release, or
+    /// the restart an installed one is waiting for.
+    pub update_check_requested: bool,
+    /// An update is installed beside this build and waits for a restart; the
+    /// menu offers that instead of a check.
+    pub update_ready: bool,
     /// Fires once to retire the runtime worker (stop QEMU, exit its loop)
     /// without shutting the app down; a later launch spawns a fresh worker.
     pub worker_exit_requested: bool,
@@ -225,6 +231,8 @@ impl AppState {
             qemu_boot_requested: false,
             restart_requested: false,
             manage_emulation_requested: false,
+            update_check_requested: false,
+            update_ready: false,
             worker_exit_requested: false,
             relaunch_requested: false,
             shade_forced: false,
