@@ -5,7 +5,7 @@ pub mod settings;
 mod staging;
 
 pub use emmc::{default_path, provision_emmc, EmmcConfig, FirmwareInfo};
-pub use settings::{prune_app_file, InstanceSettings, PanelSettings};
+pub use settings::{prune_app_file, AppSettings, InstanceSettings, PanelSettings};
 pub use staging::{apply_staged, pending_install, request_restart, StagedFirmware, StagedRecord};
 
 use std::path::PathBuf;
@@ -122,6 +122,21 @@ impl SlotClaim {
             Err(e) => Err(e),
         }
     }
+
+    /// [`SlotClaim::take`], tried again until `wait` has passed: for a process
+    /// started while the one holding the slot is on its way out.
+    pub fn take_within(
+        instance_id: u32,
+        wait: std::time::Duration,
+    ) -> std::io::Result<Option<Self>> {
+        let deadline = std::time::Instant::now() + wait;
+        let mut claim = Self::take(instance_id)?;
+        while claim.is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            claim = Self::take(instance_id)?;
+        }
+        Ok(claim)
+    }
 }
 
 /// The pid of the process holding `instance_id`'s [`SlotClaim`], if one does.
@@ -142,11 +157,12 @@ pub fn slot_running(instance_id: u32) -> bool {
 }
 
 const DELETE_REQUEST: &str = ".delete-request";
+const QUIT_REQUEST: &str = ".quit-request";
 
-/// How long a delete request stays good. The owner polls once a second, so
-/// this is ample; past it a request is taken to be left over from a window
-/// that went away, and a slot must never be emptied by a leftover.
-const DELETE_REQUEST_TTL_SECS: u64 = 10;
+/// How long a request to another window stays good. The owner polls once a
+/// second; an older request is left over from a window that went away, and is
+/// ignored.
+const REQUEST_TTL_SECS: u64 = 10;
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -157,22 +173,53 @@ fn unix_now() -> u64 {
 /// Ask the window that holds slot `instance_id` to empty it. Only that window
 /// can: its emulation has the eMMC open, and it has to stop first.
 pub fn request_delete(instance_id: u32) -> std::io::Result<()> {
-    let dir = instance_dir(instance_id);
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join(DELETE_REQUEST), unix_now().to_string())
+    write_request(instance_id, DELETE_REQUEST)
 }
 
 /// Consume a delete request for slot `instance_id`: true if one was made in
 /// the last few seconds. An older one is discarded without effect.
 pub fn take_delete_request(instance_id: u32) -> bool {
-    let path = instance_dir(instance_id).join(DELETE_REQUEST);
+    take_request(instance_id, DELETE_REQUEST)
+}
+
+/// Ask the window that holds slot `instance_id` to stop its emulation and
+/// close, as its own Quit does.
+pub fn request_quit(instance_id: u32) -> std::io::Result<()> {
+    write_request(instance_id, QUIT_REQUEST)
+}
+
+/// Consume a quit request for slot `instance_id`, as
+/// [`take_delete_request`] does a delete request.
+pub fn take_quit_request(instance_id: u32) -> bool {
+    take_request(instance_id, QUIT_REQUEST)
+}
+
+/// Remove a quit request for slot `instance_id` that has not been taken.
+pub fn withdraw_quit_request(instance_id: u32) {
+    let _ = std::fs::remove_file(instance_dir(instance_id).join(QUIT_REQUEST));
+}
+
+/// Written whole: to a file of this process's own, then renamed into place.
+fn write_request(instance_id: u32, name: &str) -> std::io::Result<()> {
+    let dir = instance_dir(instance_id);
+    std::fs::create_dir_all(&dir)?;
+    let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, unix_now().to_string())?;
+    std::fs::rename(&tmp, dir.join(name))
+}
+
+/// A request stamped in the future, beyond a second of clock skew, is as
+/// stale as an old one.
+fn take_request(instance_id: u32, name: &str) -> bool {
+    let path = instance_dir(instance_id).join(name);
     let Ok(text) = std::fs::read_to_string(&path) else {
         return false;
     };
     let _ = std::fs::remove_file(&path);
+    let now = unix_now();
     text.trim()
         .parse::<u64>()
-        .is_ok_and(|at| unix_now().saturating_sub(at) <= DELETE_REQUEST_TTL_SECS)
+        .is_ok_and(|at| at <= now + 1 && now.saturating_sub(at) <= REQUEST_TTL_SECS)
 }
 
 /// Whether another process has slot `instance_id` open ([`SlotClaim`]) or an
@@ -341,16 +388,25 @@ mod tests {
         // One left behind by a window that went away must not empty the slot
         // the next time its owner starts.
         let path = instance_dir(2).join(DELETE_REQUEST);
-        std::fs::write(
-            &path,
-            (unix_now() - DELETE_REQUEST_TTL_SECS - 5).to_string(),
-        )
-        .unwrap();
+        std::fs::write(&path, (unix_now() - REQUEST_TTL_SECS - 5).to_string()).unwrap();
         assert!(!take_delete_request(2), "a stale request is ignored");
         assert!(!path.exists(), "and removed");
 
+        std::fs::write(&path, (unix_now() + 60).to_string()).unwrap();
+        assert!(!take_delete_request(2), "so is one stamped in the future");
+
         std::fs::write(&path, "garbage").unwrap();
         assert!(!take_delete_request(2));
+    }
+
+    #[test]
+    fn a_withdrawn_quit_request_is_not_taken() {
+        let _home = TestHome::new("quitreq");
+        request_quit(3).unwrap();
+        withdraw_quit_request(3);
+        assert!(!take_quit_request(3));
+        request_quit(3).unwrap();
+        assert!(take_quit_request(3));
     }
 
     /// Running means the eMMC is locked, which is what a live QEMU holds.

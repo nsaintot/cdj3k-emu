@@ -14,6 +14,7 @@ pub enum MenuId {
     ServiceMode,
     Haptic,
     PcLink,
+    CheckForUpdate,
 
     // View
     ScreenExtended,
@@ -55,6 +56,7 @@ impl MenuId {
             Self::ServiceMode => "service_mode".into(),
             Self::Haptic => "haptic".into(),
             Self::PcLink => "pc_link".into(),
+            Self::CheckForUpdate => "check_for_update".into(),
             Self::ScreenExtended => "screen_extended".into(),
             Self::JogScreen => "jog_screen".into(),
             Self::MainScreen => "main_screen".into(),
@@ -83,6 +85,7 @@ impl MenuId {
             "service_mode" => Self::ServiceMode,
             "haptic" => Self::Haptic,
             "pc_link" => Self::PcLink,
+            "check_for_update" => Self::CheckForUpdate,
             "screen_extended" => Self::ScreenExtended,
             "jog_screen" => Self::JogScreen,
             "main_screen" => Self::MainScreen,
@@ -148,6 +151,7 @@ mod tests {
             MenuId::ServiceMode,
             MenuId::Haptic,
             MenuId::PcLink,
+            MenuId::CheckForUpdate,
             MenuId::ScreenExtended,
             MenuId::JogScreen,
             MenuId::MainScreen,

@@ -204,6 +204,11 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
     # Nested code in Resources is sealed as data by --deep, not re-signed.
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
         "$RESOURCES_DIR/CDJ3KEmuMIDI.plugin"
+    # Sparkle inside out: its helpers, then the framework.
+    SPARKLE="$APP_DIR/Contents/Frameworks/Sparkle.framework"
+    for code in "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app" "$SPARKLE"; do
+        codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$code"
+    done
     # Deep-sign all nested binaries first (no entitlements on helpers/dylibs).
     codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR"
     # --deep strips entitlements; the main binary is signed again here.

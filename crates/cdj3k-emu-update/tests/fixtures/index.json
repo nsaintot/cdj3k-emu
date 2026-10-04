@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "version": "0.4.0",
+  "notes": "https://github.com/nsaintot/cdj3k-emu/releases/tag/v0.4.0",
+  "packages": [
+    { "os": "macos", "arch": "universal", "kind": "dmg", "url": "https://github.com/nsaintot/cdj3k-emu/releases/download/v0.4.0/CDJ3K-Emulator-0.4.0-macos-universal.dmg", "size": 5, "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
+    { "os": "linux", "arch": "x86_64", "kind": "deb", "url": "https://github.com/nsaintot/cdj3k-emu/releases/download/v0.4.0/CDJ3K-Emulator-0.4.0-linux-x86_64.deb", "size": 5, "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
+    { "os": "linux", "arch": "aarch64", "kind": "appimage", "url": "https://github.com/nsaintot/cdj3k-emu/releases/download/v0.4.0/CDJ3K-Emulator-0.4.0-linux-aarch64.AppImage", "size": 5, "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
+    { "os": "windows", "arch": "x86_64", "kind": "inno", "url": "https://github.com/nsaintot/cdj3k-emu/releases/download/v0.4.0/CDJ3K-Emulator-0.4.0-windows-x64.exe", "size": 5, "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
+    { "os": "windows", "arch": "aarch64", "kind": "inno", "url": "https://github.com/nsaintot/cdj3k-emu/releases/download/v0.4.0/CDJ3K-Emulator-0.4.0-windows-arm64.exe", "size": 5, "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" }
+  ]
+}

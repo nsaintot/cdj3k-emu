@@ -36,6 +36,14 @@ contents:
   - src: /opt/cdj3k-emu/bin/cdj3k-emu
     dst: /usr/bin/cdj3k-emu
     type: symlink
+  # The format this package is, for the updater: the tree is shared by all
+  # three. build.sh writes the files.
+  - src: .package-kind/deb
+    dst: /opt/cdj3k-emu/share/cdj3k-emu/package-kind
+    packager: deb
+  - src: .package-kind/rpm
+    dst: /opt/cdj3k-emu/share/cdj3k-emu/package-kind
+    packager: rpm
 
 # The libraries scripts/bundle-sos.sh refuses to vendor: they talk to a
 # driver, a display server or a sound daemon. Everything else the emulator and

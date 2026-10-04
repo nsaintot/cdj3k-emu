@@ -1,0 +1,45 @@
+[package]
+name = "cdj3k-emu-update"
+description = "The updater: the signed release index, the package download and each host's silent install."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+cdj3k-emu-platform = { path = "../cdj3k-emu-platform" }
+cdj3k-emu-storage = { path = "../cdj3k-emu-storage" }
+base64 = "0.22"
+ed25519-compact = { version = "2", default-features = false }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+# One client on every host; the TLS under it is the host's to pick
+# (src/fetch). rustls with ring, and the host's own trust store through the
+# platform verifier: no OpenSSL to bundle.
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
+
+# fcntl for the AppImage relaunch (src/install/linux.rs).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+# Sparkle, through the Objective-C runtime (src/native/macos.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.5"
+objc2 = "0.5.2"
+objc2-foundation = { version = "0.2.2", features = ["NSBundle", "NSString"] }
+
+# SChannel, Windows' own TLS and trust store: no C to compile for the target,
+# which ring would need.
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "3.4", default-features = false, features = ["native-tls"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

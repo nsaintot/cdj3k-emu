@@ -102,6 +102,11 @@ pub fn reveal_in_file_manager(path: &std::path::Path) {
     }
 }
 
+/// Open a web page in the default browser.
+pub fn open_url(url: &str) {
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
 mod wayland {
     use std::ffi::c_void;
     use std::ptr::NonNull;

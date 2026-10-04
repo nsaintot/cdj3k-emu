@@ -355,6 +355,22 @@ pub fn reveal_in_file_manager(path: &std::path::Path) {
         .spawn();
 }
 
+/// Open a web page in the default browser.
+pub fn open_url(url: &str) {
+    let url = windows::core::HSTRING::from(url);
+    // SAFETY: both strings outlive the call.
+    unsafe {
+        windows::Win32::UI::Shell::ShellExecuteW(
+            None,
+            w!("open"),
+            &url,
+            None,
+            None,
+            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+        );
+    }
+}
+
 /// Whether setup opens as a second window centred over the first. Windows
 /// keeps it in the one window.
 pub const PLACES_WINDOWS: bool = false;

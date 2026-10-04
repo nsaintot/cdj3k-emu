@@ -278,14 +278,19 @@ impl EguiProvider {
             button = button.fill(STRIP_HOVER);
         }
         // Emulation and Instances have their own pill an inch away, so the
-        // sandwich holds what the strip cannot reach in one click.
-        let mut roots: Vec<MenuNode> = self
-            .model
-            .roots
-            .iter()
-            .filter(|n| !matches!(n, MenuNode::Submenu { label, .. } if label == "Emulation" || label == "Instances"))
-            .cloned()
-            .collect();
+        // sandwich holds what the strip cannot reach in one click, under the
+        // update row.
+        let mut roots: Vec<MenuNode> = self.update_row().into_iter().collect();
+        if !roots.is_empty() {
+            roots.push(MenuNode::Separator);
+        }
+        roots.extend(
+            self.model
+                .roots
+                .iter()
+                .filter(|n| !matches!(n, MenuNode::Submenu { label, .. } if label == "Emulation" || label == "Instances"))
+                .cloned(),
+        );
         roots.push(MenuNode::Separator);
         roots.push(MenuNode::Predefined(Predefined::Quit));
         let res = egui::menu::menu_custom_button(ui, button, |ui| {
@@ -544,17 +549,29 @@ impl EguiProvider {
     // ── Panels ────────────────────────────────────────────────────────────────
 
     /// A pill or icon opens one menu, so it shows that menu without the Quit
-    /// the native app menu needs at the end of the first one.
+    /// the native app menu needs at the end of the first one, and without the
+    /// update row, which the sandwich lists first.
     fn menu_rows(children: &[MenuNode]) -> Vec<MenuNode> {
         let mut rows: Vec<MenuNode> = children
             .iter()
-            .filter(|n| !matches!(n, MenuNode::Predefined(Predefined::Quit)))
+            .filter(|n| !matches!(n, MenuNode::Predefined(Predefined::Quit)) && !is_update_row(n))
             .cloned()
+            .skip_while(|n| matches!(n, MenuNode::Separator))
             .collect();
         while matches!(rows.last(), Some(MenuNode::Separator)) {
             rows.pop();
         }
         rows
+    }
+
+    /// The update row, wherever the model puts it.
+    fn update_row(&self) -> Option<MenuNode> {
+        self.model.roots.iter().find_map(|root| match root {
+            MenuNode::Submenu { children, .. } => {
+                children.iter().find(|n| is_update_row(n)).cloned()
+            }
+            _ => None,
+        })
     }
 
     /// A menu's rows, sized to the widest of them.
@@ -924,6 +941,17 @@ fn paint_tracked(
     let galley = ui.fonts(|f| f.layout_job(job));
     let at = align.align_size_within_rect(galley.size(), Rect::from_center_size(pos, Vec2::ZERO));
     ui.painter().galley(at.min, galley, color);
+}
+
+/// The update row: first in the sandwich, so not in a pill.
+fn is_update_row(node: &MenuNode) -> bool {
+    matches!(
+        node,
+        MenuNode::Item {
+            id: MenuId::CheckForUpdate,
+            ..
+        }
+    )
 }
 
 /// The id under which the sandwich records itself as open. Not a menu label,
@@ -1467,6 +1495,46 @@ mod frame_tests {
             .expect("the row was just asserted present");
         let _ = ctx.run(click_at(row.center()), |ctx| p.draw(ctx));
         assert_eq!(p.poll(), vec![MenuId::ServiceMode]);
+    }
+
+    /// The update row heads the sandwich and leaves the pill it came from.
+    #[test]
+    fn the_update_row_is_first_in_the_sandwich_only() {
+        let emulation = vec![
+            MenuNode::item(MenuId::CheckForUpdate, "Check for Update…"),
+            MenuNode::Separator,
+            MenuNode::item(MenuId::ManageEmulation, "Manage Emulation"),
+        ];
+        assert!(matches!(
+            EguiProvider::menu_rows(&emulation).as_slice(),
+            [MenuNode::Item {
+                id: MenuId::ManageEmulation,
+                ..
+            }]
+        ));
+
+        let ctx = test_ctx();
+        let mut p = EguiProvider::default();
+        p.apply(&MenuModel {
+            roots: vec![
+                MenuNode::submenu("Emulation", emulation),
+                MenuNode::submenu("Storage", vec![]),
+            ],
+            ..Default::default()
+        });
+        let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let hamburger = Pos2::new(BAR_PAD_X + 15.0, BAR_HEIGHT / 2.0);
+        let _ = ctx.run(click_at(hamburger), |ctx| p.draw(ctx));
+        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let drawn = texts(&out);
+        let top = |want: &str| {
+            drawn
+                .iter()
+                .find(|(t, _)| t == want)
+                .map(|(_, r)| r.top())
+                .unwrap_or_else(|| panic!("{want:?} missing from the sandwich"))
+        };
+        assert!(top("Check for Update…") < top("Storage"));
     }
 
     /// The strip's pills read out state rather than menu names.

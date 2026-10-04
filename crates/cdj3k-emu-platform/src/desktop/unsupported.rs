@@ -60,5 +60,7 @@ pub(super) fn run_picker(
 
 pub fn reveal_in_file_manager(_path: &std::path::Path) {}
 
+pub fn open_url(_url: &str) {}
+
 /// Whether a second window can be centred over the first.
 pub const PLACES_WINDOWS: bool = false;

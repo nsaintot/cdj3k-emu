@@ -212,6 +212,9 @@ for ($i = 0; $i -lt $sizes.Count; $i++) {
 foreach ($f in $frames) { $w.Write([byte[]]$f) }
 $w.Dispose(); $fs.Dispose()
 
+# The updater runs the release's installer over this tree.
+Set-Content -NoNewline -Encoding ascii -Path (Join-Path $Share 'package-kind') -Value "inno`n"
+
 # -- Completeness check -------------------------------------------------------
 Write-Host '==> Checking the tree'
 $required = @(
@@ -222,7 +225,7 @@ $required = @(
     'share\cdj3k-emu\tools\subucom_live', 'share\cdj3k-emu\tools\subucom_forwarder',
     'share\cdj3k-emu\tools\deck_shim.so',
     'share\cdj3k-emu\tap-windows6\OemVista.inf', 'share\cdj3k-emu\tap-windows6\tap0901.sys',
-    'share\cdj3k-emu\tap-windows6\tap0901.cat',
+    'share\cdj3k-emu\tap-windows6\tap0901.cat', 'share\cdj3k-emu\package-kind',
     'installer\setup-helper.ps1', 'cdj3k-emu.ico',
     'licenses\LICENSE-APACHE', 'licenses\LICENSE-MIT', 'licenses\NOTICE',
     'licenses\QEMU-COPYING', 'licenses\TAP-WINDOWS6.txt'

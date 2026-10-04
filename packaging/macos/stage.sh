@@ -326,6 +326,42 @@ else
     exit 1
 fi
 
+# The updater replaces a release bundle from the release's .dmg. A dev build
+# carries no marker and is not updated.
+if [[ $NATIVE -eq 0 ]]; then
+    echo dmg > "$RES_DIR/package-kind"
+fi
+
+# ── Sparkle ──────────────────────────────────────────────────────────────────
+# The macOS updater. The app loads it at runtime from Contents/Frameworks, and
+# only in a release bundle (package-kind). Its XPC services, for sandboxed
+# apps, are removed.
+SPARKLE_VERSION="2.10.0"
+SPARKLE_SHA256="c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c"
+SPARKLE_DIR="$REPO_ROOT/build/sparkle-$SPARKLE_VERSION"
+if [[ ! -d "$SPARKLE_DIR/Sparkle.framework" ]]; then
+    echo "==> Fetching Sparkle $SPARKLE_VERSION"
+    mkdir -p "$SPARKLE_DIR"
+    archive="$SPARKLE_DIR/Sparkle.tar.xz"
+    curl -fsSL -o "$archive" \
+        "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+    got=$(shasum -a 256 "$archive" | cut -d' ' -f1)
+    if [[ "$got" != "$SPARKLE_SHA256" ]]; then
+        echo "ERROR: Sparkle-$SPARKLE_VERSION.tar.xz sha256 $got" >&2
+        rm -rf "$SPARKLE_DIR"
+        exit 1
+    fi
+    tar -xf "$archive" -C "$SPARKLE_DIR" Sparkle.framework
+    rm "$archive"
+fi
+mkdir -p "$APP_DIR/Contents/Frameworks"
+rm -rf "$APP_DIR/Contents/Frameworks/Sparkle.framework"
+ditto "$SPARKLE_DIR/Sparkle.framework" "$APP_DIR/Contents/Frameworks/Sparkle.framework"
+rm -rf "$APP_DIR/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
+    "$APP_DIR/Contents/Frameworks/Sparkle.framework/XPCServices"
+echo "     bundled Sparkle.framework $SPARKLE_VERSION"
+SPARKLE_PUBLIC_KEY=$(tr -d '[:space:]' < "$REPO_ROOT/packaging/update-ed25519.pub")
+
 # ── Info.plist ────────────────────────────────────────────────────────────────
 echo "==> Writing Info.plist (version=$APP_VERSION build=$APP_BUILD)"
 cat > "$APP_DIR/Contents/Info.plist" <<PLIST
@@ -365,6 +401,23 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <true/>
 
     <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+
+    <!-- Sparkle. The feed URL comes from the app (cdj3k-emu-update); a
+         release's CFBundleVersion is its CD run number, which is what the
+         appcast's sparkle:version compares against. -->
+    <key>SUPublicEDKey</key>
+    <string>${SPARKLE_PUBLIC_KEY}</string>
+    <!-- Sparkle's name for the app: the process renames itself per slot. -->
+    <key>SUBundleName</key>
+    <string>CDJ3K Emulator</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>21600</integer>
+    <key>SUAllowsAutomaticUpdates</key>
+    <true/>
+    <key>SUVerifyUpdateBeforeExtraction</key>
     <true/>
 
     <!-- Required for HVF (Hypervisor.framework) entitlement. -->

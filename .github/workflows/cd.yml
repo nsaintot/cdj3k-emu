@@ -72,6 +72,7 @@ jobs:
           IN_NOTARIZE: ${{ inputs.notarize }}
           HAVE_CERT: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 != '' }}
           HAVE_NOTARY: ${{ secrets.NOTARY_API_KEY_BASE64 != '' }}
+          HAVE_UPDATE_KEY: ${{ secrets.UPDATE_SIGNING_KEY != '' }}
         run: |
           version=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)
           release=false
@@ -88,6 +89,10 @@ jobs:
               fi
               if [[ "$HAVE_CERT" != true || "$HAVE_NOTARY" != true ]]; then
                   echo "::error::a release needs the macOS signing and notary secrets"
+                  exit 1
+              fi
+              if [[ "$HAVE_UPDATE_KEY" != true ]]; then
+                  echo "::error::a release needs UPDATE_SIGNING_KEY to sign the update feeds"
                   exit 1
               fi
               release=true
@@ -362,12 +367,13 @@ jobs:
         run: |
           check=/ci/linux-installed-check.sh
           docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/.github/scripts:/ci:ro" debian:bookworm \
-              bash -ec "apt-get update -qq && apt-get install -y -qq /dist/*.deb >/dev/null && $check"
+              bash -ec "apt-get update -qq && apt-get install -y -qq /dist/*.deb >/dev/null && $check deb"
           docker run --rm -v "$PWD/dist:/dist:ro" -v "$PWD/.github/scripts:/ci:ro" fedora:latest \
-              bash -ec "dnf install -y -q /dist/*.rpm >/dev/null && $check"
+              bash -ec "dnf install -y -q /dist/*.rpm >/dev/null && $check rpm"
           appimage=$(ls dist/*.AppImage)
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
           "$RUNNER_TEMP/squashfs-root/opt/cdj3k-emu/bin/qemu-img" --version
+          [[ "$(cat "$RUNNER_TEMP/squashfs-root/opt/cdj3k-emu/share/cdj3k-emu/package-kind")" == appimage ]]
       - uses: actions/upload-artifact@v7
         with:
           name: package-linux-${{ matrix.arch }}
@@ -436,31 +442,58 @@ jobs:
     name: Release
     needs: [plan, package-macos, package-linux, package-windows]
     if: needs.plan.outputs.release == 'true'
+    # UPDATE_SIGNING_KEY lives in the release environment.
+    environment: release
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.plan.outputs.version }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            .github/scripts
+            packaging/update-ed25519.pub
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v8
         with:
           pattern: package-*
           path: dist
           merge-multiple: true
-      # A draft, so nothing is public until it is published by hand. A rerun
-      # replaces the draft's files.
+      # A draft, so nothing is public until it is published by hand; its
+      # notes go into both update feeds, with LF line ends and without the
+      # Downloads section (feed-notes.sh). A rerun reuses the draft and
+      # replaces its files.
       - name: Draft release
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+              args=(--draft --verify-tag --title "$GITHUB_REF_NAME" --generate-notes)
+              if [[ "$VERSION" == *-* ]]; then args+=(--prerelease); fi
+              gh release create "$GITHUB_REF_NAME" "${args[@]}"
+          fi
+          gh release view "$GITHUB_REF_NAME" --json body -q .body \
+              | .github/scripts/feed-notes.sh > "$RUNNER_TEMP/notes.md"
+          gh api markdown -f text="$(cat "$RUNNER_TEMP/notes.md")" -f mode=gfm \
+              -f context="$GH_REPO" > "$RUNNER_TEMP/notes.html"
+      # The index Windows and Linux read and the Sparkle appcast macOS reads,
+      # both signed with the update key (sign.sh): the index itself, and the
+      # appcast's .dmg. Its public half is packaging/update-ed25519.pub, which
+      # the app and Info.plist carry. The CD run number is the bundle's
+      # CFBundleVersion.
+      - name: Update feeds
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          VERSION: ${{ needs.plan.outputs.version }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          .github/scripts/update-index.sh "$VERSION" "$GITHUB_REF_NAME" dist "$RUNNER_TEMP/notes.md"
+          .github/scripts/sign.sh dist/cdj3k-emu-update.json > dist/cdj3k-emu-update.json.sig
+          .github/scripts/appcast.sh "$VERSION" "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" dist "$RUNNER_TEMP/notes.html"
+      - name: Upload
         run: |
           cd dist
           sha256sum -- * > SHA256SUMS.txt
           cat SHA256SUMS.txt
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-              gh release upload "$GITHUB_REF_NAME" --clobber -- *
-          else
-              args=(--draft --verify-tag --title "$GITHUB_REF_NAME" --generate-notes)
-              if [[ "$VERSION" == *-* ]]; then args+=(--prerelease); fi
-              gh release create "$GITHUB_REF_NAME" "${args[@]}" -- *
-          fi
+          gh release upload "$GITHUB_REF_NAME" --clobber -- *
           echo "Draft: $(gh release view "$GITHUB_REF_NAME" --json url -q .url)" >> "$GITHUB_STEP_SUMMARY"

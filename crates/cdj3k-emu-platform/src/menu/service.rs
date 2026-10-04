@@ -185,7 +185,14 @@ fn tcg_notice(why: SoftwareEmulation) -> Notice {
 /// Choosing the deck a slot emulates and installing the firmware it runs are
 /// steps of one window, so they are one entry.
 fn emulation(snap: &Snapshot, deck: Option<String>) -> MenuNode {
+    let update = if snap.update_ready {
+        "Restart to Update…"
+    } else {
+        "Check for Update…"
+    };
     let mut rows = vec![
+        MenuNode::item(MenuId::CheckForUpdate, update),
+        MenuNode::Separator,
         MenuNode::item(MenuId::ManageEmulation, "Manage Emulation"),
         MenuNode::item_enabled(MenuId::Restart, "Restart Emulation", deck.is_some()),
         MenuNode::Separator,
@@ -464,6 +471,7 @@ struct Snapshot {
     guest_ready: bool,
     selected_interface: u32,
     current_instance_id: u32,
+    update_ready: bool,
 }
 
 impl Snapshot {
@@ -484,6 +492,7 @@ impl Snapshot {
             haptic_enabled: s.haptic_enabled,
             pc_link_supported: s.pc_link_supported,
             pc_link_enabled: s.pc_link_enabled,
+            update_ready: s.update_ready,
             latency_packed: s.latency_packed,
             usb_virtual_mounted: s.usb_virtual_mounted,
             usb_phys_mounted_idx: s.usb_phys_mounted_idx,

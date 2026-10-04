@@ -16,8 +16,9 @@ pub(super) fn instance_path(instance_id: u32) -> PathBuf {
     crate::instance_dir(instance_id).join("settings.txt")
 }
 
-/// The app-wide `<BUNDLE_ID>/settings.txt`. It holds no keys (see
-/// [`APP_KEYS`]); only [`prune_app_file`] touches it.
+/// The app-wide `<BUNDLE_ID>/settings.txt`, which [`AppSettings`] owns.
+///
+/// [`AppSettings`]: super::AppSettings
 pub(super) fn app_path() -> PathBuf {
     crate::app_data_dir().join("settings.txt")
 }
@@ -46,14 +47,21 @@ pub(super) const SLOT_KEYS: &[&str] = &[
     "vinyl_speed",
 ];
 
-/// Every key the app-wide `settings.txt` may hold: none. Every setting is per
-/// slot and lives in [`SLOT_KEYS`].
-const APP_KEYS: &[&str] = &[];
+/// Every key the app-wide `settings.txt` may hold: what [`AppSettings`]
+/// writes. Everything else is per slot and lives in [`SLOT_KEYS`].
+///
+/// [`AppSettings`]: super::AppSettings
+pub(super) const APP_KEYS: &[&str] = &[
+    "update_auto_check",
+    "update_auto_install",
+    "update_remind_after",
+    "update_skip_version",
+];
 
 /// Empty the app-wide `settings.txt` of every key [`APP_KEYS`] does not list.
 ///
-/// No save writes that file, so the app calls this at startup. A file that is
-/// already clean is left alone.
+/// The app calls this at startup, for the keys older releases kept there. A
+/// file that is already clean is left alone.
 pub fn prune_app_file() {
     let _g = locked();
     let path = app_path();

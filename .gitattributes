@@ -1,1 +1,3 @@
 *.sh text eol=lf
+# Signed bytes: a line-end conversion breaks the signature.
+crates/cdj3k-emu-update/tests/fixtures/** -text

@@ -8,6 +8,13 @@
 /// Reads as the app name in macOS Dock / Cmd-Tab.
 pub const APP_DISPLAY_NAME: &str = "CDJ3K Emulator";
 
+/// The build: the release's version when CD sets `CDJ3K_VERSION` from the
+/// tag, the workspace version otherwise.
+pub const VERSION: &str = match option_env!("CDJ3K_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 /// Window compositor identifier.
 pub const APP_ID: &str = "cdj3k-emu";
 

@@ -33,6 +33,7 @@ use super::picker::{
 use super::screenshot::ScreenshotDriver;
 use super::script::ScriptDriver;
 use super::theme;
+use super::updater::{Updater, UpdaterEvent};
 use super::CdjApp;
 
 /// Result of asking the host to boot a model.
@@ -74,6 +75,9 @@ pub struct ShellConfig {
     pub initial_model: Option<Model>,
     pub host: Box<dyn RuntimeHost>,
 }
+
+/// How long a quit left to Sparkle waits for it to end the process.
+const QUIT_HAND_OFF_WAIT: Duration = Duration::from_secs(15);
 
 /// The setup window's size on every step: the size of the picker it opens
 /// over.
@@ -157,6 +161,11 @@ pub struct CdjShell {
     shutdown_in_progress: bool,
     shot: ScreenshotDriver,
     script: ScriptDriver,
+    /// The update window and the check, download and install behind it.
+    updater: Updater,
+    /// When the quit was left to Sparkle, which installs the update waiting
+    /// for it and ends the process itself.
+    quit_handed_off: Option<Instant>,
 }
 
 static MENU_SETUP: std::sync::Once = std::sync::Once::new();
@@ -190,6 +199,8 @@ impl CdjShell {
             shutdown_in_progress: false,
             shot: ScreenshotDriver::from_env(),
             script: ScriptDriver::from_env(),
+            updater: Updater::new(cfg.instance),
+            quit_handed_off: None,
         }
     }
 
@@ -389,6 +400,14 @@ impl CdjShell {
             return;
         }
         self.next_install_check = now + Duration::from_secs(1);
+        // Another window is installing an update and needs this one gone. An
+        // install of firmware under way here finishes first; the request
+        // lapses, and the updater says which slot did not close.
+        if !self.wizard.is_running() && cdj3k_emu_storage::take_quit_request(self.instance) {
+            eprintln!("cdj3k-emu: slot {}: closing for an update", self.instance);
+            self.close_window = true;
+            return;
+        }
         // Another window asked for this slot to be emptied. Left alone while
         // this window is installing into it: the request lapses on its own.
         let installing_here =
@@ -740,7 +759,15 @@ impl eframe::App for CdjShell {
         }
         if self.shutdown_in_progress {
             if cdj3k_emu_runtime::worker_is_finished() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                // A prepared update installs now. Sparkle ends the process
+                // itself; past QUIT_HAND_OFF_WAIT the window closes anyway.
+                if self.quit_handed_off.is_none() && self.updater.apply_on_quit() {
+                    self.quit_handed_off = Some(Instant::now());
+                }
+                match self.quit_handed_off {
+                    Some(at) if at.elapsed() < QUIT_HAND_OFF_WAIT => ctx.request_repaint(),
+                    _ => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                }
             } else {
                 ctx.request_repaint();
             }
@@ -822,6 +849,9 @@ impl eframe::App for CdjShell {
             self.wizard.set_installed(installed);
         }
         self.check_for_install();
+        // The requests other windows leave for this one are read on a frame;
+        // an idle window draws none, so it wakes for them.
+        ctx.request_repaint_after(Duration::from_secs(1));
         let action = self.show_setup_window(ctx);
         self.apply_picker_action(action);
         if let Some((slot, model)) = self.wizard.take_boot_request() {
@@ -831,6 +861,23 @@ impl eframe::App for CdjShell {
         }
         if std::mem::take(&mut self.reveal_picker) {
             self.show_picker_window(ctx, frame);
+        }
+        match self
+            .updater
+            .show(ctx, cdj3k_emu_runtime::worker_is_finished())
+        {
+            UpdaterEvent::Exit => self.close_window = true,
+            UpdaterEvent::StopEmulation => {
+                if !self.worker_stopping && !cdj3k_emu_runtime::worker_is_finished() {
+                    self.stop_emulation();
+                }
+            }
+            UpdaterEvent::ResumeEmulation => {
+                if matches!(self.screen, Screen::Panel) && self.pending_launch.is_none() {
+                    self.pending_launch = Some(self.model);
+                }
+            }
+            UpdaterEvent::None => {}
         }
         if std::mem::take(&mut self.close_window) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -867,7 +914,7 @@ fn draw_setup(
             let body = draw_header(
                 ui,
                 &Header {
-                    slot,
+                    slot: Some(slot),
                     model: Some(model),
                     release: None,
                     state: None,
@@ -890,7 +937,7 @@ fn draw_setup(
         Some(SetupStep::StoppingToDelete) => draw_busy(
             ui,
             &Header {
-                slot,
+                slot: Some(slot),
                 model: Some(going),
                 release: this.viewed_release.as_deref(),
                 state: Some("STOPPING"),
