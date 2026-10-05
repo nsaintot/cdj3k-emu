@@ -238,29 +238,36 @@ pub fn read_cabinet_image(iso_path: &Path) -> Option<Vec<u8>> {
     data.starts_with(LUKS_MAGIC).then_some(data)
 }
 
-/// Read `images/images.tar.gz` out of the decrypted UPD payload.
-///
-/// The sibling of `cabinet.img`; its SHA-512 is one term of the factory
-/// cabinet passphrase (see [`crate::vendor_passphrase`]).  Follows the same
-/// nesting precedence as [`read_cabinet_image`] - the inner
-/// `CDJ3K-RK3399.ISO` first, then the outer ISO - so the two files come from
-/// the same package.  Returns `None` when the firmware carries no such file.
-pub fn read_images_targz(iso_path: &Path) -> Option<Vec<u8>> {
-    let mut iso = std::fs::File::open(iso_path).ok()?;
-    let found = match read_iso_file(&mut iso, "IMAGES/CDJ3K-RK3399.ISO") {
-        Ok(inner) => {
-            let mut inner = std::io::Cursor::new(inner);
-            read_iso_file(&mut inner, "IMAGES/IMAGES.TAR.GZ").ok()
-        }
-        Err(_) => None,
-    };
-    match found {
-        Some(d) => Some(d),
-        None => {
-            iso.seek(SeekFrom::Start(0)).ok()?;
-            read_iso_file(&mut iso, "IMAGES/IMAGES.TAR.GZ").ok()
-        }
+/// The sibling of `cabinet.img` that the factory cabinet passphrase hashes,
+/// read out of the UPD payload (`images/images.tar.gz` or `images/app.hash`,
+/// whichever the firmware carries).  Same nesting precedence as
+/// [`read_cabinet_image`], so both files come from the same package.
+pub fn read_cabinet_seed(iso_path: &Path) -> Option<Vec<u8>> {
+    const SEEDS: [&str; 2] = ["IMAGES/IMAGES.TAR.GZ", "IMAGES/APP.HASH"];
+    fn first_seed<R: Read + Seek>(r: &mut R) -> Option<Vec<u8>> {
+        SEEDS.iter().find_map(|name| {
+            r.seek(SeekFrom::Start(0)).ok()?;
+            read_iso_file(r, name).ok()
+        })
     }
+    let mut iso = std::fs::File::open(iso_path).ok()?;
+    read_iso_file(&mut iso, "IMAGES/CDJ3K-RK3399.ISO")
+        .ok()
+        .and_then(|inner| first_seed(&mut std::io::Cursor::new(inner)))
+        .or_else(|| first_seed(&mut iso))
+}
+
+/// Write the initramfs in `images/boot.img` to `out_path`, as the firmware
+/// ships it (a gzipped cpio).
+///
+/// A FIT `boot.img` carries it as its `ramdisk` image.
+pub fn extract_boot_ramdisk(iso_path: &Path, out_path: &Path) -> Result<bool, ExtractError> {
+    let mut iso = std::fs::File::open(iso_path)?;
+    let Ok(boot) = read_iso_file(&mut iso, "IMAGES/BOOT.IMG") else {
+        return Ok(false);
+    };
+    std::fs::write(out_path, crate::fit::image(&boot, "ramdisk")?)?;
+    Ok(true)
 }
 
 // ── ISO 9660 reader ───────────────────────────────────────────────────────────

@@ -1,11 +1,10 @@
-use cdj3k_emu_panel::Btn;
+use cdj3k_emu_panel::{Btn, Lamp};
 use egui::{FontFamily, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::app::ui::{
     DoubleBorderSpec, StrokeSpec, COL_BLACK, COL_BLUE, COL_BTN, COL_BTN_OUTLINED_YELLOW,
     COL_BTN_TEXT, COL_BTN_WHITE, COL_DARK, COL_GREEN, COL_RED, COL_SILVER, COL_WHITE,
 };
-use cdj3k_emu_panel::mosi_frame;
 
 use crate::app::ui::draw_vinyl_speed::{self, VinylSpeedPlacement};
 
@@ -266,8 +265,8 @@ pub(super) fn draw_right_sections(
         let label_x = combo_ref.center().x + JOG_MODE_LABEL_OFF_X;
         let jog_rect = screen(layout, jog_ref);
 
-        let vinyl_led = app.mosi().led_bit(mosi_frame::LED_JOG_MODE_VINYL);
-        let cdj_led = app.mosi().led_bit(mosi_frame::LED_JOG_MODE_CDJ);
+        let vinyl_led = app.mosi().lit(Lamp::JogModeVinyl);
+        let cdj_led = app.mosi().lit(Lamp::JogModeCdj);
 
         // VINYL label (yellow, illuminated when active)
         p.text(
@@ -342,9 +341,9 @@ pub(super) fn draw_right_sections(
             layout.sc(SYNC_BORDER_GAP),
         );
 
-        let beat_sync_led = app.mosi().led_bit(mosi_frame::LED_BEAT_SYNC);
-        let master_led = app.mosi().led_bit(mosi_frame::LED_MASTER);
-        let key_sync_led = app.mosi().led_bit(mosi_frame::LED_KEY_SYNC);
+        let beat_sync_led = app.mosi().lit(Lamp::BeatSync);
+        let master_led = app.mosi().lit(Lamp::Master);
+        let key_sync_led = app.mosi().lit(Lamp::KeySync);
 
         app.btn(
             ui,
@@ -453,7 +452,7 @@ pub(super) fn draw_right_sections(
             layout.sc(5.0),
         );
 
-        let master_tempo_led = app.mosi().led_bit(mosi_frame::LED_MASTER_TEMPO);
+        let master_tempo_led = app.mosi().lit(Lamp::MasterTempo);
 
         app.circle_btn(
             ui,
@@ -603,7 +602,7 @@ pub(super) fn draw_right_sections(
         let led_x0 = reset_cx + reset_r + layout.sc(TEMPO_RESET_LED_GAP_L);
         let led_x1 = tick_x_screen - layout.sc(TEMPO_RESET_LED_GAP_R);
         if led_x1 > led_x0 {
-            let tempo_reset_led = app.mosi().led_bit(mosi_frame::LED_TEMPO_RESET);
+            let tempo_reset_led = app.mosi().lit(Lamp::TempoReset);
 
             p.line_segment(
                 [Pos2::new(led_x0, zero_y), Pos2::new(led_x1, zero_y)],

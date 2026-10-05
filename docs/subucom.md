@@ -91,14 +91,19 @@ and `guest/modules/subucom_virt/subucom_virt.c` (kernel).
 On the CDJ-3000X (EP145) both frames are this one shifted. The MISO frame
 sits behind a u16 format version (non-zero, or EP145 drops the frame) with
 the same CRC window; the MOSI frame moves the LED bitfield and the RGB lamps
-and adds lamps of its own. `MisoMap` and `MosiMap` in `cdj3kx.rs` carry the
-shifts.
+and adds lamps of its own. `cdj3kx.rs` carries the shifts: its MISO encoder
+writes the CDJ-3000's fields `MISO_SHIFT` bytes on, and its `MosiMap`
+(`cdj3kx::MOSI`) moves the lamps.
+
+The CDJ-1500X (EP166) has 32-byte frames of its own on
+`/dev/subucom_spi3.0`, the same CRC-16/X-25 stored big-endian; see
+[Models](models.md) and `cdj1500x.rs`.
 
 ### MOSI payload (LED state)
 
 EP122 writes **linear-light PWM bytes**. Three LED classes coexist:
 
-- **Single-bit LEDs** (`LedBit = (byte, mask)`) - PLAY, CUE, MASTER,
+- **Single-bit LEDs** (`(byte, mask)`) - PLAY, CUE, MASTER,
   transport, beat-jump, encoder, …
 - **Two-bit "step" LEDs** (`StepLedMask`) - navigation (`SOURCE`,
   `BROWSE`, `TAG LIST`, `PLAYLIST`, `SEARCH`, `MENU`) and
@@ -115,8 +120,10 @@ colour nears white. This preserves hue at any drive level;
 `led_drive_factor` is exposed for callers that want to dim the visual to
 match drive.
 
-> Canonical LED → byte/mask map: `crates/cdj3k-emu-panel/src/mosi_frame.rs`
-> (CDJ-3000 coordinates), shifted per model by `MosiMap` in `cdj3k.rs` / `cdj3kx.rs`.
+> Canonical LED → byte/mask map: the `LED_*` bits in
+> `crates/cdj3k-emu-panel/src/cdj3k.rs` (CDJ-3000 coordinates), shifted per
+> model by the `MosiMap` in `cdj3k.rs` / `cdj3kx.rs`; the CDJ-1500X's own
+> layout is in `cdj1500x.rs`.
 
 ### MISO payload (input state)
 
@@ -138,14 +145,16 @@ Mostly bitmasks plus a handful of scalar fields. By region:
 - **Device state** `b12` - `0x80`=power-on, `0x01`=SD-cover-closed.
   High nibble carries the sub-CPU power-off timer (see *forwarder*).
 
-A pre-baked `IDLE` per model (`cdj3k.rs`, `cdj3kx.rs`) holds the "nothing
-pressed" baseline. `MisoFrame::idle(model)` copies it; per-gesture setters
-(`set_btn`, `set_jog`, `set_touch`, `set_tempo`, `set_vinyl`,
-`set_rotary`, `set_direction`, `set_power`) patch individual fields.
-`finalize()` stamps the CRC and returns the 64-byte wire frame.
+A pre-baked `IDLE` per model holds the "nothing pressed" baseline. The UI
+describes the panel in a model-neutral `PanelState` (pressed and cleared
+frame bits, fader travel, jog, rotary, direction, vinyl, touch, power) and
+`miso_frame::encode(model, &state)` hands it to the player's `MisoCodec`,
+which starts from its `IDLE`, writes each control the way its deck does -
+the CDJ-3000's tempo dead-zone curve included - and stamps the CRC.
 
-> Canonical map: `crates/cdj3k-emu-panel/src/miso_frame.rs`
-> (CDJ-3000 coordinates), shifted per model by `MisoMap` in `cdj3k.rs` / `cdj3kx.rs`.
+> Canonical map: `crates/cdj3k-emu-panel/src/miso_frame.rs` (CDJ-3000
+> coordinates); each model's encoder is in its spec file (`cdj3k.rs`,
+> `cdj3kx.rs`, `cdj1500x.rs`).
 
 ---
 
@@ -239,9 +248,8 @@ Two snapshot mechanisms coexist:
 
 ### 4. Decoders - `cdj3k-emu-panel` crate
 
-`MosiFrame::new(bytes, model)` and `MisoFrame::idle(model)` give
-name-based accessors (`led_bit`, `step_led`, `pad_rgb`, `slot_1_rgb`,
-`set_btn`, `set_jog`, …) read through the model's frame map, so the UI
+`MosiFrame::new(bytes, model)` answers for a `Lamp` through the model's
+`MosiCodec` (`lamp`, and `lit`, `step`, `rgb`, `drive` over it), and `miso_frame::encode(model, &state)` writes the control frame, so the UI
 never indexes raw bytes. The `egui-color` feature exposes
 `MosiFrame::led_color(part, r, g, b) -> Option<Color32>`, performing the
 gamma + peak-normalise conversion through the part's `LedProfile` in one
@@ -271,8 +279,7 @@ the module or EP122.
 - **Slingshot / scroll-bend** input shaping. That lives in the UI layer
   (gesture → MISO frame synthesis), not the subucom protocol itself.
   See `README.md` for user-facing controls.
-- **Per-byte field tables.** Treat `mosi_frame.rs` / `miso_frame.rs` as
-  the canonical reference; this doc deliberately doesn't duplicate the
-  constants so it doesn't go stale.
+- **Per-byte field tables.** The model spec files (`cdj3k.rs`, `cdj3kx.rs`,
+  `cdj1500x.rs`) hold them.
 - **`ctrl.sock` framing / reconnect.** See
   [stream-transports.md](stream-transports.md).

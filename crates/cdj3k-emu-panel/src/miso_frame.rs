@@ -1,13 +1,18 @@
-//! The control frame the host sends the deck, and the CDJ-3000 coordinates
-//! every model's [`MisoMap`] is expressed relative to.
+//! The control frame the host sends the deck.
 //!
-//! A player's whole frame moves together, so the one [`Btn`] set shifted by
-//! [`MisoMap::shift`] serves all of them; a player that gained a control
-//! claims it in [`MisoMap::extra`].
+//! The UI says what the panel is doing in a [`PanelState`], in no deck's
+//! coordinates, and the player's [`MisoCodec`] (its `ModelSpec::miso`) writes
+//! the frame its sub-CPU would send, every quirk of that deck included. Each
+//! model keeps its encoder in its own spec file. Buttons travel as frame bits,
+//! resolved once through [`MisoCodec::button`], because a script can also
+//! name a raw bit.
+//!
+//! [`fields`] and [`ROTARY_IDLE`] are the CDJ-3000's frame, which the
+//! CDJ-3000X's encoder writes again behind its version word.
 
 use crate::button::Btn;
 use crate::crc::crc16_x25;
-use crate::frame::{FrameBit, MisoMap};
+use crate::frame::FrameBit;
 use crate::model::Model;
 use crate::Direction;
 
@@ -22,7 +27,7 @@ pub const MISO_SIZE: usize = 64;
 /// the module is compiled into the initramfs so it is the one they follow.
 pub const ROTARY_IDLE: u16 = 0xffff;
 
-/// Where the analog fields sit in the shared frame.
+/// Where the analog fields sit in the CDJ-3000's frame.
 pub mod fields {
     /// 3-position rocker switch (REV / SLIP_REV / FWD).
     pub const DIRECTION: usize = 4;
@@ -42,15 +47,88 @@ pub mod fields {
     pub const JOG: usize = 26;
 }
 
+/// The jog wheel as the panel's physics count it: position, velocity and
+/// touch state, in the CDJ-3000 sub-CPU's units (see [`fields::JOG`]).
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct JogState {
+    /// The CDJ-3000's position counter, velocity word and touch byte, as the
+    /// UI's platter model encodes them.
+    pub pos: u16,
+    pub vel: u16,
+    pub touch: u8,
+    /// The platter's travel in turns since start, forward positive.
+    pub revs: f64,
+    /// Its speed in turns per second, forward positive: how fast it actually
+    /// turns, the hand's motion while held.
+    pub rps: f32,
+    /// Whether a hand is on the platter.
+    pub touched: bool,
+}
+
+/// What the panel is doing, in no deck's coordinates.
+#[derive(Clone, Debug)]
+pub struct PanelState {
+    /// Frame bits held down, already resolved in the player's frame.
+    pub pressed: Vec<FrameBit>,
+    /// Frame bits forced low after everything else is written.
+    pub cleared: Vec<FrameBit>,
+    /// Tempo fader travel, `0.0..=1.0`, the centre detent at `0.5`.
+    pub tempo: f32,
+    pub jog: JogState,
+    /// The browse rotary's counter (see [`ROTARY_IDLE`]).
+    pub rotary: u16,
+    /// A second encoder's counter, where the player has one (e.g. BEAT LOOP on
+    /// the CDJ-1500X); ignored by a player that does not.
+    pub beat_loop: u16,
+    pub direction: Direction,
+    /// VINYL SPEED ADJUST, `0x00..=0xff`.
+    pub vinyl: u8,
+    /// LCD touch in the model's touch units, `None` for no contact.
+    pub touch: Option<(u16, u16)>,
+    /// The emulator's power flag. The idle frame carries it set; `false`
+    /// clears it after everything else, which the guest reads as power off.
+    pub power: bool,
+}
+
+impl PanelState {
+    /// Nothing pressed, every control at rest, powered.
+    pub fn at_rest() -> Self {
+        Self {
+            pressed: Vec::new(),
+            cleared: Vec::new(),
+            tempo: 0.5,
+            jog: JogState {
+                pos: 0,
+                vel: 0xffff,
+                touch: 0x00,
+                revs: 0.0,
+                rps: 0.0,
+                touched: false,
+            },
+            rotary: ROTARY_IDLE,
+            beat_loop: 0,
+            direction: Direction::Forward,
+            vinyl: 0,
+            touch: None,
+            power: true,
+        }
+    }
+}
+
+/// How one player's sub-CPU frames the panel.
+pub trait MisoCodec: Sync + std::fmt::Debug {
+    /// Where `btn` sits in this player's frame, or `None` if it has no such
+    /// button.
+    fn button(&self, btn: Btn) -> Option<FrameBit>;
+
+    /// The frame for `state`, CRC included.
+    fn encode(&self, state: &PanelState) -> [u8; MISO_SIZE];
+}
+
 /// Where `btn` sits in `model`'s frame, or `None` if that player has no such
 /// button.
 pub fn button(model: Model, btn: Btn) -> Option<FrameBit> {
-    let map = &model.spec().miso;
-    if !btn.is_shared() && !map.extra.contains(&btn) {
-        return None;
-    }
-    let (byte, mask) = btn.bit();
-    Some((byte + map.shift, mask))
+    model.spec().miso.button(btn)
 }
 
 /// [`button`] from a written name: a [`Btn::name`] (case-insensitive) or a raw
@@ -61,6 +139,11 @@ pub fn button_by_name(model: Model, name: &str) -> Option<FrameBit> {
         Some(raw) => Some(raw),
         None => button(model, Btn::from_name(name)?),
     }
+}
+
+/// `model`'s frame for `state`.
+pub fn encode(model: Model, state: &PanelState) -> [u8; MISO_SIZE] {
+    model.spec().miso.encode(state)
 }
 
 fn raw_bit(name: &str) -> Option<FrameBit> {
@@ -76,90 +159,54 @@ fn raw_bit(name: &str) -> Option<FrameBit> {
     (byte < MISO_SIZE - 2).then_some((byte, mask))
 }
 
-/// A 64-byte MISO control frame, written through one player's [`MisoMap`].
-pub struct MisoFrame {
-    bytes: [u8; MISO_SIZE],
-    map: &'static MisoMap,
+// ── Pieces the encoders share ─────────────────────────────────────────────────
+
+/// A frame starting from `idle`, the bytes before the CRC.
+pub(crate) fn from_idle(idle: &[u8; 62]) -> [u8; MISO_SIZE] {
+    let mut f = [0u8; MISO_SIZE];
+    f[..62].copy_from_slice(idle);
+    f
 }
 
-impl MisoFrame {
-    /// `model`'s idle frame: nothing pressed, every analog control at rest.
-    pub fn idle(model: Model) -> Self {
-        let map = &model.spec().miso;
-        let mut bytes = [0u8; MISO_SIZE];
-        bytes[..62].copy_from_slice(map.idle);
-        Self { bytes, map }
+pub(crate) fn set_bit(f: &mut [u8; MISO_SIZE], (byte, mask): FrameBit, on: bool) {
+    if on {
+        f[byte] |= mask;
+    } else {
+        f[byte] &= !mask;
     }
+}
 
-    /// The frame offset of shared field byte `byte`.
-    fn at(&self, byte: usize) -> usize {
-        byte + self.map.shift
+/// Set every bit `state` holds down.
+pub(crate) fn press(f: &mut [u8; MISO_SIZE], state: &PanelState) {
+    for &bit in &state.pressed {
+        set_bit(f, bit, true);
     }
+}
 
-    /// Press or release a bit already resolved against this player's frame -
-    /// from [`button`], so the shift is applied once, at lookup.
-    pub fn set_btn(&mut self, btn: FrameBit, pressed: bool) {
-        let (byte, mask) = btn;
-        if pressed {
-            self.bytes[byte] |= mask;
-        } else {
-            self.bytes[byte] &= !mask;
-        }
+/// Force low every bit `state` clears.
+pub(crate) fn clear(f: &mut [u8; MISO_SIZE], state: &PanelState) {
+    for &bit in &state.cleared {
+        set_bit(f, bit, false);
     }
+}
 
-    /// Set the touch words ([`fields::TOUCH`]); `(0, 0)` means no touch.
-    pub fn set_touch(&mut self, x: u16, y: u16) {
-        let o = self.at(fields::TOUCH);
-        self.bytes[o..o + 2].copy_from_slice(&x.to_le_bytes());
-        self.bytes[o + 2..o + 4].copy_from_slice(&y.to_le_bytes());
-    }
+/// Write `v` at `at`, 16-bit little-endian.
+pub(crate) fn put_le(f: &mut [u8; MISO_SIZE], at: usize, v: u16) {
+    f[at..at + 2].copy_from_slice(&v.to_le_bytes());
+}
 
-    /// Rotary encoder counter.
-    pub fn set_rotary(&mut self, counter: u16) {
-        let o = self.at(fields::ROTARY);
-        self.bytes[o..o + 2].copy_from_slice(&counter.to_le_bytes());
-    }
+/// Write `v` at `at`, 16-bit big-endian.
+pub(crate) fn put_be(f: &mut [u8; MISO_SIZE], at: usize, v: u16) {
+    f[at..at + 2].copy_from_slice(&v.to_be_bytes());
+}
 
-    /// Jog wheel position, velocity and touch state - see [`fields::JOG`].
-    pub fn set_jog(&mut self, pos: u16, vel: u16, touch: u8) {
-        let o = self.at(fields::JOG);
-        self.bytes[o..o + 2].copy_from_slice(&pos.to_le_bytes());
-        self.bytes[o + 2..o + 4].copy_from_slice(&vel.to_le_bytes());
-        self.bytes[o + 4] = touch;
-    }
-
-    pub fn set_direction(&mut self, direction: Direction) {
-        let o = self.at(fields::DIRECTION);
-        self.bytes[o] = direction.as_byte();
-    }
-
-    /// Tempo slider - see [`fields::TEMPO`].
-    pub fn set_tempo(&mut self, raw: u16) {
-        let o = self.at(fields::TEMPO);
-        self.bytes[o..o + 2].copy_from_slice(&raw.to_le_bytes());
-    }
-
-    /// Vinyl speed rotary.
-    pub fn set_vinyl(&mut self, v: u8) {
-        self.bytes[self.at(fields::VINYL)] = v;
-    }
-
-    pub fn set_power(&mut self, on: bool) {
-        let (byte, mask) = Btn::PowerOn.bit();
-        self.set_btn((self.at(byte), mask), on);
-        for &mirror in self.map.power_mirrors {
-            self.set_btn(mirror, on);
-        }
-    }
-
-    pub fn finalize(mut self) -> [u8; MISO_SIZE] {
-        let crc = crc16_x25(&self.bytes[..62]);
-        self.bytes[62..64].copy_from_slice(&crc.to_le_bytes());
-        self.bytes
-    }
-
-    pub fn as_bytes(&self) -> &[u8; MISO_SIZE] {
-        &self.bytes
+/// The CRC-16/X-25 of the bytes before `at`, stored at `at`.
+pub(crate) fn stamp_crc(f: &mut [u8; MISO_SIZE], at: usize, big_endian: bool) {
+    let crc = crc16_x25(&f[..at]);
+    if big_endian {
+        put_be(f, at, crc);
+    } else {
+        put_le(f, at, crc);
     }
 }
 
@@ -178,25 +225,135 @@ mod tests {
         assert_eq!(&f[36..48], &cdj3k::IDLE[32..44]);
     }
 
-    #[test]
-    fn analog_fields_land_shifted() {
-        let mut f = MisoFrame::idle(Model::Cdj3kx);
-        f.set_direction(Direction::Reverse);
-        f.set_touch(0x1234, 0x5678);
-        f.set_tempo(0x7f90);
-        assert_eq!(f.as_bytes()[8], Direction::Reverse.as_byte());
-        assert_eq!(&f.as_bytes()[20..24], &[0x34, 0x12, 0x78, 0x56]);
-        assert_eq!(&f.as_bytes()[26..28], &[0x90, 0x7f]);
+    /// The states the golden frames below were taken in.
+    fn scenarios(model: Model) -> Vec<(&'static str, PanelState)> {
+        let rest = PanelState::at_rest;
+        let play = button(model, Btn::Play);
+        let hot_c = button(model, Btn::HotC);
+        vec![
+            ("idle", rest()),
+            (
+                "buttons",
+                PanelState {
+                    pressed: play.into_iter().chain(hot_c).chain([(3, 0x10)]).collect(),
+                    cleared: vec![(18, 0x40)],
+                    ..rest()
+                },
+            ),
+            (
+                "analog",
+                PanelState {
+                    tempo: 0.73,
+                    jog: JogState {
+                        pos: 0x1234,
+                        vel: 0x0456,
+                        touch: 0x0c,
+                        revs: 3.25,
+                        rps: 2.5,
+                        touched: false,
+                    },
+                    rotary: 0x7ff1,
+                    beat_loop: 0x2345,
+                    direction: Direction::Reverse,
+                    vinyl: 200,
+                    touch: Some((0x8123, 0x0456)),
+                    ..rest()
+                },
+            ),
+            (
+                "tempo0",
+                PanelState {
+                    tempo: 0.0,
+                    jog: JogState {
+                        touch: 0x04,
+                        ..rest().jog
+                    },
+                    ..rest()
+                },
+            ),
+            (
+                "tempo1",
+                PanelState {
+                    tempo: 1.0,
+                    jog: JogState {
+                        touch: 0x04,
+                        ..rest().jog
+                    },
+                    direction: Direction::SlipReverse,
+                    vinyl: 7,
+                    ..rest()
+                },
+            ),
+            (
+                "poweroff",
+                PanelState {
+                    pressed: play.into_iter().collect(),
+                    tempo: 0.25,
+                    jog: JogState {
+                        pos: 9,
+                        vel: 8,
+                        touch: 0x03,
+                        revs: -0.5,
+                        rps: -1.0,
+                        touched: true,
+                    },
+                    rotary: 3,
+                    vinyl: 1,
+                    touch: Some((5, 6)),
+                    power: false,
+                    ..rest()
+                },
+            ),
+        ]
     }
 
-    /// A button resolves in the player's own frame, so a slate that names a
-    /// control cannot land on the wrong one whichever player it draws.
+    /// Whole frames for the [`scenarios`], each player's encoder end to end.
+    const GOLDEN: &[(&str, &str, &str)] = &[
+        ("cdj3k", "idle", "0000010403000000000000008100ffff00000000007f507f00000000ffff00005101d5d6d6d5d5d6d6d5d5d6000000000000000000000000000000000000230b"),
+        ("cdj3k", "buttons", "0000011403010000000400008100ffff00000000007f507f00000000ffff00005101d5d6d6d5d5d6d6d5d5d6000000000000000000000000000000000000107d"),
+        ("cdj3k", "analog", "0000010401000000000000008100f17f23815604007f82bac800341256040c005101d5d6d6d5d5d6d6d5d5d6000000000000000000000000000000000000fe29"),
+        ("cdj3k", "tempo0", "0000010403000000000000008100ffff00000000007f000000000000ffff04005101d5d6d6d5d5d6d6d5d5d60000000000000000000000000000000000002fa1"),
+        ("cdj3k", "tempo1", "0000010402000000000000008100ffff00000000007fffff07000000ffff04005101d5d6d6d5d5d6d6d5d5d60000000000000000000000000000000000008f83"),
+        ("cdj3k", "poweroff", "0000010403010000000000000100030005000600007fa83f01000900080003005101d5d6d6d5d5d6d6d5d5d6000000000000000000000000000000000000b5f7"),
+        ("cdj3kx", "idle", "010000000000010403000000800000008000ffff00000000007f507f00000000ffff00005101d5d6d6d5d5d6d6d5d5d60000000000000000000000000000e88f"),
+        ("cdj3kx", "buttons", "010000100000010403010000800400008000bfff00000000007f507f00000000ffff00005101d5d6d6d5d5d6d6d5d5d600000000000000000000000000005790"),
+        ("cdj3kx", "analog", "010000000000010401000000800000008000f17f23815604007f82bac800341256040c005101d5d6d6d5d5d6d6d5d5d6000000000000000000000000000033b6"),
+        ("cdj3kx", "tempo0", "010000000000010403000000800000008000ffff00000000007f000000000000ffff04005101d5d6d6d5d5d6d6d5d5d60000000000000000000000000000061a"),
+        ("cdj3kx", "tempo1", "010000000000010402000000800000008000ffff00000000007fffff07000000ffff04005101d5d6d6d5d5d6d6d5d5d60000000000000000000000000000dc5a"),
+        ("cdj3kx", "poweroff", "010000000000010403010000000000000000030005000600007fa83f01000900080003005101d5d6d6d5d5d6d6d5d5d60000000000000000000000000000f829"),
+        ("cdj1500x", "idle", "010000001ff81ff8000000000000ffff00000000ffff000001d80000000080000000000000000000000000000000000000000000000000000000000000000000"),
+        ("cdj1500x", "buttons", "010000101ff81ff8000000000000ffff40002000ffff00008fba0000000080000000000000000000000000000000000000000000000000000000000000000000"),
+        ("cdj1500x", "analog", "010000002ead1ff8234500000924022c000000027ff100007b6e2381560480000000000000000000000000000000000000000000000000000000000000000000"),
+        ("cdj1500x", "tempo0", "0100000000001ff8000000000000ffff00000000ffff0000646a0000000080000000000000000000000000000000000000000000000000000000000000000000"),
+        ("cdj1500x", "tempo1", "010000003ff01ff8000000000000ffff00000000ffff000088bf0000000080000000000000000000000000000000000000000000000000000000000000000000"),
+        ("cdj1500x", "poweroff", "010000000ffc1ff800000000fe98056d4000000100030000ca3a0500060000000000000000000000000000000000000000000000000000000000000000000000"),
+    ];
+
+    #[test]
+    fn every_player_encodes_its_golden_frames() {
+        for model in Model::ALL {
+            for (name, state) in scenarios(model) {
+                let (_, _, want) = GOLDEN
+                    .iter()
+                    .find(|(slug, n, _)| *slug == model.spec().slug && *n == name)
+                    .unwrap_or_else(|| panic!("no golden for {model} {name}"));
+                let got: String = encode(model, &state)
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                assert_eq!(&got, want, "{model} {name}");
+            }
+        }
+    }
+
+    /// A button resolves in the player's own frame.
     #[test]
     fn buttons_resolve_in_the_players_own_frame() {
-        assert_eq!(button(Model::Cdj3k, Btn::Play), Some(Btn::Play.bit()));
+        let (byte, mask) = Btn::Play.bit().unwrap();
+        assert_eq!(button(Model::Cdj3k, Btn::Play), Some((byte, mask)));
         assert_eq!(
             button(Model::Cdj3kx, Btn::Play),
-            Some((Btn::Play.bit().0 + cdj3kx::MISO_SHIFT, Btn::Play.bit().1))
+            Some((byte + cdj3kx::MISO_SHIFT, mask))
         );
         // Case and the raw form are accepted the same way on either player.
         assert_eq!(
@@ -212,38 +369,45 @@ mod tests {
     /// button the CDJ-3000 does not have, at the shifted offset.
     #[test]
     fn a_player_can_add_a_button() {
+        let (byte, mask) = Btn::Usb2Stop.bit().unwrap();
         assert_eq!(
             button(Model::Cdj3kx, Btn::Usb2Stop),
-            Some((
-                Btn::Usb2Stop.bit().0 + cdj3kx::MISO_SHIFT,
-                Btn::Usb2Stop.bit().1
-            ))
+            Some((byte + cdj3kx::MISO_SHIFT, mask))
         );
         assert_eq!(button(Model::Cdj3k, Btn::Usb2Stop), None);
     }
 
-    /// The CDJ-3000X's guest forwarder checks power at the CDJ-3000 offset, which its
-    /// own shift moved: the flag has to reach both.
+    /// The guest forwarder powers the deck off when the flag it reads drops:
+    /// byte 12 on the RK3399 decks, where the CDJ-3000X also clears its own
+    /// shifted copy; byte 30 on the CDJ-1500X, whose byte 12 is panel data.
     #[test]
-    fn power_reaches_every_bit_the_guest_reads() {
-        let mut f = MisoFrame::idle(Model::Cdj3kx);
-        f.set_power(false);
-        assert_eq!(f.as_bytes()[12] & 0x80, 0);
-        assert_eq!(f.as_bytes()[16] & 0x80, 0);
-        f.set_power(true);
-        assert_eq!(f.as_bytes()[12] & 0x80, 0x80);
-        assert_eq!(f.as_bytes()[16] & 0x80, 0x80);
+    fn power_off_reaches_every_bit_the_guest_reads() {
+        let off = PanelState {
+            power: false,
+            ..PanelState::at_rest()
+        };
+        let on = PanelState::at_rest();
 
-        let mut f = MisoFrame::idle(Model::Cdj3k);
-        f.set_power(false);
-        assert_eq!(f.as_bytes()[12] & 0x80, 0);
+        let f = encode(Model::Cdj3kx, &off);
+        assert_eq!(f[12] & 0x80, 0);
+        assert_eq!(f[16] & 0x80, 0);
+        let f = encode(Model::Cdj3kx, &on);
+        assert_eq!(f[12] & 0x80, 0x80);
+        assert_eq!(f[16] & 0x80, 0x80);
+
+        assert_eq!(encode(Model::Cdj3k, &off)[12] & 0x80, 0);
+        assert_eq!(encode(Model::Cdj3k, &on)[12] & 0x80, 0x80);
+
+        assert_eq!(encode(Model::Cdj1500x, &on)[30] & 0x80, 0x80);
+        let f = encode(Model::Cdj1500x, &off);
+        assert_eq!(f[30] & 0x80, 0);
+        assert_eq!(f[12], 0);
     }
 
-    /// Every player answers to every shared button, so a slate written
-    /// against one is not silently missing controls on another.
+    /// Every RK3399 player answers to every shared button.
     #[test]
-    fn every_player_resolves_every_shared_button() {
-        for model in Model::ALL {
+    fn the_rk3399_players_resolve_every_shared_button() {
+        for model in [Model::Cdj3k, Model::Cdj3kx] {
             for &btn in Btn::SHARED {
                 let bit =
                     button(model, btn).unwrap_or_else(|| panic!("{model} has no {}", btn.name()));
@@ -254,5 +418,15 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The CRC lands where each player's sub-CPU checks it.
+    #[test]
+    fn the_crc_lands_where_each_player_checks_it() {
+        let rest = PanelState::at_rest();
+        let f = encode(Model::Cdj3k, &rest);
+        assert_eq!(&f[62..64], &crc16_x25(&f[..62]).to_le_bytes());
+        let f = encode(Model::Cdj1500x, &rest);
+        assert_eq!(&f[24..26], &crc16_x25(&f[..24]).to_be_bytes());
     }
 }

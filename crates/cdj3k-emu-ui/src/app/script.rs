@@ -11,6 +11,7 @@
 //! 61.5 clear 12:0x80 500     # force a frame bit low (one the idle frame sets)
 //! 62   touch 0.5 0.5 300     # LCD tap at fractions of the display, 300 ms
 //! 63   shot /tmp/after.png   # capture the window (the panel keeps running)
+//! 64   tilt                  # tilt the deck, or bring it back (a deck that has a front face)
 //! 70   quit                  # close the window (graceful shutdown)
 //! ```
 
@@ -28,6 +29,7 @@ enum Action {
     Clear { bit: String, hold: Duration },
     Touch { x: f32, y: f32, hold: Duration },
     Shot(String),
+    Tilt,
     Quit,
 }
 
@@ -142,6 +144,10 @@ impl ScriptDriver {
                     eprintln!("cdj3k-emu: script {t}s shot {path}");
                     shot.request_capture(ctx, path);
                 }
+                Action::Tilt => {
+                    eprintln!("cdj3k-emu: script {t}s tilt");
+                    app.tilted = !app.tilted;
+                }
                 Action::Quit => {
                     eprintln!("cdj3k-emu: script {t}s quit");
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -212,6 +218,7 @@ fn parse_line(line: &str) -> Result<Option<(f64, Action)>, String> {
             }
         }
         Some("shot") => Action::Shot(w.next().ok_or("shot needs a path")?.to_string()),
+        Some("tilt") => Action::Tilt,
         Some("quit") => Action::Quit,
         other => return Err(format!("unknown action {other:?}")),
     };

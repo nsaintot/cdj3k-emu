@@ -239,15 +239,16 @@ pub fn cabinet_passphrase(model_env: &str, soc_serial: &str) -> Result<Vec<u8>, 
 /// stdout: 128 lowercase hex digits, no trailing newline.
 ///
 /// ```text
-/// KEY = sha512hex( model + sha512hex(images/images.tar.gz) )
+/// KEY = sha512hex( model + sha512hex(seed) )
 /// ```
 ///
 /// It opens the slot the firmware ships (slot 0 on a vendor cabinet), whose
-/// master key every CDJ-3000X cabinet shares.  `model_env` is the U-Boot
-/// `model` variable ([`cdj3k_emu_panel::ModelSpec::model_env`]); `images_tar_gz`
-/// is the sibling of `cabinet.img` in the same `.UPD` package.
-pub fn vendor_passphrase(model_env: &str, images_tar_gz: &[u8]) -> Vec<u8> {
-    let inner = hex::encode(Sha512::digest(images_tar_gz));
+/// master key every cabinet of that model shares.  `model_env` is the U-Boot
+/// `model` variable ([`cdj3k_emu_panel::ModelSpec::model_env`]); `seed` is the
+/// sibling of `cabinet.img` in the same `.UPD` package that the model hashes
+/// ([`crate::read_cabinet_seed`]).
+pub fn vendor_passphrase(model_env: &str, seed: &[u8]) -> Vec<u8> {
+    let inner = hex::encode(Sha512::digest(seed));
     let outer = Sha512::digest(format!("{model_env}{inner}").as_bytes());
     hex::encode(outer).into_bytes()
 }

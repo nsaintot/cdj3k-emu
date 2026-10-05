@@ -1,7 +1,7 @@
 use crate::app::ui::draw_direction::{self, DirectionPlacement};
 use crate::app::ui::{DoubleBorderSpec, StrokeSpec, COL_WHITE, COL_YELLOW};
-use cdj3k_emu_panel::mosi_frame;
 use cdj3k_emu_panel::Btn;
+use cdj3k_emu_panel::{mosi_frame, Lamp};
 use egui::{Color32, FontFamily, Pos2, Rect, Stroke, Vec2};
 
 use super::{
@@ -63,25 +63,6 @@ pub(super) const PERF_V_USB_SIGN: f32 = 0.0795;
 /// Center of the USB MOUNT glow rectangle.
 pub(super) const PERF_U_USB_MOUNT: f32 = 0.322;
 pub(super) const PERF_V_USB_MOUNT: f32 = 0.040;
-
-/// USB trident logo dimensions (ref units).
-pub(super) const PERF_USB_SIGN_W: f32 = 70.0;
-pub(super) const PERF_USB_SIGN_STROKE: f32 = 3.5;
-pub(super) const PERF_USB_SIGN_TAIL_DOT_R: f32 = 5.0;
-pub(super) const PERF_USB_SIGN_ARROW_LEN: f32 = 12.0;
-pub(super) const PERF_USB_SIGN_ARROW_HALF: f32 = 6.0;
-pub(super) const PERF_USB_SIGN_FORK_OFF_Y: f32 = 12.0;
-/// Fork X positions, as ref-unit offsets from the trident center (cx_ref).
-/// Top fork (terminates in a filled circle).
-pub(super) const PERF_USB_SIGN_TOP_FORK_X_START: f32 = -22.0;
-pub(super) const PERF_USB_SIGN_TOP_FORK_X_DIAG_END: f32 = -10.0;
-pub(super) const PERF_USB_SIGN_TOP_FORK_X_END: f32 = 0.0;
-/// Bottom fork (terminates in a filled square).
-pub(super) const PERF_USB_SIGN_BOT_FORK_X_START: f32 = -18.0;
-pub(super) const PERF_USB_SIGN_BOT_FORK_X_DIAG_END: f32 = 0.0;
-pub(super) const PERF_USB_SIGN_BOT_FORK_X_END: f32 = 11.0;
-pub(super) const PERF_USB_SIGN_SQUARE_S: f32 = 8.0;
-pub(super) const PERF_USB_SIGN_CIRCLE_R: f32 = 5.0;
 
 /// USB MOUNT: outer glow + [`mount_rect`] = **casing** (bezel). Inside that, a nested
 /// double-bordered rect = **receptacle opening**; inside that, the **tongue** bar.
@@ -297,7 +278,7 @@ pub(super) fn draw_left_section(
 
     // ── USB MOUNT glow rectangle (LED-tinted, USB-A cavity graphic) ─────
     {
-        let (r, g, b) = app.mosi().slot_2_rgb().unwrap_or_default();
+        let (r, g, b) = app.mosi().rgb(Lamp::Slot2).unwrap_or_default();
         let lit = app.mosi().led_color(mosi_frame::LedPart::Slot, r, g, b);
         let usb_drive = mosi_frame::led_drive_factor(r, g, b).unwrap_or(0.0);
 
@@ -443,7 +424,7 @@ pub(super) fn draw_left_section(
 
     // ── SD slot: casing, closed cover, light bar ─────────────────────────
     {
-        let (r, g, b) = app.mosi().slot_1_rgb().unwrap_or_default();
+        let (r, g, b) = app.mosi().rgb(Lamp::Slot1).unwrap_or_default();
         let lit = app.mosi().led_color(mosi_frame::LedPart::Slot, r, g, b);
         let drive = mosi_frame::led_drive_factor(r, g, b).unwrap_or(0.0);
 
@@ -581,8 +562,8 @@ pub(super) fn draw_left_section(
         let slip = Rect::from_center_size(slip_center, slip_btn_size);
         let quantize = Rect::from_center_size(quantize_center, slip_btn_size);
 
-        let slip_step = app.mosi().step_led(mosi_frame::LED_SLIP);
-        let quantize_step = app.mosi().step_led(mosi_frame::LED_QUANTIZE);
+        let slip_step = app.mosi().step(Lamp::Slip);
+        let quantize_step = app.mosi().step(Lamp::Quantize);
 
         let slip_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
@@ -731,9 +712,9 @@ pub(super) fn draw_left_section(
             layout.sc(0.0),
         );
 
-        let loop_in_led = app.mosi().led_bit(mosi_frame::LED_LOOP_IN);
-        let loop_out_led = app.mosi().led_bit(mosi_frame::LED_LOOP_OUT);
-        let loop_reloop_led = app.mosi().led_bit(mosi_frame::LED_RELOOP);
+        let loop_in_led = app.mosi().lit(Lamp::LoopIn);
+        let loop_out_led = app.mosi().lit(Lamp::LoopOut);
+        let loop_reloop_led = app.mosi().lit(Lamp::Reloop);
 
         app.circle_btn(
             ui,
@@ -799,8 +780,8 @@ pub(super) fn draw_left_section(
             0.555 + PERF_BEAT_LOOP_U_OFF_FRAC,
             PERF_V_BEAT_LOOP_LABEL,
         );
-        let beat_loop_4_led = app.mosi().led_bit(mosi_frame::LED_BEAT_JUMP_4);
-        let beat_loop_8_led = app.mosi().led_bit(mosi_frame::LED_BEAT_JUMP_8);
+        let beat_loop_4_led = app.mosi().lit(Lamp::BeatJump4);
+        let beat_loop_8_led = app.mosi().lit(Lamp::BeatJump8);
 
         let beat_loop_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
@@ -893,8 +874,8 @@ pub(super) fn draw_left_section(
             layout.sc(2.0),
         );
 
-        let beat_jump_prev_leds = app.mosi().led_bit(mosi_frame::LED_BEAT_JUMP_PREV);
-        let beat_jump_next_leds = app.mosi().led_bit(mosi_frame::LED_BEAT_JUMP_NEXT);
+        let beat_jump_prev_leds = app.mosi().lit(Lamp::BeatJumpPrev);
+        let beat_jump_next_leds = app.mosi().lit(Lamp::BeatJumpNext);
 
         app.btn(
             ui,
@@ -965,7 +946,7 @@ pub(super) fn draw_left_section(
             layout.sc(5.0),
         );
 
-        let search_leds = app.mosi().led_bit(mosi_frame::LED_TRACK_SEARCH);
+        let search_leds = app.mosi().lit(Lamp::TrackSearch);
 
         app.circle_btn(
             ui,
@@ -1046,7 +1027,7 @@ pub(super) fn draw_left_section(
 
     {
         let cue_c = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.5, PERF_V_CUE);
-        let cue_led = app.mosi().led_bit(mosi_frame::LED_CUE);
+        let cue_led = app.mosi().lit(Lamp::Cue);
         let cue_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
                 width: layout.sc(PERF_LARGE_BTN_STROKE_INNER),
@@ -1077,7 +1058,7 @@ pub(super) fn draw_left_section(
     }
     {
         let play_c = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.5, PERF_V_PLAY);
-        let play_led = app.mosi().led_bit(mosi_frame::LED_PLAY);
+        let play_led = app.mosi().lit(Lamp::Play);
         let play_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
                 width: layout.sc(PERF_LARGE_BTN_STROKE_INNER),

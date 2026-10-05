@@ -1,16 +1,16 @@
 //! Every button a player can have, declared once.
 //!
-//! [`Btn`] is a name, not an address: its [`bit`](Btn::bit) is in the
-//! CDJ-3000's frame coordinates and only [`button`](crate::miso_frame::button)
-//! turns it into an offset, by shifting it into the player's own frame. A
-//! slate therefore names the control it draws and gets the right bit for
-//! whichever player is on screen - naming another player's button is not
-//! something the type allows.
+//! [`Btn`] names a control: its [`bit`](Btn::bit) is in the CDJ-3000's frame
+//! coordinates and the player's
+//! [`MisoCodec::button`](crate::miso_frame::MisoCodec::button) turns it into
+//! an offset in its own frame. A slate names the control it draws and gets
+//! the right bit for whichever player is on screen.
 //!
-//! The macro below declares the variant, its script name and its bit together
-//! so the three can't drift. `shared` are the CDJ-3000's, which every player
-//! inherits; `extra` are later additions, which a player claims in
-//! [`MisoMap::extra`](crate::frame::MisoMap::extra).
+//! The macro below declares the variant, its script name and its bit together.
+//! `shared` are the CDJ-3000's buttons, `extra` those the CDJ-3000 lacks,
+//! placed at a CDJ-3000 coordinate it leaves free of a button, and `own` those
+//! with no place in that frame at all: only a codec that lists them gives them
+//! a bit.
 
 use crate::frame::FrameBit;
 
@@ -18,12 +18,14 @@ macro_rules! buttons {
     (
         shared { $($(#[$sm:meta])* $sv:ident = $sn:literal => $sb:expr),+ $(,)? }
         extra  { $($(#[$em:meta])* $ev:ident = $en:literal => $eb:expr),+ $(,)? }
+        own    { $($(#[$om:meta])* $ov:ident = $on:literal),+ $(,)? }
     ) => {
         /// A button of the front panel.
         #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
         pub enum Btn {
             $($(#[$sm])* $sv,)+
             $($(#[$em])* $ev,)+
+            $($(#[$om])* $ov,)+
         }
 
         impl Btn {
@@ -32,13 +34,16 @@ macro_rules! buttons {
             /// The buttons added after the CDJ-3000; a player has one only if
             /// its map claims it.
             pub const EXTRA: &'static [Btn] = &[$(Btn::$ev),+];
+            /// The buttons with no place in the CDJ-3000's frame.
+            pub const OWN: &'static [Btn] = &[$(Btn::$ov),+];
 
-            /// Its place in the CDJ-3000's frame - the shared coordinates
-            /// every player's map shifts from, not an address in any frame.
-            pub const fn bit(self) -> FrameBit {
+            /// Its place in the CDJ-3000's frame, which a shifted player's map
+            /// moves from; `None` for an [`OWN`](Self::OWN) button.
+            pub const fn bit(self) -> Option<FrameBit> {
                 match self {
-                    $(Btn::$sv => $sb,)+
-                    $(Btn::$ev => $eb,)+
+                    $(Btn::$sv => Some($sb),)+
+                    $(Btn::$ev => Some($eb),)+
+                    $(Btn::$ov => None,)+
                 }
             }
 
@@ -47,6 +52,7 @@ macro_rules! buttons {
                 match self {
                     $(Btn::$sv => $sn,)+
                     $(Btn::$ev => $en,)+
+                    $(Btn::$ov => $on,)+
                 }
             }
 
@@ -61,6 +67,7 @@ macro_rules! buttons {
                 Btn::SHARED
                     .iter()
                     .chain(Btn::EXTRA)
+                    .chain(Btn::OWN)
                     .copied()
                     .find(|b| b.name() == upper)
             }
@@ -129,7 +136,7 @@ buttons! {
         /// The USB eject button - USB on the CDJ-3000, USB 1 on the
         /// CDJ-3000X.
         UsbStop = "USB_STOP" => (12, 0x02),
-        PowerOn = "POWER_ON" => (12, 0x80),
+        PowerOn = "POWER_ON" => POWER_ON,
     }
     extra {
         /// The second USB port's eject button - USB 2 on the CDJ-3000X.
@@ -137,7 +144,14 @@ buttons! {
         /// confirmed against the CDJ-3000X.
         Usb2Stop = "USB2_STOP" => (12, 0x01),
     }
+    own {
+        /// SHIFT, on a player with its own button table.
+        Shift = "SHIFT",
+    }
 }
+
+/// [`Btn::PowerOn`]'s bit, for a map that names it in a constant.
+pub const POWER_ON: FrameBit = (12, 0x80);
 
 /// Device state bit: the CDJ-3000's SD slot cover is closed. Set in its idle
 /// frame; a player without an SD slot makes the bit a button ([`Btn::Usb2Stop`]).
@@ -149,22 +163,29 @@ mod tests {
 
     #[test]
     fn names_round_trip() {
-        for b in Btn::SHARED.iter().chain(Btn::EXTRA) {
+        for b in Btn::SHARED.iter().chain(Btn::EXTRA).chain(Btn::OWN) {
             assert_eq!(Btn::from_name(b.name()), Some(*b));
             assert_eq!(Btn::from_name(&b.name().to_ascii_lowercase()), Some(*b));
         }
         assert_eq!(Btn::from_name("NOT_A_BUTTON"), None);
     }
 
-    /// Two buttons on one bit would make a press ambiguous, and a name reused
-    /// would make [`Btn::from_name`] answer with whichever came first.
+    /// Each button has a bit and a [`Btn::from_name`] name of its own.
     #[test]
     fn every_button_is_its_own_bit_and_name() {
-        let all: Vec<Btn> = Btn::SHARED.iter().chain(Btn::EXTRA).copied().collect();
+        let all: Vec<Btn> = Btn::SHARED
+            .iter()
+            .chain(Btn::EXTRA)
+            .chain(Btn::OWN)
+            .copied()
+            .collect();
         for (i, a) in all.iter().enumerate() {
             assert!(a.is_shared() == Btn::SHARED.contains(a));
+            assert!(a.bit().is_none() == Btn::OWN.contains(a));
             for b in &all[i + 1..] {
-                assert_ne!(a.bit(), b.bit(), "{a:?} and {b:?} share a bit");
+                if a.bit().is_some() {
+                    assert_ne!(a.bit(), b.bit(), "{a:?} and {b:?} share a bit");
+                }
                 assert_ne!(a.name(), b.name(), "{a:?} and {b:?} share a name");
             }
         }
@@ -172,7 +193,7 @@ mod tests {
 
     #[test]
     fn the_cdj3000x_reuses_the_sd_cover_bit() {
-        assert_eq!(Btn::Usb2Stop.bit(), STATE_SD_CLOSED);
+        assert_eq!(Btn::Usb2Stop.bit(), Some(STATE_SD_CLOSED));
         assert!(!Btn::Usb2Stop.is_shared());
     }
 }

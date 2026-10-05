@@ -6,8 +6,8 @@ surfacing the device's main LCD, jog LCD, jog wheel, faders, buttons, USB, PC-Li
 <table>
 <tr>
 <td valign="top" width="50%">
-<img src="docs/preview.png" alt="cdj3k-emu slate" width="100%">
-<sub><em>Preview of the main emulation window</em></sub>
+<img src="docs/slates.gif" alt="cdj3k-emu slates" width="100%">
+<sub><em>The emulated players' slates · <a href="docs/preview.png">full preview</a></em></sub>
 </td>
 <td valign="middle" align="center" width="50%">
   <img src="docs/preview.gif" alt="Demo animation" width="100%">
@@ -76,7 +76,7 @@ do with real CDJs on a physical LAN when you're on vacation.
 > [!IMPORTANT]  
 > On the CDJ-3000, cdj3k-emu accepts **firmware version 3.00 or newer** only.
 >
-> All CDJ-3000X firmwares are supported.
+> All CDJ-3000X/CDJ-1500X firmwares are supported.
 
 Pioneer shipped two different system-on-chip families across the CDJ-3000's
 lifetime:
@@ -95,14 +95,15 @@ will reject it before provisioning the eMMC image. Use a 3.00+ update file.
 
 ## Emulated models
 
-`--model cdj3k` / `--model cdj3kx` (or `CDJ3K_MODEL`) names the model to
-launch. A slot holds one installation, and its model is persisted in the
-slot's settings (see [Storage](docs/storage.md)).
+`--model <slug>` (or `CDJ3K_MODEL`) skips the picker; slugs are `cdj3k`,
+`cdj3kx`, `cdj1500x`. A slot holds one installation, and its model is
+persisted in the slot's settings (see [Storage](docs/storage.md)).
 
 | Model         | Board / kernel             | Panel             | Status                    |
 | ------------- | -------------------------- | ----------------- | ------------------------- |
 | **CDJ-3000**  | RK3399, vanilla 6.6 kernel | 9-inch display    | Boots, Plays, Pro DJ Link |
 | **CDJ-3000X** | RK3399, vanilla 6.6 kernel | 10.1-inch display | Boots, Plays, Pro DJ Link |
+| **CDJ-1500X** | RK3566, vanilla 6.6 kernel | 10.1-inch display | Boots, Plays, Pro DJ Link |
 
 ([Models and slates](docs/models.md)).
 
@@ -276,7 +277,7 @@ UAC asks, in three situations:
 app/cdj3k-emu/       binary (eframe egui app + runtime worker)
 crates/cdj3k-emu-*   Rust workspace: panel, streams, platform, ui,
                      runtime, storage, firmware
-  ui/src/app/ui/       shared control toolkit + slate/{cdj3k,cdj3kx}
+  ui/src/app/ui/       shared control toolkit + slate/<model>
 guest/               C sources built for the guest:
   cfgd/                cdj3k-cfgd  - virtio-serial config daemon
   deck_shim/           deck_shim.so - LD_PRELOAD shim (core/ + per-model)
@@ -286,6 +287,7 @@ guest/               C sources built for the guest:
   kernel-patches/      vanilla 6.6 patches + the guest kernel .config
 qemu/                upstream QEMU source + our overlay patches
 winit/               winit fetched from crates.io + our overlay patch
+dropbear/            static aarch64 dropbear for firmware without SSH
 docker/              Alpine + Ubuntu build pipeline for guest artefacts, and
                      the Linux and Windows host-build images
 packaging/macos/     staging (universal or one arch), signing, notarization, .dmg

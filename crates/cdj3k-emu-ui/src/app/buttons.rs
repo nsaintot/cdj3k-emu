@@ -36,13 +36,13 @@ impl CdjApp {
         let was_held = self.held_btn == Some(btn);
         if is_down && !was_held && !self.latched_btns.contains(&btn) {
             self.held_btn = Some(btn);
-            self.inject(self.build_current_frame().finalize());
+            self.inject(self.build_current_frame());
         } else if !is_down && was_held {
             self.held_btn = None;
             if ctrl {
                 self.latched_btns.insert(btn);
             }
-            self.inject(self.build_current_frame().finalize());
+            self.inject(self.build_current_frame());
         }
     }
 
@@ -106,6 +106,40 @@ impl CdjApp {
         });
         self.frame_shape_count += shapes.len() as u64;
         painter.extend(shapes.iter().cloned());
+        let ctrl = ui.input(|i| i.modifiers.ctrl);
+        if let Some(bit) = bit {
+            self.handle_btn_interaction(is_down, ctrl, bit);
+        }
+    }
+
+    /// Draw a button whose look the caller collects, given whether it is
+    /// pressed; inject on press edge, clear on release edge. `rect` is the
+    /// hit area; `state` packs whatever else the look depends on, so a change
+    /// rebuilds the cached shapes. A `btn` of `None` is a key whose frame bit
+    /// is not known yet: it presses on screen and sends nothing.
+    pub(super) fn shape_btn(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        state: u32,
+        id_src: impl Hash,
+        btn: Option<Btn>,
+        collect: impl FnOnce(&mut ui::draw_cache::ShapeList, bool),
+    ) {
+        let id = ui.id().with(&id_src);
+        let response = ui.interact(rect, id, egui::Sense::click_and_drag());
+        let is_down = response.is_pointer_button_down_on();
+        let bit = btn.and_then(|b| self.button(b));
+        let is_pressed = is_down || bit.is_some_and(|b| self.latched_btns.contains(&b));
+        let cache_key =
+            ui::draw_cache::BtnCacheKey::new(rect, state, is_pressed, ui.ctx().pixels_per_point());
+        let painter = ui.painter().clone();
+        let shapes = self
+            .btn_cache
+            .get_or_build(id, cache_key, |list| collect(list, is_pressed));
+        self.frame_shape_count += shapes.len() as u64;
+        painter.extend(shapes.iter().cloned());
+
         let ctrl = ui.input(|i| i.modifiers.ctrl);
         if let Some(bit) = bit {
             self.handle_btn_interaction(is_down, ctrl, bit);

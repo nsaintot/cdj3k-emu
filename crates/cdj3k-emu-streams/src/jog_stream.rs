@@ -175,10 +175,18 @@ fn stream_loop(
     // inode), so a held mapping would freeze on the previous session's last
     // frame. The cleanup hook zeros the magic before unlink, giving us a
     // reliable in-band signal to drop and re-open.
+    // Logged once, and again after each session that carried frames. Until
+    // the guest publishes (a deck without a jog LCD never does) the mapping
+    // is re-made silently.
+    let mut announce = true;
     loop {
         let shm = open_shm(shm_path);
-        eprintln!("[jog_stream] shm mapped: {shm_path} ({} bytes)", shm.len());
+        if announce {
+            eprintln!("[jog_stream] shm mapped: {shm_path} ({} bytes)", shm.len());
+            announce = false;
+        }
 
+        let mut seen_magic = false;
         let mut last_seq: u32 = 0;
         let mut last_change_at: Option<Instant> = None;
         let mut frame_count: u64 = 0;
@@ -187,12 +195,18 @@ fn stream_loop(
         loop {
             let magic = read_u32(&shm, SHM_OFF_MAGIC);
             if magic != SHM_MAGIC {
-                eprintln!("[jog_stream] magic gone, reconnecting");
+                // Before the first publish the mapping is re-made at the
+                // reconnect pace below, which picks up a restart's new file.
+                if seen_magic {
+                    eprintln!("[jog_stream] magic gone, reconnecting");
+                    announce = true;
+                }
                 if connected.swap(false, Ordering::Relaxed) {
                     gate.request();
                 }
                 break;
             }
+            seen_magic = true;
 
             let seq = read_u32(&shm, SHM_OFF_SEQ);
             if seq == last_seq || (seq & 1) != 0 {

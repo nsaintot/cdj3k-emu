@@ -1,17 +1,13 @@
-//! The players the emulator can boot: the CDJ-3000 and the CDJ-3000X.
+//! Players the emulator supports: see [`Model`] for the current set.
 //!
-//! Both are RK3399 boards running the same patched kernel; they differ in the
-//! firmware image (and its rootfs scripts), the sub-CPU control set (the CDJ-3000X
-//! trades the SD slot for a second USB port) and the panel layout.
-//!
-//! [`Model`] is an identity and nothing else: every fact about a player lives
-//! in its [`ModelSpec`], which [`Model::spec`] resolves. That one function is
-//! the only place in the emulator that matches on the model.
+//! All per-model data lives in [`ModelSpec`], which [`Model::spec`] resolves.
+//! [`Model`] itself is just an identity; matching on the model happens in only one place
+//! via `Model::spec`.
 
 use std::fmt;
 
 use crate::spec::ModelSpec;
-use crate::{cdj3k, cdj3kx};
+use crate::{cdj1500x, cdj3k, cdj3kx};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Model {
@@ -20,16 +16,19 @@ pub enum Model {
     Cdj3k,
     /// CDJ-3000X.
     Cdj3kx,
+    /// CDJ-1500X.
+    Cdj1500x,
 }
 
 impl Model {
-    pub const ALL: [Model; 2] = [Model::Cdj3k, Model::Cdj3kx];
+    pub const ALL: [Model; 3] = [Model::Cdj3k, Model::Cdj3kx, Model::Cdj1500x];
 
     /// The player this model is.
     pub const fn spec(self) -> &'static ModelSpec {
         match self {
             Model::Cdj3k => &cdj3k::SPEC,
             Model::Cdj3kx => &cdj3kx::SPEC,
+            Model::Cdj1500x => &cdj1500x::SPEC,
         }
     }
 
@@ -38,7 +37,7 @@ impl Model {
         self.spec().title
     }
 
-    /// Stable identifier (`cdj3k` / `cdj3kx`) for directory names and settings.
+    /// Stable identifier for directory names and settings.
     pub fn slug(self) -> &'static str {
         self.spec().slug
     }
@@ -49,9 +48,8 @@ impl Model {
         self.spec().firmware_file_names
     }
 
-    /// The deck an update file called `name` is for, by the name Pioneer
-    /// publishes it under - `CDJ3Kv322.UPD` is a CDJ-3000's. `None` when the
-    /// name is not one of ours, which includes a file the user has renamed.
+    /// Returns the [`Model`] for an update file given its original name as published by Pioneer,
+    /// e.g., `CDJ3Kv322.UPD` is recognized as a CDJ-3000. Returns `None` for unknown or user-renamed files.
     pub fn from_firmware_file_name(name: &str) -> Option<Model> {
         // Either separator: the name can be a path from any host.
         let stem = name.rsplit(['/', '\\']).next().unwrap_or(name);
@@ -83,8 +81,7 @@ impl Model {
     /// short form (`3k`, `3kx`).
     pub fn parse(s: &str) -> Option<Model> {
         let s = s.trim().to_ascii_lowercase();
-        // The slug first, and before the prefix strip: a slug starts with
-        // `cdj`, so stripping would hide it behind its own aliases.
+        // The slug first: it starts with `cdj`, which the prefix strip removes.
         if let Some(m) = Model::ALL.into_iter().find(|m| m.spec().slug == s) {
             return Some(m);
         }
@@ -114,10 +111,15 @@ mod tests {
         for s in ["cdj3kx", "3000x", "cdj3000x", "CDJ-3000X", "3000X", "3kx"] {
             assert_eq!(Model::parse(s), Some(Model::Cdj3kx), "{s}");
         }
+        for s in ["cdj1500x", "1500x", "cdj1500x", "CDJ-1500X", "1k5x"] {
+            assert_eq!(Model::parse(s), Some(Model::Cdj1500x), "{s}");
+        }
         assert_eq!(Model::parse("2000"), None);
         assert_eq!(Model::parse(""), None);
         // The Pioneer application number is not a spelling we take.
-        for s in ["122", "145", "ep122", "ep145", "EP122", "EP-145"] {
+        for s in [
+            "122", "145", "166", "ep122", "ep145", "ep166", "EP122", "EP-145",
+        ] {
             assert_eq!(Model::parse(s), None, "{s}");
         }
     }
@@ -129,8 +131,7 @@ mod tests {
         }
     }
 
-    /// A spelling that reaches two models resolves to whichever comes first
-    /// in [`Model::ALL`], silently. Adding a player has to keep them apart.
+    /// Each spelling reaches one model.
     #[test]
     fn spellings_identify_one_model_each() {
         for m in Model::ALL {
@@ -160,14 +161,14 @@ mod tests {
         assert_eq!(Model::Cdj3k.touch_units(0.5, 0.5), (500, 500));
 
         // CDJ-3000X: screen pixels on its 1280x800 scanout, with the contact
-        // flagged, so its top-left pixel is a touch and not a lift.
+        // flagged, so its top-left pixel is a touch.
         assert_eq!(Model::Cdj3kx.touch_units(0.0, 0.0), (TOUCH_DOWN, 0));
         assert_eq!(
             Model::Cdj3kx.touch_units(1.0, 1.0),
             (1279 | TOUCH_DOWN, 799)
         );
 
-        // A point off the display clamps rather than wrapping past the edge.
+        // A point off the display clamps to its edge.
         assert_eq!(Model::Cdj3kx.touch_units(-0.5, 2.0), (TOUCH_DOWN, 799));
         assert_eq!(Model::Cdj3k.touch_units(2.0, -1.0), (0, 0));
     }
@@ -186,16 +187,17 @@ mod firmware_file_name_tests {
             ("/a/b/CDJ3000Xv140.UPD", Some(Model::Cdj3kx)),
             (r"C:\Users\u\Downloads\CDJ3Kv322.UPD", Some(Model::Cdj3k)),
             ("cdj3000xv140.upd", Some(Model::Cdj3kx)),
+            ("CDJ1500Xv110.UPD", Some(Model::Cdj1500x)),
+            ("EP166v110.UPD", Some(Model::Cdj1500x)),
             // Other Pioneer products, and a name we cannot place.
             ("XDJAZv130.UPD", None),
-            ("CDJ1500Xv110.UPD", None),
             ("DJM-A9_119.upd", None),
             ("firmware.UPD", None),
             ("CDJ3000v140.UPD", None),
         ] {
             assert_eq!(Model::from_firmware_file_name(name), want, "{name}");
         }
-        // The CDJ-3000X's name is not read as the CDJ-3000's.
+        // The CDJ-3000X's name resolves to the CDJ-3000X.
         assert_eq!(
             Model::from_firmware_file_name("CDJ3000Xv140.UPD"),
             Some(Model::Cdj3kx)

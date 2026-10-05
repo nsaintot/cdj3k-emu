@@ -67,7 +67,7 @@ fn main() {
     // via `--instance N` (the "Instances" menu launches us with `open -n`).
     let mut instance: u32 = 1;
 
-    // `--model <3000|3000x>` / `CDJ3K_MODEL`: skip the picker and boot this
+    // `--model <slug>` / `CDJ3K_MODEL`: skip the picker and boot this
     // model right away (headless captures, dev loops, launch scripts).
     let mut initial_model: Option<Model> = std::env::var("CDJ3K_MODEL")
         .ok()
@@ -119,8 +119,9 @@ fn main() {
                     match Model::parse(&args[i]) {
                         Some(m) => initial_model = Some(m),
                         None => eprintln!(
-                            "cdj3k-emu: unknown --model {:?} (cdj3k | cdj3kx) - showing the picker",
-                            args[i]
+                            "cdj3k-emu: unknown --model {:?} ({}) - showing the picker",
+                            args[i],
+                            Model::ALL.map(|m| m.spec().slug).join(" | ")
                         ),
                     }
                 }

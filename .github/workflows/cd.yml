@@ -25,6 +25,7 @@ on:
     paths:
       - ".github/**"
       - build.sh
+      - dropbear/build.sh
       - Cargo.lock
       - docker/**
       - guest/**
@@ -132,7 +133,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: guest-payload.tar
-          key: guest-${{ hashFiles('build.sh', 'docker/Dockerfile', '.dockerignore', 'guest/**') }}
+          key: guest-${{ hashFiles('build.sh', 'docker/Dockerfile', '.dockerignore', 'guest/**', 'dropbear/build.sh') }}
       # Gives buildx the runtime token the gha cache backend needs.
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: crazy-max/ghaction-github-runtime@v4

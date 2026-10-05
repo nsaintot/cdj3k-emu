@@ -10,7 +10,8 @@
 #   share\cdj3k-emu\     Image, patch\, tools\, tap-windows6\ (OemVista.inf,
 #                        tap0901.sys, tap0901.cat)
 #   installer\           setup-helper.ps1
-#   licenses\            LICENSE-*, NOTICE, QEMU's COPYING, the TAP notice
+#   licenses\            LICENSE-*, NOTICE, QEMU's COPYING, the TAP notice,
+#                        dropbear's LICENSE
 #   cdj3k-emu.ico
 #
 # bundled::resources() finds share\cdj3k-emu as <exe>\..\share\cdj3k-emu, the
@@ -108,7 +109,7 @@ try {
     Invoke-Native $bash @('scripts/make-patch-dispatcher.sh', 'initramfs-patch/patch-rootfs.d', $dispatched)
 } finally { Pop-Location }
 
-foreach ($tool in 'cfgd_aarch64', 'pc_link_bridge_aarch64') {
+foreach ($tool in 'cfgd_aarch64', 'pc_link_bridge_aarch64', 'dropbear_aarch64') {
     $src = Join-Path $RepoRoot "guest\out\$tool"
     Need-File $src 'run ./build.sh'
     Copy-File $src (Join-Path $Share "patch\$tool")
@@ -170,6 +171,7 @@ foreach ($name in 'LICENSE-APACHE', 'LICENSE-MIT', 'NOTICE') {
     Copy-File (Join-Path $RepoRoot $name) (Join-Path $Out "licenses\$name")
 }
 Copy-File (Join-Path $QemuDir 'COPYING') (Join-Path $Out 'licenses\QEMU-COPYING')
+Copy-File (Join-Path $RepoRoot 'guest\out\dropbear_aarch64.LICENSE') (Join-Path $Out 'licenses\DROPBEAR-LICENSE')
 @"
 TAP-Windows6 $TapVersion, OpenVPN Inc., GPL-2.0.
 Unmodified, from $TapUrl
@@ -221,6 +223,7 @@ $required = @(
     'bin\cdj3k-emu.exe', 'bin\qemu-system-aarch64.exe', 'bin\qemu-img.exe',
     'share\cdj3k-emu\Image', 'share\cdj3k-emu\patch\patch-rootfs.sh',
     'share\cdj3k-emu\patch\cfgd_aarch64', 'share\cdj3k-emu\patch\pc_link_bridge_aarch64',
+    'share\cdj3k-emu\patch\dropbear_aarch64',
     'share\cdj3k-emu\patch\dummy_drv.so',
     'share\cdj3k-emu\tools\subucom_live', 'share\cdj3k-emu\tools\subucom_forwarder',
     'share\cdj3k-emu\tools\deck_shim.so',
@@ -228,7 +231,7 @@ $required = @(
     'share\cdj3k-emu\tap-windows6\tap0901.cat', 'share\cdj3k-emu\package-kind',
     'installer\setup-helper.ps1', 'cdj3k-emu.ico',
     'licenses\LICENSE-APACHE', 'licenses\LICENSE-MIT', 'licenses\NOTICE',
-    'licenses\QEMU-COPYING', 'licenses\TAP-WINDOWS6.txt'
+    'licenses\QEMU-COPYING', 'licenses\TAP-WINDOWS6.txt', 'licenses\DROPBEAR-LICENSE'
 )
 $missing = $required | Where-Object { -not (Test-Path (Join-Path $Out $_)) }
 if ($missing) { Fail "staged tree is missing: $($missing -join ', ')" }

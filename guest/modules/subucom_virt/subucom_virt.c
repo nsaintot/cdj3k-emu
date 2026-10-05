@@ -3,6 +3,7 @@
  * subucom_virt.c - Virtual subucom_spi character device for QEMU cdj3k-emu
  *
  * Creates /dev/subucom_spi1.0 (major 246, minor 0) under class "subucom_spiclass",
+ * /dev/subucom_spi3.0 for model=cdj1500x, the node the CDJ-1500X's app opens.
  *
  * Also creates /dev/subucom_ctrl for host communication:
  *   write(ctrl, 64 bytes) → inject MISO frame delivered on next read() of spi1.0
@@ -48,6 +49,9 @@
 
 #define DRV_NAME        "subucom_virt"
 #define SPI_DEV_NAME    "subucom_spi1.0"
+#define SPI_DEV_NAME_1500X "subucom_spi3.0"
+/* Where the CDJ-1500X's frame CRC sits: it covers the bytes before it. */
+#define MISO_CRC_1500X  24
 #define CTRL_DEV_NAME   "subucom_ctrl"
 #define CLASS_NAME      "subucom_virt_class"
 
@@ -153,19 +157,28 @@ static u32 interval_us   = INTERVAL_US;
 /* ------------------------------------------------------------------ */
 /* Model                                                              */
 /*                                                                    */
-/* model=cdj3k (CDJ-3000, default) or cdj3kx (CDJ-3000X). The         */
-/* CDJ-3000X's sub-CPU frame is the CDJ-3000 frame 4 bytes further    */
-/* on, behind a u16 format version (which it requires non-zero) and   */
-/* 2 pad bytes. The CDJ-3000's SD-cover bit (byte 16 bit 0 there) is  */
-/* a button on the CDJ-3000X.                                         */
+/* model=cdj3k (CDJ-3000, default), cdj3kx (CDJ-3000X) or cdj1500x    */
+/* (CDJ-1500X). The CDJ-3000X's sub-CPU frame is the CDJ-3000 frame 4 */
+/* bytes further on, behind a u16 format version (which it requires   */
+/* non-zero) and 2 pad bytes. The CDJ-3000's SD-cover bit (byte 16    */
+/* bit 0 there) is a button on the CDJ-3000X. The CDJ-1500X's frame   */
+/* is 32 bytes: format version at byte 0 (required non-zero), data to */
+/* byte 23, its CRC at 24-25; it idles with the version alone.        */
 /* ------------------------------------------------------------------ */
 
 static char *model = "cdj3k";
 module_param(model, charp, 0444);
-MODULE_PARM_DESC(model, "Player: cdj3k = CDJ-3000 (default), cdj3kx = CDJ-3000X");
+MODULE_PARM_DESC(model, "Player: cdj3k = CDJ-3000 (default), cdj3kx = CDJ-3000X, cdj1500x = CDJ-1500X");
 
 /* Resolved once at init; the parameter is read-only afterwards. */
 static bool model_is_x;
+static bool model_is_1500x;
+
+/* The sub-CPU device node the loaded model's app opens. */
+static const char *spi_dev_name(void)
+{
+    return model_is_1500x ? SPI_DEV_NAME_1500X : SPI_DEV_NAME;
+}
 
 /* The idle frame for the loaded model (miso_idle adjusted at init). */
 static u8 miso_idle_model[MISO_SIZE];
@@ -259,7 +272,13 @@ static ssize_t spi_read(struct file *filp, char __user *buf,
     }
     spin_unlock_irqrestore(&miso_lock, flags);
 
-    {
+    if (model_is_1500x) {
+        /* CRC-16/X-25 over bytes 0-23, big-endian at 24-25 (subucom_read
+         * --crc 24 --size 32). */
+        u16 crc = crc16_x25(frame, MISO_CRC_1500X);
+        frame[MISO_CRC_1500X] = (u8)(crc >> 8);
+        frame[MISO_CRC_1500X + 1] = (u8)(crc & 0xFF);
+    } else {
         u16 crc = crc16_x25(frame, 62);
         frame[62] = (u8)(crc & 0xFF);
         frame[63] = (u8)(crc >> 8);
@@ -456,7 +475,10 @@ static int __init subucom_virt_init(void)
         goto err_unreg;
     }
 
-    /* spi1.0 device */
+    model_is_x = model && strcmp(model, "cdj3kx") == 0;
+    model_is_1500x = model && strcmp(model, "cdj1500x") == 0;
+
+    /* sub-CPU device */
     cdev_init(&subucom_cdev[0], &spi_fops);
     subucom_cdev[0].owner = THIS_MODULE;
     ret = cdev_add(&subucom_cdev[0], MKDEV(subucom_major, MINOR_SPI), 1);
@@ -464,7 +486,7 @@ static int __init subucom_virt_init(void)
 
     subucom_dev[0] = device_create(subucom_class, NULL,
                                    MKDEV(subucom_major, MINOR_SPI),
-                                   NULL, SPI_DEV_NAME);
+                                   NULL, spi_dev_name());
     if (IS_ERR(subucom_dev[0])) { ret = PTR_ERR(subucom_dev[0]); goto err_cdev0; }
 
     /* ctrl device */
@@ -480,9 +502,10 @@ static int __init subucom_virt_init(void)
 
     init_waitqueue_head(&mosi_wq);
 
-    model_is_x = model && strcmp(model, "cdj3kx") == 0;
-
-    if (model_is_x) {
+    if (model_is_1500x) {
+        memset(miso_idle_model, 0, MISO_SIZE);
+        miso_idle_model[0] = 0x01;
+    } else if (model_is_x) {
         /* Format version 1 (u16 LE), pad, the CDJ-3000 frame at +4. */
         memset(miso_idle_model, 0, MISO_SIZE);
         miso_idle_model[0] = 0x01;
@@ -495,7 +518,11 @@ static int __init subucom_virt_init(void)
     /* Testmode boot injection: hold the model's service-mode combo */
     if (inject_testmode) {
         unsigned long flags;
-        if (model_is_x) {
+        if (model_is_1500x) {
+            /* ServiceMode in pre-setting.sh: SHIFT + HOT CUE B */
+            testmode_byte[0] = 17; testmode_mask[0] = 0x01;
+            testmode_byte[1] = 18; testmode_mask[1] = 0x40;
+        } else if (model_is_x) {
             /* TEMPO RANGE: byte 10, mask 0x04 */
             testmode_byte[0] = 10; testmode_mask[0] = 0x04;
             /* MEMORY: byte 12, mask 0x01 */
@@ -516,7 +543,7 @@ static int __init subucom_virt_init(void)
     }
 
     pr_info("%s: /dev/%s (major %d minor %d) + /dev/%s (minor %d) ready\n",
-            DRV_NAME, SPI_DEV_NAME, subucom_major, MINOR_SPI,
+            DRV_NAME, spi_dev_name(), subucom_major, MINOR_SPI,
             CTRL_DEV_NAME, MINOR_CTRL);
     return 0;
 

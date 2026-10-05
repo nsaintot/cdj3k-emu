@@ -1,7 +1,7 @@
 //! NAV rotary - large outer ring + inner press button + scroll detents that
 //! drive the menu cursor on the LCD.
 
-use cdj3k_emu_panel::Btn;
+use cdj3k_emu_panel::{Btn, Lamp};
 use egui::{Color32, FontFamily, Sense, Stroke, Vec2};
 
 use crate::app::CdjApp;
@@ -296,7 +296,7 @@ pub(super) fn draw_nav_rotary(
 
     // ── 2.5 Encoder LED glow ring - LED driven (live) ────────────────────
     {
-        let encoder_on = app.mosi().led_bit(mosi_frame::LED_ENCODER);
+        let encoder_on = app.mosi().lit(Lamp::Encoder);
         if encoder_on {
             let glow_col = NAV_ENCODER_GLOW_COL;
             let main_w = layout.sc(NAV_ENCODER_MAIN_W_REF);

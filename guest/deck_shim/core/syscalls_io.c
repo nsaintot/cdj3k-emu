@@ -93,7 +93,7 @@ ssize_t read(int fd, void *buf, size_t count) {
      *   off the sub-CPU also carries touch coordinates; on a model that
      *   reads a touch device they reach it as evdev records on its stub. --- */
     ssize_t r = sys_read(fd, buf, count);
-    if (r == 64 && fd == __atomic_load_n(&g_subucom_fd, __ATOMIC_ACQUIRE)
+    if (r > 0 && fd == __atomic_load_n(&g_subucom_fd, __ATOMIC_ACQUIRE)
         && deck_touch_publish)
         deck_touch_publish((const unsigned char *)buf, (size_t)r);
     return r;

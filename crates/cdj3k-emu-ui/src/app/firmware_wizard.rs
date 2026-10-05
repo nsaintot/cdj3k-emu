@@ -984,34 +984,49 @@ fn provision(
     log!("[kernel] OK");
 
     // 4. Patch initramfs - Pioneer firmware is the rootfs base
-    //    (EP122 binary and Pioneer libraries live there).
-    //    The Pioneer kernel is extracted to a temp file solely to unpack the
-    //    embedded initramfs; it is not used as the final kernel.
+    //    (the app binary and Pioneer libraries live there).
+    //    A model with images/boot.img ships it as that image's ramdisk; the
+    //    others embed it in their kernel, extracted to a temp file only to
+    //    unpack it (not used as the final kernel).
     set!(ProvisionStep::PatchingInitramfs);
     log!("[patch] resources dir: {}", resources_dir.display());
-    let pioneer_kernel_tmp = out_dir.join("Image.pioneer.tmp");
     let initramfs_patched = paths.initramfs.clone();
     let initramfs_orig = out_dir.join("initramfs-orig.cpio");
 
-    log!(
-        "[initramfs] extracting Pioneer kernel (initramfs source) → {}",
-        pioneer_kernel_tmp.display()
-    );
-    try_step!(
+    let from_boot_img = try_step!(
         ProvisionStep::PatchingInitramfs,
-        cdj3k_emu_firmware::extract_kernel(&tmp_iso, &pioneer_kernel_tmp, |msg| log!("{}", msg))
+        cdj3k_emu_firmware::extract_boot_ramdisk(&tmp_iso, &initramfs_orig)
             .map_err(|e| std::io::Error::other(format!("{e}")))
     );
-    log!(
-        "[initramfs] extracting from Pioneer kernel → {}",
-        initramfs_orig.display()
-    );
-    try_step!(
-        ProvisionStep::PatchingInitramfs,
-        cdj3k_emu_firmware::extract_initramfs(&pioneer_kernel_tmp, &initramfs_orig)
-            .map_err(|e| std::io::Error::other(format!("{e:?}")))
-    );
-    let _ = std::fs::remove_file(&pioneer_kernel_tmp);
+    if from_boot_img {
+        log!(
+            "[initramfs] boot.img ramdisk → {}",
+            initramfs_orig.display()
+        );
+    } else {
+        let pioneer_kernel_tmp = out_dir.join("Image.pioneer.tmp");
+        log!(
+            "[initramfs] extracting Pioneer kernel (initramfs source) → {}",
+            pioneer_kernel_tmp.display()
+        );
+        try_step!(
+            ProvisionStep::PatchingInitramfs,
+            cdj3k_emu_firmware::extract_kernel(&tmp_iso, &pioneer_kernel_tmp, |msg| log!(
+                "{}", msg
+            ))
+            .map_err(|e| std::io::Error::other(format!("{e}")))
+        );
+        log!(
+            "[initramfs] extracting from Pioneer kernel → {}",
+            initramfs_orig.display()
+        );
+        try_step!(
+            ProvisionStep::PatchingInitramfs,
+            cdj3k_emu_firmware::extract_initramfs(&pioneer_kernel_tmp, &initramfs_orig)
+                .map_err(|e| std::io::Error::other(format!("{e:?}")))
+        );
+        let _ = std::fs::remove_file(&pioneer_kernel_tmp);
+    }
     log!("[initramfs] OK");
 
     // Patching happens inside a throwaway guest, where the scripts' modes,
@@ -1088,10 +1103,11 @@ fn provision(
     // cabinet.img carries the Widevine keys and the Device Library Plus key
     // file.  The deck's updater copies it onto the settings partition, where
     // apl_start.sh opens it on every boot (`genkey_pr | initoptenv`); here it
-    // is staged in the recovery partition for guest patch 14.
+    // is staged in a partition the emulator does not boot from, for guest
+    // patch 14.
     // The firmware's own image is keyed for the factory passphrase genkey_pb
-    // computes (model + images.tar.gz); a keyslot for this slot's own serial
-    // is added to it below.
+    // computes (model + images.tar.gz, or app.hash); a keyslot for this slot's
+    // own serial is added to it below.
     // CDJ3K_CABINET_IMG stages a cabinet taken off a real deck instead.
     let cabinet = match std::env::var_os("CDJ3K_CABINET_IMG") {
         Some(path) => {
@@ -1123,15 +1139,16 @@ fn provision(
 
     // Give the container a keyslot this slot can open.  The firmware ships it
     // keyed for the factory passphrase (genkey_pb, from the model and this
-    // ISO's images.tar.gz); opening that slot recovers the master key every
-    // CDJ-3000X cabinet shares, and a slot keyed for this unit's serial is
-    // added from it.  A container no factory slot opens - a foreign cabinet,
-    // or one from another firmware version - is refused and stages unchanged.
+    // ISO's images.tar.gz or app.hash); opening that slot recovers the master
+    // key every cabinet of the model shares, and a slot keyed for this unit's
+    // serial is added from it.  A container no factory slot opens - a foreign
+    // cabinet, or one from another firmware version - is refused and stages
+    // unchanged.
     let mut cabinet = cabinet;
     if let Some(bytes) = cabinet.as_mut() {
         let model_env = model.spec().model_env;
-        let vendor = cdj3k_emu_firmware::read_images_targz(&tmp_iso)
-            .map(|tgz| cdj3k_emu_firmware::vendor_passphrase(model_env, &tgz));
+        let vendor = cdj3k_emu_firmware::read_cabinet_seed(&tmp_iso)
+            .map(|seed| cdj3k_emu_firmware::vendor_passphrase(model_env, &seed));
         match (
             vendor,
             cdj3k_emu_firmware::cabinet_passphrase(model_env, &serial),
@@ -1142,7 +1159,9 @@ fn provision(
                     Err(e) => log!("[cabinet] not keyed for this slot ({e}) - staging it as it is"),
                 }
             }
-            (None, _) => log!("[cabinet] no images.tar.gz to key from - staging it as it is"),
+            (None, _) => {
+                log!("[cabinet] no images.tar.gz or app.hash to key from - staging it as it is")
+            }
             (_, Err(e)) => {
                 log!("[cabinet] no passphrase for this slot ({e}) - staging it as it is")
             }

@@ -2,7 +2,8 @@
 /*
  * subucom_live.c - Live real-time display of subucom SPI frames
  *
- * MISO mode (default): reads /dev/subucom_spi1.0, shows 64-byte control frames
+ * MISO mode (default): reads the sub-CPU device (/dev/subucom_spi1.0, or
+ * /dev/subucom_spi3.0 on models on the other bus), shows 64-byte control frames
  *   (buttons, jog wheel, potentiometers) at ~850 Hz.
  *
  * MOSI / LED mode (-mosi): reads /dev/subucom_ctrl, shows 64-byte LED frames
@@ -32,7 +33,9 @@
 
 #define PKT_SIZE     64
 #define MAX_FILTER   64
-#define MISO_DEV     "/dev/subucom_spi1.0"
+#define MISO_DEV        "/dev/subucom_spi1.0"
+#define MISO_DEV_1500X  "/dev/subucom_spi3.0"
+#define MODEL_PARAM     "/sys/module/subucom_virt/parameters/model"
 #define MOSI_DEV     "/dev/subucom_ctrl"
 #define DEFAULT_MISO_HZ 10
 
@@ -396,6 +399,17 @@ static void run_mosi_list(int fd, int one_shot) {
 
 /* ── main ────────────────────────────────────────────────────────────── */
 
+/* The sub-CPU device of the loaded model. */
+static const char *miso_dev(void) {
+    char model[16] = {0};
+    FILE *f = fopen(MODEL_PARAM, "r");
+    if (f) {
+        if (!fgets(model, sizeof(model), f)) model[0] = '\0';
+        fclose(f);
+    }
+    return strncmp(model, "cdj1500x", 8) == 0 ? MISO_DEV_1500X : MISO_DEV;
+}
+
 int main(int argc, char **argv) {
     int one_shot = 0, mosi_mode = 0;
     int miso_hz = DEFAULT_MISO_HZ;
@@ -449,7 +463,7 @@ int main(int argc, char **argv) {
     signal(SIGINT,  cleanup);
     signal(SIGTERM, cleanup);
 
-    const char *dev = mosi_mode ? MOSI_DEV : MISO_DEV;
+    const char *dev = mosi_mode ? MOSI_DEV : miso_dev();
     int fd = open(dev, O_RDWR);
     if (fd < 0) { perror(dev); return 1; }
     g_fd = fd;

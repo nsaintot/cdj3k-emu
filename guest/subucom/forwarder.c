@@ -26,6 +26,14 @@
 #define PORT_NAME   "cdj3k.ctrl"
 #define FRAME_SIZE  64
 
+/* The host's power flag: bit 7 of byte 12.  A model whose frame uses byte 12
+ * for panel data carries it in the unchecked tail past the CRC and touch
+ * words. */
+#define POWER_BYTE        12
+#define POWER_BYTE_1500X  30
+#define POWER_BIT         0x80U
+#define MODEL_PARAM       "/sys/module/subucom_virt/parameters/model"
+
 static int ctrl_rfd = -1;  /* O_RDONLY - read MOSI/LED frames */
 static int ctrl_wfd = -1;  /* O_WRONLY - write MISO/CTRL frames */
 static int vport_fd = -1;  /* O_RDWR  - virtio-serial port     */
@@ -148,6 +156,19 @@ static void *poweroff_thread(void *arg)
     return NULL;
 }
 
+/* Where the loaded model's host frames carry the power flag. */
+static int power_byte(void)
+{
+    char model[16] = {0};
+    FILE *f = fopen(MODEL_PARAM, "r");
+    if (f) {
+        if (!fgets(model, sizeof(model), f))
+            model[0] = '\0';
+        fclose(f);
+    }
+    return strncmp(model, "cdj1500x", 8) == 0 ? POWER_BYTE_1500X : POWER_BYTE;
+}
+
 int main(void)
 {
     ctrl_rfd = open_ctrl_r();
@@ -161,7 +182,9 @@ int main(void)
     }
     vport_fd = open_vport(vport_path);
 
-    fprintf(stderr, "[subucom_forwarder] ready - %s ↔ %s\n", vport_path, CTRL_PATH);
+    const int pb = power_byte();
+    fprintf(stderr, "[subucom_forwarder] ready - %s ↔ %s (power flag at byte %d)\n",
+            vport_path, CTRL_PATH, pb);
 
     pthread_t t;
     if (pthread_create(&t, NULL, led_thread, NULL) != 0) {
@@ -194,12 +217,13 @@ int main(void)
             continue;
         }
 
-        /* Simulate sub-CPU power-off timer: high nibble of byte 12 = 0 → power off.
+        /* Simulate sub-CPU power-off timer: the power flag clear → power off.
          * Latch the first detection - EP122 keeps sending power-off frames until
          * actual shutdown, and we don't need a fresh thread for each one. */
         static int poweroff_armed;
-        if (!poweroff_armed && ((frame[12] >> 4) & 0x08U) == 0) {
-            fprintf(stderr, "[subucom_forwarder] power-off detected (b12=0x%02x) - rebooting in 2s\n", frame[12]);
+        if (!poweroff_armed && (frame[pb] & POWER_BIT) == 0) {
+            fprintf(stderr, "[subucom_forwarder] power-off detected (b%d=0x%02x) - rebooting in 2s\n",
+                    pb, frame[pb]);
             poweroff_armed = 1;
             pthread_t pt;
             pthread_create(&pt, NULL, poweroff_thread, NULL);

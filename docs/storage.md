@@ -96,9 +96,14 @@ user-chosen location, not inside the app data directory.
 
 ## eMMC qcow2
 
-A 29.1 GB sparse qcow2 image per instance (`emmc::EMMC_SIZE`). Layout mirrors
-the real CDJ-3000 `mmcblk1` so the Pioneer init scripts find the partition
-numbers they expect.
+A 29.1 GB sparse qcow2 image per instance (`emmc::EMMC_SIZE`). Its layout is
+the deck's own eMMC (`emmc::layout`), so the Pioneer init scripts find the
+partition numbers they expect. The guest kernel names the disk after it:
+`mmcblk1` on the CDJ-3000 and CDJ-3000X, `mmcblk0` on the CDJ-1500X, whose udev
+rules take `mmcblk1` for the SD card (`virtio_blk.emmc_index`, from
+`ModelSpec::emmc_index`).
+
+CDJ-3000 / CDJ-3000X:
 
 | # | Size | Name | FS | Purpose |
 |---|---|---|---|---|
@@ -110,6 +115,17 @@ numbers they expect.
 | 6 | 256 MiB | firmware-b | raw | App firmware slot B |
 | 7 | 64 MiB | settings | (ext4) | `/home/root/settings` - formatted by guest on first boot |
 | 8 | ~28.4 GiB | userdata | (ext4) | `/mnt` - rekordbox cache, formatted by guest on first boot |
+
+CDJ-1500X, as its `emmc-fs.sh` lists the partitions:
+
+| # | Size | Name | FS | Purpose |
+|---|---|---|---|---|
+| 1 | 4 MiB | uboot | raw | U-Boot, holding the U-Boot env |
+| 2 | 256 MiB | boota | raw | Boot slot A |
+| 3 | 256 MiB | bootb | raw | Boot slot B. Holds the staged `cabinet.img` |
+| 4 | 64 MiB | setting | (ext4) | `/home/root/settings` |
+| 5 | 512 MiB | update | (ext4) | `/home/root/update` |
+| 6 | rest | reserve | (ext4) | `/mnt` |
 
 All partitions are 1 MiB-aligned; the backup GPT sits at the end of the disk
 (`gpt.rs`). Partition type GUID is the Linux filesystem data type for every
@@ -125,7 +141,9 @@ instance `serial_number` (`DJMP{instance_id:06}EH`), and firmware metadata
 read from the .UPD ISO (`miniloader` MD5, `release`, `rev_apl`,
 and the system revision under the model's `system_rev_env`: `rev_kernel` on
 the CDJ-3000, `rev_system` on the CDJ-3000X, as each deck's updater writes
-it) - see `emmc::write_uboot_env`.
+it) - see `emmc::uboot_vars`. The CDJ-1500X's set is a dumped unit's: its
+product UUID as `model`, `model_name`, the RK3568 board, and no release or
+revision, which its scripts read from the rootfs.
 
 ### Cabinet image
 
@@ -137,8 +155,9 @@ the passphrase from the U-Boot `model` and the `/proc/cpuinfo` Serial (see the
 SoC serial section below).
 
 The emulator cannot write ext4 from the host, so the install stages the image
-raw in the recovery partition behind a small ASCII header naming its size
-(`emmc::stage_cabinet`). Guest patch 14 copies it onto the settings partition
+raw behind a small ASCII header naming its size (`emmc::stage_cabinet`), in a
+partition nothing boots from: recovery (p4) on the RK3399 decks, boot slot B
+(p3) on the CDJ-1500X. Guest patch 14 copies it onto the settings partition
 once `emmc-fs.sh` has formatted and mounted it and before the app starts. An
 existing `cabinet.img` of the staged size that opens as LUKS is kept, so the
 copy survives later boots; a truncated or foreign one is replaced.
@@ -152,19 +171,21 @@ it is staged.
 
 #### Keying the container for the slot
 
-Every CDJ-3000X cabinet descends from the one container the firmware ships -
+Every cabinet of a model descends from the one container its firmware ships -
 same UUID, same master key, a different keyslot. The shipped keyslot opens with
 the factory passphrase `genkey_pb` computes,
-`sha512hex(model_env + sha512hex(images/images.tar.gz))` (`vendor_passphrase`),
-so the install needs the `images.tar.gz` from the same package. It opens that
+`sha512hex(model_env + sha512hex(seed))` (`vendor_passphrase`), where the seed
+is the package's `images/images.tar.gz` on the CDJ-3000X and its 129-byte
+`images/app.hash` on the CDJ-1500X, which ships no tarball
+(`read_cabinet_seed`), so the install needs the seed from the same package. It opens that
 slot to recover the master key, mints the slot's SoC serial, adds a keyslot for
 `sha512hex((model_env + serial) x (N+1))` (`cabinet_passphrase`), and stages
-the result (`luks/rekey.rs`, `add_keyslot`). Without `images.tar.gz`, or when
-no factory slot opens, the container is staged unkeyed.
+the result (`luks/rekey.rs`, `add_keyslot`). Without a seed, or when no
+factory slot opens, the container is staged unkeyed.
 
 The master key is verified against the header's mk-digest before anything is
 written, so a container no factory slot opens (another deck family, another
-firmware's `images.tar.gz`) is staged unchanged rather than corrupted. Only
+firmware's seed) is staged unchanged rather than corrupted. Only
 the free slot's header entry and its already-reserved material region are
 touched; the payload is not.
 
@@ -183,7 +204,8 @@ journal means the cabinet opened; eight means it stayed shut.
 
 ### First-boot formatting
 
-Partitions p7 and p8 are left unformatted at provisioning time. On first
+The ext4 partitions (p7 and p8; p4 to p6 on the CDJ-1500X) are left
+unformatted at provisioning time. On first
 boot the guest's `emmc-fs.sh` detects the blank superblock signature
 and runs `mkfs.ext4` against each. This is why first boot is noticeably
 slower than subsequent boots; once the filesystems exist they survive every
@@ -194,8 +216,8 @@ launch.
 Pioneer's patched `virtio_blk.c` probes devices in **reverse** mmio slot
 order, so the listing order in QEMU's argv matters. The runtime emits
 `usb0` first, then `emmc0`, so the eMMC ends up at probe index 0 →
-`/dev/mmcblk1` (the path the Pioneer init scripts expect) and USB lands at
-index 1 → `/dev/sdb`. See the comment over the `-drive` lines in
+`/dev/mmcblk1` (`mmcblk0` on the CDJ-1500X: the paths the Pioneer init scripts
+expect) and USB lands at index 1 → `/dev/sdb`. See the comment over the `-drive` lines in
 `runtime/src/config.rs`.
 
 ### Sparseness

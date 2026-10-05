@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Patch 08: insmod-subucom-virt.service - load subucom_virt.ko before pre-setting
 #
-# pre-setting.sh runs subucom_read which opens /dev/subucom_spi1.0 to read the
+# pre-setting.sh runs subucom_read which opens the sub-CPU device to read the
 # testmode byte and write /tmp/testmode.  Without /tmp/testmode, apl_start.sh
 # prints "can't read /tmp/testmode" and exits without launching the app.
 #
-# subucom_virt.ko registers the virtual /dev/subucom_spi1.0 device.
+# subucom_virt.ko registers that device: /dev/subucom_spi1.0, or
+# /dev/subucom_spi3.0 for model=cdj1500x.
 # This service must complete before pre-setting.service runs.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
@@ -18,7 +19,7 @@ mkdir -p "$SERVICE_DIR"
 
 cat > "$SERVICE_DIR/insmod-subucom-virt.service" << SVCEOF
 [Unit]
-Description=Load subucom_virt.ko - virtual /dev/subucom_spi1.0 for QEMU
+Description=Load subucom_virt.ko - the virtual sub-CPU device for QEMU
 DefaultDependencies=no
 Before=pre-setting.service
 Before=${APP_UNIT}

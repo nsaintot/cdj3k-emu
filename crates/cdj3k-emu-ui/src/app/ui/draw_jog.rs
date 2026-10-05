@@ -7,6 +7,7 @@
 //! disk naturally overwrites the interior of the previous one and produces a clean
 //! annulus without relying on `circle_stroke` width behavior.
 
+use cdj3k_emu_panel::Lamp;
 use egui::{
     emath::Rot2,
     epaint::{Mesh, TextShape, Vertex},
@@ -18,7 +19,6 @@ use crate::app::ui::{
     draw_cache::{JogCacheKey, JogStaticCache, ShapeList},
     COL_BTN, COL_BTN_TEXT, COL_DARK, COL_LCD_BG, COL_SILVER, COL_WHITE,
 };
-use cdj3k_emu_panel::mosi_frame;
 use cdj3k_emu_streams::jog_stream::{JOG_FB_H, JOG_FB_W};
 
 use super::{CdjApp, UiScale};
@@ -206,24 +206,18 @@ pub(super) const JOG_ADJUST_SIDE_LABEL_GAP_REF: f32 = 28.0;
 pub(super) const JOG_ADJUST_SIDE_LABEL_X_OFFSET_REF: f32 = 140.0;
 
 impl CdjApp {
-    /// `jog_ref` is the slate's jog zone in reference units.
-    pub(super) fn draw_jog_wheel_section(
+    /// Drive the platter from the pointer: drag, scroll and the slingshot,
+    /// over a platter at `center` whose touch surface ends at `r_touch` and
+    /// whose grip band ends at `r_outer_1` (screen units). Shared by every
+    /// jog skin; runs every frame.
+    pub(super) fn jog_interact(
         &mut self,
         ui: &mut egui::Ui,
-        p: &egui::Painter,
         layout: &UiScale,
-        jog_ref: Rect,
-        chrome: JogChrome,
+        center: Pos2,
+        r_touch: f32,
+        r_outer_1: f32,
     ) {
-        puffin::profile_function!();
-        let jog_panel = Rect::from_min_max(
-            layout.sp(jog_ref.left(), jog_ref.top()),
-            layout.sp(jog_ref.right(), jog_ref.bottom()),
-        );
-        let center = jog_panel.center();
-        let r_touch = layout.sc(JOG_TOUCH_RADIUS);
-        let r_outer_1 = layout.sc(JOG_OUTER_1_STROKE_RADIUS);
-
         // ── Interaction (must run every frame) ────────────────────────────────
         // Interact rect covers the full grip band (up to r_outer_1) so both
         // the center platter and the grip ring are captured by a single drag.
@@ -343,6 +337,28 @@ impl CdjApp {
                 }
             }
         }
+    }
+
+    /// `jog_ref` is the slate's jog zone in reference units.
+    pub(super) fn draw_jog_wheel_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: &egui::Painter,
+        layout: &UiScale,
+        jog_ref: Rect,
+        chrome: JogChrome,
+    ) {
+        puffin::profile_function!();
+        let jog_panel = Rect::from_min_max(
+            layout.sp(jog_ref.left(), jog_ref.top()),
+            layout.sp(jog_ref.right(), jog_ref.bottom()),
+        );
+        let center = jog_panel.center();
+        let r_touch = layout.sc(JOG_TOUCH_RADIUS);
+        let r_outer_1 = layout.sc(JOG_OUTER_1_STROKE_RADIUS);
+
+        self.jog_interact(ui, layout, center, r_touch, r_outer_1);
+
         // JOG ADJUST drag interaction (see paint_jog_adjust_interact below).
         self.paint_jog_adjust_interact(ui, layout, jog_ref);
 
@@ -487,16 +503,15 @@ impl CdjApp {
 
         // Jog ring arc lights - cached per LED state
         {
-            // Through the model's layout: the ring sits at byte 3 on the
-            // CDJ-3000 and byte 9 on the CDJ-3000X.
+            // The ring's level and its red, as the player's codec reads them.
             let mosi = self.mosi();
-            let brt = mosi.jog_level();
+            let brt = mosi.step(Lamp::JogRing).level();
             let white_alpha: f32 = match brt {
                 0 => 0.0,
                 1 => 0.6,
                 _ => 1.0,
             };
-            let red_on = mosi.led_bit(mosi_frame::LED_JOG_RED);
+            let red_on = mosi.lit(Lamp::JogRed);
             let (light_color, light_alpha, glow_outer_mult, glow_inner_mult) = if red_on {
                 (Color32::from_rgb(255, 70, 20), 1.0_f32, 0.35_f32, 0.2_f32)
             } else {

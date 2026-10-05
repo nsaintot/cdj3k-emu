@@ -10,8 +10,9 @@
 # patch 12 publishes.  Nothing re-keys the container, so it opens only for the
 # unit it was keyed for.
 #
-# The emulator's installer stages the image raw at the start of the recovery
-# partition behind a 512-byte ASCII header.  This service copies it onto the
+# The emulator's installer stages the image raw at the start of a partition
+# nothing boots from (recovery, p4; boot slot B, p3, on the CDJ-1500X) behind
+# a 512-byte ASCII header.  This service copies it onto the
 # settings partition after emmc-fs.sh has formatted and mounted it and before
 # the app starts.  The copy goes to a temporary file that is size- and
 # magic-checked before it is renamed into place, so a full partition leaves no
@@ -20,6 +21,12 @@
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 : "${APP_UNIT:?APP_UNIT must be set by dispatcher}"
+: "${APP_SLUG:?APP_SLUG must be set by dispatcher}"
+
+case "$APP_SLUG" in
+    cdj1500x) STAGE_DEV=/dev/mmcblk0p3 ;;
+    *)        STAGE_DEV=/dev/mmcblk1p4 ;;
+esac
 
 SERVICE_DIR="$ROOTFS/etc/systemd/system"
 mkdir -p "$SERVICE_DIR" "$ROOTFS/usr/sbin"
@@ -35,7 +42,7 @@ export LC_ALL=C
 
 DEST=/home/root/settings/cabinet.img
 TMP=$DEST.tmp
-STAGE=/dev/mmcblk1p4
+STAGE=@STAGE_DEV@
 
 file_size() {
     ls -ln "$1" 2>/dev/null | awk '{ print $5 }'
@@ -46,7 +53,7 @@ has_luks_magic() {
 }
 
 [ -b "$STAGE" ] || exit 0
-# Only write to the real settings partition, never to the rootfs ramfs.
+# Write only to the real settings partition.
 grep -q ' /home/root/settings ' /proc/mounts || exit 0
 
 hdr=$(dd if="$STAGE" bs=512 count=1 2>/dev/null | tr -d '\000')
@@ -87,6 +94,7 @@ mv "$TMP" "$DEST"
 sync
 echo "cabinet-install: ${size} bytes -> ${DEST}"
 EOFS
+sed -i "s|@STAGE_DEV@|$STAGE_DEV|" "$ROOTFS/usr/sbin/cabinet-install.sh"
 chmod 755 "$ROOTFS/usr/sbin/cabinet-install.sh"
 
 cat > "$SERVICE_DIR/cabinet-install.service" << SVCEOF
@@ -111,4 +119,4 @@ mkdir -p "$MULTI_USER_WANTS"
 ln -sf /etc/systemd/system/cabinet-install.service \
     "$MULTI_USER_WANTS/cabinet-install.service"
 
-echo "  -> cabinet-install.service installed and enabled"
+echo "  -> cabinet-install.service installed and enabled (staged on $STAGE_DEV)"

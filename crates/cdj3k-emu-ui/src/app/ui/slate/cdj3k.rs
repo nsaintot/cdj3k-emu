@@ -10,7 +10,7 @@ mod draw_right;
 mod draw_top;
 mod layout;
 
-use crate::app::picker::{Bay, Card, Glyph};
+use crate::app::picker::{Bay, Card, CardGlyph, Glyph};
 use crate::app::ui::slate::Slate;
 #[allow(unused_imports)]
 use crate::app::ui::*;
@@ -19,11 +19,11 @@ use egui::{Color32, Pos2, Rect, Vec2};
 
 pub(in crate::app) const SLATE: Slate = Slate {
     ref_canvas: (REF_W, REF_H),
+    accent: Color32::from_rgb(56, 132, 255),
     card: Card {
         subtitle: "9-inch touch display",
         era: "2020",
-        accent: Color32::from_rgb(56, 132, 255),
-        glyph: Glyph {
+        glyph: CardGlyph::Riser(Glyph {
             canvas: (REF_W, REF_H),
             body_top: layout::TRANSPORT_REF_TOP / REF_H,
             riser: (
@@ -75,7 +75,7 @@ pub(in crate::app) const SLATE: Slate = Slate {
             pod: Pos2::new(POD_X / REF_W, POD_Y / REF_H),
             pod_half_w: 150.0,
             pod_ring_r: POD_RING_R,
-        },
+        }),
     },
     draw_panel,
 };

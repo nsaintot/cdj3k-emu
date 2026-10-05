@@ -171,7 +171,7 @@ pub(in crate::app) fn draw_direction_switch(
 
     // Inject MISO frame on direction change.
     if app.direction != prev_direction {
-        app.inject(app.build_current_frame().finalize());
+        app.inject(app.build_current_frame());
     }
 
     // --- Paddle/rocker lever - fills the housing slot like an american light switch ---

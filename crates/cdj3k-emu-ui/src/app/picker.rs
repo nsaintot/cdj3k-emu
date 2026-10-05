@@ -39,14 +39,6 @@ const HEADER_BODY_GAP: f32 = 16.0;
 // ── Cards ─────────────────────────────────────────────────────────────────────
 const CARD_GAP: f32 = 22.0;
 const CARD_PAD: f32 = 16.0;
-/// Decks the picker names but cannot install: a plate that says what is
-/// coming and nothing it cannot back up. No [`Model`] stands behind one, so
-/// there is no firmware, no slot and no click.
-const ANNOUNCED: [&str; 1] = ["CDJ-1500X"];
-/// What the announced plate says in place of a display size and a year.
-const SOON_SUB: &str = "";
-const SOON_PILL: &str = "NOT AVAILABLE";
-const SOON_CHIP: &str = "SOON";
 
 /// A card is a plate of its own size, centred in the row with the space left
 /// over around it - not a panel stretched to whatever the window has. Three
@@ -212,8 +204,16 @@ pub(in crate::app) struct Card {
     pub subtitle: &'static str,
     /// Retail release year.
     pub era: &'static str,
-    pub accent: Color32,
-    pub glyph: Glyph,
+    pub glyph: CardGlyph,
+}
+
+/// The miniature on a deck's card.
+pub(in crate::app) enum CardGlyph {
+    /// A cabinet with its screen in a block standing above the body, from the
+    /// slate's own zones.
+    Riser(Glyph),
+    /// A plain cabinet whose top is all screen housing (e.g. the CDJ-1500X).
+    Flat,
 }
 
 /// Which media bay a deck carries at the head of its transport column - the
@@ -454,7 +454,7 @@ pub(in crate::app) fn draw_header(ui: &egui::Ui, head: &Header<'_>) -> HeaderOut
         p.rect_filled(
             Rect::from_center_size(Pos2::new(x + s * 0.5, cy), Vec2::splat(s)),
             theme::HAIRLINE * k,
-            crate::app::ui::slate::for_model(model).card.accent,
+            crate::app::ui::slate::for_model(model).accent,
         );
         x += s + STRIP_MARK_GAP * k;
         x += tracked(
@@ -652,7 +652,7 @@ fn slot_menu_row(ui: &mut egui::Ui, n: u32, here: bool, pal: &Palette, k: f32) -
             p.rect_filled(
                 mark,
                 theme::HAIRLINE * k,
-                crate::app::ui::slate::for_model(m).card.accent,
+                crate::app::ui::slate::for_model(m).accent,
             );
         }
         None => {
@@ -830,14 +830,13 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
             space.bottom() - CARD_ROW_BOTTOM * k,
         ),
     );
-    let n = (Model::ALL.len() + ANNOUNCED.len()) as f32;
+    let n = Model::ALL.len() as f32;
     let gap = CARD_GAP * k;
     let cw = ((row.width() - gap * (n - 1.0)) / n).min(CARD_MAX_W * k);
     let ch = row.height().min(CARD_MAX_H * k);
     let x0 = row.center().x - (cw * n + gap * (n - 1.0)) * 0.5;
     let y0 = row.center().y - ch * 0.5;
-    for (i, model) in Model::ALL.iter().enumerate() {
-        let model = *model;
+    for (i, &model) in Model::ALL.iter().enumerate() {
         let rect =
             Rect::from_min_size(Pos2::new(x0 + i as f32 * (cw + gap), y0), Vec2::new(cw, ch));
         // An install never touches a running emulation, so every card of
@@ -866,18 +865,6 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
                 _ => PickerAction::Choose(model),
             });
         }
-    }
-    for (i, name) in ANNOUNCED.iter().enumerate() {
-        draw_soon_card(
-            ui.painter(),
-            Rect::from_min_size(
-                Pos2::new(x0 + (Model::ALL.len() + i) as f32 * (cw + gap), y0),
-                Vec2::new(cw, ch),
-            ),
-            name,
-            k,
-            pal,
-        );
     }
 
     let inner = draw_footer(ui, bar, pal, k);
@@ -995,7 +982,7 @@ fn draw_confirm(
         p.rect_filled(
             Rect::from_center_size(Pos2::new(x + s * 0.5, cy), Vec2::splat(s)),
             theme::HAIRLINE * k,
-            crate::app::ui::slate::for_model(deck).card.accent,
+            crate::app::ui::slate::for_model(deck).accent,
         );
         x += s + STRIP_MARK_GAP * k;
         x += tracked(
@@ -1094,7 +1081,8 @@ fn draw_card(
     k: f32,
     pal: &Palette,
 ) {
-    let card = &crate::app::ui::slate::for_model(model).card;
+    let slate = crate::app::ui::slate::for_model(model);
+    let card = &slate.card;
     let round = theme::ROUND * k;
     let pad = CARD_PAD * k;
 
@@ -1120,7 +1108,7 @@ fn draw_card(
             sw: 0.0,
             se: 0.0,
         },
-        card.accent,
+        slate.accent,
     );
 
     if installed {
@@ -1181,23 +1169,27 @@ fn draw_card(
 
     // The miniature stands on whatever the chip above and the title below
     // leave it.
-    draw_deck_glyph(
-        p,
-        Rect::from_min_max(
-            Pos2::new(
-                rect.left() + pad,
-                cap.bottom() + (CHIP_TOP + CHIP_H + CHIP_GLYPH_GAP) * k,
-            ),
-            Pos2::new(
-                rect.right() - pad,
-                title_y - CARD_TITLE_FONT * 0.5 * k - CARD_GLYPH_GAP * k,
-            ),
+    let area = Rect::from_min_max(
+        Pos2::new(
+            rect.left() + pad,
+            cap.bottom() + (CHIP_TOP + CHIP_H + CHIP_GLYPH_GAP) * k,
         ),
-        card,
-        pal,
-        lerp_color(pal.plate, pal.plate_hover, hover_t),
-        k,
+        Pos2::new(
+            rect.right() - pad,
+            title_y - CARD_TITLE_FONT * 0.5 * k - CARD_GLYPH_GAP * k,
+        ),
     );
+    match &card.glyph {
+        CardGlyph::Riser(g) => draw_deck_glyph(
+            p,
+            area,
+            g,
+            pal,
+            lerp_color(pal.plate, pal.plate_hover, hover_t),
+            k,
+        ),
+        CardGlyph::Flat => draw_flat_glyph(p, area, k, pal.glyph, pal.glyph_detail),
+    }
 
     // Foot pill: what clicking the card does to the slot. Every pill is the
     // same outline, filling under the pointer; colour is kept for what
@@ -1326,144 +1318,44 @@ pub(in crate::app) fn draw_delete_confirm(
     action
 }
 
-// ── The announced deck ────────────────────────────────────────────────────────
+// ── The CDJ-1500X's miniature ─────────────────────────────────────────────────
 // Measured off AlphaTheta's own CDJ-1500X outline drawing. The cabinet is a
 // plain rectangle - no riser block, the screen assembly is the whole of the
-// top - with the tempo fader down the right and CUE and PLAY down the left,
-// where the CDJ-3000 has neither on its miniature. Its true size against the
-// other decks is not known, so it is drawn at their height and its own
-// measured width; that lands properly once a panel is measured.
-/// Its canvas, in the same reference units as the other two, so it is drawn
-/// at the same one-unit-per-pixel and comes out its own size beside them.
-/// Taken off AlphaTheta's own size overlay, where a dashed CDJ-3000X stands
-/// behind the CDJ-1500X on the same foot line: the 1500X measures 0.863 of
-/// the CDJ-3000X's height and 0.822 of its width, which is about 283 x 423 mm against
-/// the CDJ-3000X's 344.6 x 490.4. The aspect that falls out, 0.673, is the spec
-/// outline's own to within 1.3 %.
-const SOON_CANVAS: (f32, f32) = (2706.0, 4020.0);
-const SOON_SCREEN_FRAME: (f32, f32, f32, f32) = (0.012, 0.012, 0.988, 0.455);
-/// The glass, not the frame around it. Sized off the CDJ-3000X's, which the
+// top - with the tempo fader down the right and CUE and PLAY down the left.
+/// Its canvas: the slate's reference units, so the cabinet is drawn at the
+/// same units-per-pixel as the riser glyphs.
+const FLAT_CANVAS: (f32, f32) = (
+    crate::app::ui::slate::cdj1500x::REF_W,
+    crate::app::ui::slate::cdj1500x::REF_H,
+);
+const FLAT_SCREEN_FRAME: (f32, f32, f32, f32) = (0.012, 0.012, 0.988, 0.455);
+/// The glass inside the frame. Sized off the CDJ-3000X's, which the
 /// vector drawing puts at 217.0 x 134.2 mm - the 10.1-inch panel both decks
-/// carry - rather than read off this drawing, where the nested frames are a
-/// pixel apart at the size it was published.
-const SOON_SCREEN: (f32, f32, f32, f32) = (0.1166, 0.0749, 0.8834, 0.3921);
-const SOON_PADS: (f32, f32, f32, f32) = (0.172, 0.478, 0.833, 0.505);
+/// carry - as the nested frames in this drawing are a pixel apart at its
+/// published size.
+const FLAT_SCREEN: (f32, f32, f32, f32) = (0.1166, 0.0749, 0.8834, 0.3921);
+const FLAT_PADS: (f32, f32, f32, f32) = (0.172, 0.478, 0.833, 0.505);
 /// Share of each key's pitch left as the gap, read off the same drawing.
-const SOON_PAD_GAP: f32 = 0.34;
+const FLAT_PAD_GAP: f32 = 0.34;
 /// Jog: centre as fractions of the outline, radius over its width.
-const SOON_JOG: (f32, f32, f32) = (0.495, 0.755, 0.305);
-const SOON_JOG_HUB: f32 = 0.120;
+const FLAT_JOG: (f32, f32, f32) = (0.495, 0.755, 0.305);
+const FLAT_JOG_HUB: f32 = 0.120;
 /// The browse rotary, which stands alone where the CDJ-3000 has a pod.
-const SOON_BROWSE: (f32, f32, f32) = (0.912, 0.570, 0.037);
-const SOON_LOOP: (f32, f32, f32) = (0.086, 0.570, 0.040);
+const FLAT_BROWSE: (f32, f32, f32) = (0.912, 0.570, 0.037);
+const FLAT_LOOP: (f32, f32, f32) = (0.086, 0.570, 0.040);
 /// Tempo fader, down the right.
-const SOON_TEMPO: (f32, f32, f32, f32) = (0.855, 0.635, 0.955, 0.955);
+const FLAT_TEMPO: (f32, f32, f32, f32) = (0.855, 0.635, 0.955, 0.955);
 /// CUE and PLAY, down the left. Same radius, one above the other.
-const SOON_TRANSPORT_X: f32 = 0.100;
-const SOON_TRANSPORT_R: f32 = 0.053;
-const SOON_TRANSPORT_Y: (f32, f32) = (0.845, 0.945);
+const FLAT_TRANSPORT_X: f32 = 0.100;
+const FLAT_TRANSPORT_R: f32 = 0.053;
+const FLAT_TRANSPORT_Y: (f32, f32) = (0.845, 0.945);
 
-/// A deck the picker names but cannot offer: the same plate, gone quiet. It
-/// takes no pointer - there is nothing behind it to click.
-fn draw_soon_card(p: &egui::Painter, rect: Rect, name: &str, k: f32, pal: &Palette) {
-    let round = theme::ROUND * k;
-    let pad = CARD_PAD * k;
-
-    p.rect_filled(rect, round, pal.off);
-    p.rect_stroke(rect, round, Stroke::new(theme::HAIRLINE * k, pal.line));
-
-    let cap = Rect::from_min_size(rect.min, Vec2::new(rect.width(), CARD_CAP_H * k));
-    p.rect_filled(
-        cap,
-        Rounding {
-            nw: round,
-            ne: round,
-            sw: 0.0,
-            se: 0.0,
-        },
-        pal.off_line,
-    );
-
-    let font = FontId::proportional(CHIP_FONT * k);
-    let w = text_width(p, SOON_CHIP, &font, CHIP_TRACK * k) + 2.0 * CHIP_PAD_X * k;
-    let chip = Rect::from_min_size(
-        Pos2::new(rect.right() - pad - w, cap.bottom() + CHIP_TOP * k),
-        Vec2::new(w, CHIP_H * k),
-    );
-    p.rect_stroke(
-        chip,
-        theme::ROUND_CHIP * k,
-        Stroke::new(theme::HAIRLINE * k, pal.off_line),
-    );
-    tracked(
-        p,
-        Pos2::new(chip.left() + CHIP_PAD_X * k, chip.center().y),
-        SOON_CHIP,
-        &font,
-        pal.off_text,
-        CHIP_TRACK * k,
-    );
-
-    // The same lines as the cards beside it, measured up from the same foot.
-    let pill = Rect::from_min_max(
-        Pos2::new(rect.left() + pad, rect.bottom() - pad - theme::PILL_H * k),
-        Pos2::new(rect.right() - pad, rect.bottom() - pad),
-    );
-    let cx = rect.center().x;
-    let sub_y = pill.top() - CARD_ERA_GAP * k - CARD_SUB_GAP * k;
-    let title_y = sub_y - CARD_TITLE_GAP * k;
-    p.text(
-        Pos2::new(cx, sub_y),
-        Align2::CENTER_CENTER,
-        SOON_SUB,
-        FontId::proportional(CARD_SUB_FONT * k),
-        pal.off_text,
-    );
-    p.text(
-        Pos2::new(cx, title_y),
-        Align2::CENTER_CENTER,
-        name,
-        FontId::proportional(CARD_TITLE_FONT * k),
-        pal.off_text,
-    );
-
-    draw_soon_glyph(
-        p,
-        Rect::from_min_max(
-            Pos2::new(
-                rect.left() + pad,
-                cap.bottom() + (CHIP_TOP + CHIP_H + CHIP_GLYPH_GAP) * k,
-            ),
-            Pos2::new(
-                rect.right() - pad,
-                title_y - CARD_TITLE_FONT * 0.5 * k - CARD_GLYPH_GAP * k,
-            ),
-        ),
-        k,
-        pal,
-    );
-
-    p.rect_stroke(pill, round, Stroke::new(theme::HAIRLINE * k, pal.off_line));
-    tracked_center(
-        p,
-        pill.center(),
-        SOON_PILL,
-        &FontId::proportional(PILL_FONT * k),
-        pal.off_text,
-        PILL_TRACK * k,
-    );
-}
-
-/// The announced deck's miniature, standing on the same foot as its
-/// neighbours and drawn in the plate's own quiet greys.
-fn draw_soon_glyph(p: &egui::Painter, area: Rect, k: f32, pal: &Palette) {
-    // The other two are drawn at one unit-per-pixel against a 4659-unit
-    // canvas; this one has no measured canvas, so it takes the area it is
-    // given and its own aspect.
-    // The same units-per-pixel the other two are drawn at: the area holds the
-    // tallest cabinet, and this one takes the share its canvas asks for.
+/// The CDJ-1500X's miniature, on the same foot and units-per-pixel as the
+/// riser glyphs: the area holds the tallest cabinet, and this one takes the
+/// share its canvas asks for.
+fn draw_flat_glyph(p: &egui::Painter, area: Rect, k: f32, col: Color32, detail_col: Color32) {
     let u = area.height() / (GLYPH_CANVAS_H - GLYPH_FOOT_TRIM_REF);
-    let (w, h) = (SOON_CANVAS.0 * u, SOON_CANVAS.1 * u);
+    let (w, h) = (FLAT_CANVAS.0 * u, FLAT_CANVAS.1 * u);
     let outline = Rect::from_min_size(
         Pos2::new(area.center().x - w * 0.5, area.bottom() - h),
         Vec2::new(w, h),
@@ -1476,49 +1368,33 @@ fn draw_soon_glyph(p: &egui::Painter, area: Rect, k: f32, pal: &Palette) {
     };
     let place = |r: (f32, f32, f32, f32)| Rect::from_min_max(at(r.0, r.1), at(r.2, r.3));
 
-    let col = pal.off_text;
     let stroke = Stroke::new(GLYPH_STROKE * k, col);
-    let detail = Stroke::new(GLYPH_DETAIL_STROKE * k, pal.off_line);
+    let detail = Stroke::new(GLYPH_DETAIL_STROKE * k, detail_col);
 
     p.rect_stroke(outline, GLYPH_CHASSIS_ROUND_REF * k * 0.05, stroke);
-    p.rect_stroke(place(SOON_SCREEN_FRAME), GLYPH_FRAME_ROUND * k, detail);
-    p.rect_filled(place(SOON_SCREEN), GLYPH_SCREEN_ROUND * k, pal.off_line);
-    button_row(
-        p,
-        place(SOON_PADS),
-        GLYPH_PAD_COUNT,
-        SOON_PAD_GAP,
-        pal.off_line,
-        k,
-    );
-    p.rect_stroke(place(SOON_TEMPO), GLYPH_FRAME_ROUND * k, detail);
+    p.rect_stroke(place(FLAT_SCREEN_FRAME), GLYPH_FRAME_ROUND * k, detail);
+    p.rect_filled(place(FLAT_SCREEN), GLYPH_SCREEN_ROUND * k, col);
+    button_row(p, place(FLAT_PADS), GLYPH_PAD_COUNT, FLAT_PAD_GAP, col, k);
+    p.rect_stroke(place(FLAT_TEMPO), GLYPH_FRAME_ROUND * k, detail);
 
-    let (jx, jy, jr) = SOON_JOG;
+    let (jx, jy, jr) = FLAT_JOG;
     let jog_c = at(jx, jy);
     p.circle_stroke(jog_c, jr * outline.width(), stroke);
-    p.circle_filled(jog_c, SOON_JOG_HUB * outline.width(), pal.off_line);
-    for (x, y, r) in [SOON_BROWSE, SOON_LOOP] {
+    p.circle_filled(jog_c, FLAT_JOG_HUB * outline.width(), col);
+    for (x, y, r) in [FLAT_BROWSE, FLAT_LOOP] {
         p.circle_stroke(at(x, y), r * outline.width(), detail);
     }
-    for y in [SOON_TRANSPORT_Y.0, SOON_TRANSPORT_Y.1] {
+    for y in [FLAT_TRANSPORT_Y.0, FLAT_TRANSPORT_Y.1] {
         p.circle_stroke(
-            at(SOON_TRANSPORT_X, y),
-            SOON_TRANSPORT_R * outline.width(),
+            at(FLAT_TRANSPORT_X, y),
+            FLAT_TRANSPORT_R * outline.width(),
             detail,
         );
     }
 }
 
 /// Draw the model's miniature into `area`, standing on its foot.
-fn draw_deck_glyph(
-    p: &egui::Painter,
-    area: Rect,
-    card: &Card,
-    pal: &Palette,
-    fill: Color32,
-    k: f32,
-) {
-    let g = &card.glyph;
+fn draw_deck_glyph(p: &egui::Painter, area: Rect, g: &Glyph, pal: &Palette, fill: Color32, k: f32) {
     // Reference units → glyph pixels, shared by both models, so a part given
     // in reference units comes out the same size on either card and the taller
     // cabinet is the one that fills `area`.

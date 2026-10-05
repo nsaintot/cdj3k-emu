@@ -11,6 +11,7 @@ mod screenshot;
 mod script;
 pub mod shell;
 mod theme;
+mod tilt_input;
 mod ui;
 mod updater;
 mod viewports;
@@ -70,6 +71,9 @@ const TEMPO_INIT: f32 = 0.5;
 /// profiling build doesn't expose the endpoint on any host interface.
 const PUFFIN_SERVER_ADDR: &str = "127.0.0.1:8585";
 
+/// Layout, the two knobs' angles and their pressed states.
+type KnobCacheKey = (i32, i32, i32, [u32; 2], [bool; 2]);
+
 pub struct CdjApp {
     /// The model whose slate is drawn (selects layout + control set).
     model: Model,
@@ -85,6 +89,10 @@ pub struct CdjApp {
     /// Last `jog_angle` value fed into the tick accumulator. Lets the encoder use actual
     /// angle deltas (not `jog_omega * dt`) so slow drags register correctly.
     jog_angle_last_encoded: f32,
+    /// Platter travel in turns, accumulated from the same angle deltas.
+    jog_revs: f64,
+    /// The platter's turns per second over the last tick, from its angle.
+    jog_rps: f32,
     /// Tick accumulator for trackpad haptic feedback. Independent of `jog_accum`
     /// because the haptic detent stride is far coarser than the device tick
     /// stride (3240/rev). Reset to zero whenever `jog_omega` reaches zero so
@@ -121,7 +129,8 @@ pub struct CdjApp {
     main_screen_popped: bool,
     debug_screen_popped: bool,
     rotary: u16,
-    /// `0.0..=1.0`, piecewise-mapped to `0x0000..=0xFFFF` (centre → `TEMPO_CENTER`).
+    /// Fader travel `0.0..=1.0`; the player's encoder maps it to its own
+    /// slider value (the CDJ-3000's: `cdj3k::tempo_raw`).
     tempo: f32,
     vinyl_speed: u8,
     direction: cdj3k_emu_panel::Direction,
@@ -147,6 +156,20 @@ pub struct CdjApp {
     nav_scroll_accum: f32,
     jog_adjust_scroll_accum: f32,
     vinyl_scroll_accum: f32,
+    /// BEAT LOOP encoder: how far it has turned, and its sub-detent scroll
+    /// accumulator (px).
+    beat_loop_angle: f32,
+    beat_loop_scroll_accum: f32,
+    /// The BEAT LOOP encoder's absolute counter, sent in the frame.
+    beat_loop: u16,
+    /// The deck is shown tilted, its front face in view (a slate with one).
+    tilted: bool,
+    tilt_input: Option<tilt_input::TiltInput>,
+    /// Tilt this frame, 0 flat to 1, set by the slate as it draws. Part of the
+    /// bloom scene: the front face's lamps move with it.
+    tilt_progress: f32,
+    tilt_cache: ui::tilt::TiltCache,
+    raw_pointer: tilt_input::RawPointer,
 
     ctrl_stream: CtrlStream,
 
@@ -203,6 +226,10 @@ pub struct CdjApp {
     jog_ring_lights_cache: ui::draw_cache::ShapeCache<(i32, i32, i32, u8, bool)>,
     jog_corner_labels_cache: ui::draw_cache::ShapeCache<(i32, i32, i32, i32, [u8; 16])>,
     grip_cache: ui::draw_cache::ShapeCache<(i32, i32, i32, i32)>,
+    /// A jog knurl, keyed on layout and the platter's angle.
+    knurl_cache: ui::draw_cache::ShapeCache<(i32, i32, i32, u32)>,
+    /// Two rotary knobs, keyed on layout, their angles and pressed states.
+    knob_cache: ui::draw_cache::ShapeCache<KnobCacheKey>,
 
     fps_smooth: f32,
     /// What holding the window to the chassis aspect carries between frames.
@@ -289,6 +316,8 @@ impl CdjApp {
             jog_angle: 0.0,
             jog_accum: 0.0,
             jog_angle_last_encoded: 0.0,
+            jog_revs: 0.0,
+            jog_rps: 0.0,
             jog_haptic_accum: 0.0,
             jog_omega: 0.0,
             jog_drag_prev_angle: None,
@@ -315,6 +344,14 @@ impl CdjApp {
             nav_scroll_accum: 0.0,
             jog_adjust_scroll_accum: 0.0,
             vinyl_scroll_accum: 0.0,
+            beat_loop_angle: 0.0,
+            beat_loop_scroll_accum: 0.0,
+            beat_loop: 0,
+            tilted: false,
+            tilt_input: None,
+            tilt_progress: 0.0,
+            tilt_cache: Default::default(),
+            raw_pointer: Default::default(),
             ctrl_stream: CtrlStream::new(&socket_dir, repaint_gate.clone()),
             display_stream: MainLcdStream::new(&socket_dir, repaint_gate.clone()),
             display_gl_tex: None,
@@ -343,6 +380,8 @@ impl CdjApp {
             jog_ring_lights_cache: ui::draw_cache::ShapeCache::new(),
             jog_corner_labels_cache: ui::draw_cache::ShapeCache::new(),
             grip_cache: ui::draw_cache::ShapeCache::new(),
+            knurl_cache: ui::draw_cache::ShapeCache::new(),
+            knob_cache: ui::draw_cache::ShapeCache::new(),
             fps_smooth: 60.0,
             resize: Default::default(),
             frame_shape_count: 0,
@@ -376,6 +415,8 @@ impl CdjApp {
         }
         self.model = model;
         self.on_leave_panel();
+        self.tilted = false;
+        self.tilt_progress = 0.0;
         // Frame bits and LEDs are positions in the previous model's frames.
         self.cleared_bits.clear();
         self.scripted_btns.clear();
@@ -392,20 +433,25 @@ impl CdjApp {
         self.jog_ring_lights_cache = ui::draw_cache::ShapeCache::new();
         self.jog_corner_labels_cache = ui::draw_cache::ShapeCache::new();
         self.grip_cache = ui::draw_cache::ShapeCache::new();
+        self.knurl_cache = ui::draw_cache::ShapeCache::new();
+        self.knob_cache = ui::draw_cache::ShapeCache::new();
         // The window is re-shaped for the new canvas; let the aspect snap
         // re-evaluate from scratch.
         self.resize = Default::default();
     }
 
     /// The panel is hidden (picker shown): release any held or latched
-    /// control so the guest never sees a button stuck down.
+    /// control, and drop the tilt's pointer map, which belongs to the window as
+    /// last drawn.
     pub(crate) fn on_leave_panel(&mut self) {
+        self.tilt_input = None;
+        self.raw_pointer = Default::default();
         if self.held_btn.is_some() || !self.latched_btns.is_empty() || self.lcd_touch.is_some() {
             self.held_btn = None;
             self.latched_btns.clear();
             self.lcd_touch = None;
             self.lcd_touch_ctrl_latched = false;
-            self.inject(self.build_current_frame().finalize());
+            self.inject(self.build_current_frame());
         }
     }
 
@@ -432,6 +478,7 @@ impl CdjApp {
         n.hash(&mut h);
         latched[..n].hash(&mut h);
         ((self.shade_alpha.clamp(0.0, 1.0) * 255.0) as u8).hash(&mut h);
+        self.tilt_progress.to_bits().hash(&mut h);
         h.finish()
     }
 }
@@ -511,7 +558,7 @@ impl CdjApp {
         // control channel is up.
         let ctrl_ready = self.ctrl_stream.is_ready();
         if ctrl_ready && !self.ctrl_was_ready {
-            self.inject(self.build_current_frame().finalize());
+            self.inject(self.build_current_frame());
         }
         self.ctrl_was_ready = ctrl_ready;
 
@@ -535,7 +582,7 @@ impl CdjApp {
         if !ctrl && !self.latched_btns.is_empty() {
             puffin::profile_scope!("latched_clear_inject");
             self.latched_btns.clear();
-            self.inject(self.build_current_frame().finalize());
+            self.inject(self.build_current_frame());
         }
 
         {
@@ -617,9 +664,7 @@ impl CdjApp {
         // is already stopped, so `poll_menu_state` will never consume
         // POWER_OFF_STIMULI_REQUESTED. Without this, instance.stop()'s 8 s
         // EP122 wait elapses with the guest never having seen the signal.
-        let mut f = self.build_current_frame();
-        f.set_power(false);
-        self.inject(f.finalize());
+        self.inject(self.power_off_frame());
 
         // Mark shutdown so the runtime worker observes it at the top of its
         // next loop iteration and runs `instance.stop()` (graceful
@@ -690,9 +735,7 @@ impl CdjApp {
         self.main_screen_popped = main;
         self.debug_screen_popped = debug;
         if want_poweroff {
-            let mut f = self.build_current_frame();
-            f.set_power(false);
-            self.inject(f.finalize());
+            self.inject(self.power_off_frame());
         }
     }
 

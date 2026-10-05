@@ -1,11 +1,11 @@
 //! Upper deck UI (rekordbox bar, nav, LCD, hot cues). Horizontal LCD / hot-cue band comes from [`super::layout`].
 
 use crate::app::ui::{
-    draw_bordered_rect_section, draw_cache::ShapeList, DoubleBorderSpec, StrokeSpec, COL_AMBER,
-    COL_BLACK, COL_BLUE, COL_BTN, COL_BTN_TEXT, COL_BTN_WHITE, COL_LCD_BG, COL_SILVER,
+    draw_cache::ShapeList, DoubleBorderSpec, StrokeSpec, COL_AMBER, COL_BLACK, COL_BLUE, COL_BTN,
+    COL_BTN_TEXT, COL_BTN_WHITE, COL_SILVER,
 };
-use cdj3k_emu_panel::mosi_frame;
 use cdj3k_emu_panel::Btn;
+use cdj3k_emu_panel::{mosi_frame, Lamp};
 use egui::{Color32, FontId, Pos2, Rect, Shape, Stroke};
 
 use super::{layout, ButtonType, CdjApp, UiScale};
@@ -51,12 +51,6 @@ use layout::{
     LCD_GLASS_ASPECT as LCD_ASPECT, LCD_GLASS_V_TOP as LCD_V_TOP,
     LCD_GLASS_WIDTH_FRAC as LCD_WIDTH_FRAC,
 };
-/// Bezel thickness on all sides (reference units).
-const LCD_BEZEL_REF: f32 = 4.0;
-/// Corner rounding for the bezel (reference units).
-const LCD_ROUNDING_REF: f32 = 10.0;
-/// Font size for the "connecting…" placeholder label.
-const LCD_PLACEHOLDER_FONT_SIZE: f32 = 44.0;
 
 // --- Hot cue row ---
 /// Width of a single hot cue button in reference units.
@@ -128,20 +122,15 @@ const HOT_CUE_BTNS: &[(&str, Btn)] = &[
     ("H", Btn::HotH),
 ];
 
-/// (label, MISO btn, MOSI nav LED, lit color) - font color is computed live from led_state.
-/// Medium-only lit → dimmed color, full → solid (see [`mosi_frame::StepLedMask`]).
-const BROWSER_BTNS: &[(&str, Btn, mosi_frame::StepLedMask, Color32)] = &[
-    ("SOURCE", Btn::Source, mosi_frame::LED_SOURCE, COL_BTN_WHITE),
-    ("BROWSE", Btn::Browse, mosi_frame::LED_BROWSE, COL_BLUE),
-    ("TAG LIST", Btn::TagList, mosi_frame::LED_TAG_LIST, COL_BLUE),
-    (
-        "PLAY LIST",
-        Btn::Playlist,
-        mosi_frame::LED_PLAYLIST,
-        COL_BLUE,
-    ),
-    ("SEARCH", Btn::SearchMenu, mosi_frame::LED_SEARCH, COL_BLUE),
-    ("MENU", Btn::Menu, mosi_frame::LED_MENU, COL_BTN_WHITE),
+/// (label, button, lamp, lit color) - the font color follows the lamp.
+/// Medium-only lit → dimmed color, full → solid (see [`StepLed`](mosi_frame::StepLed)).
+const BROWSER_BTNS: &[(&str, Btn, Lamp, Color32)] = &[
+    ("SOURCE", Btn::Source, Lamp::Source, COL_BTN_WHITE),
+    ("BROWSE", Btn::Browse, Lamp::Browse, COL_BLUE),
+    ("TAG LIST", Btn::TagList, Lamp::TagList, COL_BLUE),
+    ("PLAY LIST", Btn::Playlist, Lamp::Playlist, COL_BLUE),
+    ("SEARCH", Btn::SearchMenu, Lamp::Search, COL_BLUE),
+    ("MENU", Btn::Menu, Lamp::Menu, COL_BTN_WHITE),
 ];
 
 /// Collect fully-static elements of the top section into `list` (rebuilt only on resize).
@@ -268,7 +257,7 @@ pub(super) fn draw_top_section(
 
     // --- ON AIR LED bar - inverted trapezoid above the nav button row ---
     {
-        let (r, g, b) = app.mosi().on_air_rgb().unwrap_or_default();
+        let (r, g, b) = app.mosi().rgb(Lamp::OnAir).unwrap_or_default();
         if let Some(bar_color) = app.mosi().led_color(mosi_frame::LedPart::OnAir, r, g, b) {
             let panel_cx = (MENUBAR_COL_REF.left() + MENUBAR_COL_REF.right()) * 0.5;
             let bar_top_y = MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * ON_AIR_BAR_V_TOP;
@@ -335,7 +324,7 @@ pub(super) fn draw_top_section(
         for (i, (label, btn, led, color)) in BROWSER_BTNS.iter().enumerate() {
             let btn_left = first_left + i as f32 * (btn_w + gap);
             let rect = layout.ar2rect(btn_left, btn_top, NAV_BTN_ASPECT, btn_w);
-            let color = match mosi_frame::led_step(&app.led_state.frame, *led) {
+            let color = match app.mosi().step(*led) {
                 mosi_frame::StepLed::Full => *color,
                 mosi_frame::StepLed::Medium => dim_color(*color, 0.7),
                 mosi_frame::StepLed::Off => COL_BTN_TEXT,
@@ -381,90 +370,8 @@ pub(super) fn draw_top_section(
         let center_x = (MENUBAR_COL_REF.left() + MENUBAR_COL_REF.right()) * 0.5;
         let lcd_left = center_x - lcd_w * 0.5;
 
-        let bezel_rounding = layout.sc(LCD_ROUNDING_REF);
-        let bezel_rect = layout.sr(lcd_left, lcd_top, lcd_w, lcd_h);
-        p.rect_filled(bezel_rect, bezel_rounding, Color32::from_rgb(10, 10, 12));
-
-        let bezel_px = layout.sc(LCD_BEZEL_REF);
-        let display_rect = bezel_rect.shrink(bezel_px);
-        app.bloom_excludes.push(display_rect);
-        let display_rounding = (bezel_rounding - bezel_px).max(2.0);
-        p.rect_filled(display_rect, display_rounding, COL_LCD_BG);
-
-        let uv_full = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-        if app.main_screen_popped {
-            p.text(
-                display_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "↗ external window",
-                FontId::proportional(layout.sc(LCD_PLACEHOLDER_FONT_SIZE)),
-                Color32::from_rgb(60, 60, 70),
-            );
-        } else if !app.lcds_blanked {
-            if let Some(tex_id) = app.display_tex_id {
-                if app.display_stream.is_connected() {
-                    p.image(tex_id, display_rect, uv_full, Color32::WHITE);
-                } else {
-                    p.image(
-                        tex_id,
-                        display_rect,
-                        uv_full,
-                        Color32::from_rgba_unmultiplied(255, 255, 255, 60),
-                    );
-                }
-            }
-            if !app.display_stream.is_connected() {
-                p.text(
-                    display_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    format!("connecting {}…", app.display_stream.addr_str()),
-                    FontId::proportional(layout.sc(LCD_PLACEHOLDER_FONT_SIZE)),
-                    Color32::from_rgb(60, 60, 70),
-                );
-            }
-        }
-
-        // Touch is handled by the popout viewport when the LCD is detached.
-        if !app.main_screen_popped {
-            let lcd_resp = ui.interact(
-                display_rect,
-                ui.id().with("lcd_touch"),
-                egui::Sense::click_and_drag(),
-            );
-            app.apply_lcd_touch(crate::app::LcdTouchCapture {
-                hovered: lcd_resp.hovered(),
-                scroll_y: ui.input(|i| i.raw_scroll_delta.y),
-                pointer_moved: ui.input(|i| i.pointer.delta().length_sq() > 0.0),
-                is_down: lcd_resp.is_pointer_button_down_on(),
-                ctrl: ui.input(|i| i.modifiers.ctrl),
-                right_down: ui.input(|i| {
-                    i.pointer.button_down(egui::PointerButton::Secondary)
-                        && i.pointer
-                            .hover_pos()
-                            .is_some_and(|p| display_rect.contains(p))
-                }),
-                interact_pos: lcd_resp.interact_pointer_pos(),
-                display_rect,
-            });
-        }
-
-        draw_bordered_rect_section(
-            p,
-            display_rect,
-            None,
-            None,
-            DoubleBorderSpec::from_strokes_with_gap(
-                StrokeSpec {
-                    width: layout.sc(LCD_BEZEL_REF),
-                    color: COL_SILVER,
-                },
-                StrokeSpec {
-                    width: layout.sc(LCD_BEZEL_REF),
-                    color: COL_SILVER,
-                },
-                layout.sc(1.0),
-            ),
-        );
+        let bezel = Rect::from_min_size(Pos2::new(lcd_left, lcd_top), egui::vec2(lcd_w, lcd_h));
+        crate::app::ui::draw_lcd::draw_main_lcd(app, ui, p, layout, bezel);
     }
 
     // --- Hot cue row, centered on MID_CENTRAL_PANEL_REF ---
@@ -497,7 +404,7 @@ pub(super) fn draw_top_section(
         for (i, (label, btn)) in HOT_CUE_BTNS.iter().enumerate() {
             let btn_left = first_left + i as f32 * (btn_w + gap);
             let rect = layout.ar2rect(btn_left, btn_top, HOT_CUE_BTN_ASPECT, btn_w);
-            let (r, g, b) = app.mosi().pad_rgb(i);
+            let (r, g, b) = app.mosi().rgb(Lamp::HOT_CUES[i]).unwrap_or_default();
             let accent = app
                 .mosi()
                 .led_color(mosi_frame::LedPart::Pad, r, g, b)
@@ -532,7 +439,7 @@ pub(super) fn draw_top_section(
             0.735 + CUE_CONTROL_CALL_BTNS_GAP,
             CUE_CONTROL_V,
         );
-        let call_led = app.mosi().led_bit(mosi_frame::LED_TRACK_SEARCH);
+        let call_led = app.mosi().lit(Lamp::TrackSearch);
         let call_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
                 width: layout.sc(CUE_CONTROL_CALL_BTNS_INNER_STROKE),

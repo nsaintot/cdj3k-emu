@@ -91,6 +91,40 @@ impl ShapeList {
         self.0.push(Shape::galley(top_left, galley, color));
     }
 
+    /// Fit a single-line caption to the ink box it occupies on a drawing:
+    /// the glyphs' height sets the font size, the box's width the spacing
+    /// between letters, and the ink lands on the box's top-left corner.
+    pub fn text_in_ink_box(
+        &mut self,
+        ctx: &egui::Context,
+        ink: Rect,
+        text: &str,
+        family: egui::FontFamily,
+        color: Color32,
+    ) {
+        let layout = |size: f32, tracking: f32| {
+            let mut job = egui::text::LayoutJob::single_section(
+                text.to_owned(),
+                egui::TextFormat {
+                    font_id: FontId::new(size, family.clone()),
+                    color,
+                    extra_letter_spacing: tracking,
+                    ..Default::default()
+                },
+            );
+            job.wrap.max_width = f32::INFINITY;
+            ctx.fonts(|f| f.layout_job(job))
+        };
+        let probe = layout(100.0, 0.0);
+        let size = 100.0 * ink.height() / probe.mesh_bounds.height().max(1.0);
+        let natural = layout(size, 0.0);
+        let gaps = text.chars().count().saturating_sub(1).max(1) as f32;
+        let tracking = (ink.width() - natural.mesh_bounds.width()) / gaps;
+        let galley = layout(size, tracking);
+        let top_left = ink.min - galley.mesh_bounds.min.to_vec2();
+        self.0.push(Shape::galley(top_left, galley, color));
+    }
+
     /// Center `text` on its visible ink bounds (not the line box) at `center`,
     /// then snap to the device pixel grid. Use for single-glyph labels (icons,
     /// arrows, dots) where line-box centering drifts visibly with font metrics
