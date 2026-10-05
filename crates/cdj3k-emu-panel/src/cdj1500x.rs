@@ -16,10 +16,11 @@
 //! the wiper on a 0-1023 scale, 511 at the detent, linear from 0 up to it and
 //! from it up to [`TEMPO_TOP`]. The jog is a position counter at 12-13 and
 //! the time between its encoder pulses at 14-15, in microseconds, both
-//! big-endian: the deck reads `1111.11 / word` as turns per second (900
-//! pulses a turn), `0xFFFF` stopped. It moves the track by that speed over
-//! time, a turn a second of audio, and ignores the counter: the period has to
-//! follow the platter's actual motion, slow drags included.
+//! big-endian, `0xFFFF` stopped. The deck reads `1111.11 / word` as the jog's
+//! speed in seconds of track a second, moves the track by it over time and
+//! ignores the counter: the period has to follow the platter's actual motion,
+//! slow drags included. One platter turn is [`JOG_SPEED_PER_TURN`] seconds of
+//! track.
 //!
 //! Its MOSI frame is 32 bytes on the same node, 0-13 meaningful: PLAY, CUE
 //! and the power lamp as bits, the hot cue pads and the EJECT lamp as 2-bit
@@ -67,10 +68,17 @@ const JOG_POS_AT: usize = 12;
 const JOG_PERIOD_AT: usize = 14;
 const JOG_TOUCH: FrameBit = (19, 0x01);
 const JOG_FORWARD: FrameBit = (19, 0x02);
-/// Encoder pulses a turn: the deck's speed is `1e6 / (PULSES * period_us)`.
-pub const JOG_PULSES_PER_REV: f64 = 900.0;
-/// Seconds the platter takes to stop from one turn a second.
-const JOG_STOP_SECS: f32 = 1.0 / 12.0;
+/// The deck's jog speed for the platter turning once a second, in seconds of
+/// track a second, matched by hand so a turn of the platter on screen follows
+/// the hub ring (which the deck turns once per 1.8 s of track).
+pub const JOG_SPEED_PER_TURN: f64 = 0.8;
+/// Encoder pulses a turn: the deck reads `1111.11 / period_us` as its speed,
+/// 900 pulses a second per unit.
+pub const JOG_PULSES_PER_REV: f64 = 900.0 * JOG_SPEED_PER_TURN;
+/// Seconds the platter takes to stop from one turn a second: service mode's
+/// jog load check wants its speed to fall from 3 to 1.5 in 100-150 ms, and
+/// this brake takes 125.
+const JOG_STOP_SECS: f32 = 0.125 * JOG_SPEED_PER_TURN as f32 / 1.5;
 /// The period word of a stopped jog.
 const JOG_STOPPED: u16 = 0xFFFF;
 
@@ -265,8 +273,8 @@ pub const SPEC: ModelSpec = ModelSpec {
     miso: &Miso,
     mosi: &Mosi,
     leds: cdj3kx::SPEC.leds,
-    // No JOG ADJUST knob. Service mode's jog load check passes a platter that
-    // slows from 3 to 1.5 turns a second in 100-150 ms; this brake takes 125.
+    // No JOG ADJUST knob: a fixed brake that passes service mode's jog load
+    // check.
     jog_brake: JogBrake::Fixed {
         stop_secs: JOG_STOP_SECS,
     },
@@ -293,12 +301,14 @@ mod tests {
     }
 
     /// The period word follows the speed service mode's load check reads,
-    /// `1111.11 / word` turns a second, and a stopped jog sends `0xFFFF`.
+    /// `1111.11 / word`, at [`JOG_SPEED_PER_TURN`] a turn a second, and a
+    /// stopped jog sends `0xFFFF`.
     #[test]
     fn the_jog_period_is_the_pulse_time_at_the_platters_speed() {
+        let rps = (11.111 / JOG_SPEED_PER_TURN) as f32;
         assert_eq!(jog_period(0.0), JOG_STOPPED);
-        assert_eq!(jog_period(11.111), 100);
-        assert_eq!(jog_period(-11.111), 100);
+        assert_eq!(jog_period(rps), 100);
+        assert_eq!(jog_period(-rps), 100);
         assert_eq!(jog_period(0.001), JOG_STOPPED);
         let at = |revs: f64, rps: f32, touched: bool| {
             miso_frame::encode(
@@ -315,28 +325,32 @@ mod tests {
             )
         };
         let f = at(2.0, 1.0, true);
-        assert_eq!(u16::from_be_bytes([f[12], f[13]]), 1800);
+        assert_eq!(
+            u16::from_be_bytes([f[12], f[13]]),
+            (2.0 * JOG_PULSES_PER_REV) as u16
+        );
         assert_eq!(f[19], 0x03);
         // Backward from the start wraps the counter; the jog uCom flag stays
         // clear.
-        let f = at(-1.0 / 900.0, -1.0, false);
+        let f = at(-1.0 / JOG_PULSES_PER_REV, -1.0, false);
         assert_eq!(u16::from_be_bytes([f[12], f[13]]), 0xFFFF);
         assert_eq!(f[19], 0x00);
     }
 
-    /// The window service mode's jog load check passes for the time the
-    /// platter takes to slow from 3 to 1.5 turns a second.
+    /// The window service mode's jog load check passes for the time the jog's
+    /// speed takes to fall from 3 to 1.5.
     const JOG_LOAD_CHECK_MS: std::ops::RangeInclusive<f32> = 100.0..=150.0;
 
-    /// The fixed brake passes the factory jog load check: under linear
-    /// deceleration, slowing from 3 to 1.5 turns a second takes
-    /// `1.5 * stop_secs`.
+    /// The fixed brake passes the factory jog load check: the deck's speed
+    /// falling from 3 to 1.5 is the platter slowing by
+    /// `1.5 / JOG_SPEED_PER_TURN` turns a second, which under linear
+    /// deceleration takes that many `stop_secs`.
     #[test]
     fn the_fixed_brake_passes_the_jog_load_check() {
         let JogBrake::Fixed { stop_secs } = SPEC.jog_brake else {
             panic!("the CDJ-1500X has no JOG ADJUST knob");
         };
-        let ms = 1.5 * stop_secs * 1000.0;
+        let ms = 1.5 / JOG_SPEED_PER_TURN as f32 * stop_secs * 1000.0;
         assert!(JOG_LOAD_CHECK_MS.contains(&ms), "{ms} ms");
     }
 
