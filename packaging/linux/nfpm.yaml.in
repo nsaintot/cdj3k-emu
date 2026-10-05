@@ -62,13 +62,16 @@ overrides:
       - udisks2
       - exfatprogs
   rpm:
+    # Depend on sonames, not package names: RPM auto-provides these and every
+    # family satisfies them. Hardcoded names diverge by distro (openSUSE ships
+    # Mesa-libGL1, libpipewire-0_3-0, … and matches none of the Fedora names).
     depends:
-      - mesa-libGL
-      - mesa-libEGL
-      - libwayland-client
-      - libxkbcommon
-      - libX11
-      - pipewire-libs
+      - libGL.so.1()(64bit)
+      - libEGL.so.1()(64bit)
+      - libwayland-client.so.0()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libX11.so.6()(64bit)
+      - libpipewire-0.3.so.0()(64bit)
     recommends:
       - udisks2
       - exfatprogs
