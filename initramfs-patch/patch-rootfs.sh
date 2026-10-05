@@ -16,9 +16,11 @@
 #   ROOTFS           - path to the extracted initramfs rootfs (from $1)
 #   PATCH_ASSETS_DIR - path to this directory (contains cfgd_aarch64 binary from tools/)
 #   APP_UNIT         - the player application's systemd unit, detected from the
-#                      rootfs: EP122.service (CDJ-3000) or EP145.service (CDJ-3000X)
+#                      rootfs: EP122.service (CDJ-3000), EP145.service (CDJ-3000X)
+#                      or EP166.service (CDJ-1500X)
 #   APP_NAME         - APP_UNIT without the .service suffix (the process name)
-#   APP_SLUG         - the slug the emulator names this player by: cdj3k or cdj3kx
+#   APP_SLUG         - the slug the emulator names this player by: cdj3k, cdj3kx
+#                      or cdj1500x
 
 set -euo pipefail
 
@@ -33,6 +35,7 @@ export APP_UNIT="${APP_UNIT:-EP122.service}"
 export APP_NAME="${APP_UNIT%.service}"
 case "$APP_UNIT" in
     EP145.service) export APP_SLUG="cdj3kx" ;;
+    EP166.service) export APP_SLUG="cdj1500x" ;;
     *)             export APP_SLUG="cdj3k" ;;
 esac
 

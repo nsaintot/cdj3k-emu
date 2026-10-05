@@ -1,19 +1,15 @@
-//! Record types for a model's sub-CPU frame map.
+//! The frame bit both directions address, and the CDJ-3000 family's lamp
+//! map.
 //!
-//! The sub-CPU speaks two 64-byte frames: MISO carries the panel's controls to
-//! the deck, MOSI carries its lamps back. Every model puts the same fields in
-//! them, in a different arrangement, so the codec in
-//! [`miso_frame`](crate::miso_frame) / [`mosi_frame`](crate::mosi_frame) is
-//! written once against the records here and a model is a table of numbers -
-//! see [`cdj3k`](crate::cdj3k) and [`cdj3kx`](crate::cdj3kx).
+//! The sub-CPU speaks two frames: MISO carries the panel's controls to the
+//! deck, MOSI carries its lamps back. Each model encodes MISO itself (its
+//! [`MisoCodec`](crate::miso_frame::MisoCodec)) and reads MOSI itself (its
+//! [`MosiCodec`](crate::mosi_frame::MosiCodec)).
 //!
-//! The CDJ-3000's frame is the origin of the shared coordinates: its bitfield
-//! byte numbers and MISO field offsets are the ones the `LED_*` and `BTN_*`
-//! constants carry, and a model's [`MosiMap::bit_shift`] / [`MisoMap::shift`]
-//! move them into its own frame. RGB lamps do not follow that rule - a model
-//! reassigns them - so [`RgbLamps`] names each one at its own offset.
-
-use crate::button::Btn;
+//! The CDJ-3000 and the CDJ-3000X lay their lamps out alike, so both read
+//! through a [`MosiMap`]: the CDJ-3000's bitfield bits (its `LED_*`
+//! constants) moved by [`MosiMap::bit_shift`], and RGB lamps - which a model
+//! reassigns - named each at its own offset in [`RgbLamps`].
 
 /// Single-bit field: `(byte_offset, bitmask)`.
 pub type FrameBit = (usize, u8);
@@ -57,7 +53,7 @@ pub struct RgbLamps {
     pub slot_1: Option<usize>,
     pub slot_2: Option<usize>,
     pub on_air: Option<usize>,
-    /// PLAY, on a model that drives it as a colour rather than the
+    /// PLAY, on a model that drives it as a colour; the others use the
     /// `LED_PLAY` bit.
     pub play: Option<usize>,
     /// CUE, under the [`Self::play`] rule with `LED_CUE` as the bit.
@@ -76,20 +72,4 @@ pub struct MosiMap {
     pub bit_shift: usize,
     pub lamps: RgbLamps,
     pub jog: JogBrightness,
-}
-
-/// Where a model keeps the controls of the MISO frame.
-#[derive(Copy, Clone, Debug)]
-pub struct MisoMap {
-    /// Added to a shared field or button byte to reach this model's copy of
-    /// it. The whole CDJ-3000 frame moves together.
-    pub shift: usize,
-    /// Bytes 0..62 of the idle frame, before the CRC.
-    pub idle: &'static [u8; 62],
-    /// Buttons this player has beyond the CDJ-3000's set; every other
-    /// [`Btn::EXTRA`](crate::button::Btn::EXTRA) resolves to nothing on it.
-    pub extra: &'static [Btn],
-    /// Bits in the player's own frame that the power flag drives besides its
-    /// POWER ON button, for a guest that reads the flag somewhere else.
-    pub power_mirrors: &'static [FrameBit],
 }

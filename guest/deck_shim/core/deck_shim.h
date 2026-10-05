@@ -177,7 +177,9 @@ typedef struct {
 /* Sub-CPU device                                                     */
 /* ------------------------------------------------------------------ */
 
-#define SUBUCOM_SPI_PATH  "/dev/subucom_spi1.0"
+#define SUBUCOM_SPI_PATH        "/dev/subucom_spi1.0"
+/* Models with a 32-byte frame on another bus (e.g. the CDJ-1500X). */
+#define SUBUCOM_SPI_PATH_1500X  "/dev/subucom_spi3.0"
 
 /* ------------------------------------------------------------------ */
 /* Syscall helpers - no dlsym, no libdl, GLIBC_2.17 only              */
@@ -401,6 +403,7 @@ extern int            g_subucom_fd;
 typedef enum {
     DECK_MODEL_CDJ3K = 1,    /* CDJ-3000 */
     DECK_MODEL_CDJ3KX = 2,   /* CDJ-3000X */
+    DECK_MODEL_CDJ1500X = 3, /* CDJ-1500X */
 } deck_model_t;
 
 /* Cached after the first call; EP122 when the parameter cannot be read. */

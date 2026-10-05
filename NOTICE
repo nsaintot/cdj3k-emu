@@ -35,10 +35,10 @@ license above:
 Third-party firmware (NOT redistributed by this project)
 ----------------------------------------------------------------------
 
-cdj3k-emu emulates Pioneer DJ's CDJ-3000 hardware.  It requires the user to
-supply their own copy of a Pioneer CDJ-3000 firmware update file (.UPD) on
-first launch.  The in-app wizard decrypts the update locally, extracts the
-kernel + rootfs onto a per-user qcow2 disk image under
+cdj3k-emu emulates Pioneer DJ's CDJ-3000, CDJ-3000X and CDJ-1500X hardware.
+It requires the user to supply their own copy of the player's firmware
+update file (.UPD) on first launch.  The in-app wizard decrypts the update
+locally, extracts the kernel + rootfs onto a per-user qcow2 disk image under
 "~/Library/Application Support/com.cdj3k.emu/", and never transmits it
 elsewhere.
 
@@ -74,10 +74,18 @@ identify the SPDX expression that governs the redistributed copy.
     the user-supplied Pioneer firmware and does not bundle a separate copy.
 
   * dropbear              https://matt.ucc.asn.au/dropbear/      MIT-style
-    Present inside the guest rootfs.  Configured by the initramfs patch
-    scripts under initramfs-patch/patch-rootfs.d/ when ENABLE_SSH=1 (off
-    by default).  No private keys are committed; keys are generated at
+    Present inside some models' guest rootfs.  The bundle also carries
+    dropbear_aarch64, built unmodified from the upstream release pinned in
+    dropbear/build.sh, which the patch scripts install into firmware that
+    ships no SSH server.  Its license, which covers the bundled libtom
+    code, ships with it.  Configured by the initramfs patch scripts under
+    initramfs-patch/patch-rootfs.d/ when ENABLE_SSH=1 (off by default).
+    No private keys are committed; keys are generated at provisioning or
     first boot when SSH is enabled.
+
+  * musl libc             https://musl.libc.org/                 MIT
+    Linked statically into dropbear_aarch64 (built on Alpine Linux).
+    Copyright (c) 2005-2020 Rich Felker, et al.
 
   * LZ4                   https://github.com/lz4/lz4             BSD-2-Clause
     Linked statically into the guest kernel image (LZ4 ramdisk decompression)

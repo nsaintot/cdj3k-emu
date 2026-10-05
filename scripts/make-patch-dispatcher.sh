@@ -32,13 +32,14 @@ ROOTFS="${1:?Usage: $0 <initramfs-root>}"
 export ROOTFS
 export PATCH_ASSETS_DIR="$(cd "$(dirname "$0")" && pwd)"
 # The player application's unit, detected from the rootfs: EP122.service on
-# the CDJ-3000, EP145.service on the CDJ-3000X.
+# the CDJ-3000, EP145.service on the CDJ-3000X, EP166.service on the CDJ-1500X.
 APP_UNIT="$(cd "$ROOTFS/etc/systemd/system" 2>/dev/null && ls EP1[0-9][0-9].service 2>/dev/null | head -n1 || true)"
 export APP_UNIT="${APP_UNIT:-EP122.service}"
 export APP_NAME="${APP_UNIT%.service}"
 # The slug the emulator names this player by, from the unit the rootfs carries.
 case "$APP_UNIT" in
     EP145.service) export APP_SLUG="cdj3kx" ;;
+    EP166.service) export APP_SLUG="cdj1500x" ;;
     *)             export APP_SLUG="cdj3k" ;;
 esac
 # SSH (passwordless root) is off by default. The setup window asks for it

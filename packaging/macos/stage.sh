@@ -264,6 +264,17 @@ else
     exit 1
 fi
 
+# 02-dropbear-install.sh installs dropbear_aarch64 into the rootfs of
+# firmware that ships no SSH server.
+if [[ -f "$REPO_ROOT/guest/out/dropbear_aarch64" ]]; then
+    cp "$REPO_ROOT/guest/out/dropbear_aarch64" "$REPO_ROOT/guest/out/dropbear_aarch64.LICENSE" \
+        "$RES_PATCH/"
+else
+    echo "ERROR: guest/out/dropbear_aarch64 not found" >&2
+    echo "       Run: ./build.sh" >&2
+    exit 1
+fi
+
 # patch/vanilla-modules/  - 6.6 out-of-tree modules for 22-vanilla-kernel-fixups.sh
 MODS_SRC="$REPO_ROOT/build/docker-out/modules"
 if [[ -d "$MODS_SRC" ]] && compgen -G "$MODS_SRC/*.ko" > /dev/null; then

@@ -186,11 +186,12 @@ QEMU args (config.rs lines 300-324):
   `forwarder.c` pipes each frame onto the virtio-serial port. The host
   reader (`ctrl_stream.rs::stream_loop`) decodes them through
   `MosiFrame` and drives the on-screen LED simulation.
-- **MISO - host → guest (buttons/jog/touch).** The UI builds 64-byte
-  `MisoFrame`s representing button bitmasks, jog rotation/touch, and
-  performance-pad state. Each frame is CRC-stamped (CRC-16/X-25 over
-  bytes `[0..62]`, written little-endian into bytes `[62..64]`) and
-  pushed back through the same socket. `forwarder.c` writes them into
+- **MISO - host → guest (buttons/jog/touch).** The UI describes the panel
+  in a `PanelState` and the player's `MisoCodec` encodes it into a 64-byte
+  frame, CRC-stamped where that deck's sub-CPU checks it (CRC-16/X-25 over
+  `[0..62]`, little-endian at `[62..64]` on the RK3399 decks; over `[0..24]`,
+  big-endian at `[24..26]` on the CDJ-1500X), and pushes it back through the
+  same socket. `forwarder.c` writes them into
   `/dev/subucom_ctrl`, where the firmware consumes them as if they came
   from the real subucom MCU.
 

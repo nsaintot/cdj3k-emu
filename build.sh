@@ -31,7 +31,7 @@ REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 CLEAN_AFTER_BUILD=0
 ARTIFACTS_ONLY=0
 # SSH access (dropbear on port 2222) is dev-only.  Off by default for shipping
-# builds: the SSH-related rootfs patches (02-dropbear-key, 03-dropbear-enable,
+# builds: the SSH-related rootfs patches (02-dropbear-install, 03-dropbear-enable,
 # 04-root-password) are no-ops unless this is set.  Enabling SSH leaves a
 # **passwordless** root login bound to the QEMU host-forwarded port 2222 -
 # fine on a dev box, hostile elsewhere.
@@ -119,6 +119,12 @@ for bin in deck_shim.so subucom_forwarder_aarch64 subucom_live_aarch64 cfgd_aarc
            pc_link_bridge_aarch64; do
     cp "$DOCKER_OUT/$bin" "$REPO_ROOT/guest/out/$bin"
 done
+
+# dropbear for firmware that ships no SSH server (e.g. the CDJ-1500X); its own
+# clone and build, like qemu/.
+bash "$REPO_ROOT/dropbear/build.sh"
+cp "$REPO_ROOT/dropbear/out/dropbear_aarch64" "$REPO_ROOT/dropbear/out/dropbear_aarch64.LICENSE" \
+    "$REPO_ROOT/guest/out/"
 
 if [[ "$ARTIFACTS_ONLY" -eq 1 ]]; then
     echo ""

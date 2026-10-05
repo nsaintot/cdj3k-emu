@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
 /* ------------------------------------------------------------------ */
-/* CDJ-3000X touch panel - sub-CPU frame → evdev records              */
+/* CDJ-3000X / CDJ-1500X touch panel - sub-CPU frame → evdev records  */
 /* ------------------------------------------------------------------ */
 /*
  * The app reads its touch panel as a Goodix kernel input device and hands
@@ -30,12 +30,13 @@
 #define GT_ABS_MT_POSITION_Y  0x36
 #define GT_ABS_MT_TRACKING_ID 0x39
 
-/* The frame carries touch as two u16 LE at these offsets, already in the
- * model's own units (screen pixels here). Pixel 0 is a coordinate, so a
- * contact is flagged in the X word's top bit (cdj3k_emu_panel::TOUCH_DOWN)
- * rather than told by a non-zero pair. */
-#define FRAME_TOUCH_X   20
-#define FRAME_TOUCH_Y   22
+/* The frame carries touch as two u16 LE, X then Y, already in the model's
+ * own units (screen pixels here). Pixel 0 is a coordinate, so a contact is
+ * flagged in the X word's top bit (cdj3k_emu_panel::TOUCH_DOWN).  On the
+ * CDJ-3000X the words sit at 20 in its 64-byte frame; the CDJ-1500X's app
+ * reads 32 bytes and checks none past its CRC at 24-25, so they ride at 26. */
+#define FRAME_TOUCH_X_3KX    20
+#define FRAME_TOUCH_X_1500X  26
 #define FRAME_TOUCH_DOWN 0x8000u
 
 /* struct input_event, aarch64 (16-byte timeval, then type/code/value). */
@@ -68,7 +69,14 @@ static inline int pipe_wr(uint64_t p) { return (int)(uint32_t)p; }
 /* One binary serves every model, so the panel answers only on the one that
  * has it; elsewhere the app never opens the node anyway. */
 static int touch_is_ours(void) {
-    return deck_model() == DECK_MODEL_CDJ3KX;
+    deck_model_t m = deck_model();
+    return m == DECK_MODEL_CDJ3KX || m == DECK_MODEL_CDJ1500X;
+}
+
+/* Where the touch words start in the model's frame. */
+static size_t touch_offset(void) {
+    return deck_model() == DECK_MODEL_CDJ1500X ? FRAME_TOUCH_X_1500X
+                                               : FRAME_TOUCH_X_3KX;
 }
 
 static uint64_t touch_pipe(void) {
@@ -133,7 +141,9 @@ static void fill(struct touch_event *ev, uint16_t type, uint16_t code,
 }
 
 void deck_touch_publish(const unsigned char *frame, size_t n) {
-    if (n < 64 || !touch_is_ours()) return;
+    if (!touch_is_ours()) return;
+    size_t at = touch_offset();
+    if (n < at + 4) return;
     uint64_t p = __atomic_load_n(&g_pipe, __ATOMIC_ACQUIRE);
     if (p == PIPE_NONE) return;
 
@@ -151,10 +161,8 @@ void deck_touch_publish(const unsigned char *frame, size_t n) {
      * is a level, and the next frame carries it. */
     if (__atomic_exchange_n(&g_publishing, 1, __ATOMIC_ACQUIRE)) return;
 
-    unsigned rx = (unsigned)frame[FRAME_TOUCH_X]
-                | ((unsigned)frame[FRAME_TOUCH_X + 1] << 8);
-    unsigned ry = (unsigned)frame[FRAME_TOUCH_Y]
-                | ((unsigned)frame[FRAME_TOUCH_Y + 1] << 8);
+    unsigned rx = (unsigned)frame[at] | ((unsigned)frame[at + 1] << 8);
+    unsigned ry = (unsigned)frame[at + 2] | ((unsigned)frame[at + 3] << 8);
     int down = (rx & FRAME_TOUCH_DOWN) != 0;
     /* The host sends the model's own units, so the pair travels into the
      * records unchanged once the flag is off. */

@@ -277,6 +277,7 @@ impl CdjShell {
     /// Shrink the main window back to the picker, the slot having nothing to
     /// show.
     fn show_picker_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        self.app.on_leave_panel();
         self.screen = Screen::Picker;
         menu_state::lock().model = None;
         desktop::enter_picker_window(ctx, frame);
@@ -740,6 +741,12 @@ impl CdjShell {
 }
 
 impl eframe::App for CdjShell {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if matches!(self.screen, Screen::Panel) {
+            self.app.tilt_input_hook(raw_input);
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Graceful close: instead of blocking inside `on_exit` for the full
         // runtime-stop budget (which freezes the window for 1-2 s), defer

@@ -205,6 +205,12 @@ impl QemuConfig {
         if self.service_mode {
             kcmd.push_str(" subucom_testmode");
         }
+        // The guest kernel names the eMMC `mmcblk<emmc_index>` (patch
+        // 01-virtio-blk-naming).
+        kcmd.push_str(&format!(
+            " virtio_blk.emmc_index={}",
+            self.model.spec().emmc_index
+        ));
         // Guest patch 12 turns this into the `Serial` line of /proc/cpuinfo,
         // which genkey_pr hashes with the model to key cabinet.img.
         if let Some(serial) = &self.soc_serial {
@@ -471,6 +477,21 @@ mod tests {
         assert!(a.contains("-smp 6"), "{a}");
         assert!(a.contains(&format!("{}B", QemuConfig::MEM_BYTES)), "{a}");
         assert!(a.contains("virt,gic-version=3"), "{a}");
+    }
+
+    /// The kernel command line carries each model's eMMC index: 0 for the
+    /// CDJ-1500X, 1 for the RK3399 decks.
+    #[test]
+    fn the_emmc_is_named_after_the_decks_own() {
+        for (model, n) in [(Model::Cdj3k, 1), (Model::Cdj3kx, 1), (Model::Cdj1500x, 0)] {
+            let mut c = config();
+            c.model = model;
+            let a = c.build_argv().join(" ");
+            assert!(
+                a.contains(&format!(" virtio_blk.emmc_index={n}")),
+                "{model}: {a}"
+            );
+        }
     }
 
     const KVM: Accelerator = Accelerator {

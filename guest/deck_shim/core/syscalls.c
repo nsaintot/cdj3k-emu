@@ -99,7 +99,8 @@ static int do_open(const char *pathname, int flags, mode_t mode) {
         }
         /* The sub-CPU device itself stays with subucom_virt.ko; remember the
          * fd so read() can lift touch coordinates out of the frames. */
-        if (strcmp(pathname, SUBUCOM_SPI_PATH) == 0) {
+        if (strcmp(pathname, SUBUCOM_SPI_PATH) == 0
+            || strcmp(pathname, SUBUCOM_SPI_PATH_1500X) == 0) {
             int fd = sys_openat(pathname, flags, 0);
             if (fd >= 0) {
                 __atomic_store_n(&g_subucom_fd, fd, __ATOMIC_RELEASE);

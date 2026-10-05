@@ -14,9 +14,19 @@
 # and waits. "XX" is what the monitor writes when it finds no device, and
 # mlan0Addr is written on the same path.
 #
-# start-mlan0.service is masked: on its no-SDIO path wlan-monitor.sh writes the
-# wlanbterr caution (E-7026: WLAN module ERROR) after a 10 s probe, and the
-# files it would have written are provided here.
+# The unit that runs wlan-monitor.sh is masked: on its no-SDIO path the script
+# writes the WLAN module caution (E-7026: WLAN module ERROR) to
+# /proc/udev_usbctn1 - wlanbterr after a 10 s probe, or mlanbterr at once,
+# depending on the firmware - and the files it would have written are
+# provided here.  The unit is start-mlan0.service on the CDJ-3000X,
+# start-wlan.service on the CDJ-1500X.
+#
+# mlan0 itself: service mode's version page reads the WLAN address from
+# `ifconfig mlan0` and, while it finds none, re-runs it twice a second. The
+# guest kernel's built-in dummy driver creates dummy0 before userspace; a unit
+# renames it mlan0 (or adds mlan0 where there is no dummy0) and gives it
+# eth0's address with the locally-administered bit set. It stays down, so the
+# app's network code sees no link on it.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 
@@ -35,5 +45,32 @@ f /tmp/mlan0Addr 0644 root root - 00:00:00:00:00:00
 EOFC
 echo "  -> tmpfiles.d/cdj3k-absent-hardware.conf: net_mlan0_state.dat, ccode, mlan0Addr"
 
-ln -sf /dev/null "$ROOTFS/etc/systemd/system/start-mlan0.service"
-echo "  -> masked start-mlan0.service (no WLAN module under QEMU)"
+masked=0
+for unit in "$ROOTFS"/etc/systemd/system/*.service; do
+    [[ -f "$unit" && ! -L "$unit" ]] || continue
+    grep -q '^ExecStart=.*/wlan-monitor\.sh' "$unit" || continue
+    ln -sf /dev/null "$unit"
+    echo "  -> masked $(basename "$unit") (no WLAN module under QEMU)"
+    masked=1
+done
+# A rootfs patched before carries cdj3k-mlan0.service and the unit masked.
+if [[ "$masked" == 0 && ! -f "$ROOTFS/etc/systemd/system/cdj3k-mlan0.service" ]]; then
+    echo "ERROR: no unit runs wlan-monitor.sh in this rootfs" >&2
+    exit 1
+fi
+
+cat > "$ROOTFS/etc/systemd/system/cdj3k-mlan0.service" << 'EOFU'
+[Unit]
+Description=mlan0 for the absent Wi-Fi module (a dummy interface, down)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'm=$$(cat /sys/class/net/eth0/address); { ip link set dummy0 name mlan0 || ip link add mlan0 type dummy; } && ip link set mlan0 address 02:$${m#*:}'
+
+[Install]
+WantedBy=multi-user.target
+EOFU
+mkdir -p "$ROOTFS/etc/systemd/system/multi-user.target.wants"
+ln -sf ../cdj3k-mlan0.service "$ROOTFS/etc/systemd/system/multi-user.target.wants/cdj3k-mlan0.service"
+echo "  -> cdj3k-mlan0.service: dummy0 renamed mlan0, down"

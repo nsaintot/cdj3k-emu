@@ -12,10 +12,13 @@
 //! [`Slate`] constant, so adding one is a module and an arm there, not a new
 //! branch in every caller.
 
+pub(in crate::app) mod cdj1500x;
 pub(in crate::app) mod cdj3k;
 pub(in crate::app) mod cdj3kx;
 
 use cdj3k_emu_panel::Model;
+
+use egui::Color32;
 
 use crate::app::picker::Card;
 use crate::app::CdjApp;
@@ -25,6 +28,8 @@ pub(in crate::app) struct Slate {
     /// Reference canvas `(w, h)` its layout constants are expressed in; the
     /// window is aspect-locked to it.
     pub ref_canvas: (f32, f32),
+    /// The deck's colour wherever the setup window names it.
+    pub accent: Color32,
     pub card: Card,
     /// Chassis, LCD overlay, then every section.
     pub draw_panel: fn(&mut CdjApp, &mut egui::Ui),
@@ -34,5 +39,6 @@ pub(in crate::app) fn for_model(model: Model) -> &'static Slate {
     match model {
         Model::Cdj3k => &cdj3k::SLATE,
         Model::Cdj3kx => &cdj3kx::SLATE,
+        Model::Cdj1500x => &cdj1500x::SLATE,
     }
 }

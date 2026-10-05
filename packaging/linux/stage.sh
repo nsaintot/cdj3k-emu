@@ -92,13 +92,15 @@ echo "==> Assembling share/cdj3k-emu"
 
 # Guest ELFs the patch steps install into the rootfs. 21-cfgd.sh aborts the
 # patch without cfgd.
-for tool in cfgd_aarch64 pc_link_bridge_aarch64; do
+for tool in cfgd_aarch64 pc_link_bridge_aarch64 dropbear_aarch64 dropbear_aarch64.LICENSE; do
     src="$REPO_ROOT/guest/out/$tool"
     if [[ ! -f "$src" ]]; then
         echo "ERROR: guest/out/$tool not found - run ./build.sh" >&2
         exit 1
     fi
-    install -m 0755 "$src" "$SHARE/patch/$tool"
+    mode=0755
+    [[ "$tool" == *.LICENSE ]] && mode=0644
+    install -m "$mode" "$src" "$SHARE/patch/$tool"
 done
 
 MODS="$REPO_ROOT/build/docker-out/modules"

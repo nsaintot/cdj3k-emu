@@ -3,8 +3,9 @@
 # Patch 16: replace xorg.conf.d/20-modesetting.conf for virtio-gpu (--gl mode only)
 #
 # Changes from the Pioneer original:
-#   Device: AccelMethod exa kept     (modesetting internal EXA - uses DRM/GEM, not Rockchip-specific;
-#                                    works with virtio-gpu.ko which exposes GEM
+#   Device: AccelMethod exa kept     (modesetting internal EXA over DRM/GEM, which virtio-gpu
+#                                    exposes; "none" where the modesetting build allocates its
+#                                    own EXA offscreen pixmaps, which virtio-gpu refuses)
 #           DRI "2" removed          (modesetting ignores it with a warning; sets up DRI2 internally)
 #           FlipFB "always" removed    (Rockchip/armsoc pageflip hint, not valid here)
 #   Added:  Monitor "DSI-2" Ignore  (jog LCD connector reported connected by DRM;
@@ -12,15 +13,21 @@
 # Everything else (Monitor rotate/DPMS, Screen, ServerLayout) is unchanged.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
+: "${APP_SLUG:?APP_SLUG must be set by dispatcher}"
+
+case "$APP_SLUG" in
+    cdj1500x) ACCEL=none ;;
+    *)        ACCEL=exa ;;
+esac
 
 TARGET="$ROOTFS/etc/X11/xorg.conf.d/20-modesetting.conf"
 [[ -f "$TARGET" ]] || { echo "  WARNING: $TARGET not found - skipping"; exit 0; }
 
-cat > "$TARGET" << 'EOF'
+cat > "$TARGET" << EOF
 Section "Device"
 Identifier  "Rockchip Graphics"
     Driver      "modesetting"
-    Option      "AccelMethod"    "exa"
+    Option      "AccelMethod"    "$ACCEL"
 EndSection
 
 Section "Screen"
@@ -53,4 +60,4 @@ Section "Monitor"
 EndSection
 EOF
 
-echo "  -> 20-modesetting.conf replaced (AccelMethod=none, DRI/FlipFB removed, DSI-2 ignored)"
+echo "  -> 20-modesetting.conf replaced (AccelMethod=$ACCEL, DRI/FlipFB removed, DSI-2 ignored)"

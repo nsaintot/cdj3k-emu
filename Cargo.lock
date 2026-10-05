@@ -698,6 +698,7 @@ dependencies = [
 name = "cdj3k-emu-ui"
 version = "0.2.0"
 dependencies = [
+ "bytemuck",
  "cdj3k-emu-firmware",
  "cdj3k-emu-panel",
  "cdj3k-emu-platform",

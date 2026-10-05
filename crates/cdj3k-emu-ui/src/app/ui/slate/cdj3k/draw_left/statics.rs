@@ -6,8 +6,8 @@ use egui::{FontId, Pos2, Rect, Shape, Stroke, Vec2};
 use super::super::draw_cache::ShapeList;
 use super::super::{
     collect_back_double_circle_border, collect_bordered_rect_section, collect_computer_glyph,
-    DoubleBorderSpec, StrokeSpec, UiScale, COL_BLACK, COL_BTN_OUTLINED_WHITE, COL_BTN_TEXT,
-    COL_DARK, COL_SILVER,
+    collect_usb_trident, DoubleBorderSpec, StrokeSpec, UiScale, COL_BLACK, COL_BTN_OUTLINED_WHITE,
+    COL_BTN_TEXT, COL_DARK, COL_SILVER,
 };
 use super::*;
 use crate::app::ui::draw_direction::DIRECTION_BORDER_ROUNDING;
@@ -60,84 +60,16 @@ pub(super) fn collect_left_statics(list: &mut ShapeList, ctx: &egui::Context, la
     // ── USB trident logo (left of the USB STOP button) ─────────────────────
     {
         let col = PERF_TRANSPORT_COL_REF;
-        let cx_ref = col.left() + col.width() * PERF_U_USB_SIGN;
-        let cy_ref = col.top() + col.height() * PERF_V_USB_SIGN;
-        let stroke = Stroke::new(layout.sc(PERF_USB_SIGN_STROKE), COL_BTN_TEXT);
-
-        // Trunk: horizontal line spanning the full width.
-        let half_w = PERF_USB_SIGN_W * 0.5;
-        let trunk_left = layout.sp(cx_ref - half_w, cy_ref);
-        let trunk_right = layout.sp(cx_ref + half_w - PERF_USB_SIGN_ARROW_LEN, cy_ref);
-        list.line_segment([trunk_left, trunk_right], stroke);
-
-        // Tail dot (left end of the trunk).
-        list.circle_filled(
-            layout.sp(cx_ref - half_w, cy_ref),
-            layout.sc(PERF_USB_SIGN_TAIL_DOT_R),
+        collect_usb_trident(
+            list,
+            |x, y| layout.sp(x, y),
+            |v| layout.sc(v),
+            (
+                col.left() + col.width() * PERF_U_USB_SIGN,
+                col.top() + col.height() * PERF_V_USB_SIGN,
+            ),
             COL_BTN_TEXT,
         );
-
-        // Arrow head (right end): filled triangle pointing right.
-        let arrow_base_x = cx_ref + half_w - PERF_USB_SIGN_ARROW_LEN;
-        let arrow_tip_x = cx_ref + half_w;
-        let arrow_pts = vec![
-            layout.sp(arrow_base_x, cy_ref - PERF_USB_SIGN_ARROW_HALF),
-            layout.sp(arrow_tip_x, cy_ref),
-            layout.sp(arrow_base_x, cy_ref + PERF_USB_SIGN_ARROW_HALF),
-        ];
-        list.add(Shape::convex_polygon(arrow_pts, COL_BTN_TEXT, Stroke::NONE));
-
-        // Upper fork: trunk → diagonal up → horizontal → filled circle at the end.
-        let fork_x_start = cx_ref + PERF_USB_SIGN_TOP_FORK_X_START;
-        let fork_x_diag_end = cx_ref + PERF_USB_SIGN_TOP_FORK_X_DIAG_END;
-        let fork_x_end = cx_ref + PERF_USB_SIGN_TOP_FORK_X_END;
-        let fork_top_y = cy_ref - PERF_USB_SIGN_FORK_OFF_Y;
-        list.line_segment(
-            [
-                layout.sp(fork_x_start, cy_ref),
-                layout.sp(fork_x_diag_end, fork_top_y),
-            ],
-            stroke,
-        );
-        list.line_segment(
-            [
-                layout.sp(fork_x_diag_end, fork_top_y),
-                layout.sp(fork_x_end, fork_top_y),
-            ],
-            stroke,
-        );
-        let cr = PERF_USB_SIGN_CIRCLE_R;
-        list.circle_filled(
-            layout.sp(fork_x_end + cr, fork_top_y),
-            layout.sc(cr),
-            COL_BTN_TEXT,
-        );
-
-        // Lower fork: trunk → diagonal down → horizontal → filled square at the end.
-        let lfork_x_start = cx_ref + PERF_USB_SIGN_BOT_FORK_X_START;
-        let lfork_x_diag_end = cx_ref + PERF_USB_SIGN_BOT_FORK_X_DIAG_END;
-        let lfork_x_end = cx_ref + PERF_USB_SIGN_BOT_FORK_X_END;
-        let lfork_bot_y = cy_ref + PERF_USB_SIGN_FORK_OFF_Y;
-        list.line_segment(
-            [
-                layout.sp(lfork_x_start, cy_ref),
-                layout.sp(lfork_x_diag_end, lfork_bot_y),
-            ],
-            stroke,
-        );
-        list.line_segment(
-            [
-                layout.sp(lfork_x_diag_end, lfork_bot_y),
-                layout.sp(lfork_x_end, lfork_bot_y),
-            ],
-            stroke,
-        );
-        let sq = PERF_USB_SIGN_SQUARE_S;
-        let sq_rect = Rect::from_center_size(
-            layout.sp(lfork_x_end + sq * 0.5, lfork_bot_y),
-            Vec2::new(layout.sc(sq), layout.sc(sq)),
-        );
-        list.rect_filled(sq_rect, 0.0, COL_BTN_TEXT);
     }
 
     // ── USB rating under the casing: "5V <dc> 1A" ───────────────────────────

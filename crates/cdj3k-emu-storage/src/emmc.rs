@@ -1,23 +1,30 @@
 //! eMMC qcow2 provisioning.
 //!
-//! Creates a 29.1 GB qcow2 image with a GPT partition layout matching the
-//! Pioneer CDJ-3000 eMMC (mmcblk1).  In QEMU, virtio_blk.c maps device
-//! index 0 → /dev/mmcblk1 so the Pioneer init scripts find the expected paths.
+//! Creates a 29.1 GB sparse qcow2 image with the GPT partition layout of the
+//! deck's eMMC, and the U-Boot environment its `fw_env.config` points at
+//! (offset 0x3f8000).  The guest kernel names the disk after the deck's own
+//! eMMC: `mmcblk1` on the CDJ-3000 and CDJ-3000X, `mmcblk0` on the CDJ-1500X.
 //!
-//! Partition layout:
-//!   p1  4 MB  raw     Bootloader (LOADER) - zeroed placeholder; U-Boot env
-//!                     block written at offset 0x3f8000 (matches fw_env.config)
-//!   p2  4 MB  raw     TrustFirmware (BL3X) - zeroed placeholder
-//!   p3  4 MB  raw     Rockchip resource (RSCE) - zeroed placeholder
-//!   p4  128 MB  raw   Recovery firmware slot (FAT32 on real hw) - zeroed
+//! CDJ-3000 / CDJ-3000X (RK3399):
+//!   p1  4 MB    raw   Bootloader (LOADER) - zeroed; holds the U-Boot env
+//!   p2  4 MB    raw   TrustFirmware (BL3X) - zeroed
+//!   p3  4 MB    raw   Rockchip resource (RSCE) - zeroed
+//!   p4  128 MB  raw   Recovery firmware slot - holds the staged cabinet.img
 //!   p5  256 MB  raw   App firmware slot A - zeroed
 //!   p6  256 MB  raw   App firmware slot B - zeroed
-//!   p7  64 MB  ext4   Settings (/home/root/settings)
-//!   p8  ~28.4 GB ext4 User data / rekordbox cache (/mnt)
+//!   p7  64 MB   ext4  Settings (/home/root/settings)
+//!   p8  rest    ext4  User data / rekordbox cache (/mnt)
 //!
-//! p7 and p8 are left unformatted; the guest formats them on first boot
-//! (settings-mount.sh detects blank signature and runs mkfs.ext4).
-//! The image is qcow2 sparse - host disk usage is near-zero until written.
+//! CDJ-1500X (RK3566), as its emmc-fs.sh lists them:
+//!   p1  4 MB    raw   U-Boot - zeroed; holds the U-Boot env
+//!   p2  256 MB  raw   Boot slot A - zeroed
+//!   p3  256 MB  raw   Boot slot B - holds the staged cabinet.img
+//!   p4  64 MB   ext4  Settings (/home/root/settings)
+//!   p5  512 MB  ext4  Update (/home/root/update)
+//!   p6  rest    ext4  Work (/mnt)
+//!
+//! The ext4 partitions are left unformatted; the guest's emmc-fs.sh formats
+//! them on first boot.  The emulator boots its kernel from `-kernel`.
 
 use std::collections::BTreeMap;
 use std::io::{Seek, SeekFrom, Write};
@@ -38,7 +45,7 @@ const SECTOR: u64 = 512;
 /// Total virtual disk size: 29.1 GB.
 pub const EMMC_SIZE: u64 = 29 * GB + 100 * MB; // 29,360,128,000 bytes ≈ 29.1 GB
 
-/// fw_env.config: /dev/mmcblk1  0x003f8000  0x8000
+/// fw_env.config: /dev/mmcblk<emmc_index>  0x003f8000  0x8000
 const UBOOT_ENV_OFFSET: u64 = 0x003f8000;
 const UBOOT_ENV_SIZE: usize = 0x8000;
 
@@ -53,8 +60,8 @@ pub struct EmmcConfig {
     pub model: Model,
     /// Version metadata from the firmware ISO.
     pub firmware: FirmwareInfo,
-    /// The firmware's `images/cabinet.img`, staged raw in the recovery
-    /// partition for the guest to install on its first boot.  `None` stages
+    /// The firmware's `images/cabinet.img`, staged raw in a partition nothing
+    /// boots from for the guest to install on its first boot.  `None` stages
     /// nothing, and the deck runs without Widevine or Device Library Plus.
     pub cabinet: Option<Vec<u8>>,
 }
@@ -137,42 +144,11 @@ fn write_uboot_env(
 ) -> std::io::Result<()> {
     let serial = cdj3k_emu_platform::identity::device_serial(instance_id);
 
-    // U-boot environment variables.
-    let vars: &[(&str, &str)] = &[
-        ("arch", "arm"),
-        ("baudrate", "115200"),
-        ("board", "evb_rk3399"),
-        ("board_name", "evb_rk3399"),
-        ("bootargs_emmc", "earlycon=uart8250,mmio32,0xff1a0000 swiotlb=1 console=ttyFIQ0 rw rootfstype=ramfs rootwait quiet loglevel=3 coherent_pool=1m"),
-        ("bootcmd", "run bootcmd_emmc"),
-        ("bootcmd_emmc", "setenv bootargs ${bootargs_emmc};load mmc ${part} ${kernel_addr_r} /${image};run booti_cmd"),
-        ("bootdelay", "0"),
-        ("booti_cmd", "booti ${kernel_addr_r} - ${fdt_addr_r}"),
-        ("boot_type", "normal"),
-        ("cpu", "armv8"),
-        ("fdt_addr_r", "0x00280000"),
-        ("image", "Image"),
-        ("kernel_addr_r", "0x10480000"),
-        ("kernel_bank", "B"),
-        ("miniloader", fw.miniloader.as_deref().unwrap_or("")),
-        ("model", model.spec().model_env),
-        ("part", "0:6"),
-        ("pxefile_addr_r", "0x00600000"),
-        ("ramdisk_addr_r", "0x0a200000"),
-        ("release", fw.release.as_deref().unwrap_or("")),
-        ("rev_apl", fw.rev_apl.as_deref().unwrap_or("")),
-        (model.spec().system_rev_env, fw.rev_system.as_deref().unwrap_or("")),
-        ("serial_number", &serial),
-        ("soc", "rockchip"),
-        ("stderr", "serial,vidconsole"),
-        ("stdout", "serial,vidconsole"),
-        ("update_status", "success"),
-        ("vendor", "rockchip"),
-    ];
+    let vars = uboot_vars(model, fw, &serial);
 
     // Build env data: null-terminated "key=value" strings + final null terminator.
     let mut env_data = Vec::with_capacity(UBOOT_ENV_SIZE - 4);
-    for (k, v) in vars {
+    for (k, v) in &vars {
         env_data.extend_from_slice(k.as_bytes());
         env_data.push(b'=');
         env_data.extend_from_slice(v.as_bytes());
@@ -195,6 +171,111 @@ fn write_uboot_env(
     file.write_all(&env_data)?;
 
     Ok(())
+}
+
+/// The variables a deck's U-Boot environment holds, `serial_number` being
+/// this slot's.
+fn uboot_vars<'a>(model: Model, fw: &'a FirmwareInfo, serial: &'a str) -> Vec<(&'a str, &'a str)> {
+    let spec = model.spec();
+    let mut vars: Vec<(&str, &str)> = match model {
+        // As the dumped unit's: it records no release or revision.
+        Model::Cdj1500x => vec![
+            ("arch", "arm"),
+            ("baudrate", "1500000"),
+            ("board", "evb_rk3568"),
+            ("board_name", "evb_rk3568"),
+            ("bootcmd", "boot_fit"),
+            ("bootcmd_emmc", "boot_fit"),
+            ("bootdelay", "0"),
+            ("cpu", "armv8"),
+            ("devnum", "0"),
+            ("devtype", "mmc"),
+            ("fdt_addr_r", "0x0a100000"),
+            ("kernel_addr_no_low_bl32_r", "0x00280000"),
+            ("kernel_addr_r", "0x00a80000"),
+            ("kernel_bank", "A"),
+            ("model", spec.model_env),
+            ("model_name", spec.title),
+            ("ramdisk_addr_r", "0x0a200000"),
+            ("soc", "rockchip"),
+            ("stderr", "serial,vidconsole"),
+            ("stdin", "serial,usbkbd"),
+            ("stdout", "serial,vidconsole"),
+            ("vendor", "rockchip"),
+        ],
+        Model::Cdj3k | Model::Cdj3kx => vec![
+            ("arch", "arm"),
+            ("baudrate", "115200"),
+            ("board", "evb_rk3399"),
+            ("board_name", "evb_rk3399"),
+            ("bootargs_emmc", "earlycon=uart8250,mmio32,0xff1a0000 swiotlb=1 console=ttyFIQ0 rw rootfstype=ramfs rootwait quiet loglevel=3 coherent_pool=1m"),
+            ("bootcmd", "run bootcmd_emmc"),
+            ("bootcmd_emmc", "setenv bootargs ${bootargs_emmc};load mmc ${part} ${kernel_addr_r} /${image};run booti_cmd"),
+            ("bootdelay", "0"),
+            ("booti_cmd", "booti ${kernel_addr_r} - ${fdt_addr_r}"),
+            ("boot_type", "normal"),
+            ("cpu", "armv8"),
+            ("fdt_addr_r", "0x00280000"),
+            ("image", "Image"),
+            ("kernel_addr_r", "0x10480000"),
+            ("kernel_bank", "B"),
+            ("miniloader", fw.miniloader.as_deref().unwrap_or("")),
+            ("model", spec.model_env),
+            ("part", "0:6"),
+            ("pxefile_addr_r", "0x00600000"),
+            ("ramdisk_addr_r", "0x0a200000"),
+            ("release", fw.release.as_deref().unwrap_or("")),
+            ("rev_apl", fw.rev_apl.as_deref().unwrap_or("")),
+            ("soc", "rockchip"),
+            ("stderr", "serial,vidconsole"),
+            ("stdout", "serial,vidconsole"),
+            ("update_status", "success"),
+            ("vendor", "rockchip"),
+        ],
+    };
+    if let Some(rev) = spec.system_rev_env {
+        vars.push((rev, fw.rev_system.as_deref().unwrap_or("")));
+    }
+    vars.push(("serial_number", serial));
+    vars
+}
+
+/// A deck's eMMC partitions, in order: their sizes and GPT names. The last
+/// one takes the rest of the disk.
+struct Layout {
+    sized: &'static [(u64, &'static str)],
+    rest: &'static str,
+    /// The partition the cabinet image is staged in, from 0.
+    stage: usize,
+}
+
+fn layout(model: Model) -> Layout {
+    match model {
+        Model::Cdj1500x => Layout {
+            sized: &[
+                (4 * MB, "uboot"),
+                (256 * MB, "boota"),
+                (256 * MB, "bootb"),
+                (64 * MB, "setting"),
+                (512 * MB, "update"),
+            ],
+            rest: "reserve",
+            stage: 2,
+        },
+        Model::Cdj3k | Model::Cdj3kx => Layout {
+            sized: &[
+                (4 * MB, "bootloader"),
+                (4 * MB, "trustfirmware"),
+                (4 * MB, "resource"),
+                (128 * MB, "recovery"),
+                (256 * MB, "firmware-a"),
+                (256 * MB, "firmware-b"),
+                (64 * MB, "settings"),
+            ],
+            rest: "userdata",
+            stage: 3,
+        },
+    }
 }
 
 fn sectors(bytes: u64) -> u64 {
@@ -261,30 +342,26 @@ fn write_gpt_raw(raw_path: &Path, config: &EmmcConfig) -> std::io::Result<()> {
         PartEntry::new(data, first, last, name)
     };
 
-    let partitions = vec![
-        p(4 * MB, "bootloader"),    // p1
-        p(4 * MB, "trustfirmware"), // p2
-        p(4 * MB, "resource"),      // p3
-        p(128 * MB, "recovery"),    // p4
-        p(256 * MB, "firmware-a"),  // p5
-        p(256 * MB, "firmware-b"),  // p6
-        p(64 * MB, "settings"),     // p7
-        // p8: remainder of disk (leave room for backup GPT header + entry table).
-        {
-            let last = disk_sectors - crate::gpt::GPT_BACKUP_RESERVED_SECTORS - 1;
-            PartEntry::new(data, cursor, last, "userdata")
-        },
-    ];
+    let layout = layout(config.model);
+    let mut partitions: Vec<PartEntry> = layout
+        .sized
+        .iter()
+        .map(|&(size, name)| p(size, name))
+        .collect();
+    // The last partition: the rest of the disk, leaving room for the backup
+    // GPT header and entry table.
+    let last = disk_sectors - crate::gpt::GPT_BACKUP_RESERVED_SECTORS - 1;
+    partitions.push(PartEntry::new(data, cursor, last, layout.rest));
 
     let mut w = std::io::BufWriter::new(file);
     write_gpt(&mut w, disk_sectors, &partitions)?;
     w.flush()?;
 
     let mut file = w.into_inner().map_err(|e| e.into_error())?;
-    // p4 (recovery) holds the staged cabinet image: the emulator boots the
-    // kernel from `-kernel`, so nothing else reads that partition.
+    // The kernel boots from `-kernel`; the staged partition is the guest's
+    // install source.
     if let Some(cabinet) = &config.cabinet {
-        stage_cabinet(&mut file, &partitions[3], cabinet)?;
+        stage_cabinet(&mut file, &partitions[layout.stage], cabinet)?;
     }
     write_uboot_env(
         &mut file,
@@ -318,6 +395,52 @@ fn convert_to_qcow2(raw: &Path, out: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each deck's partitions are its own scripts': the CDJ-1500X keeps its
+    /// settings on p4 and stages the cabinet on p3, the RK3399 decks keep
+    /// settings on p7 and stage on p4, recovery.
+    #[test]
+    fn each_deck_gets_the_partitions_its_scripts_mount() {
+        let l = layout(Model::Cdj1500x);
+        let names: Vec<&str> = l.sized.iter().map(|(_, n)| *n).collect();
+        assert_eq!(names, ["uboot", "boota", "bootb", "setting", "update"]);
+        assert_eq!(l.rest, "reserve");
+        assert_eq!(l.sized[l.stage].1, "bootb");
+        assert_eq!(l.sized[3].0, 64 * MB);
+
+        for model in [Model::Cdj3k, Model::Cdj3kx] {
+            let l = layout(model);
+            assert_eq!(l.sized.len(), 7);
+            assert_eq!(l.sized[l.stage].1, "recovery");
+            assert_eq!(l.sized[6].1, "settings");
+        }
+    }
+
+    /// The CDJ-1500X's environment is the dumped unit's: its product UUID,
+    /// no release or revision, and the slot's own serial.
+    #[test]
+    fn the_uboot_env_follows_the_deck() {
+        let fw = FirmwareInfo {
+            release: Some("1.10".into()),
+            rev_system: Some("1.10".into()),
+            ..Default::default()
+        };
+        let vars = uboot_vars(Model::Cdj1500x, &fw, "SERIAL");
+        let get = |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| *v);
+        assert_eq!(get("model"), Some(Model::Cdj1500x.spec().model_env));
+        assert_eq!(get("model_name"), Some("CDJ-1500X"));
+        assert_eq!(get("board"), Some("evb_rk3568"));
+        assert_eq!(get("serial_number"), Some("SERIAL"));
+        assert_eq!(get("release"), None);
+        assert!(vars.iter().all(|(n, _)| !n.starts_with("rev_")));
+
+        let vars = uboot_vars(Model::Cdj3kx, &fw, "SERIAL");
+        let get = |k: &str| vars.iter().find(|(n, _)| *n == k).map(|(_, v)| *v);
+        assert_eq!(get("model"), Some("CDJ3000X"));
+        assert_eq!(get("release"), Some("1.10"));
+        assert_eq!(get("rev_system"), Some("1.10"));
+        assert_eq!(get("serial_number"), Some("SERIAL"));
+    }
 
     /// `stage_cabinet` writes the ASCII header guest patch 14 parses, then the
     /// image, and refuses one the partition cannot hold rather than truncating.

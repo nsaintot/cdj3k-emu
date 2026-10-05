@@ -4,6 +4,8 @@
 //! `jog_pos` / `jog_vel` / `jog_touch`, and the entry points fed by
 //! drag and scroll input samples.
 
+use cdj3k_emu_panel::JogBrake;
+
 use super::CdjApp;
 
 /// Reference angular speed (rad/s) for the brake stop-time table.
@@ -106,7 +108,8 @@ impl CdjApp {
     /// The platter always applies **linear** (constant) angular deceleration,
     /// matching the jog behavior: `ω -= brake · sign(ω) · dt`.
     /// `ω` hits zero in finite time `|ω₀| / brake`. `brake` (rad/s²) is
-    /// derived from the stop-time parameters in [`JOG_BRAKE_STOP_TIMES_SEC`].
+    /// derived from the player's fixed stop time, or from the JOG ADJUST
+    /// knob's in [`JOG_BRAKE_STOP_TIMES_SEC`].
     ///
     /// Updates `jog_pos` / `jog_vel` / `jog_touch` and calls
     /// [`Self::inject_jog`] when any of them changed this frame.
@@ -128,15 +131,20 @@ impl CdjApp {
             (self.jog_release_touch_pulse_remaining_sec - dt).max(0.0);
         let touch_active = ((dragging || scroll_active) && !grip) || release_pulse;
 
-        // Interpolate brake from the 13 jog_adjust detent positions.
-        let adj_f = self.jog_adjust * (JOG_BRAKE_STOP_TIMES_SEC.len() - 1) as f32;
-        let lo = (adj_f as usize).min(JOG_BRAKE_STOP_TIMES_SEC.len() - 1);
-        let hi = (lo + 1).min(JOG_BRAKE_STOP_TIMES_SEC.len() - 1);
-        let stop_time = lerp(
-            JOG_BRAKE_STOP_TIMES_SEC[lo],
-            JOG_BRAKE_STOP_TIMES_SEC[hi],
-            adj_f.fract(),
-        );
+        // Fixed brake, or the knob's, interpolated between its 13 detents.
+        let stop_time = match self.model.spec().jog_brake {
+            JogBrake::Fixed { stop_secs } => stop_secs,
+            JogBrake::Adjustable => {
+                let adj_f = self.jog_adjust * (JOG_BRAKE_STOP_TIMES_SEC.len() - 1) as f32;
+                let lo = (adj_f as usize).min(JOG_BRAKE_STOP_TIMES_SEC.len() - 1);
+                let hi = (lo + 1).min(JOG_BRAKE_STOP_TIMES_SEC.len() - 1);
+                lerp(
+                    JOG_BRAKE_STOP_TIMES_SEC[lo],
+                    JOG_BRAKE_STOP_TIMES_SEC[hi],
+                    adj_f.fract(),
+                )
+            }
+        };
         let brake = JOG_BRAKE_REF_OMEGA / stop_time.max(BRAKE_STOP_TIME_FLOOR_SEC);
         let dec = brake * dt.max(DT_FLOOR);
 
@@ -150,7 +158,7 @@ impl CdjApp {
             self.jog_apply_friction(dt, brake);
         }
 
-        self.jog_update_encoded_state(touch_active);
+        self.jog_update_encoded_state(touch_active, dt);
         self.jog_touch_active = touch_active;
 
         if self.debug_screen_popped {
@@ -192,13 +200,17 @@ impl CdjApp {
     }
 
     /// Encodes `jog_pos` / `jog_vel` / `jog_touch` from current kinematics.
-    fn jog_update_encoded_state(&mut self, touch_active: bool) {
+    fn jog_update_encoded_state(&mut self, touch_active: bool, dt: f32) {
         puffin::profile_function!();
 
         // Position: free-running wrapping u16. Use the actual angle delta
         // (not omega · dt) so slow drags still register single ticks.
         let angle_delta = self.jog_angle - self.jog_angle_last_encoded;
         self.jog_angle_last_encoded = self.jog_angle;
+        self.jog_revs += f64::from(angle_delta / std::f32::consts::TAU);
+        // Actual platter speed this tick: coast while free, the hand's motion
+        // while held.
+        let new_rps = angle_delta / std::f32::consts::TAU / dt.max(DT_FLOOR);
         let tick_delta = angle_delta * JOG_TICKS_PER_REV / std::f32::consts::TAU;
         self.jog_accum += tick_delta;
         let ticks = self.jog_accum.trunc() as i32;
@@ -275,8 +287,11 @@ impl CdjApp {
             }
         };
 
-        let changed =
-            new_pos != self.jog_pos || new_vel != self.jog_vel || new_touch != self.jog_touch;
+        let changed = new_pos != self.jog_pos
+            || new_vel != self.jog_vel
+            || new_touch != self.jog_touch
+            || new_rps != self.jog_rps;
+        self.jog_rps = new_rps;
         self.jog_pos = new_pos;
         self.jog_vel = new_vel;
         self.jog_touch = new_touch;

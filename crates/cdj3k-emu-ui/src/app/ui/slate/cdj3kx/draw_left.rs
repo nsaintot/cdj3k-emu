@@ -1,7 +1,7 @@
 use crate::app::ui::draw_direction::{self, DirectionPlacement};
 use crate::app::ui::{DoubleBorderSpec, StrokeSpec, COL_AMBER, COL_WHITE};
-use cdj3k_emu_panel::mosi_frame;
 use cdj3k_emu_panel::Btn;
+use cdj3k_emu_panel::{mosi_frame, Lamp};
 use egui::{FontFamily, Pos2, Rect, Stroke, Vec2};
 
 use super::{
@@ -142,7 +142,7 @@ pub(super) struct UsbSlot {
     /// whole (ref units).
     pub dc_off_x: f32,
     pub type_c: bool,
-    pub lamp: fn(&mosi_frame::MosiFrame) -> Option<(u8, u8, u8)>,
+    pub lamp: Lamp,
     pub stop: Btn,
     pub id: &'static str,
 }
@@ -153,7 +153,7 @@ pub(super) const USB_1: UsbSlot = UsbSlot {
     amps: "1 A",
     dc_off_x: 0.0,
     type_c: false,
-    lamp: mosi_frame::MosiFrame::slot_1_rgb,
+    lamp: Lamp::Slot1,
     stop: Btn::UsbStop,
     id: "usb_stop",
 };
@@ -164,7 +164,7 @@ pub(super) const USB_2: UsbSlot = UsbSlot {
     amps: "1.5 A",
     dc_off_x: -11.8,
     type_c: true,
-    lamp: mosi_frame::MosiFrame::slot_2_rgb,
+    lamp: Lamp::Slot2,
     stop: Btn::Usb2Stop,
     id: "usb2_stop",
 };
@@ -325,8 +325,8 @@ pub(super) fn draw_left_section(
         let slip = Rect::from_center_size(slip_center, slip_btn_size);
         let quantize = Rect::from_center_size(quantize_center, slip_btn_size);
 
-        let slip_step = app.mosi().step_led(mosi_frame::LED_SLIP);
-        let quantize_step = app.mosi().step_led(mosi_frame::LED_QUANTIZE);
+        let slip_step = app.mosi().step(Lamp::Slip);
+        let quantize_step = app.mosi().step(Lamp::Quantize);
 
         let slip_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
@@ -479,9 +479,9 @@ pub(super) fn draw_left_section(
             layout.sc(0.0),
         );
 
-        let loop_in_led = app.mosi().led_bit(mosi_frame::LED_LOOP_IN);
-        let loop_out_led = app.mosi().led_bit(mosi_frame::LED_LOOP_OUT);
-        let loop_reloop_led = app.mosi().led_bit(mosi_frame::LED_RELOOP);
+        let loop_in_led = app.mosi().lit(Lamp::LoopIn);
+        let loop_out_led = app.mosi().lit(Lamp::LoopOut);
+        let loop_reloop_led = app.mosi().lit(Lamp::Reloop);
 
         app.circle_btn(
             ui,
@@ -547,8 +547,8 @@ pub(super) fn draw_left_section(
             PERF_BEAT_LOOP_U_MID + PERF_BEAT_LOOP_U_OFF_FRAC,
             PERF_V_BEAT_LOOP_LABEL,
         );
-        let beat_loop_4_led = app.mosi().led_bit(mosi_frame::LED_BEAT_JUMP_4);
-        let beat_loop_8_led = app.mosi().led_bit(mosi_frame::LED_BEAT_JUMP_8);
+        let beat_loop_4_led = app.mosi().lit(Lamp::BeatJump4);
+        let beat_loop_8_led = app.mosi().lit(Lamp::BeatJump8);
 
         let beat_loop_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
@@ -785,7 +785,7 @@ pub(super) fn draw_left_section(
         // the rim's colour from the deck and fall back to the unlit face.
         let cue_lamp = app
             .mosi()
-            .cue_rgb()
+            .rgb(Lamp::Cue)
             .and_then(|(r, g, b)| app.mosi().led_color(mosi_frame::LedPart::CueRim, r, g, b));
         let cue_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
@@ -820,7 +820,7 @@ pub(super) fn draw_left_section(
         // PLAY is an RGB lamp on the CDJ-3000X - see the CUE rim above.
         let play_lamp = app
             .mosi()
-            .play_rgb()
+            .rgb(Lamp::Play)
             .and_then(|(r, g, b)| app.mosi().led_color(mosi_frame::LedPart::PlayRim, r, g, b));
         let play_border = DoubleBorderSpec::from_strokes_with_gap(
             StrokeSpec {
@@ -863,7 +863,7 @@ fn draw_usb_slot(
 ) {
     let shift = Vec2::new(0.0, layout.sc(slot.off_y));
     {
-        let (r, g, b) = (slot.lamp)(&app.mosi()).unwrap_or_default();
+        let (r, g, b) = app.mosi().rgb(slot.lamp).unwrap_or_default();
         let lit = app.mosi().led_color(mosi_frame::LedPart::Slot, r, g, b);
         let usb_drive = mosi_frame::led_drive_factor(r, g, b).unwrap_or(0.0);
 

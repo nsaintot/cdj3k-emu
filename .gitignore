@@ -34,6 +34,10 @@ app/cdj3k-emu/assets/*
 # (vmnet, virtual HID).  Team-specific; supply your own via --profile.
 *.provisionprofile
 
+# dropbear: track only build.sh; the clone and its output are fetched/built
+dropbear/*
+!dropbear/build.sh
+
 # winit fetched and patched by winit/fetch.sh
 winit/src/
 # Linux QEMU artefacts copied out of the docker build
