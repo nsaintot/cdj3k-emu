@@ -6,8 +6,8 @@ surfacing the device's main LCD, jog LCD, jog wheel, faders, buttons, USB, PC-Li
 <table>
 <tr>
 <td valign="top" width="50%">
-<img src="docs/preview.png" alt="cdj3k-emu slate" width="100%">
-<sub><em>Preview of the main emulation window</em></sub>
+<img src="docs/slates.gif" alt="cdj3k-emu slates" width="100%">
+<sub><em>The emulated players' slates</em></sub>
 </td>
 <td valign="middle" align="center" width="50%">
   <img src="docs/preview.gif" alt="Demo animation" width="100%">
