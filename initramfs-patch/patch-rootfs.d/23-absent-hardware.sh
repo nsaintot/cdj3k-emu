@@ -22,11 +22,11 @@
 # start-wlan.service on the CDJ-1500X.
 #
 # mlan0 itself: service mode's version page reads the WLAN address from
-# `ifconfig mlan0` and, while it finds none, re-runs it twice a second. The
-# guest kernel's built-in dummy driver creates dummy0 before userspace; a unit
-# renames it mlan0 (or adds mlan0 where there is no dummy0) and gives it
-# eth0's address with the locally-administered bit set. It stays down, so the
-# app's network code sees no link on it.
+# `ifconfig mlan0` and, while it finds none, re-runs it twice a second. A unit
+# adds mlan0 with the guest kernel's built-in dummy driver (booted with
+# dummy.numdummies=0, so there is no dummy0) and gives it eth0's address with
+# the locally-administered bit set. It stays down, so the app's network code
+# sees no link on it.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 
@@ -66,11 +66,11 @@ Description=mlan0 for the absent Wi-Fi module (a dummy interface, down)
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'm=$$(cat /sys/class/net/eth0/address); { ip link set dummy0 name mlan0 || ip link add mlan0 type dummy; } && ip link set mlan0 address 02:$${m#*:}'
+ExecStart=/bin/sh -c 'm=$$(cat /sys/class/net/eth0/address); ip link add mlan0 type dummy && ip link set mlan0 address 02:$${m#*:}'
 
 [Install]
 WantedBy=multi-user.target
 EOFU
 mkdir -p "$ROOTFS/etc/systemd/system/multi-user.target.wants"
 ln -sf ../cdj3k-mlan0.service "$ROOTFS/etc/systemd/system/multi-user.target.wants/cdj3k-mlan0.service"
-echo "  -> cdj3k-mlan0.service: dummy0 renamed mlan0, down"
+echo "  -> cdj3k-mlan0.service: mlan0 added as a dummy, down"

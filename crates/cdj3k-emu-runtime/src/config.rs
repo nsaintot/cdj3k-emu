@@ -211,6 +211,12 @@ impl QemuConfig {
             " virtio_blk.emmc_index={}",
             self.model.spec().emmc_index
         ));
+        // The built-in dummy driver (CONFIG_DUMMY=y) creates dummy0 at boot
+        // unless numdummies is 0. The CDJ-3000's link-monitor.sh reads the
+        // MAC of every interface and exits on a second one, before eth0 gets
+        // an address. Guest patch 23 adds mlan0 as a dummy where the player
+        // has one.
+        kcmd.push_str(" dummy.numdummies=0");
         // Guest patch 12 turns this into the `Serial` line of /proc/cpuinfo,
         // which genkey_pr hashes with the model to key cabinet.img.
         if let Some(serial) = &self.soc_serial {

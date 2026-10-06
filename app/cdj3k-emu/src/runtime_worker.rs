@@ -484,9 +484,15 @@ fn run(mut instance: Option<QemuInstance>, mut config: QemuConfig, prebuilt_net:
 
             apply_menu_to_config(&mut config);
             if let Some(ref mut inst) = instance {
+                let (prev_phys, prev_virt) = {
+                    let s = menu_state::lock();
+                    (s.usb_phys_mounted_idx, s.usb_virtual_mounted)
+                };
                 match inst.restart(config.clone()) {
                     Ok(()) => {
                         reset_usb(&mut usb, &config, &cfg_client);
+                        pending_remount =
+                            PendingRemount::capture(prev_phys, prev_virt, &phys_disks);
                         alc_pushed_for_boot = false;
                         menu_state::lock().shade_forced = false;
                     }
