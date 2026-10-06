@@ -12,12 +12,13 @@ fn main() {
         // The minimum stays what the build targets: the deployment target,
         // or rustc's default for the architecture.
         println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
-        let min = std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| {
-            match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
-                Ok("x86_64") => "10.12".into(),
-                _ => "11.0".into(),
-            }
-        });
+        let min =
+            std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| {
+                match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
+                    Ok("x86_64") => "10.12".into(),
+                    _ => "11.0".into(),
+                }
+            });
         println!("cargo:rustc-link-arg=-Wl,-platform_version,macos,{min},{MACOS_SDK_VERSION}");
     }
 }
