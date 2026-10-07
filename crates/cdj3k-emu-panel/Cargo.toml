@@ -12,7 +12,7 @@ publish.workspace = true
 # `egui` is pulled in only for the `Color32` helper used by `mosi_frame::led_color`.
 # Gated behind a default-on feature so consumers that don't render the LED frame
 # can drop the egui dep entirely with `default-features = false`.
-egui = { version = "0.29", optional = true }
+egui = { version = "0.36", optional = true }
 
 [features]
 default = ["egui-color"]

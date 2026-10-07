@@ -91,7 +91,7 @@ pub(in crate::app) fn collect_button_inset_fill(
 
     // Measure the label so the inset rect tracks the actual glyph box.
     let font = FontId::new(font_size, font_family.clone());
-    let galley = ctx.fonts(|f| f.layout_no_wrap(label.to_owned(), font.clone(), text_color));
+    let galley = ctx.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), text_color));
     let label_pos = rect.center() + label_nudge.unwrap_or(Vec2::ZERO);
     let glyph_size = galley.size();
     let inset_size = Vec2::new(
@@ -371,7 +371,7 @@ pub(in crate::app) fn collect_arc_quad_button(
                 ..Default::default()
             },
         );
-        let galley = ctx.fonts(|f| f.layout_job(job));
+        let galley = ctx.fonts_mut(|f| f.layout_job(job));
         out.add(Shape::galley(
             label_pos - galley.size() * 0.5,
             galley,

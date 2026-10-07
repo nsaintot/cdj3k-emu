@@ -617,7 +617,7 @@ mod tests {
         let slot1 = SLOT_TABLE_OFFSET + SLOT_ENTRY_BYTES;
 
         // Truncation, at every depth.
-        refused(|i| i.truncate(0), |e| matches!(e, NotLuks1));
+        refused(|i| i.clear(), |e| matches!(e, NotLuks1));
         refused(|i| i.truncate(HEADER_BYTES - 1), |e| matches!(e, NotLuks1));
         refused(|i| i.truncate(HEADER_BYTES), |e| matches!(e, Truncated));
         refused(|i| i.truncate(4096), |e| matches!(e, Truncated));

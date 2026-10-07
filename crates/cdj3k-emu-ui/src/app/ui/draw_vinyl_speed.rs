@@ -109,7 +109,7 @@ pub(in crate::app) fn draw_vinyl_speed_adj(
         }
     }
     if resp.hovered() {
-        let scroll_y = ui.input(|i| i.raw_scroll_delta.y);
+        let scroll_y = crate::app::scroll::raw_delta(ui).y;
         if scroll_y != 0.0 {
             app.vinyl_scroll_accum += scroll_y;
             while app.vinyl_scroll_accum >= VINYL_SCROLL_PX_PER_STEP {

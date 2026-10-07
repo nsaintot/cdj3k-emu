@@ -53,7 +53,7 @@ pub(super) fn load(key: &str) -> Option<Frame> {
 pub(super) fn track(ctx: &egui::Context, key: String, saved: Option<Frame>) {
     *TRACKING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Tracking {
         key,
-        start_size: ctx.screen_rect().size(),
+        start_size: ctx.content_rect().size(),
         armed: false,
         last: None,
         changed_at: Instant::now(),
@@ -84,7 +84,7 @@ pub(super) fn observe(ctx: &egui::Context) {
         return;
     }
     let frame = Frame {
-        size: ctx.screen_rect().size(),
+        size: ctx.content_rect().size(),
         pos,
     };
     if !t.armed {

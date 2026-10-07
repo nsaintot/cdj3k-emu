@@ -29,7 +29,7 @@ opt-level = 2
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nsaintot/cdj3k-emu"
 # All workspace members are internal-only — they share types across crate

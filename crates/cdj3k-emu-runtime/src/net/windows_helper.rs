@@ -721,8 +721,10 @@ fn read_string(key: HKEY, value: PCWSTR) -> Option<String> {
     .ok()
     .ok()?;
     let wide: Vec<u16> = buf[..len as usize]
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
         .take_while(|&c| c != 0)
         .collect();
     Some(String::from_utf16_lossy(&wide))

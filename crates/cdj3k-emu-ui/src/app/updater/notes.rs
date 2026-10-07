@@ -15,11 +15,11 @@ pub(super) fn notes_box(ui: &mut egui::Ui, markdown: &str, pal: &Palette, k: f32
         return;
     }
     ui.add_space(6.0 * k);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(pal.field)
         .stroke(Stroke::new(theme::HAIRLINE * k, pal.line))
-        .rounding(theme::ROUND * k)
-        .inner_margin(egui::Margin::symmetric(12.0 * k, 10.0 * k))
+        .corner_radius(theme::ROUND * k)
+        .inner_margin(egui::epaint::MarginF32::symmetric(12.0 * k, 10.0 * k))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             // Plain text rows; the window style sets rows to field height.

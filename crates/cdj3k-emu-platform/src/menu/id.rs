@@ -105,10 +105,8 @@ impl MenuId {
                     Self::NetInterface(rest.parse().ok()?)
                 } else if let Some(rest) = other.strip_prefix("phys_select_") {
                     Self::PhysicalDisk(rest.parse().ok()?)
-                } else if let Some(rest) = other.strip_prefix("instance_") {
-                    Self::Instance(rest.parse().ok()?)
                 } else {
-                    return None;
+                    Self::Instance(other.strip_prefix("instance_")?.parse().ok()?)
                 }
             }
         })

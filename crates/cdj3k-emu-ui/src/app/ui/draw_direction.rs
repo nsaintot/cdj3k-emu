@@ -210,7 +210,12 @@ pub(in crate::app) fn draw_direction_switch(
                 Pos2::new(lever_cx + fwd_half_w, rect_mid + fwd_half_h),
             );
             p.rect_filled(fwd_face_rect, lever_rounding, face_color);
-            p.rect_stroke(fwd_face_rect, lever_rounding, border_stroke);
+            p.rect_stroke(
+                fwd_face_rect,
+                lever_rounding,
+                border_stroke,
+                egui::StrokeKind::Middle,
+            );
             // Inner groove mark - only on FWD.
             let inner_h = layout.sc(DIRECTION_LEVER_INNER_H);
             p.rect_filled(
@@ -280,7 +285,12 @@ pub(in crate::app) fn draw_direction_switch(
             let face_rect = Rect::from_min_max(i_a_l, i_b_r);
             let tilt_face_stroke = egui::Stroke::new(layout.sc(1.0), COL_SILVER);
             p.rect_filled(face_rect, lever_rounding * 0.5, face_color);
-            p.rect_stroke(face_rect, lever_rounding * 0.5, tilt_face_stroke);
+            p.rect_stroke(
+                face_rect,
+                lever_rounding * 0.5,
+                tilt_face_stroke,
+                egui::StrokeKind::Middle,
+            );
 
             // Groove mark - proportional to the tilted face dimensions, offset toward
             // the protruding side (bottom for REV, top for SLIP REV).

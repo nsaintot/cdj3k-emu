@@ -9,6 +9,7 @@ mod lcd_touch;
 mod picker;
 mod screenshot;
 mod script;
+mod scroll;
 pub mod shell;
 mod theme;
 mod tilt_input;
@@ -487,7 +488,7 @@ impl CdjApp {
     /// One panel frame: ingest the LCD/LED streams, tick the jog physics,
     /// draw the slate, the boot shade and the pop-out viewports. Driven by
     /// the shell while the panel screen is up.
-    pub fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    pub fn update(&mut self, ctx: &egui::Context, root: &mut egui::Ui, frame: &mut eframe::Frame) {
         // No sleep here. With vsync disabled in NativeOptions, eframe only
         // paints when something requested a repaint - the gate's metronome
         // thread paces those requests so this `update()` runs at most ~60 Hz.
@@ -616,8 +617,8 @@ impl CdjApp {
         {
             puffin::profile_scope!("draw_chrome");
             egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(ui::panel_bg()))
-                .show(ctx, |ui| {
+                .frame(egui::Frame::NONE.fill(ui::panel_bg()))
+                .show(root, |ui| {
                     self.draw_ui(ui);
                 });
         }
@@ -826,7 +827,7 @@ impl CdjApp {
             egui::Id::new("bloom_pass"),
         ))
         .add(egui::Shape::Callback(egui::PaintCallback {
-            rect: ctx.screen_rect(),
+            rect: ctx.content_rect(),
             callback: Arc::new(cb),
         }));
     }

@@ -317,7 +317,7 @@ impl CdjApp {
             }
         }
         if resp.hovered() && !resp.dragged() {
-            let scroll_y = ui.input(|i| i.raw_scroll_delta.y);
+            let scroll_y = crate::app::scroll::raw_delta(ui).y;
             if scroll_y != 0.0 {
                 if let Some(pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
                     let v = pos - center;
@@ -837,7 +837,7 @@ impl CdjApp {
             }
         }
         if resp.hovered() {
-            let scroll_y = ui.input(|i| i.raw_scroll_delta.y);
+            let scroll_y = crate::app::scroll::raw_delta(ui).y;
             if scroll_y != 0.0 {
                 self.jog_adjust_scroll_accum += scroll_y;
                 let n = (JOG_ADJUST_TICK_COUNT.saturating_sub(1)).max(1) as f32;

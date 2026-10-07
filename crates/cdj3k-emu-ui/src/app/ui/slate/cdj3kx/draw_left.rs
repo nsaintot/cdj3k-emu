@@ -889,13 +889,13 @@ fn draw_usb_slot(
             layout.sc(PERF_USB_MOUNT_BORDER_GAP),
         );
         let br = layout.sc(PERF_USB_MOUNT_BOTTOM_R);
-        let round = egui::Rounding {
+        let round = egui::epaint::CornerRadiusF32 {
             nw: 0.0,
             ne: 0.0,
             sw: br,
             se: br,
         };
-        let round_outer = egui::Rounding {
+        let round_outer = egui::epaint::CornerRadiusF32 {
             nw: 0.0,
             ne: 0.0,
             sw: br + mount_border.gap,
@@ -906,8 +906,14 @@ fn draw_usb_slot(
             mount_rect.expand(mount_border.gap),
             round_outer,
             mount_border.outer.stroke(),
+            egui::StrokeKind::Middle,
         );
-        p.rect_stroke(mount_rect, round, mount_border.inner.stroke());
+        p.rect_stroke(
+            mount_rect,
+            round,
+            mount_border.inner.stroke(),
+            egui::StrokeKind::Middle,
+        );
 
         // Light band: flush on the cavity floor, full width, no gap to the border.
         {
@@ -926,7 +932,7 @@ fn draw_usb_slot(
                 .unwrap_or(COL_SILVER.gamma_multiply(0.30));
             p.rect_filled(
                 band,
-                egui::Rounding {
+                egui::epaint::CornerRadiusF32 {
                     nw: 0.0,
                     ne: 0.0,
                     sw: br * 0.55,
@@ -974,7 +980,12 @@ fn draw_usb_slot(
                     connector_rect.bottom() + clearance + side_w * 0.5,
                 ),
             );
-            p.rect_stroke(housing, 0.0, Stroke::new(side_w, COL_BTN_HOT));
+            p.rect_stroke(
+                housing,
+                0.0,
+                Stroke::new(side_w, COL_BTN_HOT),
+                egui::StrokeKind::Middle,
+            );
             p.line_segment(
                 [housing.left_top(), housing.right_top()],
                 Stroke::new(top_w, COL_BTN_HOT),
@@ -1006,7 +1017,12 @@ fn draw_usb_slot(
             .shrink(stroke_w * 0.5);
             let pill_r = pill.height() * 0.5;
             p.rect_filled(pill, pill_r, COL_DARK);
-            p.rect_stroke(pill, pill_r, Stroke::new(stroke_w, COL_SILVER));
+            p.rect_stroke(
+                pill,
+                pill_r,
+                Stroke::new(stroke_w, COL_SILVER),
+                egui::StrokeKind::Middle,
+            );
         } else {
             draw_bordered_rect_section(
                 p,
@@ -1036,6 +1052,7 @@ fn draw_usb_slot(
                 tongue_rect,
                 tongue_r,
                 Stroke::new(layout.sc(1.5), COL_DARK.gamma_multiply(0.65)),
+                egui::StrokeKind::Middle,
             );
 
             // Reserve interactive area for future open-mount click handler.

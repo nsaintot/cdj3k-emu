@@ -529,6 +529,7 @@ pub(super) fn draw_right_sections(
             knob_outer,
             knob_rounding,
             Stroke::new(layout.sc(2.0), COL_SILVER),
+            egui::StrokeKind::Middle,
         );
         // Inner rect (color B).
         p.rect_filled(knob_inner, knob_rounding * 0.5, COL_BTN);

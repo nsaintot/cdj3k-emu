@@ -60,12 +60,12 @@ impl CdjApp {
                 .with_title(format!("{} — Jog Screen", self.model.title()))
                 .with_inner_size(JOG_LCD_INITIAL_SIZE)
                 .with_min_inner_size(JOG_LCD_MIN_SIZE),
-            |inner_ctx, _class| {
-                enforce_aspect_ratio(inner_ctx, JOG_LCD_ASPECT);
-                handle_close_request(inner_ctx, &close_inner);
+            |root, _class| {
+                enforce_aspect_ratio(root, JOG_LCD_ASPECT);
+                handle_close_request(root, &close_inner);
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::none().fill(egui::Color32::BLACK))
-                    .show(inner_ctx, |ui| {
+                    .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+                    .show(root, |ui| {
                         if let Some(tex_id) = tex_id {
                             paint_aspect_fit_image(
                                 ui,
@@ -100,12 +100,12 @@ impl CdjApp {
             egui::ViewportBuilder::default()
                 .with_title("Debug Window")
                 .with_inner_size(DEBUG_INITIAL_SIZE),
-            move |inner_ctx, _class| {
+            move |root, _class| {
                 let local_fps = update_local_fps(&vp_state);
 
-                if inner_ctx.input(|i| i.viewport().close_requested()) {
+                if root.input(|i| i.viewport().close_requested()) {
                     wants_close.store(true, Ordering::Relaxed);
-                    inner_ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    root.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
 
                 let mut snap = snapshot.lock().map(|g| g.clone()).unwrap_or_default();
@@ -114,11 +114,11 @@ impl CdjApp {
                 }
                 egui::CentralPanel::default()
                     .frame(
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(DEBUG_BG)
-                            .inner_margin(egui::Margin::same(DEBUG_INNER_MARGIN)),
+                            .inner_margin(egui::Margin::from(DEBUG_INNER_MARGIN)),
                     )
-                    .show(inner_ctx, |ui| {
+                    .show(root, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             ui::draw_debug_content(ui, &snap, local_fps);
                         });
@@ -130,7 +130,7 @@ impl CdjApp {
                 // viewport's event loop. Calling `request_repaint_after` from
                 // *inside* this closure goes through the in-thread scheduling
                 // path (capped only by ProMotion vsync ≤120 Hz, but reliable).
-                inner_ctx.request_repaint_after(MIN_FRAME_INTERVAL);
+                root.request_repaint_after(MIN_FRAME_INTERVAL);
             },
         );
 
@@ -159,14 +159,14 @@ impl CdjApp {
                 .with_title(format!("{} — Main Screen", self.model.title()))
                 .with_inner_size(main_initial)
                 .with_min_inner_size(main_min),
-            |inner_ctx, _class| {
-                // Use the *inner* viewport's Context (not the outer captured
-                // one) so input/screen_rect read from the popout window.
-                enforce_aspect_ratio(inner_ctx, main_aspect);
-                handle_close_request(inner_ctx, &close_inner);
+            |root, _class| {
+                // The popout's own root, not the outer captured context, so
+                // input and the window's size read from the popout window.
+                enforce_aspect_ratio(root, main_aspect);
+                handle_close_request(root, &close_inner);
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::none().fill(egui::Color32::BLACK))
-                    .show(inner_ctx, |ui| {
+                    .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
+                    .show(root, |ui| {
                         if let Some(tex_id) = tex_id {
                             let tint = if connected {
                                 egui::Color32::WHITE
@@ -196,7 +196,7 @@ impl CdjApp {
 /// Re-issue an `InnerSize` viewport command if the current size's aspect
 /// ratio drifts from `aspect` by more than [`ASPECT_FIX_TOL_PX`].
 fn enforce_aspect_ratio(ctx: &egui::Context, aspect: f32) {
-    let size = ctx.screen_rect().size();
+    let size = ctx.content_rect().size();
     let ideal_h = size.x / aspect;
     if (ideal_h - size.y).abs() > ASPECT_FIX_TOL_PX {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::Vec2::new(
@@ -247,7 +247,7 @@ fn capture_lcd_touch(ui: &mut egui::Ui, display_rect: egui::Rect) -> LcdTouchCap
     );
     LcdTouchCapture {
         hovered: lcd_resp.hovered(),
-        scroll_y: ui.input(|i| i.raw_scroll_delta.y),
+        scroll_y: crate::app::scroll::raw_delta(ui).y,
         pointer_moved: ui.input(|i| i.pointer.delta().length_sq() > 0.0),
         is_down: lcd_resp.is_pointer_button_down_on(),
         ctrl: ui.input(|i| i.modifiers.ctrl),

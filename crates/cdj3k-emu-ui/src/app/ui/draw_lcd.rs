@@ -78,7 +78,7 @@ pub(super) fn draw_main_lcd(
         );
         app.apply_lcd_touch(crate::app::LcdTouchCapture {
             hovered: lcd_resp.hovered(),
-            scroll_y: ui.input(|i| i.raw_scroll_delta.y),
+            scroll_y: crate::app::scroll::raw_delta(ui).y,
             pointer_moved: ui.input(|i| i.pointer.delta().length_sq() > 0.0),
             is_down: lcd_resp.is_pointer_button_down_on(),
             ctrl: ui.input(|i| i.modifiers.ctrl),

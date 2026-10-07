@@ -87,7 +87,7 @@ const SNAP_TOL_PX: f32 = 1.5;
 /// model change, would otherwise stay that way. Where the lock works, a
 /// settled window is already square and this does nothing.
 fn snap_when_settled(ctx: &egui::Context, state: &mut ResizeState, (ref_w, ref_h): (f32, f32)) {
-    let size = ctx.screen_rect().size();
+    let size = ctx.content_rect().size();
     // A maximized or full-screen window takes the screen's shape; resizing it
     // would take it out of that state.
     let whole_screen = ctx.input(|i| {
@@ -168,7 +168,10 @@ pub fn native_options(instance_id: u32) -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport,
         centered: true,
-        vsync: imp::VSYNC,
+        glow_options: eframe::egui_glow::GlowConfiguration {
+            vsync: imp::VSYNC,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

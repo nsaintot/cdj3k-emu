@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 
 use egui::{
-    Align, Color32, Context, FontId, Frame, Margin, Pos2, Rect, RichText, Rounding, Sense, Stroke,
+    Align, Color32, Context, CornerRadius, FontId, Frame, Pos2, Rect, RichText, Sense, Stroke,
     TextEdit, Vec2,
 };
 
@@ -240,7 +240,7 @@ impl FirmwareWizard {
             Pos2::new(space.left() + theme::GUTTER * k, space.top()),
             Pos2::new(space.right() - theme::GUTTER * k, space.bottom()),
         );
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
             theme::apply_setup_style(ui, pal);
             ui.spacing_mut().item_spacing.y = ROW_GAP * k;
 
@@ -276,8 +276,8 @@ impl FirmwareWizard {
             Frame::default()
                 .fill(pal.field)
                 .stroke(Stroke::new(theme::HAIRLINE * k, pal.line))
-                .rounding(Rounding::same(theme::ROUND * k))
-                .inner_margin(Margin::symmetric(11.0 * k, 9.0 * k))
+                .corner_radius(CornerRadius::from(theme::ROUND * k))
+                .inner_margin(egui::epaint::MarginF32::symmetric(11.0 * k, 9.0 * k))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("provision_log")
@@ -296,7 +296,7 @@ impl FirmwareWizard {
                                 ui.add(
                                     TextEdit::multiline(&mut snapshot.as_str())
                                         .desired_width(ui.available_width())
-                                        .frame(false)
+                                        .frame(egui::Frame::NONE)
                                         .font(egui::TextStyle::Monospace)
                                         .text_color(pal.muted),
                                 );
@@ -307,7 +307,7 @@ impl FirmwareWizard {
 
         // ── Action bar ────────────────────────────────────────────────────
         let inner = picker::draw_footer(ui, bar, pal, k);
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
             theme::apply_setup_style(ui, pal);
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 match (&self.provision_status, &self.terminal) {
@@ -534,7 +534,7 @@ impl FirmwareWizard {
                     .id_salt(salt)
                     .desired_width(field_w)
                     .min_size(Vec2::new(0.0, theme::FIELD_H * k))
-                    .margin(Margin::symmetric(FIELD_MARGIN * k, pad_y))
+                    .margin(egui::epaint::MarginF32::symmetric(FIELD_MARGIN * k, pad_y))
                     .hint_text(hint)
                     .font(egui::TextStyle::Monospace),
             );
@@ -671,8 +671,8 @@ fn banner(
     Frame::default()
         .fill(pal.plate)
         .stroke(Stroke::new(theme::HAIRLINE * k, pal.line))
-        .rounding(Rounding::same(theme::ROUND * k))
-        .inner_margin(Margin::symmetric(14.0 * k, 11.0 * k))
+        .corner_radius(CornerRadius::from(theme::ROUND * k))
+        .inner_margin(egui::epaint::MarginF32::symmetric(14.0 * k, 11.0 * k))
         .show(ui, |ui| {
             // Full width, so it reads as a bar across the step rather than a
             // tag pinned to its own text.
@@ -694,8 +694,8 @@ fn meter(ui: &mut egui::Ui, k: f32, pal: &theme::Palette, step: &ProvisionStep) 
     Frame::default()
         .fill(pal.plate)
         .stroke(Stroke::new(theme::HAIRLINE * k, pal.line))
-        .rounding(Rounding::same(theme::ROUND * k))
-        .inner_margin(Margin::symmetric(16.0 * k, 14.0 * k))
+        .corner_radius(CornerRadius::from(theme::ROUND * k))
+        .inner_margin(egui::epaint::MarginF32::symmetric(16.0 * k, 14.0 * k))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 9.0 * k;

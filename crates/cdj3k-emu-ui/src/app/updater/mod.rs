@@ -572,22 +572,22 @@ impl Updater {
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("cdj3k_update"),
             builder,
-            |ctx, _class| {
-                closed = ctx.input(|i| i.viewport().close_requested());
+            |root, _class| {
+                closed = root.input(|i| i.viewport().close_requested());
                 if raise {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    ctx.request_repaint_after(Duration::from_millis(100));
+                    root.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    root.request_repaint_after(Duration::from_millis(100));
                 }
                 // Pinned size, as in the setup window.
                 let size = Vec2::from(WINDOW_SIZE);
-                if first_frame || (ctx.screen_rect().size() - size).length() > 1.0 {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(size));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(size));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                if first_frame || (root.content_rect().size() - size).length() > 1.0 {
+                    root.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(size));
+                    root.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(size));
+                    root.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
                 }
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::none().fill(theme::palette(ctx).paper))
-                    .show(ctx, |ui| {
+                    .frame(egui::Frame::NONE.fill(theme::palette(root).paper))
+                    .show(root, |ui| {
                         action =
                             view::draw(ui, phase, &mut self.auto_check, &mut self.auto_install);
                     });

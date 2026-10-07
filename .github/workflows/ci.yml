@@ -31,7 +31,7 @@ jobs:
         with:
           components: rustfmt,clippy
           targets: x86_64-pc-windows-gnullvm
-      - run: rustup toolchain install 1.88 --profile minimal
+      - run: rustup toolchain install 1.95 --profile minimal
       - run: ./winit/fetch.sh
       - name: rustfmt
         run: cargo fmt --all --check
@@ -41,8 +41,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: clippy (Windows)
         run: cargo clippy --workspace --all-targets --locked --target x86_64-pc-windows-gnullvm -- -D warnings
-      - name: MSRV (1.88)
-        run: cargo +1.88 check --workspace --all-targets --locked
+      - name: MSRV (1.95)
+        run: cargo +1.95 check --workspace --all-targets --locked
       - name: actionlint
         run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12

@@ -230,7 +230,7 @@ impl Face {
 
 fn tessellator(ctx: &egui::Context, pixels_per_point: f32) -> Tessellator {
     let options: TessellationOptions = ctx.tessellation_options(|o| *o);
-    let font_tex_size = ctx.fonts(|f| f.font_image_size());
+    let font_tex_size = ctx.fonts_mut(|f| f.font_image_size());
     Tessellator::new(pixels_per_point, options, font_tex_size, Vec::new())
 }
 
@@ -240,8 +240,10 @@ fn subdivide(mesh: &mut Mesh, split: impl Fn([Pos2; 3]) -> bool) {
     let mut out: Vec<[Vertex; 3]> = Vec::with_capacity(mesh.indices.len() / 3);
     let mut stack: Vec<[Vertex; 3]> = mesh
         .indices
-        .chunks_exact(3)
-        .map(|t| [0, 1, 2].map(|i| mesh.vertices[t[i] as usize]))
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|t| t.map(|i| mesh.vertices[i as usize]))
         .collect();
     let mut split_any = false;
     while let Some(tri) = stack.pop() {
@@ -580,7 +582,7 @@ pub(in crate::app) fn project_layer(
 ) {
     cache.begin(tilt);
     let mut tess = tessellator(ctx, ctx.pixels_per_point());
-    let clip = ctx.screen_rect();
+    let clip = ctx.content_rect();
     let (ox, oy, scale) = layout.cache_key();
     let to_ref = |p: Pos2| Pos2::new((p.x - ox) / scale, (p.y - oy) / scale);
     // A raised part stands off the flat panel by its lift; the rest lies on

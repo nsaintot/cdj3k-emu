@@ -38,7 +38,7 @@ RUN windows-qemu-deps.sh aarch64
 
 # Rust for the app's <arch>-pc-windows-gnullvm targets, which link with
 # llvm-mingw. Read-only at run time: the build sets its own CARGO_HOME.
-ARG RUST_VERSION=1.93.0
+ARG RUST_VERSION=1.99.0
 ENV RUSTUP_HOME=/opt/rustup PATH=/opt/cargo/bin:$PATH
 RUN curl -fsSL https://sh.rustup.rs | env CARGO_HOME=/opt/cargo sh -s -- -y \
         --no-modify-path --profile minimal --default-toolchain "${RUST_VERSION}" \
