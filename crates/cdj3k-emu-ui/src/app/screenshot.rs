@@ -43,7 +43,7 @@ impl ScreenshotDriver {
     pub(super) fn request_capture(&mut self, ctx: &egui::Context, path: String) {
         self.scripted = Some(path);
         self.scripted_wait = 0;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
     }
 
     /// Call once per frame after drawing. Drives the capture + exit.
@@ -81,7 +81,7 @@ impl ScreenshotDriver {
             self.scripted_wait += 1;
             if self.scripted_wait >= SCRIPTED_RETRY_FRAMES {
                 self.scripted_wait = 0;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
             ctx.request_repaint();
         }
@@ -108,7 +108,7 @@ impl ScreenshotDriver {
             && self.started.elapsed().as_secs_f64() >= settle_secs
         {
             self.requested = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
         }
         ctx.request_repaint();
     }

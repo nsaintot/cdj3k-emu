@@ -559,7 +559,7 @@ unsafe fn make_fbo(gl: &glow::Context, w: i32, h: i32) -> (glow::Texture, glow::
         0,
         glow::RGBA,
         glow::UNSIGNED_BYTE,
-        None,
+        glow::PixelUnpackData::Slice(None),
     );
     for (param, val) in [
         (glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32),

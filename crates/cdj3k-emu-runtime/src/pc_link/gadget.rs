@@ -41,7 +41,9 @@ fn hex_bytes(v: &str) -> Result<Vec<u8>, ParseError> {
         return Err(ParseError("report_desc has an odd number of digits".into()));
     }
     digits
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let nibble = |c: u8| (c as char).to_digit(16);
             match (nibble(pair[0]), nibble(pair[1])) {

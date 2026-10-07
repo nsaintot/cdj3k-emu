@@ -142,7 +142,12 @@ pub(super) fn draw_tempo(
     let round = layout.sc(CAP_ROUND);
     let flange = lerp(COL_SILVER, COL_CAP_TILTED, t);
     p.rect_filled(cap, round, flange);
-    p.rect_stroke(cap, round, Stroke::new(layout.sc(LINE_STROKE), COL_SILVER));
+    p.rect_stroke(
+        cap,
+        round,
+        Stroke::new(layout.sc(LINE_STROKE), COL_SILVER),
+        egui::StrokeKind::Middle,
+    );
 }
 
 /// The cap's ridge and its index line, drawn after the flange so a tilt can

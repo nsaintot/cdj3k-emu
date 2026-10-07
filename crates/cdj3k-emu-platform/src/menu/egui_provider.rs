@@ -19,8 +19,8 @@
 use std::collections::BTreeSet;
 
 use egui::{
-    Align, Color32, CursorIcon, FontId, Layout, Pos2, Rect, Response, Rounding, Sense, Stroke, Ui,
-    Vec2,
+    Align, Color32, CornerRadius, CursorIcon, FontId, Layout, Pos2, Rect, Response, Sense, Stroke,
+    Ui, Vec2,
 };
 
 use crate::desktop::{self, CaptionArea, CAPTION_IN_STRIP};
@@ -146,8 +146,10 @@ impl EguiProvider {
         self.take_shortcuts(ctx);
     }
 
-    /// Draw the strip. Call once per frame, before the chassis.
-    pub fn draw(&mut self, ctx: &egui::Context) {
+    /// Draw the strip at the top of `ui`, the window's root. Call once per
+    /// frame, before the chassis.
+    pub fn draw(&mut self, ui: &mut egui::Ui) {
+        let ctx = &ui.ctx().clone();
         if !self.styled {
             style_menus(ctx);
             self.styled = true;
@@ -156,16 +158,18 @@ impl EguiProvider {
         self.chrome.clear();
         self.widgets.clear();
 
-        let frame = egui::Frame::none().fill(BAR_BG).inner_margin(egui::Margin {
-            left: BAR_PAD_X,
-            right: if CAPTION_IN_STRIP { 0.0 } else { BAR_PAD_X },
-            top: 0.0,
-            bottom: 0.0,
-        });
-        let strip = egui::TopBottomPanel::top("cdj3k_menu_bar")
-            .exact_height(BAR_HEIGHT)
+        let frame = egui::Frame::NONE
+            .fill(BAR_BG)
+            .inner_margin(egui::epaint::MarginF32 {
+                left: BAR_PAD_X,
+                right: if CAPTION_IN_STRIP { 0.0 } else { BAR_PAD_X },
+                top: 0.0,
+                bottom: 0.0,
+            });
+        let strip = egui::Panel::top("cdj3k_menu_bar")
+            .exact_size(BAR_HEIGHT)
             .frame(frame)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 ui.horizontal_centered(|ui| self.bar(ui));
             });
         self.chrome.push(strip.response.rect);
@@ -273,7 +277,7 @@ impl EguiProvider {
 
     /// Every menu, as the design's sandwich: the same tree the pills open.
     fn hamburger(&mut self, ui: &mut Ui, open: &mut BTreeSet<String>) {
-        let mut button = egui::Button::new("").min_size(ICON_BTN).rounding(3.0);
+        let mut button = egui::Button::new("").min_size(ICON_BTN).corner_radius(3.0);
         if self.open.contains(HAMBURGER) {
             button = button.fill(STRIP_HOVER);
         }
@@ -293,19 +297,20 @@ impl EguiProvider {
         );
         roots.push(MenuNode::Separator);
         roots.push(MenuNode::Predefined(Predefined::Quit));
-        let res = egui::menu::menu_custom_button(ui, button, |ui| {
-            self.panel(ui, &roots);
-        });
-        if res.inner.is_some() {
+        let (response, inner) =
+            egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                self.panel(ui, &roots);
+            });
+        if inner.is_some() {
             open.insert(HAMBURGER.into());
         }
-        self.widgets.push(res.response.rect);
-        let c = res.response.rect.center();
+        self.widgets.push(response.rect);
+        let c = response.rect.center();
         let s = Stroke::new(1.4_f32, TEXT);
         for dy in [-4.0, 0.0, 4.0] {
             ui.painter().hline(c.x - 6.0..=c.x + 6.0, c.y + dy, s);
         }
-        res.response.on_hover_cursor(CursorIcon::PointingHand);
+        response.on_hover_cursor(CursorIcon::PointingHand);
     }
 
     /// A menu opener that also reads out its state.
@@ -344,7 +349,7 @@ impl EguiProvider {
 
         let mut button = egui::Button::new(job)
             .min_size(Vec2::new(0.0, PILL_H))
-            .rounding(3.0)
+            .corner_radius(3.0)
             .stroke(Stroke::new(
                 1.0_f32,
                 if was_open { TEXT } else { PILL_BORDER },
@@ -353,14 +358,15 @@ impl EguiProvider {
             button = button.fill(STRIP_HOVER);
         }
         let children = Self::menu_rows(children);
-        let res = egui::menu::menu_custom_button(ui, button, |ui| {
-            self.panel(ui, &children);
-        });
-        if res.inner.is_some() {
+        let (response, inner) =
+            egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                self.panel(ui, &children);
+            });
+        if inner.is_some() {
             open.insert(label.clone());
         }
 
-        let rect = res.response.rect;
+        let rect = response.rect;
         self.widgets.push(rect);
         if matches!(icon, Some(MenuIcon::Emulation)) {
             ui.painter().rect_filled(
@@ -377,7 +383,7 @@ impl EguiProvider {
             Pos2::new(rect.right() - ROW_PAD_X - 4.5, rect.center().y - 1.0),
             if was_open { TEXT } else { TEXT_DETAIL },
         );
-        res.response.on_hover_cursor(CursorIcon::PointingHand);
+        response.on_hover_cursor(CursorIcon::PointingHand);
     }
 
     /// One glyph, one click, the menu behind it.
@@ -395,7 +401,7 @@ impl EguiProvider {
         };
         let was_open = self.open.contains(label);
 
-        let mut button = egui::Button::new("").min_size(ICON_BTN).rounding(3.0);
+        let mut button = egui::Button::new("").min_size(ICON_BTN).corner_radius(3.0);
         if was_open {
             button = button.fill(STRIP_HOVER);
         }
@@ -411,14 +417,15 @@ impl EguiProvider {
         // would fade it.
         let rect = ui
             .add_enabled_ui(*enabled, |ui| {
-                let res = egui::menu::menu_custom_button(ui, button, |ui| {
-                    self.panel(ui, &children);
-                });
-                if res.inner.is_some() {
+                let (response, inner) =
+                    egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                        self.panel(ui, &children);
+                    });
+                if inner.is_some() {
                     open.insert(label.clone());
                 }
-                let rect = res.response.rect;
-                res.response
+                let rect = response.rect;
+                response
                     .on_hover_cursor(CursorIcon::PointingHand)
                     .on_hover_text(tip)
                     .on_disabled_hover_text(format!(
@@ -437,23 +444,24 @@ impl EguiProvider {
     /// shows on hover and stays up on a click.
     fn notice_badge(&mut self, ui: &mut Ui, notice: &Notice, open: &mut BTreeSet<String>) {
         let was_open = self.open.contains(NOTICE);
-        let mut button = egui::Button::new("").min_size(ICON_BTN).rounding(3.0);
+        let mut button = egui::Button::new("").min_size(ICON_BTN).corner_radius(3.0);
         if was_open {
             button = button.fill(STRIP_HOVER);
         }
-        let res = egui::menu::menu_custom_button(ui, button, |ui| {
-            egui::Frame::none()
-                .inner_margin(egui::Margin::same(ROW_PAD_X - PANEL_PAD))
-                .show(ui, |ui| notice_card(ui, notice));
-            self.chrome.push(ui.min_rect().expand(PANEL_PAD + 1.0));
-        });
-        if res.inner.is_some() {
+        let (response, inner) =
+            egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::from(ROW_PAD_X - PANEL_PAD))
+                    .show(ui, |ui| notice_card(ui, notice));
+                self.chrome.push(ui.min_rect().expand(PANEL_PAD + 1.0));
+            });
+        if inner.is_some() {
             open.insert(NOTICE.into());
         }
-        self.widgets.push(res.response.rect);
+        self.widgets.push(response.rect);
         let pen = Pen::new(
             ui,
-            res.response.rect,
+            response.rect,
             Vec2::splat(15.0),
             Vec2::splat(15.0),
             WARN_AMBER,
@@ -461,7 +469,7 @@ impl EguiProvider {
         pen.arc(7.5, 9.0, 6.0, 0.4286, 1.0714, 1.1);
         pen.line((7.5, 9.0), (4.0, 8.2), 1.3);
         pen.fill_circle(7.5, 9.0, 1.1);
-        let res = res.response.on_hover_cursor(CursorIcon::PointingHand);
+        let res = response.on_hover_cursor(CursorIcon::PointingHand);
         if !was_open {
             res.on_hover_ui(|ui| notice_card(ui, notice));
         }
@@ -479,7 +487,7 @@ impl EguiProvider {
         let res = ui.add(
             egui::Button::new("")
                 .min_size(ICON_BTN)
-                .rounding(3.0)
+                .corner_radius(3.0)
                 .sense(if armed {
                     Sense::click()
                 } else {
@@ -665,7 +673,7 @@ impl EguiProvider {
                     .clicked()
                 {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
             MenuNode::Item {
@@ -682,7 +690,7 @@ impl EguiProvider {
                     .clicked()
                 {
                     self.clicked.push(id.clone());
-                    ui.close_menu();
+                    ui.close();
                 }
             }
             MenuNode::Check {
@@ -707,7 +715,7 @@ impl EguiProvider {
                     .clicked()
                 {
                     self.clicked.push(id.clone());
-                    ui.close_menu();
+                    ui.close();
                 }
             }
             MenuNode::Submenu {
@@ -867,7 +875,7 @@ fn panel_width(ui: &Ui, nodes: &[MenuNode]) -> f32 {
 }
 
 fn text_width(ui: &Ui, text: &str, font: FontId) -> f32 {
-    ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font, TEXT).size().x)
+    ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font, TEXT).size().x)
 }
 
 /// Cut a label that will not fit, so a long device name widens the panel to
@@ -938,7 +946,7 @@ fn paint_tracked(
     let mut job = egui::text::LayoutJob::default();
     job.append(text, 0.0, tracked_fmt(size, track, color));
     job.wrap.max_width = f32::INFINITY;
-    let galley = ui.fonts(|f| f.layout_job(job));
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
     let at = align.align_size_within_rect(galley.size(), Rect::from_center_size(pos, Vec2::ZERO));
     ui.painter().galley(at.min, galley, color);
 }
@@ -979,7 +987,7 @@ fn style_strip(ui: &mut Ui) {
         &mut s.visuals.widgets.active,
         &mut s.visuals.widgets.open,
     ] {
-        v.rounding = Rounding::same(3.0);
+        v.corner_radius = CornerRadius::from(3.0);
         v.bg_stroke = Stroke::NONE;
         v.expansion = 0.0;
     }
@@ -997,12 +1005,12 @@ fn style_strip(ui: &mut Ui) {
 /// to be set there. The setup window overrides the same fields on its own Ui
 /// tree, so its popups keep their palette.
 fn style_menus(ctx: &egui::Context) {
-    ctx.style_mut(|s| {
+    ctx.all_styles_mut(|s| {
         s.visuals.window_fill = PANEL_BG;
         s.visuals.window_stroke = Stroke::new(1.0_f32, PANEL_BORDER);
-        s.visuals.menu_rounding = Rounding::same(3.0);
+        s.visuals.menu_corner_radius = CornerRadius::from(3.0);
         s.visuals.popup_shadow = egui::epaint::Shadow::NONE;
-        s.spacing.menu_margin = egui::Margin::same(PANEL_PAD);
+        s.spacing.menu_margin = egui::Margin::from(PANEL_PAD);
         s.spacing.menu_spacing = 6.0;
     });
 }
@@ -1020,7 +1028,7 @@ fn style_submenu(ui: &mut Ui, row_w: f32) {
         &mut s.visuals.widgets.active,
         &mut s.visuals.widgets.open,
     ] {
-        v.rounding = Rounding::same(2.0);
+        v.corner_radius = CornerRadius::from(2.0);
         v.bg_stroke = Stroke::NONE;
         v.fg_stroke = Stroke::new(1.0_f32, TEXT);
         v.expansion = 0.0;
@@ -1143,8 +1151,9 @@ impl<'a> Pen<'a> {
     fn rect(&self, x: f32, y: f32, w: f32, h: f32, r: f32, sw: f32) {
         self.p.rect_stroke(
             Rect::from_min_size(self.at(x, y), Vec2::new(w, h) * self.k),
-            Rounding::same(r * self.k),
+            CornerRadius::from(r * self.k),
             self.stroke(sw),
+            egui::StrokeKind::Middle,
         );
     }
 
@@ -1367,6 +1376,17 @@ mod tests {
 mod frame_tests {
     use super::*;
 
+    /// One frame of `ui`, its texture uploads dropped: nothing renders here.
+    fn run(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        ui: impl FnMut(&mut egui::Ui),
+    ) -> egui::FullOutput {
+        let mut out = ctx.run_ui(input, ui);
+        out.textures_delta.clear();
+        out
+    }
+
     /// A context with the app's named families bound to egui's own fonts: the
     /// strip draws the wordmark in one of them where it is the title bar.
     fn test_ctx() -> egui::Context {
@@ -1453,7 +1473,7 @@ mod frame_tests {
         p.apply(&model());
 
         // Frame one finds the hamburger; nothing is open yet.
-        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let out = run(&ctx, Default::default(), |ui| p.draw(ui));
         assert!(
             !texts(&out).iter().any(|(t, _)| t == "Manage Emulation"),
             "the menu drew its rows before anything opened it"
@@ -1462,8 +1482,8 @@ mod frame_tests {
 
         // Frame two opens it; the hamburger holds the menus, so what appears
         // is one opener per menu.
-        let _ = ctx.run(click_at(hamburger), |ctx| p.draw(ctx));
-        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, click_at(hamburger), |ui| p.draw(ui));
+        let out = run(&ctx, Default::default(), |ui| p.draw(ui));
         let opener = texts(&out)
             .into_iter()
             .find(|(t, _)| t == "Storage")
@@ -1471,8 +1491,8 @@ mod frame_tests {
             .expect("the hamburger did not list the menus");
 
         // Frame three opens that menu, frame four sees its rows.
-        let _ = ctx.run(click_at(opener.center()), |ctx| p.draw(ctx));
-        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, click_at(opener.center()), |ui| p.draw(ui));
+        let out = run(&ctx, Default::default(), |ui| p.draw(ui));
         let drawn = texts(&out);
         for want in [
             "Manage Emulation",
@@ -1493,7 +1513,7 @@ mod frame_tests {
             .find(|(t, _)| t == "Service Mode")
             .map(|(_, r)| *r)
             .expect("the row was just asserted present");
-        let _ = ctx.run(click_at(row.center()), |ctx| p.draw(ctx));
+        let _ = run(&ctx, click_at(row.center()), |ui| p.draw(ui));
         assert_eq!(p.poll(), vec![MenuId::ServiceMode]);
     }
 
@@ -1522,10 +1542,10 @@ mod frame_tests {
             ],
             ..Default::default()
         });
-        let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, Default::default(), |ui| p.draw(ui));
         let hamburger = Pos2::new(BAR_PAD_X + 15.0, BAR_HEIGHT / 2.0);
-        let _ = ctx.run(click_at(hamburger), |ctx| p.draw(ctx));
-        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, click_at(hamburger), |ui| p.draw(ui));
+        let out = run(&ctx, Default::default(), |ui| p.draw(ui));
         let drawn = texts(&out);
         let top = |want: &str| {
             drawn
@@ -1548,7 +1568,7 @@ mod frame_tests {
                 .with_detail("3.20")],
             ..Default::default()
         });
-        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let out = run(&ctx, Default::default(), |ui| p.draw(ui));
         let drawn: Vec<_> = texts(&out).into_iter().map(|(t, _)| t).collect();
         assert!(drawn.iter().any(|t| t.contains("CDJ-3000")), "{drawn:?}");
         assert!(drawn.iter().any(|t| t.contains("3.20")), "{drawn:?}");
@@ -1566,7 +1586,7 @@ mod frame_tests {
                     .with_status("Slot 1", MenuIcon::Instances)],
                 notice,
             });
-            ctx.run(Default::default(), |ctx| p.draw(ctx)).shapes.len()
+            run(&ctx, Default::default(), |ui| p.draw(ui)).shapes.len()
         };
         let flagged = shapes(Some(Notice {
             title: "Software emulation (TCG)".into(),
@@ -1581,7 +1601,7 @@ mod frame_tests {
         let ctx = test_ctx();
         let mut p = EguiProvider::default();
         p.apply(&model());
-        let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, Default::default(), |ui| p.draw(ui));
         assert!(
             p.chrome()
                 .iter()
@@ -1597,8 +1617,8 @@ mod frame_tests {
     fn a_panel_fits_its_rows_rather_than_the_window() {
         let ctx = test_ctx();
         let mut measured = (0.0, 0.0);
-        let _ = ctx.run(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = run(&ctx, Default::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 measured.0 = panel_width(ui, model().roots[0].children());
                 measured.1 = panel_width(
                     ui,
@@ -1653,24 +1673,27 @@ mod frame_tests {
         let mut p = EguiProvider::default();
         p.apply(&model());
 
-        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let out = run(&ctx, Default::default(), |ui| p.draw(ui));
         assert!(!filled(&out, STRIP_HOVER), "lit with the pointer elsewhere");
 
         let burger = Pos2::new(BAR_PAD_X + 15.0, BAR_HEIGHT / 2.0);
-        let _ = ctx.run(hover(burger), |ctx| p.draw(ctx));
-        let out = ctx.run(hover(burger), |ctx| p.draw(ctx));
+        let _ = run(&ctx, hover(burger), |ui| p.draw(ui));
+        let out = run(&ctx, hover(burger), |ui| p.draw(ui));
         assert!(filled(&out, STRIP_HOVER), "the sandwich did not light up");
 
         // Open it, then hover its first row.
-        let _ = ctx.run(click_at(burger), |ctx| p.draw(ctx));
-        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, click_at(burger), |ui| p.draw(ui));
+        let out = run(&ctx, Default::default(), |ui| p.draw(ui));
         let row = texts(&out)
             .into_iter()
             .find(|(t, _)| t == "Quit")
             .map(|(_, r)| r)
             .expect("the sandwich did not list Quit");
-        let _ = ctx.run(hover(row.center()), |ctx| p.draw(ctx));
-        let out = ctx.run(hover(row.center()), |ctx| p.draw(ctx));
+        // The panel fades in over several frames before its rows read as lit.
+        for _ in 0..10 {
+            let _ = run(&ctx, hover(row.center()), |ui| p.draw(ui));
+        }
+        let out = run(&ctx, hover(row.center()), |ui| p.draw(ui));
         assert!(filled(&out, ROW_HOVER), "the row did not light up");
     }
 
@@ -1701,9 +1724,9 @@ mod frame_tests {
             ..Default::default()
         });
         let burger = Pos2::new(BAR_PAD_X + 15.0, BAR_HEIGHT / 2.0);
-        let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
-        let _ = ctx.run(click_at(burger), |ctx| p.draw(ctx));
-        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, Default::default(), |ui| p.draw(ui));
+        let _ = run(&ctx, click_at(burger), |ui| p.draw(ui));
+        let out = run(&ctx, Default::default(), |ui| p.draw(ui));
         let drawn: Vec<_> = texts(&out).into_iter().map(|(t, _)| t).collect();
         assert!(drawn.iter().any(|t| t == "View"), "{drawn:?}");
         assert!(drawn.iter().any(|t| t == "Quit"), "{drawn:?}");
@@ -1742,7 +1765,7 @@ mod frame_tests {
             ],
             ..Default::default()
         });
-        let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, Default::default(), |ui| p.draw(ui));
 
         // Sweep the strip rather than guess where each button landed: what
         // matters is that every one of them lights, wherever it is.
@@ -1750,8 +1773,8 @@ mod frame_tests {
         let mut x = 18.0;
         while x < 890.0 {
             let at = Pos2::new(x, BAR_HEIGHT / 2.0);
-            let _ = ctx.run(hover(at), |ctx| p.draw(ctx));
-            let out = ctx.run(hover(at), |ctx| p.draw(ctx));
+            let _ = run(&ctx, hover(at), |ui| p.draw(ui));
+            let out = run(&ctx, hover(at), |ui| p.draw(ui));
             if let Some(r) = out.shapes.iter().find_map(|c| match &c.shape {
                 egui::Shape::Rect(r) if r.fill == STRIP_HOVER && r.rect.contains(at) => {
                     Some(r.rect)
@@ -1795,8 +1818,8 @@ mod frame_tests {
             .with_status("No firmware", MenuIcon::Emulation)],
             ..Default::default()
         });
-        let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
-        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, Default::default(), |ui| p.draw(ui));
+        let out = run(&ctx, Default::default(), |ui| p.draw(ui));
         // The pill is the only thing in the strip that carries an outline.
         let outlined: Vec<_> = out
             .shapes
@@ -1848,10 +1871,10 @@ mod frame_tests {
         let ctx = test_ctx();
         let mut p = EguiProvider::default();
         p.apply(&with_quit);
-        let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, Default::default(), |ui| p.draw(ui));
         let burger = Pos2::new(BAR_PAD_X + 15.0, BAR_HEIGHT / 2.0);
-        let _ = ctx.run(click_at(burger), |ctx| p.draw(ctx));
-        let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+        let _ = run(&ctx, click_at(burger), |ui| p.draw(ui));
+        let out = run(&ctx, Default::default(), |ui| p.draw(ui));
         let drawn: Vec<_> = texts(&out).into_iter().map(|(t, _)| t).collect();
         assert!(drawn.iter().any(|t| t == "Quit"), "{drawn:?}");
     }
@@ -1887,9 +1910,9 @@ mod frame_tests {
                 )),
                 ..Default::default()
             };
-            let out = ctx.run(input.clone(), |ctx| p.draw(ctx));
+            let out = run(&ctx, input.clone(), |ui| p.draw(ui));
             let _ = out;
-            let out = ctx.run(input, |ctx| p.draw(ctx));
+            let out = run(&ctx, input, |ui| p.draw(ui));
             // The buttons' own plates: the artwork inside an icon is smaller
             // than any of them, and the bar's ground is taller.
             out.shapes
@@ -1955,22 +1978,22 @@ mod frame_tests {
                 ..Default::default()
             });
             let burger = Pos2::new(BAR_PAD_X + 15.0, BAR_HEIGHT / 2.0);
-            let _ = ctx.run(Default::default(), |ctx| p.draw(ctx));
-            let _ = ctx.run(click_at(burger), |ctx| p.draw(ctx));
-            let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+            let _ = run(&ctx, Default::default(), |ui| p.draw(ui));
+            let _ = run(&ctx, click_at(burger), |ui| p.draw(ui));
+            let out = run(&ctx, Default::default(), |ui| p.draw(ui));
             let opener = texts(&out)
                 .into_iter()
                 .find(|(t, _)| t == "View")
                 .map(|(_, r)| r)
                 .expect("the sandwich did not list View");
-            let _ = ctx.run(click_at(opener.center()), |ctx| p.draw(ctx));
-            let out = ctx.run(Default::default(), |ctx| p.draw(ctx));
+            let _ = run(&ctx, click_at(opener.center()), |ui| p.draw(ui));
+            let out = run(&ctx, Default::default(), |ui| p.draw(ui));
             let row = texts(&out)
                 .into_iter()
                 .find(|(t, _)| t == label)
                 .map(|(_, r)| r)
                 .unwrap_or_else(|| panic!("{label:?} is not in the View menu"));
-            let _ = ctx.run(click_at(row.center()), |ctx| p.draw(ctx));
+            let _ = run(&ctx, click_at(row.center()), |ui| p.draw(ui));
             assert_eq!(p.poll(), vec![id.clone()], "clicking {label:?}");
         }
     }
@@ -1980,11 +2003,11 @@ mod frame_tests {
     #[test]
     fn the_typed_glyphs_all_exist() {
         let ctx = test_ctx();
-        let _ = ctx.run(Default::default(), |_| {});
+        let _ = run(&ctx, Default::default(), |_| {});
         let font = FontId::proportional(FONT_ROW);
         for s in ["CDJ3K EMULATOR", "NAT", "Ctrl Q", "141 ms", "·", "—", "…"] {
             assert!(
-                ctx.fonts(|f| f.has_glyphs(&font, s)),
+                ctx.fonts_mut(|f| f.has_glyphs(&font, s)),
                 "{s:?} has no glyph and would draw as a box"
             );
         }

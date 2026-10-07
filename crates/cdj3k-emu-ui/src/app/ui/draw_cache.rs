@@ -63,8 +63,12 @@ impl ShapeList {
     }
 
     pub fn rect_stroke(&mut self, rect: Rect, rounding: f32, stroke: impl Into<Stroke>) {
-        self.0
-            .push(Shape::rect_stroke(rect, rounding, stroke.into()));
+        self.0.push(Shape::rect_stroke(
+            rect,
+            rounding,
+            stroke.into(),
+            egui::StrokeKind::Middle,
+        ));
     }
 
     pub fn line_segment(&mut self, pts: [Pos2; 2], stroke: impl Into<Stroke>) {
@@ -86,7 +90,7 @@ impl ShapeList {
         font_id: FontId,
         color: Color32,
     ) {
-        let galley = ctx.fonts(|f| f.layout_no_wrap(text.to_owned(), font_id, color));
+        let galley = ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font_id, color));
         let top_left = anchor.anchor_size(pos, galley.size()).min;
         self.0.push(Shape::galley(top_left, galley, color));
     }
@@ -113,7 +117,7 @@ impl ShapeList {
                 },
             );
             job.wrap.max_width = f32::INFINITY;
-            ctx.fonts(|f| f.layout_job(job))
+            ctx.fonts_mut(|f| f.layout_job(job))
         };
         let probe = layout(100.0, 0.0);
         let size = 100.0 * ink.height() / probe.mesh_bounds.height().max(1.0);
@@ -138,7 +142,7 @@ impl ShapeList {
         font_id: FontId,
         color: Color32,
     ) {
-        let galley = ctx.fonts(|f| f.layout_no_wrap(text.to_owned(), font_id, color));
+        let galley = ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font_id, color));
         let ppp = ctx.pixels_per_point();
         let raw = center - galley.mesh_bounds.center().to_vec2();
         let snapped = Pos2::new((raw.x * ppp).round() / ppp, (raw.y * ppp).round() / ppp);

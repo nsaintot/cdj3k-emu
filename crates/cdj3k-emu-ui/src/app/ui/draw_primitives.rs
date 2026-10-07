@@ -118,11 +118,26 @@ fn paint_double_rect_border(
     let rounding_outer = (rounding + expand).min(max_r);
 
     if rounding == 0.0 {
-        painter.rect_stroke(rect_outer, 0.0, spec.outer.stroke());
-        painter.rect_stroke(rect, 0.0, spec.inner.stroke());
+        painter.rect_stroke(
+            rect_outer,
+            0.0,
+            spec.outer.stroke(),
+            egui::StrokeKind::Middle,
+        );
+        painter.rect_stroke(rect, 0.0, spec.inner.stroke(), egui::StrokeKind::Middle);
     } else {
-        painter.rect_stroke(rect_outer, rounding_outer, spec.outer.stroke());
-        painter.rect_stroke(rect, rounding, spec.inner.stroke());
+        painter.rect_stroke(
+            rect_outer,
+            rounding_outer,
+            spec.outer.stroke(),
+            egui::StrokeKind::Middle,
+        );
+        painter.rect_stroke(
+            rect,
+            rounding,
+            spec.inner.stroke(),
+            egui::StrokeKind::Middle,
+        );
     }
 }
 

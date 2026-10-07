@@ -12,5 +12,5 @@ publish.workspace = true
 cdj3k-emu-panel = { path = "../cdj3k-emu-panel" }
 cdj3k-emu-platform = { path = "../cdj3k-emu-platform" }
 memmap2 = "0.9"
-egui = "0.29"
+egui = "0.36"
 puffin = "0.19"

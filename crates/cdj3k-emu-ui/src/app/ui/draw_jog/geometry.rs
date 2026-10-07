@@ -358,7 +358,7 @@ pub(super) fn inner_lcd_push_curved_label(
 ) {
     let font = font.clone();
     let galley =
-        ctx.fonts(|f| f.layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER));
+        ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER));
     if galley.is_empty() {
         return;
     }
@@ -385,7 +385,7 @@ pub(super) fn inner_lcd_push_curved_label(
     let row_center_y = galley
         .rows
         .first()
-        .map(|r| r.rect.center().y)
+        .map(|r| r.rect().center().y)
         .unwrap_or(galley.rect.center().y);
 
     let mut cum = 0.0_f32;
@@ -411,7 +411,8 @@ pub(super) fn inner_lcd_push_curved_label(
                 continue;
             }
 
-            let g_galley = ctx.fonts(|f| f.layout_no_wrap(chr, font.clone(), Color32::PLACEHOLDER));
+            let g_galley =
+                ctx.fonts_mut(|f| f.layout_no_wrap(chr, font.clone(), Color32::PLACEHOLDER));
             if g_galley.is_empty() {
                 continue;
             }

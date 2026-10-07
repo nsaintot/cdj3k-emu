@@ -63,7 +63,7 @@ impl CdjApp {
         label_nudge: Option<egui::Vec2>,
         border_override: Option<ui::DoubleBorderSpec>,
         font_family: egui::FontFamily,
-        id_src: impl Hash,
+        id_src: impl Hash + std::fmt::Debug,
         btn: Btn,
     ) {
         let border = border_override.unwrap_or_else(|| ui::default_rect_btn_border(layout));
@@ -122,7 +122,7 @@ impl CdjApp {
         ui: &mut egui::Ui,
         rect: Rect,
         state: u32,
-        id_src: impl Hash,
+        id_src: impl Hash + std::fmt::Debug,
         btn: Option<Btn>,
         collect: impl FnOnce(&mut ui::draw_cache::ShapeList, bool),
     ) {
@@ -162,7 +162,7 @@ impl CdjApp {
         btn_label_size: f32,
         btn_label_nudge: Option<egui::Vec2>,
         btn_border: Option<ui::DoubleBorderSpec>,
-        id_src: impl Hash,
+        id_src: impl Hash + std::fmt::Debug,
         btn: Btn,
     ) {
         let id = ui.id().with(&id_src);
@@ -226,7 +226,7 @@ impl CdjApp {
         font_family: egui::FontFamily,
         dec_arc: Option<ui::ArcDecorSpec>,
         notch_arc: Option<ui::ArcNotchSpec>,
-        id_src: impl Hash,
+        id_src: impl Hash + std::fmt::Debug,
         btn: Btn,
     ) {
         let interact_rect = arc_quad_bounding_rect(center, inner_r, outer_r, a_start, a_end);

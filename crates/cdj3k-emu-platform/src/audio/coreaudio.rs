@@ -119,7 +119,7 @@ pub fn enumerate_output_devices() -> Vec<AudioOutDevice> {
         });
     }
 
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|d| d.name.to_lowercase());
     out
 }
 

@@ -161,8 +161,9 @@ enum LcdSwizzle {
     BgrToRgbAlphaOne,
 }
 
-/// Allocate an SRGB8_ALPHA8 LCD texture with linear sampling, clamp wrap, and
-/// the requested channel swizzle.
+/// Allocate an RGBA8 LCD texture with linear sampling, clamp wrap, and the
+/// requested channel swizzle. Plain RGBA8, not sRGB: egui's shader takes what
+/// it samples as gamma-encoded, which the deck's framebuffer bytes already are.
 unsafe fn allocate_lcd_texture(
     gl: &glow::Context,
     w: i32,
@@ -206,19 +207,19 @@ unsafe fn allocate_lcd_texture(
 }
 
 /// (Re)allocate `tex`'s level-0 storage as an uninitialised `w`×`h`
-/// SRGB8_ALPHA8 image.
+/// RGBA8 image.
 unsafe fn specify_lcd_storage(gl: &glow::Context, tex: glow::Texture, w: i32, h: i32) {
     gl.bind_texture(glow::TEXTURE_2D, Some(tex));
     gl.tex_image_2d(
         glow::TEXTURE_2D,
         0,
-        glow::SRGB8_ALPHA8 as i32,
+        glow::RGBA8 as i32,
         w,
         h,
         0,
         glow::RGBA,
         glow::UNSIGNED_BYTE,
-        None,
+        glow::PixelUnpackData::Slice(None),
     );
     gl.bind_texture(glow::TEXTURE_2D, None);
 }
@@ -244,7 +245,7 @@ unsafe fn upload_sub_image(
         h,
         glow::RGBA,
         glow::UNSIGNED_BYTE,
-        glow::PixelUnpackData::Slice(pixels),
+        glow::PixelUnpackData::Slice(Some(pixels)),
     );
     gl.pixel_store_i32(glow::UNPACK_ROW_LENGTH, 0);
     gl.bind_texture(glow::TEXTURE_2D, None);
@@ -261,7 +262,7 @@ unsafe fn upload_full_zero(gl: &glow::Context, tex: glow::Texture, w: i32, h: i3
         h,
         glow::RGBA,
         glow::UNSIGNED_BYTE,
-        glow::PixelUnpackData::Slice(zeros),
+        glow::PixelUnpackData::Slice(Some(zeros)),
     );
     gl.bind_texture(glow::TEXTURE_2D, None);
 }

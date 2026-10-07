@@ -212,10 +212,10 @@ fn collect_letter(
     col: Color32,
 ) {
     let font = egui::FontId::new(100.0, letter_family());
-    let probe = ctx.fonts(|f| f.layout_no_wrap(letter.to_owned(), font, col));
+    let probe = ctx.fonts_mut(|f| f.layout_no_wrap(letter.to_owned(), font, col));
     let k = h / probe.mesh_bounds.height().max(1.0);
     let font = egui::FontId::new(100.0 * k, letter_family());
-    let galley = ctx.fonts(|f| f.layout_no_wrap(letter.to_owned(), font, col));
+    let galley = ctx.fonts_mut(|f| f.layout_no_wrap(letter.to_owned(), font, col));
     let top_left = at - galley.mesh_bounds.min.to_vec2();
     list.add(egui::Shape::galley(top_left, galley, col));
 }

@@ -159,11 +159,11 @@ fn stream_loop(
     // Two `Arc<ColorImage>` buffers - rotate so the receiver can read while we
     // write the next frame without reallocating the 76 800-element pixel Vec.
     let mut bufs: [Arc<egui::ColorImage>; 2] = [
-        Arc::new(egui::ColorImage::new(
+        Arc::new(egui::ColorImage::filled(
             [JOG_FB_W, JOG_FB_H],
             egui::Color32::BLACK,
         )),
-        Arc::new(egui::ColorImage::new(
+        Arc::new(egui::ColorImage::filled(
             [JOG_FB_W, JOG_FB_H],
             egui::Color32::BLACK,
         )),
@@ -238,7 +238,7 @@ fn stream_loop(
             if Arc::get_mut(&mut bufs[next_idx]).is_none() {
                 next_idx ^= 1;
                 if Arc::get_mut(&mut bufs[next_idx]).is_none() {
-                    bufs[next_idx] = Arc::new(egui::ColorImage::new(
+                    bufs[next_idx] = Arc::new(egui::ColorImage::filled(
                         [JOG_FB_W, JOG_FB_H],
                         egui::Color32::BLACK,
                     ));

@@ -645,21 +645,21 @@ impl CdjShell {
         ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("cdj3k_setup"),
             builder,
-            |ctx, _class| {
-                if ctx.input(|i| i.viewport().close_requested()) {
+            |root, _class| {
+                if root.input(|i| i.viewport().close_requested()) {
                     closed_inner.store(true, Relaxed);
                 }
                 // Min and max equal hold the size; restated whenever the
                 // window measures wrong.
                 let size = egui::Vec2::from(SETUP_WINDOW_SIZE);
-                if first_frame || (ctx.screen_rect().size() - size).length() > 1.0 {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(size));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(size));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                if first_frame || (root.content_rect().size() - size).length() > 1.0 {
+                    root.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(size));
+                    root.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(size));
+                    root.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
                 }
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::none().fill(theme::palette(ctx).paper))
-                    .show(ctx, |ui| {
+                    .frame(egui::Frame::NONE.fill(theme::palette(root).paper))
+                    .show(root, |ui| {
                         action = draw_setup(this, ui, &closed_inner);
                     });
             },
@@ -680,13 +680,13 @@ impl CdjShell {
             .order(egui::Order::Middle)
             .fixed_pos(egui::pos2(0.0, 0.0))
             .show(ctx, |ui| {
-                let screen = ctx.screen_rect();
+                let screen = ctx.content_rect();
                 ui.painter().rect_filled(screen, 0.0, pal.paper);
                 // It owns the window while it is up, so nothing behind it can
                 // be clicked through. Registered before the setup's widgets:
                 // the last one registered over a point takes its clicks.
                 ui.interact(screen, ui.id().with("block"), egui::Sense::click_and_drag());
-                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(screen), |ui| {
+                ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
                     ui.set_clip_rect(screen);
                     action = draw_setup(self, ui, closed);
                 });
@@ -747,7 +747,8 @@ impl eframe::App for CdjShell {
         }
     }
 
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         // Graceful close: instead of blocking inside `on_exit` for the full
         // runtime-stop budget (which freezes the window for 1-2 s), defer
         // the actual close until the worker has finished.
@@ -785,7 +786,7 @@ impl eframe::App for CdjShell {
         // no-op on macOS. The startup picker carries its own wordmark and slot
         // switcher, so it gets only the shortcuts.
         if matches!(self.screen, Screen::Panel) {
-            cdj3k_emu_platform::menu::draw_in_window(ctx);
+            cdj3k_emu_platform::menu::draw_in_window(ui);
         } else {
             cdj3k_emu_platform::menu::shortcuts_only(ctx);
         }
@@ -838,13 +839,13 @@ impl eframe::App for CdjShell {
                 let view = self.picker_view(None, None, false);
                 let mut action = None;
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::none().fill(theme::palette(ctx).paper))
-                    .show(ctx, |ui| {
+                    .frame(egui::Frame::NONE.fill(theme::palette(ctx).paper))
+                    .show(ui, |ui| {
                         action = draw_picker(ui, &view);
                     });
                 self.apply_picker_action(action);
             }
-            Screen::Panel => self.app.update(ctx, frame),
+            Screen::Panel => self.app.update(ctx, ui, frame),
         }
 
         // One window for switching an emulation and installing its firmware.
@@ -933,7 +934,7 @@ fn draw_setup(
             .body;
             // The wizard lays out its own gutters and its own action bar, so
             // it takes the body whole.
-            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body), |ui| {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                 this.wizard.draw(ui, closed);
             });
         }

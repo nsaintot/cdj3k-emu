@@ -200,12 +200,12 @@ pub(super) fn draw(
         Pos2::new(space.right() - theme::GUTTER * k, space.bottom()),
     );
     let mut action = None;
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| {
         theme::apply_setup_style(ui, pal);
         action = draw_content(ui, phase, auto_check, auto_install, pal, k);
     });
     let inner = draw_footer(ui, bar, pal, k);
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
         theme::apply_setup_style(ui, pal);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if let Some(a) = draw_buttons(ui, phase, pal, k) {
@@ -441,11 +441,11 @@ fn row(ui: &mut egui::Ui, label: &str, value: &str, pal: &Palette, k: f32) {
 }
 
 fn command_box(ui: &mut egui::Ui, cmd: &str, pal: &Palette, k: f32) {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(pal.field)
         .stroke(Stroke::new(theme::HAIRLINE * k, pal.line))
-        .rounding(theme::ROUND * k)
-        .inner_margin(egui::Margin::symmetric(10.0 * k, 7.0 * k))
+        .corner_radius(theme::ROUND * k)
+        .inner_margin(egui::epaint::MarginF32::symmetric(10.0 * k, 7.0 * k))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
@@ -472,7 +472,12 @@ fn progress_bar(ui: &mut egui::Ui, done: u64, total: u64, pal: &Palette, k: f32)
     let p = ui.painter();
     let round = PROGRESS_H * k * 0.5;
     p.rect_filled(rect, round, pal.field);
-    p.rect_stroke(rect, round, Stroke::new(theme::HAIRLINE * k, pal.line));
+    p.rect_stroke(
+        rect,
+        round,
+        Stroke::new(theme::HAIRLINE * k, pal.line),
+        egui::StrokeKind::Middle,
+    );
     let t = if total == 0 {
         0.0
     } else {

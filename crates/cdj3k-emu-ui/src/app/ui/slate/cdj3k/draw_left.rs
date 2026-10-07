@@ -412,6 +412,7 @@ pub(super) fn draw_left_section(
             tongue_rect,
             tongue_r,
             Stroke::new(layout.sc(1.5), COL_DARK.gamma_multiply(0.65)),
+            egui::StrokeKind::Middle,
         );
 
         // Reserve interactive area for future open-mount click handler.
@@ -433,7 +434,7 @@ pub(super) fn draw_left_section(
             centre,
             Vec2::new(layout.sc(PERF_SD_W), layout.sc(PERF_SD_H)),
         );
-        let corners = |inset: f32| egui::Rounding {
+        let corners = |inset: f32| egui::epaint::CornerRadiusF32 {
             nw: (layout.sc(PERF_SD_TOP_R) - inset).max(0.0),
             ne: (layout.sc(PERF_SD_TOP_R) - inset).max(0.0),
             sw: (layout.sc(PERF_SD_BOTTOM_R) - inset).max(0.0),
@@ -445,6 +446,7 @@ pub(super) fn draw_left_section(
             outer.shrink(rim_w * 0.5),
             corners(rim_w * 0.5),
             Stroke::new(rim_w, COL_SILVER),
+            egui::StrokeKind::Middle,
         );
 
         let wall_w = layout.sc(PERF_SD_WALL_STROKE);
@@ -453,6 +455,7 @@ pub(super) fn draw_left_section(
             outer.shrink(wall_mid),
             corners(wall_mid),
             Stroke::new(wall_w, COL_BLACK),
+            egui::StrokeKind::Middle,
         );
         let cavity_inset = layout.sc(PERF_SD_WALL_INSET) + wall_w;
         let cavity = outer.shrink(cavity_inset);
@@ -467,7 +470,7 @@ pub(super) fn draw_left_section(
             ),
         );
         let cover_r = layout.sc(PERF_SD_COVER_R);
-        let cover_round = egui::Rounding {
+        let cover_round = egui::epaint::CornerRadiusF32 {
             nw: 0.0,
             ne: 0.0,
             sw: cover_r,
@@ -478,6 +481,7 @@ pub(super) fn draw_left_section(
             cover,
             cover_round,
             Stroke::new(layout.sc(PERF_USB_FLAP_STROKE), COL_SILVER),
+            egui::StrokeKind::Middle,
         );
 
         // A diffuser: dim while the slot is idle, the lamp colour when driven.

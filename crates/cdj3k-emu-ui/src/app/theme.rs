@@ -7,7 +7,7 @@
 //! window is styled once by [`apply_setup_style`] rather than tinted call by
 //! call.
 
-use egui::{Color32, Context, Rounding, Stroke, Vec2};
+use egui::{Color32, Context, CornerRadius, Stroke, Vec2};
 
 /// Every colour the setup window draws with.
 pub(in crate::app) struct Palette {
@@ -95,7 +95,7 @@ pub(in crate::app) const DARK: Palette = Palette {
 /// The palette the system theme asks for. eframe follows the desktop setting,
 /// so the window is light unless the desktop is dark.
 pub(in crate::app) fn palette(ctx: &Context) -> &'static Palette {
-    if ctx.style().visuals.dark_mode {
+    if ctx.theme() == egui::Theme::Dark {
         &DARK
     } else {
         &LIGHT
@@ -186,11 +186,12 @@ pub(in crate::app) fn destructive_line(
         (pal.plate, pal.danger)
     };
     let p = ui.painter();
-    p.rect_filled(rect, Rounding::same(ROUND), fill);
+    p.rect_filled(rect, CornerRadius::from(ROUND), fill);
     p.rect_stroke(
         rect,
-        Rounding::same(ROUND),
+        CornerRadius::from(ROUND),
         Stroke::new(HAIRLINE, pal.danger),
+        egui::StrokeKind::Middle,
     );
 
     // Glyph and label are laid out as one block and centred together, so the
@@ -237,7 +238,7 @@ pub(in crate::app) fn primary_off(
         )
         .fill(pal.off)
         .stroke(Stroke::new(HAIRLINE, pal.off_line))
-        .rounding(Rounding::same(ROUND)),
+        .corner_radius(CornerRadius::from(ROUND)),
     )
 }
 
@@ -271,7 +272,7 @@ fn filled(
                         .strong()
                         .color(text),
                 )
-                .rounding(Rounding::same(ROUND)),
+                .corner_radius(CornerRadius::from(ROUND)),
             ),
         );
     });
@@ -314,7 +315,7 @@ pub(in crate::app) fn apply_setup_style(ui: &mut egui::Ui, pal: &Palette) {
     style.spacing.button_padding = Vec2::new(14.0, 7.0);
     style.spacing.interact_size.y = FIELD_H;
     style.spacing.combo_height = 240.0;
-    style.spacing.window_margin = egui::Margin::same(8.0);
+    style.spacing.window_margin = egui::Margin::from(8);
 
     let v = &mut style.visuals;
     v.panel_fill = Color32::TRANSPARENT;
@@ -322,8 +323,8 @@ pub(in crate::app) fn apply_setup_style(ui: &mut egui::Ui, pal: &Palette) {
     v.faint_bg_color = pal.plate;
     v.window_fill = pal.plate;
     v.window_stroke = Stroke::new(HAIRLINE, pal.line);
-    v.window_rounding = Rounding::same(ROUND);
-    v.menu_rounding = Rounding::same(ROUND);
+    v.window_corner_radius = CornerRadius::from(ROUND);
+    v.menu_corner_radius = CornerRadius::from(ROUND);
     v.window_shadow = egui::epaint::Shadow::NONE;
     v.popup_shadow = egui::epaint::Shadow::NONE;
     // The row a list already holds: a sunk band, not a highlight. egui's own
@@ -339,7 +340,7 @@ pub(in crate::app) fn apply_setup_style(ui: &mut egui::Ui, pal: &Palette) {
     n.weak_bg_fill = pal.off;
     n.bg_stroke = Stroke::new(HAIRLINE, pal.off_line);
     n.fg_stroke = Stroke::new(HAIRLINE, pal.off_text);
-    n.rounding = Rounding::same(ROUND);
+    n.corner_radius = CornerRadius::from(ROUND);
 
     // Rest, hover, press: the plate lifts and the edge darkens, which is the
     // same move the cards make. Nothing grows, and nothing casts a shadow.
@@ -353,7 +354,7 @@ pub(in crate::app) fn apply_setup_style(ui: &mut egui::Ui, pal: &Palette) {
         w.weak_bg_fill = fill;
         w.bg_stroke = Stroke::new(HAIRLINE, edge);
         w.fg_stroke = Stroke::new(HAIRLINE, fg);
-        w.rounding = Rounding::same(ROUND);
+        w.corner_radius = CornerRadius::from(ROUND);
         w.expansion = 0.0;
     }
 }

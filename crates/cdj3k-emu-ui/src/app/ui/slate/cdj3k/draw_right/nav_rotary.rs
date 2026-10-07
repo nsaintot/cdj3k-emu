@@ -113,10 +113,10 @@ pub(super) fn draw_nav_rotary(
     );
 
     // Scroll wheel → rotary ticks (accumulated to avoid sub-tick jitter).
-    // Use raw_scroll_delta so ctrl+scroll still works (egui routes smooth_scroll_delta
-    // to its zoom accumulator when ctrl is held, zeroing it for us).
+    // The raw wheel events, so ctrl+scroll still works (egui routes its smoothed
+    // delta to its zoom accumulator when ctrl is held, zeroing it for us).
     if resp.hovered() {
-        let scroll_y = ui.input(|i| i.raw_scroll_delta.y);
+        let scroll_y = crate::app::scroll::raw_delta(ui).y;
         if scroll_y != 0.0 {
             app.nav_scroll_accum += scroll_y;
             let detent_rad = std::f32::consts::TAU / NAV_DETENT_COUNT;

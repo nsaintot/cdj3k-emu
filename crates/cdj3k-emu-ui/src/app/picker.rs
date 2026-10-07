@@ -6,7 +6,7 @@
 //! window width.
 
 use cdj3k_emu_panel::Model;
-use egui::{Align2, Color32, FontId, Pos2, Rect, Rounding, Sense, Shape, Stroke, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 
 /// Window width the pixel sizes below are authored against; `k == 1.0` here.
 const REF_WIDTH: f32 = 760.0;
@@ -547,6 +547,7 @@ fn draw_slot_switch(
             chip,
             theme::ROUND * k,
             Stroke::new(theme::HAIRLINE * k, pal.line_strong),
+            egui::StrokeKind::Middle,
         );
         tracked(
             p,
@@ -561,7 +562,7 @@ fn draw_slot_switch(
     let id = ui.id().with("cdj_slot_switch");
     let resp = theme::pointer(ui.interact(chip, id, Sense::click()));
     let popup = ui.id().with("cdj_slot_menu");
-    let open = ui.memory(|m| m.is_popup_open(popup));
+    let open = egui::Popup::is_id_open(ui.ctx(), popup);
 
     let edge = if open || resp.hovered() {
         pal.ink
@@ -572,6 +573,7 @@ fn draw_slot_switch(
         chip,
         theme::ROUND * k,
         Stroke::new(theme::HAIRLINE * k, edge),
+        egui::StrokeKind::Middle,
     );
     tracked(
         p,
@@ -594,38 +596,35 @@ fn draw_slot_switch(
         chev,
     );
 
-    if resp.clicked() {
-        ui.memory_mut(|m| m.toggle_popup(popup));
-    }
     let mut picked = None;
-    // The popup takes its frame from the Ui it opens from; this one carries
+    // The popup takes its frame from the style it is given; this one carries
     // the setup's palette over the context's (in-window menu) style.
     let mut host = egui::Ui::new(
         ui.ctx().clone(),
-        ui.layer_id(),
         id.with("menu_host"),
-        egui::UiBuilder::new().max_rect(ui.max_rect()),
+        egui::UiBuilder::new()
+            .layer_id(ui.layer_id())
+            .max_rect(ui.max_rect()),
     );
     theme::apply_setup_style(&mut host, pal);
-    egui::popup::popup_below_widget(
-        &host,
-        popup,
-        &resp,
-        egui::popup::PopupCloseBehavior::CloseOnClickOutside,
-        |ui| {
+    let style = (**host.style()).clone();
+    egui::Popup::from_toggle_button_response(&resp)
+        .id(popup)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .style(style)
+        .width(SLOT_MENU_W * k)
+        .show(|ui| {
             theme::apply_setup_style(ui, pal);
-            ui.set_min_width(SLOT_MENU_W * k);
             ui.spacing_mut().item_spacing.y = 2.0 * k;
             for n in 1..=cdj3k_emu_platform::menu_state::MAX_INSTANCES {
                 if slot_menu_row(ui, n, n == slot, pal, k).clicked() {
                     if n != slot {
                         picked = Some(n);
                     }
-                    ui.memory_mut(|m| m.close_popup());
+                    egui::Popup::close_id(ui.ctx(), popup);
                 }
             }
-        },
-    );
+        });
     (w, picked)
 }
 
@@ -660,6 +659,7 @@ fn slot_menu_row(ui: &mut egui::Ui, n: u32, here: bool, pal: &Palette, k: f32) -
                 mark,
                 theme::HAIRLINE * k,
                 Stroke::new(theme::HAIRLINE * k, pal.off_line),
+                egui::StrokeKind::Middle,
             );
         }
     }
@@ -768,7 +768,7 @@ pub(in crate::app) fn draw_busy(
     let body = draw_header(ui, head).body;
     let k = k_of(ui.max_rect());
     let pal = theme::palette(ui.ctx());
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(body), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
         theme::apply_setup_style(ui, pal);
         ui.vertical_centered(|ui| {
             ui.add_space(body.height() * 0.28);
@@ -878,7 +878,7 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
     let deletable = view.installed.is_some();
     let closable = view.dismissable || !view.every_slot_empty;
     if closable || deletable {
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
             theme::apply_setup_style(ui, pal);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if closable && theme::secondary(ui, button_size(k), "Close", pal).clicked() {
@@ -1002,11 +1002,16 @@ fn draw_confirm(
     );
     let round = theme::ROUND * k;
     p.rect_filled(plate, round, pal.plate);
-    p.rect_stroke(plate, round, Stroke::new(theme::HAIRLINE * k, pal.line));
+    p.rect_stroke(
+        plate,
+        round,
+        Stroke::new(theme::HAIRLINE * k, pal.line),
+        egui::StrokeKind::Middle,
+    );
     let band = Rect::from_min_size(plate.min, Vec2::new(w, LOSS_HEAD_H * k));
     p.rect_filled(
         band,
-        Rounding {
+        egui::epaint::CornerRadiusF32 {
             nw: round,
             ne: round,
             sw: 0.0,
@@ -1046,7 +1051,7 @@ fn draw_confirm(
 
     let inner = draw_footer(ui, bar, pal, k);
     let mut action = None;
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
         theme::apply_setup_style(ui, pal);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let label = format!("Install the {}", model.title());
@@ -1096,13 +1101,14 @@ fn draw_card(
             theme::HAIRLINE * k,
             lerp_color(pal.line, pal.ink, hover_t * CARD_HOVER_EDGE),
         ),
+        egui::StrokeKind::Middle,
     );
 
     // The deck's own colour, across the head of its card.
     let cap = Rect::from_min_size(rect.min, Vec2::new(rect.width(), CARD_CAP_H * k));
     p.rect_filled(
         cap,
-        Rounding {
+        egui::epaint::CornerRadiusF32 {
             nw: round,
             ne: round,
             sw: 0.0,
@@ -1122,6 +1128,7 @@ fn draw_card(
             chip,
             theme::ROUND_CHIP * k,
             Stroke::new(theme::HAIRLINE * k, pal.line_strong),
+            egui::StrokeKind::Middle,
         );
         tracked(
             p,
@@ -1199,7 +1206,12 @@ fn draw_card(
     let edge = pal.ink;
     let text = lerp_color(pal.ink, pal.on_ink, hover_t);
     p.rect_filled(pill, round, fill);
-    p.rect_stroke(pill, round, Stroke::new(theme::HAIRLINE * k, edge));
+    p.rect_stroke(
+        pill,
+        round,
+        Stroke::new(theme::HAIRLINE * k, edge),
+        egui::StrokeKind::Middle,
+    );
     tracked_center(
         p,
         pill.center(),
@@ -1250,11 +1262,16 @@ pub(in crate::app) fn draw_delete_confirm(
     let p = ui.painter();
     let round = theme::ROUND * k;
     p.rect_filled(plate, round, pal.plate);
-    p.rect_stroke(plate, round, Stroke::new(theme::HAIRLINE * k, pal.line));
+    p.rect_stroke(
+        plate,
+        round,
+        Stroke::new(theme::HAIRLINE * k, pal.line),
+        egui::StrokeKind::Middle,
+    );
     let band = Rect::from_min_size(plate.min, Vec2::new(w, LOSS_HEAD_H * k));
     p.rect_filled(
         band,
-        Rounding {
+        egui::epaint::CornerRadiusF32 {
             nw: round,
             ne: round,
             sw: 0.0,
@@ -1294,7 +1311,7 @@ pub(in crate::app) fn draw_delete_confirm(
 
     let inner = draw_footer(ui, bar, pal, k);
     let mut action = None;
-    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(inner), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
         theme::apply_setup_style(ui, pal);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let label = format!("Delete slot {}", view.slot);
@@ -1371,11 +1388,26 @@ fn draw_flat_glyph(p: &egui::Painter, area: Rect, k: f32, col: Color32, detail_c
     let stroke = Stroke::new(GLYPH_STROKE * k, col);
     let detail = Stroke::new(GLYPH_DETAIL_STROKE * k, detail_col);
 
-    p.rect_stroke(outline, GLYPH_CHASSIS_ROUND_REF * k * 0.05, stroke);
-    p.rect_stroke(place(FLAT_SCREEN_FRAME), GLYPH_FRAME_ROUND * k, detail);
+    p.rect_stroke(
+        outline,
+        GLYPH_CHASSIS_ROUND_REF * k * 0.05,
+        stroke,
+        egui::StrokeKind::Middle,
+    );
+    p.rect_stroke(
+        place(FLAT_SCREEN_FRAME),
+        GLYPH_FRAME_ROUND * k,
+        detail,
+        egui::StrokeKind::Middle,
+    );
     p.rect_filled(place(FLAT_SCREEN), GLYPH_SCREEN_ROUND * k, col);
     button_row(p, place(FLAT_PADS), GLYPH_PAD_COUNT, FLAT_PAD_GAP, col, k);
-    p.rect_stroke(place(FLAT_TEMPO), GLYPH_FRAME_ROUND * k, detail);
+    p.rect_stroke(
+        place(FLAT_TEMPO),
+        GLYPH_FRAME_ROUND * k,
+        detail,
+        egui::StrokeKind::Middle,
+    );
 
     let (jx, jy, jr) = FLAT_JOG;
     let jog_c = at(jx, jy);
@@ -1446,7 +1478,12 @@ fn draw_deck_glyph(p: &egui::Painter, area: Rect, g: &Glyph, pal: &Palette, fill
     // The screen, and the frame it sits in.
     let screen = place(g.screen);
     let frame = screen.expand2(Vec2::new(g.bezel.x * outline.width(), g.bezel.y * vh));
-    p.rect_stroke(frame, GLYPH_FRAME_ROUND * k, detail);
+    p.rect_stroke(
+        frame,
+        GLYPH_FRAME_ROUND * k,
+        detail,
+        egui::StrokeKind::Middle,
+    );
     if g.recessed {
         for (wall, floor) in [
             (frame.left_top(), screen.left_top()),
@@ -1503,7 +1540,12 @@ fn draw_deck_glyph(p: &egui::Painter, area: Rect, g: &Glyph, pal: &Palette, fill
     };
     match g.bay {
         Bay::UsbAndSd => {
-            p.rect_stroke(cell(BAY_USB), GLYPH_FRAME_ROUND * k, detail);
+            p.rect_stroke(
+                cell(BAY_USB),
+                GLYPH_FRAME_ROUND * k,
+                detail,
+                egui::StrokeKind::Middle,
+            );
             p.circle_stroke(
                 Pos2::new(
                     tcol.left() + BAY_STOP.0 * tcol.width(),
@@ -1512,11 +1554,21 @@ fn draw_deck_glyph(p: &egui::Painter, area: Rect, g: &Glyph, pal: &Palette, fill
                 BAY_STOP.2 * tcol.width(),
                 detail,
             );
-            p.rect_stroke(cell(BAY_SD), GLYPH_FRAME_ROUND * k, detail);
+            p.rect_stroke(
+                cell(BAY_SD),
+                GLYPH_FRAME_ROUND * k,
+                detail,
+                egui::StrokeKind::Middle,
+            );
         }
         Bay::TwinUsb => {
             for (slot, stop) in BAY_SLOTS.iter().zip(BAY_STOPS.iter()) {
-                p.rect_stroke(cell(*slot), GLYPH_FRAME_ROUND * k, detail);
+                p.rect_stroke(
+                    cell(*slot),
+                    GLYPH_FRAME_ROUND * k,
+                    detail,
+                    egui::StrokeKind::Middle,
+                );
                 // Filled: a bar this thin closes up as an outline.
                 let bar = cell(*stop);
                 p.rect_filled(bar, bar.height() * 0.5, detail.color);
@@ -1536,6 +1588,7 @@ fn draw_deck_glyph(p: &egui::Painter, area: Rect, g: &Glyph, pal: &Palette, fill
         ),
         GLYPH_FRAME_ROUND * k,
         detail,
+        egui::StrokeKind::Middle,
     );
 
     let (jx, jy, jr) = g.jog;
@@ -1578,7 +1631,7 @@ fn draw_deck_glyph(p: &egui::Painter, area: Rect, g: &Glyph, pal: &Palette, fill
         // The ring fits inside the block: one plain outline, and the seam runs
         // from each end down to the ring.
         let pod = Rect::from_center_size(pod_c, Vec2::new(2.0 * hw, 2.0 * half_h));
-        p.rect_stroke(pod, round, detail);
+        p.rect_stroke(pod, round, detail, egui::StrokeKind::Middle);
         for (y0, y1) in [
             (pod.top(), pod_c.y - ring_r),
             (pod_c.y + ring_r, pod.bottom()),
@@ -1693,7 +1746,7 @@ pub(in crate::app) fn text_width(p: &egui::Painter, text: &str, font: &FontId, t
 }
 
 fn glyph_width(p: &egui::Painter, c: char, font: &FontId) -> f32 {
-    p.ctx().fonts(|f| {
+    p.ctx().fonts_mut(|f| {
         f.layout_no_wrap(c.to_string(), font.clone(), Color32::WHITE)
             .size()
             .x

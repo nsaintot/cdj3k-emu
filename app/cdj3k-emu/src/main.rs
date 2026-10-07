@@ -30,15 +30,15 @@ fn configure_helvetica_medium(ctx: &egui::Context) {
 
     fonts.font_data.insert(
         NIMBUS_SANS.to_owned(),
-        FontData::from_static(NIMBUS_SANS_DATA).tweak(tweak),
+        std::sync::Arc::new(FontData::from_static(NIMBUS_SANS_DATA).tweak(tweak.clone())),
     );
     fonts.font_data.insert(
         NIMBUS_SANS_BOLD.to_owned(),
-        FontData::from_static(NIMBUS_BOLD_DATA).tweak(tweak),
+        std::sync::Arc::new(FontData::from_static(NIMBUS_BOLD_DATA).tweak(tweak)),
     );
     fonts.font_data.insert(
         NIMBUS_SANS_CONDENSED.to_owned(),
-        FontData::from_static(NIMBUS_CONDENSED_DATA).tweak(tweak_condensed),
+        std::sync::Arc::new(FontData::from_static(NIMBUS_CONDENSED_DATA).tweak(tweak_condensed)),
     );
 
     if let Some(family) = fonts.families.get_mut(&FontFamily::Proportional) {

@@ -35,7 +35,7 @@ const REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1
 pub(super) fn paint_boot_shade(ctx: &egui::Context, alpha: f32, booting: bool) {
     // The deck is what is booting, so the shade covers the deck and stops at
     // the in-window menu strip: those controls work throughout.
-    let mut screen = ctx.screen_rect();
+    let mut screen = ctx.content_rect();
     screen.min.y += cdj3k_emu_platform::menu::in_window_bar_height();
     egui::Area::new(egui::Id::new("qemu_boot_shade"))
         .order(egui::Order::Foreground)

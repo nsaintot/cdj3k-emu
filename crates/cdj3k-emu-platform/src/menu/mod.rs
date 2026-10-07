@@ -76,8 +76,8 @@ pub fn in_window_bar_height() -> f32 {
 
 /// Draw the in-window menu. Call once per frame, before the chassis; a no-op
 /// where the host draws the menu itself.
-pub fn draw_in_window(ctx: &egui::Context) {
-    with_egui_provider(|p| p.draw(ctx));
+pub fn draw_in_window(ui: &mut egui::Ui) {
+    with_egui_provider(|p| p.draw(ui));
 }
 
 /// Run the menu's keyboard shortcuts without drawing it.

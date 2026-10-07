@@ -166,7 +166,7 @@ fn turned(
         return None;
     }
     // Raw, so ctrl+scroll still reaches the knob.
-    let scroll_y = ui.input(|i| i.raw_scroll_delta.y);
+    let scroll_y = crate::app::scroll::raw_delta(ui).y;
     if scroll_y == 0.0 {
         return None;
     }
