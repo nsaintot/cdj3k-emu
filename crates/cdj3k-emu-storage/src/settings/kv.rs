@@ -34,10 +34,12 @@ pub(super) const SLOT_KEYS: &[&str] = &[
     "audio_device_uid",
     "audio_enabled",
     "firmware_release",
+    "fs",
     "haptic_enabled",
     "jog_adjust",
     "mac",
     "model",
+    "mods_enabled",
     "net_iface",
     "pc_link_enabled",
     "screen_extended",
@@ -78,7 +80,7 @@ pub fn prune_app_file() {
     }
 }
 
-pub(super) fn read_kv(path: &Path) -> BTreeMap<String, String> {
+pub(crate) fn read_kv(path: &Path) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     if let Ok(s) = std::fs::read_to_string(path) {
         for line in s.lines() {
@@ -106,16 +108,18 @@ pub(super) fn write_kv(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut buf = String::new();
-    for (k, v) in map.iter().filter(|(k, _)| known.contains(&k.as_str())) {
-        buf.push_str(k);
-        buf.push('=');
-        buf.push_str(v);
-        buf.push('\n');
-    }
+    let buf = kv_text(map.iter().filter(|(k, _)| known.contains(&k.as_str())));
     let tmp = path.with_extension(format!("txt.{}.tmp", std::process::id()));
     std::fs::write(&tmp, buf)?;
     std::fs::rename(&tmp, path)
+}
+
+/// `pairs` as `key=value` lines, the format of every settings file.
+pub(crate) fn kv_text<'a>(pairs: impl IntoIterator<Item = (&'a String, &'a String)>) -> String {
+    pairs
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}\n"))
+        .collect()
 }
 
 #[cfg(test)]
@@ -143,6 +147,8 @@ mod tests {
             pc_link_enabled: true,
             model: Some(Model::Cdj3kx),
             firmware_release: Some("3.20".into()),
+            fs: 1,
+            mods_enabled: false,
             net_iface: Some("en0".into()),
             usb_virtual_path: Some(PathBuf::from("/tmp/usb.img")),
             usb_physical_bsd: Some("disk2".into()),

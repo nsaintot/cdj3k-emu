@@ -1,5 +1,6 @@
 pub mod emmc;
 pub mod gpt;
+pub mod mods;
 mod qcow2;
 pub mod settings;
 mod staging;
@@ -158,6 +159,7 @@ pub fn slot_running(instance_id: u32) -> bool {
 
 const DELETE_REQUEST: &str = ".delete-request";
 const QUIT_REQUEST: &str = ".quit-request";
+const MODS_RESTART_REQUEST: &str = ".mods-restart-request";
 
 /// How long a request to another window stays good. The owner polls once a
 /// second; an older request is left over from a window that went away, and is
@@ -192,6 +194,18 @@ pub fn request_quit(instance_id: u32) -> std::io::Result<()> {
 /// [`take_delete_request`] does a delete request.
 pub fn take_quit_request(instance_id: u32) -> bool {
     take_request(instance_id, QUIT_REQUEST)
+}
+
+/// Ask the window that owns slot `instance_id` to restart its emulation so the
+/// slot's current mods take effect, as its own Restart Emulation does.
+pub fn request_mods_restart(instance_id: u32) -> std::io::Result<()> {
+    write_request(instance_id, MODS_RESTART_REQUEST)
+}
+
+/// Take a mods restart request for slot `instance_id`, the way
+/// [`take_delete_request`] takes a delete request.
+pub fn take_mods_restart_request(instance_id: u32) -> bool {
+    take_request(instance_id, MODS_RESTART_REQUEST)
 }
 
 /// Remove a quit request for slot `instance_id` that has not been taken.
@@ -264,6 +278,17 @@ fn lock_exclusive(path: &std::path::Path) -> std::io::Result<Option<std::fs::Fil
     };
     cdj3k_emu_platform::file_lock::lock(&f, path)?;
     Ok(Some(f))
+}
+
+/// The guest feature set that an install puts in a slot. Raise it when a
+/// change under `initramfs-patch/` only reaches a slot through a reinstall.
+pub const FEATURE_SET: u32 = 2;
+
+/// Whether slot `instance_id` is installed with a guest feature set older
+/// than [`FEATURE_SET`], so it needs a reinstall.
+pub fn slot_outdated(instance_id: u32) -> bool {
+    FirmwarePaths::new(instance_id).provisioned()
+        && settings::InstanceSettings::saved_fs(instance_id) < FEATURE_SET
 }
 
 /// What slot `instance_id` holds: the deck installed in it and the firmware

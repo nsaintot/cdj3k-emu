@@ -103,6 +103,10 @@ fn main() {
     // `--after-update`: started by the updater while the build it replaced is
     // still exiting, so the slot is waited for rather than found taken.
     let mut after_update = false;
+    // `--mod <folder>` (repeatable) adds a mod folder for this launch only.
+    // `--no-mods` boots without the slot's mods.
+    let mut extra_mods: Vec<PathBuf> = Vec::new();
+    let mut no_mods = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -167,6 +171,15 @@ fn main() {
             }
             "--after-update" => {
                 after_update = true;
+            }
+            "--mod" => {
+                i += 1;
+                if i < args.len() {
+                    extra_mods.push(PathBuf::from(&args[i]));
+                }
+            }
+            "--no-mods" => {
+                no_mods = true;
             }
             _ => {}
         }
@@ -240,6 +253,7 @@ fn main() {
             s.audio_device_uid = inst_settings.audio_device_uid.clone();
             s.alc_enabled = inst_settings.alc_enabled;
             s.haptic_enabled = inst_settings.haptic_enabled;
+            s.mods_enabled = inst_settings.mods_enabled;
             s.pc_link_enabled =
                 inst_settings.pc_link_enabled && cdj3k_emu_runtime::pc_link::is_supported();
             s.service_mode = service_mode;
@@ -319,6 +333,8 @@ fn main() {
         initramfs,
         no_emmc,
         serial_log,
+        extra_mods,
+        no_mods,
         ui_only: no_spawn,
         claim: SLOT_CLAIM.get(),
     };

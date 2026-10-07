@@ -3,6 +3,7 @@ pub mod config;
 pub mod disk;
 pub mod elevate;
 pub mod instance;
+pub mod mods_report;
 pub mod net;
 pub mod pc_link;
 pub mod process;

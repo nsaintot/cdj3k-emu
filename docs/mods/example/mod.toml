@@ -1,0 +1,16 @@
+[mod]
+name = "example"
+version = "0.1.0"
+author = "John Doe"
+description = "A mod to start from: a variable, a library, a loader.sh."
+# url = "https://github.com/…"
+# Libraries for the player app, as paths relative to the mod's folder.
+# preload = ["lib/example.so"]
+env = { EXAMPLE_MOD = "1" }
+
+# The firmware releases this mod runs on, per model. Delete the table to run
+# on every firmware.
+[compat]
+cdj3k = "*"
+cdj3kx = "*"
+cdj1500x = "*"

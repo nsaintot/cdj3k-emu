@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 pub use super::portable::{
     activate_process, enter_panel_window, enter_picker_window, on_creation_context,
-    open_file_picker, run_picker, set_app_name,
+    open_file_picker, run_mod_picker, run_picker, set_app_name,
 };
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};

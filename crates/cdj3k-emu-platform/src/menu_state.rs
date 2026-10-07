@@ -146,6 +146,12 @@ pub struct AppState {
     /// consumes it and persists `haptic_enabled` to InstanceSettings.
     pub haptic_toggle_requested: bool,
 
+    /// "Enable Mods": whether the slot boots with its mods. Toggling it
+    /// restarts a running emulation; the list stays editable either way.
+    pub mods_enabled: bool,
+    /// One-shot: the runtime worker persists `mods_enabled`.
+    pub mods_toggle_requested: bool,
+
     /// Whether this build can publish PC Link endpoints. Set once at startup.
     pub pc_link_supported: bool,
     /// "PC Link (USB-B cable)" toggle.
@@ -249,6 +255,8 @@ impl AppState {
             alc_toggle_requested: false,
             haptic_enabled: true,
             haptic_toggle_requested: false,
+            mods_enabled: true,
+            mods_toggle_requested: false,
             pc_link_supported: false,
             pc_link_enabled: false,
             pc_link_toggle_requested: false,

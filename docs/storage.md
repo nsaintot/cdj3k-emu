@@ -391,6 +391,8 @@ lose each other's fields.
 | `haptic_enabled` | `0` / `1` | `1` | Gates Force Touch detent clicks |
 | `model` | `cdj3k` / `cdj3kx` or empty | empty | The model the slot's installation is; the app opens the slot on it |
 | `firmware_release` | e.g. `3.20` or empty | empty | The release the installation came from, as `IMAGES/RELEASE.TXT` gives it |
+| `fs` | `u32` | `0` | The guest feature set the slot was installed with. When it is lower than the app's, the slot is outdated and boots without mods until it is reinstalled. |
+| `mods_enabled` | `0` / `1` | `1` | Enable Mods: whether the slot boots with its enabled mods |
 | `pc_link_enabled` | `0` / `1` | `0` | PC Link (USB-B) cable plugged in |
 | `net_iface` | `en0`, `Ethernet 2` etc. or empty | empty | Selected Pro DJ Link interface |
 | `usb_virtual_path` | path or empty | empty | Last attached virtual USB image |

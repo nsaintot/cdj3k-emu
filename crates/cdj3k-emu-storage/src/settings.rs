@@ -24,6 +24,8 @@ mod app;
 mod identity;
 mod instance;
 mod kv;
+
+pub(crate) use kv::{kv_text, read_kv};
 mod panel;
 
 pub use app::AppSettings;

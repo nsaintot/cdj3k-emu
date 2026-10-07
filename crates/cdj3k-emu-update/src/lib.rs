@@ -175,6 +175,11 @@ pub fn download(
     )
 }
 
+/// Fetch any file over HTTPS into `dest`, refusing one over `limit` bytes.
+pub fn fetch_file(url: &str, dest: &std::path::Path, limit: u64) -> Result<(), Error> {
+    fetch::fetch_to(url, dest, limit)
+}
+
 /// Remove what [`download`] left for `version`.
 pub fn discard_download(version: &str) {
     let _ = std::fs::remove_dir_all(download_dir(version));

@@ -86,6 +86,32 @@ pub fn download(
     save(reader, package, &dir.join(name), progress, cancel)
 }
 
+/// Up to `limit` bytes from `url` into `dest`, through a `.part` file renamed
+/// into place once the body is whole.
+pub fn fetch_to(url: &str, dest: &Path, limit: u64) -> Result<(), Error> {
+    let resp = agent(PACKAGE_BODY_WAIT)
+        .get(url)
+        .call()
+        .map_err(|e| http_error(url, e))?;
+    let mut reader = resp.into_body().into_reader().take(limit + 1);
+    let part = dest.with_extension(format!("{}.part", std::process::id()));
+    let result = (|| {
+        let mut file = std::fs::File::create(&part)?;
+        let n = std::io::copy(&mut reader, &mut file)?;
+        if n > limit {
+            return Err(Error::new(format!("{url} is larger than {limit} bytes")));
+        }
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&part, dest)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    result
+}
+
 /// Copy `reader` to `dest` through a `.part` file of this process's own,
 /// created new, that is renamed into place only once its size and hash match
 /// `package`.

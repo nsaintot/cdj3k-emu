@@ -9,6 +9,7 @@
 #     cdj3k-usbcmd-listener.sh)
 #   - exposes whitelisted /sys/module/virtio_snd/parameters via `set`/`get`
 #   - pushes audio_latency_ms (CSV: guest,host,total) to the host every 3s
+#   - reports this boot's mods to the host (patch 30)
 #
 # The USB attach/detach hook scripts (patches 19, 20) write `usb_state 0|1`
 # lines directly to /dev/virtio-ports/cdj3k.cfg - Linux guarantees atomic

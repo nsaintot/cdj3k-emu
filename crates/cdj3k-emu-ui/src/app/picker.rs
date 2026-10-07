@@ -47,6 +47,21 @@ const CARD_MAX_W: f32 = 250.0;
 const CARD_MAX_H: f32 = 300.0;
 /// Under the card row, so it does not sit on the action bar.
 const CARD_ROW_BOTTOM: f32 = 20.0;
+
+// ── The Mods bar, between the cards and the action bar ────────────────────────
+const MODS_BAR_H: f32 = 44.0;
+const MODS_BAR_BOTTOM: f32 = 16.0;
+const MODS_BAR_PAD: f32 = 16.0;
+const MODS_BAR_GAP: f32 = 12.0;
+const MODS_BAR_GLYPH: f32 = 16.0;
+const MODS_BAR_FONT: f32 = 12.5;
+const MODS_BAR_DOT: f32 = 7.0;
+const MODS_BAR_DOT_GAP: f32 = 6.0;
+/// The line in the replace confirmation that names the mods the new model
+/// would not run.
+const REPLACE_MODS_GAP: f32 = 14.0;
+const REPLACE_MODS_GLYPH: f32 = 14.0;
+const REPLACE_MODS_FONT: f32 = 12.5;
 /// The band of deck colour across the head of a card - the one place the
 /// window lets a hue run full width.
 const CARD_CAP_H: f32 = 3.0;
@@ -313,6 +328,12 @@ pub(in crate::app) struct PickerView<'a> {
     pub every_slot_empty: bool,
     /// The firmware release installed in the slot shown.
     pub release: Option<&'a str>,
+    /// The slot shown needs a reinstall.
+    pub outdated: bool,
+    /// The slot's mods, for the bar under the cards.
+    pub mods: Option<&'a super::mods_view::ModsBar>,
+    /// The slot's mods the confirmed model would not run.
+    pub replace_incompatible: Vec<String>,
 }
 
 pub(in crate::app) enum PickerAction {
@@ -336,6 +357,10 @@ pub(in crate::app) enum PickerAction {
     ConfirmDelete,
     /// The delete confirmation was declined.
     CancelDelete,
+    /// The Mods bar was clicked.
+    ManageMods,
+    /// Something asked of the Mods view.
+    Mods(super::mods_view::ModsAction),
 }
 
 /// What a card's foot pill offers for its model.
@@ -402,7 +427,14 @@ pub(in crate::app) struct Header<'a> {
     /// Whether the slot chip opens its menu. The window follows the slot it
     /// is pointed at, so a step in the middle of a job keeps its own.
     pub switchable: bool,
+    /// `sub` is a warning.
+    pub warn: bool,
 }
+
+/// The subtitle of a slot that needs a reinstall
+/// ([`cdj3k_emu_storage::slot_outdated`]).
+pub(in crate::app) const OUTDATED: &str =
+    "Outdated slot installation, reinstall to update the slot";
 
 /// What a header drew, and what the user asked of it.
 pub(in crate::app) struct HeaderOut {
@@ -502,14 +534,15 @@ pub(in crate::app) fn draw_header(ui: &egui::Ui, head: &Header<'_>) -> HeaderOut
         pal.ink,
     );
     y += theme::TITLE_FONT * k * 1.12 + TITLE_SUB_GAP * k;
+    let sub_col = if head.warn { pal.warn } else { pal.muted };
     let galley = p.layout(
         head.sub.to_owned(),
         FontId::proportional(theme::SUB_FONT * k),
-        pal.muted,
+        sub_col,
         area.width() - 2.0 * theme::GUTTER * k,
     );
     let sub_h = galley.size().y;
-    p.galley(Pos2::new(left, y), galley, pal.muted);
+    p.galley(Pos2::new(left, y), galley, sub_col);
 
     HeaderOut {
         body: Rect::from_min_max(
@@ -794,8 +827,10 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
         return draw_confirm(ui, view, model, k, pal);
     }
 
+    let warn = view.status.is_none() && view.outdated;
     let sub = match view.status {
         Some(status) => status.to_owned(),
+        None if warn => OUTDATED.to_owned(),
         None => "emulation model for the current slot".to_owned(),
     };
     let head = Header {
@@ -817,11 +852,28 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
         },
         sub: &sub,
         switchable: true,
+        warn,
     };
     let out = draw_header(ui, &head);
     let body = out.body;
-    let (space, bar) = footer_split(body, k);
+    let (mut space, bar) = footer_split(body, k);
     let mut action = out.switch_to.map(PickerAction::View);
+    if let (Some(mods), Some(_)) = (view.mods, view.installed) {
+        let strip = Rect::from_min_max(
+            Pos2::new(
+                space.left() + theme::GUTTER * k,
+                space.bottom() - (MODS_BAR_H + MODS_BAR_BOTTOM) * k,
+            ),
+            Pos2::new(
+                space.right() - theme::GUTTER * k,
+                space.bottom() - MODS_BAR_BOTTOM * k,
+            ),
+        );
+        if draw_mods_bar(ui, strip, mods, k, pal).clicked() {
+            action = Some(PickerAction::ManageMods);
+        }
+        space.max.y = strip.top();
+    }
 
     let row = Rect::from_min_max(
         Pos2::new(space.left() + theme::GUTTER * k, space.top()),
@@ -910,6 +962,113 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
     action
 }
 
+/// The Mods bar: how many mods are on, with a note when they are disabled or
+/// some are incompatible, or an invitation to add one when there are none.
+/// Clicking it opens the Mods view.
+fn draw_mods_bar(
+    ui: &egui::Ui,
+    rect: Rect,
+    mods: &super::mods_view::ModsBar,
+    k: f32,
+    pal: &Palette,
+) -> egui::Response {
+    let resp = theme::pointer(ui.interact(rect, ui.id().with("cdj_mods_bar"), Sense::click()));
+    let p = ui.painter();
+    let empty = mods.total == 0;
+    let round = theme::ROUND * k;
+    if empty {
+        super::mods_view::dashed_rect(
+            p,
+            rect,
+            if resp.hovered() {
+                pal.ink
+            } else {
+                pal.line_strong
+            },
+            k,
+        );
+    } else {
+        p.rect_filled(
+            rect,
+            round,
+            if resp.hovered() {
+                pal.plate_hover
+            } else {
+                pal.plate
+            },
+        );
+        p.rect_stroke(
+            rect,
+            round,
+            Stroke::new(
+                theme::HAIRLINE * k,
+                if resp.hovered() { pal.ink } else { pal.line },
+            ),
+            egui::StrokeKind::Middle,
+        );
+    }
+    let cy = rect.center().y;
+    let mut x = rect.left() + MODS_BAR_PAD * k;
+    super::mods_view::cube_glyph(
+        p,
+        Rect::from_min_size(
+            Pos2::new(x, cy - MODS_BAR_GLYPH * k * 0.5),
+            Vec2::splat(MODS_BAR_GLYPH * k),
+        ),
+        if empty { pal.faint } else { pal.dim },
+        k,
+    );
+    x += (MODS_BAR_GLYPH + MODS_BAR_GAP) * k;
+    x += tracked(
+        p,
+        Pos2::new(x, cy),
+        "MODS",
+        &FontId::proportional(theme::MICRO_FONT * k),
+        if empty { pal.dim } else { pal.ink },
+        theme::MICRO_TRACK * k,
+    ) + MODS_BAR_GAP * k;
+    let font = FontId::proportional(MODS_BAR_FONT * k);
+    let summary = if empty {
+        "None installed".to_string()
+    } else {
+        format!("{} enabled", mods.on)
+    };
+    x += p
+        .text(
+            Pos2::new(x, cy),
+            Align2::LEFT_CENTER,
+            summary,
+            font.clone(),
+            pal.muted,
+        )
+        .width()
+        + MODS_BAR_GAP * k;
+    if let Some((note, failure)) = &mods.note {
+        let col = if *failure { pal.danger } else { pal.warn };
+        let r = MODS_BAR_DOT * k * 0.5;
+        p.circle_filled(Pos2::new(x + r, cy), r, col);
+        p.text(
+            Pos2::new(x + 2.0 * r + MODS_BAR_DOT_GAP * k, cy),
+            Align2::LEFT_CENTER,
+            note,
+            font.clone(),
+            col,
+        );
+    }
+    p.text(
+        Pos2::new(rect.right() - MODS_BAR_PAD * k, cy),
+        Align2::RIGHT_CENTER,
+        if empty {
+            "Add a mod →"
+        } else {
+            "Manage mods →"
+        },
+        font,
+        pal.ink,
+    );
+    resp
+}
+
 /// The card row replaced by the question the replacement asks: the slot's
 /// installation, its eMMC and everything the guest wrote to it all go.
 fn draw_confirm(
@@ -943,13 +1102,45 @@ fn draw_confirm(
         title: &title,
         sub: &sub,
         switchable: false,
+        warn: false,
     };
     let body = draw_header(ui, &head).body;
     let (space, bar) = footer_split(body, k);
 
     let w = (CONFIRM_W * k).min(space.width() - 2.0 * theme::GUTTER * k);
     let plate_h = (LOSS_HEAD_H + 3.0 * LOSS_ROW_H) * k;
-    let block_h = (SWAP_H + SWAP_GAP) * k + plate_h;
+    let mods_line = (!view.replace_incompatible.is_empty()).then(|| {
+        let n = view.replace_incompatible.len();
+        let lead = if n == 1 {
+            format!(
+                "1 of this slot's mods is incompatible with the {}",
+                model.title()
+            )
+        } else {
+            format!(
+                "{n} of this slot's mods are incompatible with the {}",
+                model.title()
+            )
+        };
+        let font = FontId::proportional(REPLACE_MODS_FONT * k);
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            &lead,
+            0.0,
+            egui::TextFormat::simple(font.clone(), pal.danger),
+        );
+        job.append(
+            &format!(" ({}).", view.replace_incompatible.join(", ")),
+            0.0,
+            egui::TextFormat::simple(font, pal.muted),
+        );
+        job.wrap.max_width = (CONFIRM_W - REPLACE_MODS_GLYPH - 10.0) * k;
+        ui.painter().layout_job(job)
+    });
+    let mods_h = mods_line
+        .as_ref()
+        .map_or(0.0, |g| REPLACE_MODS_GAP * k + g.size().y);
+    let block_h = (SWAP_H + SWAP_GAP) * k + plate_h + mods_h;
     let left = space.center().x - w * 0.5;
     let top = space.center().y - block_h * 0.5;
     let p = ui.painter();
@@ -1046,6 +1237,24 @@ fn draw_confirm(
             row,
             FontId::proportional(LOSS_FONT * k),
             pal.ink,
+        );
+    }
+
+    if let Some(galley) = mods_line {
+        let y = plate.bottom() + REPLACE_MODS_GAP * k;
+        super::mods_view::cube_glyph(
+            p,
+            Rect::from_min_size(
+                Pos2::new(plate.left() + 2.0 * k, y + 2.0 * k),
+                Vec2::splat(REPLACE_MODS_GLYPH * k),
+            ),
+            pal.danger,
+            k,
+        );
+        p.galley(
+            Pos2::new(plate.left() + (REPLACE_MODS_GLYPH + 10.0) * k, y),
+            galley,
+            pal.muted,
         );
     }
 
@@ -1249,6 +1458,7 @@ pub(in crate::app) fn draw_delete_confirm(
         title: &title,
         sub,
         switchable: false,
+        warn: false,
     };
     let body = draw_header(ui, &head).body;
     let (space, bar) = footer_split(body, k);
@@ -1754,14 +1964,14 @@ fn glyph_width(p: &egui::Painter, c: char, font: &FontId) -> f32 {
 }
 
 /// A rule one pixel thick, whatever the window's size factor.
-fn hairline(p: &egui::Painter, a: Pos2, b: Pos2, col: Color32, k: f32) {
+pub(in crate::app) fn hairline(p: &egui::Painter, a: Pos2, b: Pos2, col: Color32, k: f32) {
     p.line_segment([a, b], Stroke::new(theme::HAIRLINE * k, col));
 }
 
 /// The upright rule in the action bar, between the window's own action and
 /// the slot's. It takes its own place in the row rather than being painted
 /// into the gap, so the spacing either side of it is the bar's.
-fn footer_rule(ui: &mut egui::Ui, pal: &Palette, k: f32) {
+pub(in crate::app) fn footer_rule(ui: &mut egui::Ui, pal: &Palette, k: f32) {
     let (rect, _) = ui.allocate_exact_size(
         Vec2::new(theme::HAIRLINE * k, FOOTER_RULE_H * k),
         Sense::hover(),
@@ -1777,7 +1987,7 @@ fn footer_rule(ui: &mut egui::Ui, pal: &Palette, k: f32) {
 }
 
 /// The bin beside the delete's label, drawn to the window's hairline.
-fn trash_glyph(p: &egui::Painter, rect: Rect, col: Color32, k: f32) {
+pub(in crate::app) fn trash_glyph(p: &egui::Painter, rect: Rect, col: Color32, k: f32) {
     let x = |t: f32| rect.left() + rect.width() * t;
     let y = |t: f32| rect.top() + rect.height() * t;
     let stroke = Stroke::new(theme::HAIRLINE * k, col);

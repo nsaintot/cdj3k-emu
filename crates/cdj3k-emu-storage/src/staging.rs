@@ -16,6 +16,7 @@
 //! whose lock nobody holds and which has no record is an install that died
 //! part way, and is emptied by whoever finds it.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +24,8 @@ use cdj3k_emu_panel::Model;
 
 use crate::{
     emulation_running, forget_release, instance_dir, lock_exclusive, lock_exclusive_retry,
-    settings::InstanceSettings, FirmwarePaths, SlotClaim, FIRMWARE_FILES,
+    settings::{kv_text, read_kv, InstanceSettings},
+    FirmwarePaths, SlotClaim, FIRMWARE_FILES,
 };
 
 pub(crate) const STAGING: &str = ".staging";
@@ -49,6 +51,8 @@ fn staged_paths(dir: &Path) -> FirmwarePaths {
 pub struct StagedRecord {
     pub model: Model,
     pub firmware_release: Option<String>,
+    /// The guest feature set the install carries ([`crate::FEATURE_SET`]).
+    pub fs: u32,
     /// The serial the staged eMMC's cabinet was keyed for.
     pub soc_serial: String,
     /// Someone asked the owner to restart onto it ([`request_restart`]).
@@ -56,23 +60,17 @@ pub struct StagedRecord {
 }
 
 fn read_record(dir: &Path) -> Option<StagedRecord> {
-    let path = dir.join(RECORD);
-    let text = std::fs::read_to_string(&path).ok()?;
-    let mut model = None;
-    let mut firmware_release = None;
-    let mut soc_serial = None;
-    for line in text.lines() {
-        match line.split_once('=') {
-            Some(("model", v)) => model = Model::parse(v),
-            Some(("firmware_release", v)) if !v.is_empty() => firmware_release = Some(v.to_owned()),
-            Some(("soc_serial", v)) => soc_serial = InstanceSettings::parse_soc_serial(v).ok(),
-            _ => {}
-        }
-    }
+    let map = read_kv(&dir.join(RECORD));
     Some(StagedRecord {
-        model: model?,
-        firmware_release,
-        soc_serial: soc_serial?,
+        model: map.get("model").and_then(|v| Model::parse(v))?,
+        firmware_release: map
+            .get("firmware_release")
+            .filter(|v| !v.is_empty())
+            .cloned(),
+        fs: map.get("fs").and_then(|v| v.parse().ok()).unwrap_or(0),
+        soc_serial: map
+            .get("soc_serial")
+            .and_then(|v| InstanceSettings::parse_soc_serial(v).ok())?,
         restart: dir.join(RESTART).exists(),
     })
 }
@@ -166,12 +164,19 @@ impl StagedFirmware {
         }
         let dir = self.paths.dir().to_path_buf();
         let tmp = dir.join(format!("{RECORD}.tmp"));
-        let text = format!(
-            "model={}\nfirmware_release={}\nsoc_serial={}\n",
-            model.slug(),
-            firmware_release.unwrap_or(""),
-            InstanceSettings::parse_soc_serial(soc_serial)?,
-        );
+        let record = BTreeMap::from([
+            ("model".to_string(), model.slug().to_string()),
+            (
+                "firmware_release".to_string(),
+                firmware_release.unwrap_or("").to_string(),
+            ),
+            ("fs".to_string(), crate::FEATURE_SET.to_string()),
+            (
+                "soc_serial".to_string(),
+                InstanceSettings::parse_soc_serial(soc_serial)?,
+            ),
+        ]);
+        let text = kv_text(&record);
         {
             use std::io::Write;
             let mut f = std::fs::File::create(&tmp)?;
@@ -242,6 +247,7 @@ pub fn apply_staged(claim: &SlotClaim) -> io::Result<Option<StagedRecord>> {
     InstanceSettings::update(instance_id, |s| {
         s.model = Some(record.model);
         s.firmware_release = record.firmware_release.clone();
+        s.fs = record.fs;
         s.soc_serial = record.soc_serial.clone();
     })?;
     let staged = staged_paths(&dir);
@@ -405,6 +411,19 @@ mod tests {
         let claim = SlotClaim::take(1).unwrap().unwrap();
         apply_staged(&claim).unwrap().unwrap();
         assert_eq!(read_all(&FirmwarePaths::new(1)), ["new", "new", "new"]);
+    }
+
+    #[test]
+    fn an_install_stamps_the_feature_set() {
+        let _home = TestHome::new("stage-fs");
+        let live = FirmwarePaths::new(1);
+        write_all(&live, "old");
+        assert!(crate::slot_outdated(1), "installed before the key");
+        stage(1, "new");
+        let claim = SlotClaim::take(1).unwrap().unwrap();
+        apply_staged(&claim).unwrap().unwrap();
+        assert_eq!(InstanceSettings::saved_fs(1), crate::FEATURE_SET);
+        assert!(!crate::slot_outdated(1));
     }
 
     /// A swap cut short between two renames is finished by the next apply,
