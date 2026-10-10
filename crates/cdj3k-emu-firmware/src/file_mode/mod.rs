@@ -1,4 +1,4 @@
-//! Marking a file executable, where the host's filesystem has the bit.
+//! A host file's mode bits, where the host's filesystem has them.
 
 #[cfg(unix)]
 #[path = "unix.rs"]
@@ -7,4 +7,4 @@ mod imp;
 #[path = "unsupported.rs"]
 mod imp;
 
-pub use imp::set_executable;
+pub use imp::{permissions, set_executable};

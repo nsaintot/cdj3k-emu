@@ -1,6 +1,6 @@
 pub mod cpio;
 pub mod extract;
-mod file_mode;
+pub mod file_mode;
 mod fit;
 pub mod initramfs;
 pub mod initramfs_guest;

@@ -30,6 +30,8 @@ pub(in crate::app) struct Palette {
     pub warn: Color32,
     pub ok: Color32,
     pub danger: Color32,
+    /// A link out of the app: the docs, a template.
+    pub link: Color32,
     /// A filled control under the pointer: the ink and the danger, lifted.
     pub ink_hover: Color32,
     pub danger_hover: Color32,
@@ -58,6 +60,7 @@ pub(in crate::app) const LIGHT: Palette = Palette {
     warn: Color32::from_rgb(138, 90, 8),
     ok: Color32::from_rgb(31, 107, 69),
     danger: Color32::from_rgb(163, 50, 36),
+    link: Color32::from_rgb(29, 86, 200),
     ink_hover: Color32::from_rgb(52, 52, 58),
     danger_hover: Color32::from_rgb(190, 64, 50),
     on_ink: Color32::from_rgb(251, 250, 247),
@@ -82,6 +85,7 @@ pub(in crate::app) const DARK: Palette = Palette {
     warn: Color32::from_rgb(217, 162, 60),
     ok: Color32::from_rgb(95, 190, 138),
     danger: Color32::from_rgb(224, 112, 92),
+    link: Color32::from_rgb(122, 162, 240),
     ink_hover: Color32::from_rgb(255, 255, 255),
     danger_hover: Color32::from_rgb(235, 133, 116),
     on_ink: Color32::from_rgb(27, 27, 25),

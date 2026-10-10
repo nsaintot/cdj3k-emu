@@ -203,15 +203,13 @@ On a real CDJ, you can hold a button or touch the screen while doing something e
 
 This lets you, for example, keep `Search Forward` held down while moving the jog wheel to search faster, just like on real hardware.
 
-## Deck mods
+## Mods
 
-The [cdj3k-mods](https://github.com/nsaintot/cdj3k-mods) feature set (Gate Cue,
-MOD SETTINGS, Themes, STEMS, X-PAD) is not built here and the emulator installs
-none of it. The mods ship as their own LD_PRELOADed object from that project's
-releases, loaded alongside `deck_shim.so` — `LD_PRELOAD` takes a
-colon-separated list.
+Mods change what runs on the emulated deck. Each slot has its own, installed from a file or a local folder under **Emulation › Manage Emulation › Manage mods**. See [Mods](docs/mods.md).
 
-STEMS needs a [stemd](https://github.com/nsaintot/stemd) server on the LAN.
+### Supported mods
+
+[cdj3k-mods](https://github.com/nsaintot/cdj3k-mods) (Smart/Gate/Preview cues, MOD SETTINGS, Themes, STEMS, X-PAD).
 
 ## Building
 
@@ -227,10 +225,10 @@ cdj3k-emu asks for elevation only when you ask it to do one of these.
 
 The admin password, in three situations:
 
-| Action                                                   | Why it elevates                                                                                                                                                                                                        |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bridging a TAP interface (OpenVPN-style) for Pro DJ Link | Creates a macOS kernel bridge with `ifconfig`, which is root-only. vmnet modes need no prompt: QEMU opens the interface itself under the app's `com.apple.developer.networking.vmnet` entitlement.                     |
-| Selecting a TAP interface (OpenVPN etc.)                 | Creates a macOS `bridge` device + assigns a `tap` device to QEMU via Authorization Services. Torn down when the slot stops using it or the app exits.                                                                                  |
+| Action                                                   | Why it elevates                                                                                                                                                                                                               |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bridging a TAP interface (OpenVPN-style) for Pro DJ Link | Creates a macOS kernel bridge with `ifconfig`, which is root-only. vmnet modes need no prompt: QEMU opens the interface itself under the app's `com.apple.developer.networking.vmnet` entitlement.                            |
+| Selecting a TAP interface (OpenVPN etc.)                 | Creates a macOS `bridge` device + assigns a `tap` device to QEMU via Authorization Services. Torn down when the slot stops using it or the app exits.                                                                         |
 | Attaching a physical USB drive in pass-through mode      | `chmod 660` on `/dev/diskN` so QEMU can open it `O_RDWR`. The exact device path is validated against `/dev/disk[0-9]+(s[0-9]+)?` before elevation — see `crates/cdj3k-emu-runtime/src/disk/macos.rs::is_valid_bsd_disk_path`. |
 
 All three use the native macOS password dialog (TouchID / Apple Watch eligible)
@@ -241,20 +239,20 @@ privileges — every elevation is scoped to one command.
 
 The desktop's polkit agent asks, in two situations:
 
-| Action | Why it elevates |
-| --- | --- |
-| Bridging onto a NIC or a bridge for Pro DJ Link | Creates a macvtap, or a tap on the bridge, through `pkexec`. The link lasts while the slot uses it, so each bridged start asks once. Picking an existing tap you own asks nothing. |
-| Attaching a physical USB drive in pass-through mode | udisks opens the disk exclusively for the app (`org.freedesktop.udisks2.open-device`) when your user cannot. The host cannot mount it while the deck holds it. |
+| Action                                              | Why it elevates                                                                                                                                                                    |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bridging onto a NIC or a bridge for Pro DJ Link     | Creates a macvtap, or a tap on the bridge, through `pkexec`. The link lasts while the slot uses it, so each bridged start asks once. Picking an existing tap you own asks nothing. |
+| Attaching a physical USB drive in pass-through mode | udisks opens the disk exclusively for the app (`org.freedesktop.udisks2.open-device`) when your user cannot. The host cannot mount it while the deck holds it.                     |
 
 ### Windows
 
 UAC asks, in three situations:
 
-| Action | Why it elevates |
-| --- | --- |
-| Bridging onto a NIC for Pro DJ Link | The app re-runs itself elevated (`--windows-net-helper`) to create the slot's TAP-Windows6 adapter and join it and the NIC to the Network Bridge. A watcher it leaves running takes both down when the slot quits or changes network, so each bridged start asks once. |
-| Attaching a physical USB drive in pass-through mode | When your user cannot open the disk, a PowerShell script grants it read and write on `\\.\PhysicalDriveN` and its volumes. The grant lasts until the disk is unplugged. |
-| Creating a blank virtual USB image | Attaching the new VHDX to partition and format it (`Mount-DiskImage`, `Format-Volume`) is admin-only. |
+| Action                                              | Why it elevates                                                                                                                                                                                                                                                        |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bridging onto a NIC for Pro DJ Link                 | The app re-runs itself elevated (`--windows-net-helper`) to create the slot's TAP-Windows6 adapter and join it and the NIC to the Network Bridge. A watcher it leaves running takes both down when the slot quits or changes network, so each bridged start asks once. |
+| Attaching a physical USB drive in pass-through mode | When your user cannot open the disk, a PowerShell script grants it read and write on `\\.\PhysicalDriveN` and its volumes. The grant lasts until the disk is unplugged.                                                                                                |
+| Creating a blank virtual USB image                  | Attaching the new VHDX to partition and format it (`Mount-DiskImage`, `Format-Volume`) is admin-only.                                                                                                                                                                  |
 
 ## Documentation and reference
 
@@ -266,6 +264,7 @@ UAC asks, in three situations:
 - [Network stack](docs/network.md)
 - [Storage](docs/storage.md)
 - [PC-Link](docs/pc-link.md)
+- [Mods](docs/mods.md)
 - [Models and slates](docs/models.md)
 - [Host/guest stream transports](docs/stream-transports.md)
 - [subucom SPI protocol](docs/subucom.md)

@@ -196,6 +196,7 @@ fn emulation(snap: &Snapshot, deck: Option<String>) -> MenuNode {
         MenuNode::item(MenuId::ManageEmulation, "Manage Emulation"),
         MenuNode::item_enabled(MenuId::Restart, "Restart Emulation", deck.is_some()),
         MenuNode::Separator,
+        MenuNode::check(MenuId::ModsEnabled, "Enable Mods", snap.mods_enabled),
         MenuNode::check(MenuId::ServiceMode, "Service Mode", snap.service_mode),
     ];
     // An actuator opened at startup: a Force Touch trackpad.
@@ -463,6 +464,7 @@ struct Snapshot {
     audio_enabled: bool,
     alc_enabled: bool,
     haptic_enabled: bool,
+    mods_enabled: bool,
     pc_link_supported: bool,
     pc_link_enabled: bool,
     latency_packed: u64,
@@ -490,6 +492,7 @@ impl Snapshot {
             audio_enabled: s.audio_enabled,
             alc_enabled: s.alc_enabled,
             haptic_enabled: s.haptic_enabled,
+            mods_enabled: s.mods_enabled,
             pc_link_supported: s.pc_link_supported,
             pc_link_enabled: s.pc_link_enabled,
             update_ready: s.update_ready,

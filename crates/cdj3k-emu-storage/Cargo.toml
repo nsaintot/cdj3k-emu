@@ -11,7 +11,11 @@ publish.workspace = true
 [dependencies]
 cdj3k-emu-panel = { path = "../cdj3k-emu-panel", default-features = false }
 crc = "3"
+flate2 = "1"
 libc = "0.2"
+sha2 = "0.10"
+tar = "0.4"
+toml = { version = "0.8", default-features = false, features = ["parse"] }
 uuid = { version = "1", features = ["v4"] }
 cdj3k-emu-firmware = { path = "../cdj3k-emu-firmware" }
 cdj3k-emu-platform = { path = "../cdj3k-emu-platform" }

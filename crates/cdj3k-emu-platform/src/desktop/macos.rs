@@ -339,10 +339,26 @@ pub(super) fn run_picker(
     let _ = reply.send(open_file_picker(title, allowed_types));
 }
 
+/// [`run_picker`] for a mod: one panel that accepts an archive or a folder.
+/// It has no type filter, because a filter would also grey out folders; the
+/// caller checks the path it gets.
+pub(super) fn run_mod_picker(
+    title: &str,
+    _allowed_types: &[&str],
+    reply: std::sync::mpsc::Sender<Option<std::path::PathBuf>>,
+) {
+    let _ = reply.send(open_panel(title, &[], true));
+}
+
 /// Open a native file-open dialog and return the chosen path, or `None` if cancelled.
 /// `title` is the panel's message text; `allowed_types` filters by UTType identifier
 /// (e.g. `&["public.data"]` for any file).  Pass an empty slice for no filter.
 pub fn open_file_picker(title: &str, allowed_types: &[&str]) -> Option<std::path::PathBuf> {
+    open_panel(title, allowed_types, false)
+}
+
+/// `NSOpenPanel` for one file; with `folders`, a folder can be chosen too.
+fn open_panel(title: &str, allowed_types: &[&str], folders: bool) -> Option<std::path::PathBuf> {
     use objc2::msg_send_id;
     use objc2::rc::Retained;
     use objc2_app_kit::NSOpenPanel;
@@ -353,7 +369,7 @@ pub fn open_file_picker(title: &str, allowed_types: &[&str]) -> Option<std::path
     unsafe {
         panel.setMessage(Some(&NSString::from_str(title)));
         panel.setCanChooseFiles(true);
-        panel.setCanChooseDirectories(false);
+        panel.setCanChooseDirectories(folders);
         panel.setAllowsOtherFileTypes(false);
         panel.setAllowsMultipleSelection(false);
         if !allowed_types.is_empty() {

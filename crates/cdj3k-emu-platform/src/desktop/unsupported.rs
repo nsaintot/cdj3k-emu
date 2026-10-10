@@ -58,6 +58,14 @@ pub(super) fn run_picker(
     let _ = reply.send(None);
 }
 
+pub(super) fn run_mod_picker(
+    _title: &str,
+    _allowed_types: &[&str],
+    reply: std::sync::mpsc::Sender<Option<std::path::PathBuf>>,
+) {
+    let _ = reply.send(None);
+}
+
 pub fn reveal_in_file_manager(_path: &std::path::Path) {}
 
 pub fn open_url(_url: &str) {}

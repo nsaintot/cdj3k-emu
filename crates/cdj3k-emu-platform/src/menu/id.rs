@@ -10,6 +10,7 @@
 pub enum MenuId {
     // Emulation
     ManageEmulation,
+    ModsEnabled,
     Restart,
     ServiceMode,
     Haptic,
@@ -52,6 +53,7 @@ impl MenuId {
     pub fn to_wire(&self) -> String {
         match self {
             Self::ManageEmulation => "manage_emulation".into(),
+            Self::ModsEnabled => "mods_enabled".into(),
             Self::Restart => "restart".into(),
             Self::ServiceMode => "service_mode".into(),
             Self::Haptic => "haptic".into(),
@@ -81,6 +83,7 @@ impl MenuId {
     pub fn from_wire(s: &str) -> Option<Self> {
         Some(match s {
             "manage_emulation" => Self::ManageEmulation,
+            "mods_enabled" => Self::ModsEnabled,
             "restart" => Self::Restart,
             "service_mode" => Self::ServiceMode,
             "haptic" => Self::Haptic,
@@ -145,6 +148,7 @@ mod tests {
     fn every_variant_survives_the_wire() {
         let ids = [
             MenuId::ManageEmulation,
+            MenuId::ModsEnabled,
             MenuId::Restart,
             MenuId::ServiceMode,
             MenuId::Haptic,

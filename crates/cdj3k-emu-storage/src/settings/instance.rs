@@ -61,6 +61,14 @@ pub struct InstanceSettings {
     /// menus read it from here. `None` for a slot installed before this key
     /// existed, or from an image that carries no release file.
     pub firmware_release: Option<String>,
+    /// The guest feature set the slot was installed with
+    /// ([`crate::FEATURE_SET`]); 0 for a slot installed before this key
+    /// existed.
+    pub fs: u32,
+    /// "Enable Mods": whether the slot's enabled mods go into its boots
+    /// ([`crate::mods`]). On by default; the list itself stays editable
+    /// either way.
+    pub mods_enabled: bool,
     /// Last user-selected network interface name (e.g. "en0"), or `None` for
     /// "no network".  Restored on launch if the iface is still present;
     /// otherwise kept on disk so it can re-bind when the iface returns.
@@ -154,6 +162,11 @@ impl InstanceSettings {
             .get("firmware_release")
             .filter(|v| !v.is_empty())
             .cloned();
+        let fs = map.get("fs").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let mods_enabled = map
+            .get("mods_enabled")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(true);
         let net_iface = map.get("net_iface").filter(|v| !v.is_empty()).cloned();
         let usb_virtual_path = map
             .get("usb_virtual_path")
@@ -173,6 +186,8 @@ impl InstanceSettings {
             pc_link_enabled,
             model,
             firmware_release,
+            fs,
+            mods_enabled,
             net_iface,
             usb_virtual_path,
             usb_physical_bsd,
@@ -194,6 +209,21 @@ impl InstanceSettings {
             .get("firmware_release")
             .filter(|v| !v.is_empty())
             .cloned()
+    }
+
+    /// The slot's [`Self::fs`], without loading the rest of its settings.
+    pub fn saved_fs(instance_id: u32) -> u32 {
+        read_kv(&instance_path(instance_id))
+            .get("fs")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// The slot's "Enable Mods", without loading the rest of its settings.
+    pub fn saved_mods_enabled(instance_id: u32) -> bool {
+        read_kv(&instance_path(instance_id))
+            .get("mods_enabled")
+            .is_none_or(|v| v == "1" || v.eq_ignore_ascii_case("true"))
     }
 
     /// A fresh SoC serial, not yet given to any slot. The firmware installer
@@ -268,6 +298,11 @@ impl InstanceSettings {
         map.insert(
             "firmware_release".into(),
             self.firmware_release.clone().unwrap_or_default(),
+        );
+        map.insert("fs".into(), self.fs.to_string());
+        map.insert(
+            "mods_enabled".into(),
+            (if self.mods_enabled { "1" } else { "0" }).to_string(),
         );
         map.insert(
             "net_iface".into(),

@@ -19,6 +19,10 @@ pub struct Host {
     pub initramfs: Option<PathBuf>,
     pub no_emmc: bool,
     pub serial_log: bool,
+    /// Folders given with `--mod`, booted in addition to the slot's mods.
+    pub extra_mods: Vec<PathBuf>,
+    /// `--no-mods`: boot without the slot's mods.
+    pub no_mods: bool,
     /// `--no-spawn`: never boot anything.
     pub ui_only: bool,
     /// This process's claim on the slot, without which it may not swap an
@@ -104,7 +108,13 @@ impl Host {
         let r = self.resolve();
         let inst_settings = cdj3k_emu_storage::InstanceSettings::load_or_init(instance);
 
-        let mut config = QemuConfig::new(r.kernel.clone(), r.initramfs.clone());
+        let mods = ModsLaunch {
+            base: r.initramfs.clone(),
+            extra: self.extra_mods.clone(),
+            no_mods: self.no_mods,
+        };
+        let boot = mods.boot(instance, model);
+        let mut config = QemuConfig::new(r.kernel.clone(), boot.initramfs.clone());
         config.instance_id = instance;
         config.model = model;
         config.ssh_port = 2222 + instance as u16;
@@ -168,11 +178,69 @@ impl Host {
         match QemuInstance::spawn(config.clone()) {
             Ok(inst) => {
                 eprintln!("cdj3k-emu: QEMU subprocess started ({model})");
-                runtime_worker::spawn(Some(inst), config, prebuilt_net);
+                cdj3k_emu_storage::mods::set_current_boot(boot);
+                runtime_worker::spawn(Some(inst), config, prebuilt_net, mods);
             }
             Err(e) => {
                 eprintln!("cdj3k-emu: QEMU start failed: {e:?}");
-                runtime_worker::spawn(None, config, prebuilt_net);
+                runtime_worker::spawn(None, config, prebuilt_net, mods);
+            }
+        }
+    }
+}
+
+/// The inputs for adding mods to a boot. The runtime worker rebuilds the
+/// initramfs before every QEMU start, so a change to the slot's mods takes
+/// effect on the next restart.
+#[derive(Clone, Debug)]
+pub struct ModsLaunch {
+    /// The slot's initramfs, or the one given with `--initramfs`.
+    pub base: PathBuf,
+    /// Folders given with `--mod`, booted in addition to the slot's mods.
+    pub extra: Vec<PathBuf>,
+    /// `--no-mods`: boot without the slot's mods.
+    pub no_mods: bool,
+}
+
+impl ModsLaunch {
+    /// The next boot's mods and initramfs: the base with the mods appended,
+    /// or the base alone when no mod runs or the mods cannot be prepared.
+    /// The caller records it with `set_current_boot` once QEMU has started.
+    pub fn boot(&self, instance: u32, model: Model) -> cdj3k_emu_storage::mods::BootMods {
+        let settings = cdj3k_emu_storage::InstanceSettings::load_or_init(instance);
+        // An outdated slot has no mods runner in its guest, so it boots
+        // without mods.
+        let outdated = cdj3k_emu_storage::slot_outdated(instance);
+        let boot = cdj3k_emu_storage::mods::prepare_boot(
+            instance,
+            &self.base,
+            model,
+            settings.firmware_release.as_deref(),
+            cdj3k_emu_storage::mods::slot_mods_on(instance) && !self.no_mods,
+            if outdated { &[] } else { &self.extra },
+        );
+        match boot {
+            Ok(mut boot) => {
+                boot.no_mods = self.no_mods;
+                if !boot.run.is_empty() {
+                    eprintln!("cdj3k-emu: booting with mods: {}", boot.run.join(", "));
+                }
+                for (name, compat) in &boot.incompatible {
+                    if !matches!(compat, cdj3k_emu_storage::mods::Compat::Invalid(_)) {
+                        eprintln!("cdj3k-emu: mod {name} is incompatible with this slot, skipped");
+                    }
+                }
+                boot
+            }
+            Err(e) => {
+                eprintln!("cdj3k-emu: preparing the mods failed, booting without them: {e}");
+                cdj3k_emu_storage::mods::BootMods {
+                    initramfs: self.base.clone(),
+                    run: Vec::new(),
+                    slot_run: Vec::new(),
+                    incompatible: Vec::new(),
+                    no_mods: self.no_mods,
+                }
             }
         }
     }

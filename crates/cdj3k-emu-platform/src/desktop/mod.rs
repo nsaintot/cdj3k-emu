@@ -176,6 +176,10 @@ pub fn native_options(instance_id: u32) -> eframe::NativeOptions {
     }
 }
 
+/// The file types the mod picker accepts: archives, and a folder's `mod.toml`
+/// or `loader.sh`.
+const MOD_TYPES: &[&str] = &["tgz", "gz", "tar", "toml"];
+
 /// A file dialog the frame loop polls for its answer ([`PendingPick::take`]).
 ///
 /// How the dialog runs is the host's: on a thread of its own where blocking
@@ -190,6 +194,15 @@ impl PendingPick {
     pub fn open(title: &str, allowed_types: &[&str]) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         imp::run_picker(title, allowed_types, tx);
+        Self { rx }
+    }
+
+    /// Open a picker for a mod: a `.tgz`, `.tar.gz` or `.tar` archive, or a
+    /// folder. Where the host's dialog cannot pick folders, the user picks the
+    /// folder's `mod.toml` instead.
+    pub fn open_mod(title: &str) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        imp::run_mod_picker(title, MOD_TYPES, tx);
         Self { rx }
     }
 

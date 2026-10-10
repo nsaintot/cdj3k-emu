@@ -27,6 +27,7 @@ use cdj3k_emu_panel::Model;
 use cdj3k_emu_platform::{app_meta, desktop, menu_state};
 
 use super::firmware_wizard::{FirmwareWizard, Installed};
+use super::mods_view::{self, ModsAction, ModsBar, ModsPage, ModsScreen};
 use super::picker::{
     draw_busy, draw_delete_confirm, draw_header, draw_picker, Header, PickerAction, PickerView,
 };
@@ -98,6 +99,8 @@ enum SetupStep {
     Install,
     /// Asking whether the slot may be emptied.
     ConfirmDelete,
+    /// The slot's mods.
+    Mods,
     /// The emulation is being stopped so the slot can be emptied: QEMU holds
     /// the eMMC open until it is gone.
     StoppingToDelete,
@@ -142,6 +145,22 @@ pub struct CdjShell {
     viewed_release: Option<String>,
     /// The setup window, and where it is; `None` while it is closed.
     setup: Option<SetupStep>,
+    /// The Mods view, while the setup window shows it.
+    mods: Option<ModsPage>,
+    /// When the Mods view last read its slot.
+    mods_read: Instant,
+    /// The Mods bar of [`viewed_slot`](Self::viewed_slot): the slot it was
+    /// read for, and when.
+    mods_bar: Option<(u32, Instant, ModsBar)>,
+    /// The Add mod dialog, while it is up.
+    mods_pick: Option<desktop::PendingPick>,
+    /// An add whose name is already in the list, waiting on the Replace dialog.
+    mods_pending: Option<cdj3k_emu_storage::mods::PendingAdd>,
+    /// A mod being downloaded: its URL, and the file once it is in.
+    mods_download: Option<(
+        String,
+        std::sync::mpsc::Receiver<Result<std::path::PathBuf, String>>,
+    )>,
     /// Where on screen the setup window opened, taken from the main window so
     /// the two sit exactly on top of each other. Held for as long as the
     /// window is up, so it stays where the user may have dragged it.
@@ -192,6 +211,12 @@ impl CdjShell {
             viewed_slot: cfg.instance,
             viewed_release: cdj3k_emu_storage::slot_release(cfg.instance),
             setup: None,
+            mods: None,
+            mods_read: Instant::now(),
+            mods_bar: None,
+            mods_pick: None,
+            mods_pending: None,
+            mods_download: None,
             setup_pos: None,
             setup_shaped: false,
             reveal_picker: false,
@@ -425,6 +450,13 @@ impl CdjShell {
             self.begin_delete();
             return;
         }
+        // Another window's Mods view asked this window to restart its
+        // emulation with the slot's current mods.
+        if self.emulation_running() && cdj3k_emu_storage::take_mods_restart_request(self.instance) {
+            let mut s = menu_state::lock();
+            s.shade_forced = true;
+            s.restart_requested = true;
+        }
         // This window's own run settles its install when it finishes.
         if self.wizard.target_instance() == self.instance && self.wizard.is_running() {
             return;
@@ -587,6 +619,16 @@ impl CdjShell {
             running_elsewhere: self.slot_runs_elsewhere(self.viewed_slot),
             every_slot_empty: self.every_slot_empty(),
             release: self.viewed_release.as_deref(),
+            outdated: cdj3k_emu_storage::slot_outdated(self.viewed_slot),
+            mods: self
+                .mods_bar
+                .as_ref()
+                .filter(|(slot, _, _)| *slot == self.viewed_slot)
+                .map(|(_, _, bar)| bar),
+            replace_incompatible: confirm_replace
+                .filter(|&m| installed != Some(m))
+                .map(|m| mods_view::incompatible_with(self.viewed_slot, m))
+                .unwrap_or_default(),
         }
     }
 
@@ -627,6 +669,7 @@ impl CdjShell {
         }
         let title = match self.setup {
             Some(SetupStep::Install) => "Install Firmware",
+            Some(SetupStep::Mods) => "Manage Mods",
             _ => "Manage Emulation",
         };
         // Not built non-resizable: winit pins min and max to the size at
@@ -702,6 +745,7 @@ impl CdjShell {
             return;
         }
         self.setup = None;
+        self.leave_mods();
         self.view_slot(self.instance);
         self.wizard.reset();
     }
@@ -719,6 +763,8 @@ impl CdjShell {
             Some(PickerAction::Delete) => self.setup = Some(SetupStep::ConfirmDelete),
             Some(PickerAction::CancelDelete) => self.setup = Some(SetupStep::Pick),
             Some(PickerAction::ConfirmDelete) => self.begin_delete(),
+            Some(PickerAction::ManageMods) => self.open_mods(self.viewed_slot),
+            Some(PickerAction::Mods(a)) => self.apply_mods_action(a),
             None => {}
         }
     }
@@ -736,6 +782,304 @@ impl CdjShell {
             Ok(true) => {}
             Ok(false) => cdj3k_emu_platform::menu::open_instance(slot),
             Err(e) => eprintln!("cdj3k-emu: asking slot {slot} to restart failed: {e}"),
+        }
+    }
+}
+
+/// How often the Mods view and the Mods bar read their slot again.
+const MODS_READ_EVERY: Duration = Duration::from_secs(2);
+/// The largest mod archive Add from URL takes.
+const MOD_DOWNLOAD_LIMIT: u64 = 512 << 20;
+
+impl CdjShell {
+    /// Show `slot`'s mods, over Manage Emulation.
+    fn open_mods(&mut self, slot: u32) {
+        self.leave_mods();
+        let mut page = ModsPage::new(slot);
+        page.refresh(
+            self.instance,
+            self.emulation_running(),
+            self.slot_runs_elsewhere(slot),
+        );
+        self.mods = Some(page);
+        self.mods_read = Instant::now();
+        self.setup = Some(SetupStep::Mods);
+    }
+
+    fn emulation_running(&self) -> bool {
+        matches!(self.screen, Screen::Panel) && menu_state::lock().qemu_running
+    }
+
+    fn refresh_mods_bar(&mut self) {
+        let stale = self.mods_bar.as_ref().is_none_or(|(slot, at, _)| {
+            *slot != self.viewed_slot || at.elapsed() >= MODS_READ_EVERY
+        });
+        if stale && self.setup.is_some() {
+            self.mods_bar = Some((
+                self.viewed_slot,
+                Instant::now(),
+                mods_view::mods_bar(self.viewed_slot),
+            ));
+        }
+    }
+
+    /// Close the Mods view. A pending replace is discarded, and a file pick or
+    /// download still in progress is dropped.
+    fn leave_mods(&mut self) {
+        self.discard_pending_mod();
+        self.mods = None;
+        self.mods_pick = None;
+        self.mods_download = None;
+    }
+
+    /// Re-read the slot when due, and collect a finished file pick or
+    /// download.
+    fn poll_mods(&mut self) {
+        if let Some(answer) = self.mods_pick.as_ref().and_then(|p| p.take()) {
+            self.mods_pick = None;
+            if let Some(path) = answer {
+                self.add_mod_path(&path, None);
+            }
+        }
+        let landed = self
+            .mods_download
+            .as_ref()
+            .and_then(|(url, rx)| rx.try_recv().ok().map(|r| (url.clone(), r)));
+        if let Some((url, result)) = landed {
+            self.mods_download = None;
+            match result {
+                Ok(file) => {
+                    // The add unpacks the archive, so the download can go.
+                    self.add_mod_path(&file, Some(&url));
+                    if let Some(dir) = file.parent() {
+                        let _ = std::fs::remove_dir_all(dir);
+                    }
+                }
+                Err(e) => self.note_mods(Some(e)),
+            }
+        }
+        if self.mods_read.elapsed() >= MODS_READ_EVERY {
+            self.reread_mods();
+        }
+    }
+
+    fn reread_mods(&mut self) {
+        let running = self.emulation_running();
+        let elsewhere = self
+            .mods
+            .as_ref()
+            .is_some_and(|page| self.slot_runs_elsewhere(page.slot));
+        if let Some(page) = self.mods.as_mut() {
+            page.refresh(self.instance, running, elsewhere);
+        }
+        self.mods_read = Instant::now();
+        self.mods_bar = None;
+    }
+
+    /// Show `error` on the Mods view's toolbar, or clear what it showed.
+    fn note_mods(&mut self, error: Option<String>) {
+        if let Some(page) = self.mods.as_mut() {
+            page.note = error.map(|e| (e, true));
+        }
+        self.reread_mods();
+    }
+
+    /// Add a picked, dropped or downloaded path: an archive is installed, a
+    /// folder (or its `mod.toml`) is used in place. A mod whose name is in the
+    /// list already waits for the Replace dialog.
+    fn add_mod_path(&mut self, path: &std::path::Path, origin: Option<&str>) {
+        let Some(slot) = self.mods.as_ref().map(|p| p.slot) else {
+            return;
+        };
+        let mut list = cdj3k_emu_storage::mods::SlotMods::load(slot);
+        let result = list
+            .prepare(path, origin)
+            .and_then(|add| match &add.replaces {
+                Some(old) => {
+                    if let Some(page) = self.mods.as_mut() {
+                        page.replace = Some((
+                            add.manifest.name.clone(),
+                            old.clone(),
+                            add.manifest.version.clone(),
+                        ));
+                    }
+                    self.mods_pending = Some(add);
+                    Ok(())
+                }
+                None => list.commit(add).map(|_| ()),
+            });
+        self.note_mods(result.err().map(|e| e.to_string()));
+    }
+
+    /// Drop a same-name add the Replace dialog was asking about.
+    fn discard_pending_mod(&mut self) {
+        self.mods_pending = None;
+        if let Some(page) = self.mods.as_mut() {
+            page.replace = None;
+        }
+    }
+
+    fn apply_mods_action(&mut self, action: ModsAction) {
+        let Some(slot) = self.mods.as_ref().map(|p| p.slot) else {
+            return;
+        };
+        let list = || cdj3k_emu_storage::mods::SlotMods::load(slot);
+        let result: std::io::Result<()> = match action {
+            ModsAction::Back => {
+                self.leave_mods();
+                self.setup = Some(SetupStep::Pick);
+                return;
+            }
+            ModsAction::Close => {
+                self.close_setup();
+                return;
+            }
+            ModsAction::Restart => {
+                let slot = self.mods.as_ref().map_or(self.instance, |p| p.slot);
+                if slot == self.instance {
+                    let mut s = menu_state::lock();
+                    s.shade_forced = true;
+                    s.restart_requested = true;
+                } else if let Err(e) = cdj3k_emu_storage::request_mods_restart(slot) {
+                    self.note_mods(Some(format!("Restarting slot {slot} failed: {e}")));
+                }
+                return;
+            }
+            ModsAction::Start => {
+                if let Some(page) = &self.mods {
+                    cdj3k_emu_platform::menu::open_instance(page.slot);
+                }
+                return;
+            }
+            ModsAction::Toggle(name) => {
+                let mut l = list();
+                let on = l.get(&name).is_some_and(|m| m.enabled);
+                l.set_enabled(&name, !on)
+            }
+            ModsAction::Reorder(from, to) => list().reorder(from, to),
+            ModsAction::AskRemove(name) => {
+                if let Some(page) = self.mods.as_mut() {
+                    page.remove = Some(name);
+                }
+                return;
+            }
+            ModsAction::CancelRemove => {
+                if let Some(page) = self.mods.as_mut() {
+                    page.remove = None;
+                }
+                return;
+            }
+            ModsAction::Remove(name) | ModsAction::Eject(name) => {
+                if let Some(page) = self.mods.as_mut() {
+                    page.remove = None;
+                }
+                list().remove(&name)
+            }
+            ModsAction::Add => {
+                if self.mods_pick.is_none() {
+                    self.mods_pick = Some(desktop::PendingPick::open_mod(
+                        "Choose a mod: a .tgz archive, or a mod folder",
+                    ));
+                }
+                return;
+            }
+            ModsAction::Replace => {
+                if let Some(page) = self.mods.as_mut() {
+                    page.replace = None;
+                }
+                match self.mods_pending.take() {
+                    Some(add) => list().commit(add).map(|_| ()),
+                    None => Ok(()),
+                }
+            }
+            ModsAction::KeepOld => {
+                self.discard_pending_mod();
+                return;
+            }
+            ModsAction::AskUrl => {
+                if let Some(page) = self.mods.as_mut() {
+                    page.url = Some(String::new());
+                }
+                return;
+            }
+            ModsAction::CancelUrl => {
+                if let Some(page) = self.mods.as_mut() {
+                    page.url = None;
+                }
+                return;
+            }
+            ModsAction::AddUrl(url) => {
+                if self.mods_download.is_none() {
+                    self.download_mod(slot, url);
+                }
+                return;
+            }
+            ModsAction::OpenLog(name) => {
+                if let Some(page) = self.mods.as_mut() {
+                    page.open_log(&name);
+                }
+                return;
+            }
+            ModsAction::CloseLog => {
+                if let Some(page) = self.mods.as_mut() {
+                    page.screen = ModsScreen::List;
+                    page.log = None;
+                }
+                return;
+            }
+            ModsAction::Open(url) => {
+                desktop::open_url(&url);
+                return;
+            }
+            ModsAction::Dropped(paths) => {
+                for path in paths {
+                    self.add_mod_path(&path, None);
+                }
+                return;
+            }
+        };
+        self.note_mods(result.err().map(|e| e.to_string()));
+    }
+
+    /// Fetch `url` on a thread of its own; [`Self::poll_mods`] installs it.
+    fn download_mod(&mut self, slot: u32, url: String) {
+        if let Some(page) = self.mods.as_mut() {
+            page.url = None;
+            page.note = Some((format!("Downloading {url}…"), false));
+        }
+        let name = url
+            .rsplit('/')
+            .next()
+            .map(|n| n.split(['?', '#']).next().unwrap_or(n))
+            .filter(|n| !n.is_empty() && !n.contains(['\\', ':']) && *n != "..")
+            .unwrap_or("mod.tgz")
+            .to_string();
+        static DOWNLOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = DOWNLOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = cdj3k_emu_storage::mods::mods_dir(slot)
+            .join(format!(".download-{}-{n}", std::process::id()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let fetch_url = url.clone();
+        let spawned = std::thread::Builder::new()
+            .name("cdj3k-emu-mod-download".into())
+            .spawn(move || {
+                let result = std::fs::create_dir_all(&dir)
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| {
+                        let dest = dir.join(&name);
+                        cdj3k_emu_update::fetch_file(&fetch_url, &dest, MOD_DOWNLOAD_LIMIT)
+                            .map(|()| dest)
+                            .map_err(|e| e.to_string())
+                    });
+                // Delete the download if it failed or nobody waits for it.
+                let failed = result.is_err();
+                if tx.send(result).is_err() || failed {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }
+            });
+        match spawned {
+            Ok(_) => self.mods_download = Some((url, rx)),
+            Err(e) => self.note_mods(Some(e.to_string())),
         }
     }
 }
@@ -791,6 +1135,20 @@ impl eframe::App for CdjShell {
             cdj3k_emu_platform::menu::shortcuts_only(ctx);
         }
         let want_manage = std::mem::take(&mut menu_state::lock().manage_emulation_requested);
+        // With no runtime worker to save it, Enable Mods is saved here.
+        if cdj3k_emu_runtime::worker_is_finished() {
+            let toggled = {
+                let mut s = menu_state::lock();
+                std::mem::take(&mut s.mods_toggle_requested).then_some(s.mods_enabled)
+            };
+            if let Some(on) = toggled {
+                if let Err(e) = cdj3k_emu_storage::InstanceSettings::update(self.instance, |s| {
+                    s.mods_enabled = on
+                }) {
+                    eprintln!("cdj3k-emu: saving Enable Mods failed: {e}");
+                }
+            }
+        }
 
         if let Some(model) = self.initial_model.take() {
             self.launch(ctx, frame, model);
@@ -830,6 +1188,17 @@ impl eframe::App for CdjShell {
             self.view_slot(self.instance);
             self.setup = Some(SetupStep::Pick);
         }
+        // Any way out of the Mods view drops its pick, download and pending
+        // replace, so none of them lands in another slot.
+        if !matches!(self.setup, Some(SetupStep::Mods))
+            && (self.mods.is_some()
+                || self.mods_pick.is_some()
+                || self.mods_download.is_some()
+                || self.mods_pending.is_some())
+        {
+            self.leave_mods();
+        }
+        self.refresh_mods_bar();
 
         match self.screen {
             Screen::Picker => {
@@ -929,6 +1298,7 @@ fn draw_setup(
                     title: "Install firmware",
                     sub: &sub,
                     switchable: false,
+                    warn: false,
                 },
             )
             .body;
@@ -942,6 +1312,15 @@ fn draw_setup(
             let view = this.picker_view(None, None, true);
             action = draw_delete_confirm(ui, &view);
         }
+        Some(SetupStep::Mods) => {
+            this.poll_mods();
+            if let Some(page) = this.mods.as_mut() {
+                action = mods_view::draw_mods(ui, page).map(PickerAction::Mods);
+            }
+            // Repaint regularly so the list follows the slot's files and the
+            // boot report, and a finished pick or download is collected.
+            ui.ctx().request_repaint_after(Duration::from_millis(500));
+        }
         Some(SetupStep::StoppingToDelete) => draw_busy(
             ui,
             &Header {
@@ -952,6 +1331,7 @@ fn draw_setup(
                 title: "Emulation",
                 sub: "The emulation has to stop before its installation may be touched.",
                 switchable: false,
+                warn: false,
             },
             &format!("Stopping the {} emulation…", going.title()),
             "The slot is emptied once it has.",

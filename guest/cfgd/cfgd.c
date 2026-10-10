@@ -18,12 +18,24 @@
  *                               so the dummy_hcd-attached gadget's HID + MIDI
  *                               endpoints start/stop pumping out cdj3k.usb-link
  *                               (emulates plugging/unplugging the USB-B cable)
+ *     mods status             - emit the mods report
+ *     mods log <name>         - emit a mod's journal for this boot
  *
  *   guest → host
  *     usb_state <0|1>         - emitted by cfgd in response to SIGUSR1/SIGUSR2
  *                               from the USB hook scripts (see below)
  *     param <name> <value>    - response to get or unsolicited push
  *     latency <g>,<h>,<t>     - pushed every LATENCY_PERIOD_MS
+ *     mods off                - this boot has no mods
+ *     mods pending            - the mods runner has not finished
+ *     mods begin / mod <name> script <rc|timeout|none>
+ *       libs <n> / mods end   - the runner's report, one `mod` line per mod
+ *     log_begin <name> / log <name> <line>… / log_end <name>
+ *                             - the answer to `mods log`, once per request
+ *
+ *   The mods report is sent when it changes (checked every
+ *   LATENCY_PERIOD_MS) and on `mods status`, so a host that connects late
+ *   gets it by asking once.
  *
  * Signal IPC from in-guest scripts:
  *
@@ -50,6 +62,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -61,6 +74,9 @@
 #define USB_ATTACH       "/usr/sbin/usb-external-attach.sh"
 #define SYSFS_DIR        "/sys/module/virtio_snd/parameters/"
 #define LATENCY_FILE     SYSFS_DIR "audio_latency_ms"
+#define MODS_MANIFEST    "/opt/cdj3k-mods/manifest"
+#define MODS_STATUS      "/run/cdj3k-mods/status"
+#define MODS_LOG_LINES   500
 
 /* Sysfs parameters cfgd is allowed to expose. Anything not listed here is
  * rejected with `param <name> ?` so a host bug can't poke arbitrary kernel
@@ -115,8 +131,10 @@ static void emit(const char *fmt, ...)
     int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     if (n <= 0) return;
+    /* A line cut short to fit the buffer still ends in a newline. */
     if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
-    if (buf[n - 1] != '\n' && n < (int)sizeof(buf) - 1) {
+    if (buf[n - 1] != '\n') {
+        if (n == (int)sizeof(buf) - 1) n--;
         buf[n++] = '\n';
     }
     ssize_t w = write(g_port_fd, buf, (size_t)n);
@@ -300,6 +318,112 @@ static void handle_get(const char *name)
     }
 }
 
+/* ---- mods ---------------------------------------------------------------- */
+
+/* The state last sent, so that each tick sends only a change. */
+static struct timespec g_mods_mtime;
+static int g_mods_state = -1;   /* 0 off, 1 pending, 2 report */
+
+static int mods_state(struct stat *st)
+{
+    if (access(MODS_MANIFEST, F_OK) != 0) return 0;
+    if (stat(MODS_STATUS, st) != 0) return 1;
+    return 2;
+}
+
+static void emit_mods(void)
+{
+    struct stat st = {0};
+    int state = mods_state(&st);
+    g_mods_state = state;
+    g_mods_mtime = st.st_mtim;
+    if (state == 0) { emit("mods off"); return; }
+    if (state == 1) { emit("mods pending"); return; }
+    FILE *fp = fopen(MODS_STATUS, "r");
+    if (!fp) { emit("mods pending"); return; }
+    emit("mods begin");
+    char line[400];
+    int whole = 1;
+    while (fgets(line, sizeof(line), fp)) {
+        /* A line longer than the buffer is skipped entirely. */
+        int ends = strchr(line, '\n') != NULL || feof(fp);
+        line[strcspn(line, "\n")] = '\0';
+        if (whole && ends && strncmp(line, "mod ", 4) == 0) emit("%s", line);
+        whole = ends;
+    }
+    fclose(fp);
+    emit("mods end");
+}
+
+/* Send the mods report if it changed since it was last sent. */
+static void poll_mods(void)
+{
+    struct stat st = {0};
+    int state = mods_state(&st);
+    if (state != g_mods_state ||
+        st.st_mtim.tv_sec != g_mods_mtime.tv_sec ||
+        st.st_mtim.tv_nsec != g_mods_mtime.tv_nsec) {
+        emit_mods();
+    }
+}
+
+static int valid_mod_name(const char *name)
+{
+    if (!*name || strlen(name) > 64) return 0;
+    for (const char *c = name; *c; c++) {
+        if (!((*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') ||
+              *c == '.' || *c == '_' || *c == '-')) return 0;
+    }
+    return 1;
+}
+
+/* The journal of the mod's unit for this boot, followed by the runner's
+ * lines about the mod. */
+static void emit_mod_log(const char *name)
+{
+    if (!valid_mod_name(name)) {
+        emit("log_begin %.64s", name);
+        emit("log_end %.64s", name);
+        return;
+    }
+    emit("log_begin %s", name);
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "echo '-- journalctl -u cdj3k-mod-%s.service, this boot --';"
+             "journalctl -b -o cat --no-pager -u cdj3k-mod-%s.service | tail -n %d;"
+             "echo '-- cdj3k-mods.service --';"
+             "journalctl -b -o cat --no-pager -u cdj3k-mods.service"
+             " | awk -v p='%s: ' 'index($0, p) == 1 { print substr($0, length(p) + 1) }'",
+             name, name, MODS_LOG_LINES - 20, name);
+    FILE *fp = popen(cmd, "r");
+    if (fp) {
+        char line[400];
+        while (fgets(line, sizeof(line), fp)) {
+            size_t len = strcspn(line, "\n");
+            int whole = line[len] == '\n' || feof(fp);
+            line[len] = '\0';
+            /* A longer line is sent cut, with the rest of it skipped. */
+            emit(whole ? "log %s %s" : "log %s %s...", name, line);
+            if (!whole) {
+                int c;
+                while ((c = fgetc(fp)) != EOF && c != '\n') {
+                }
+            }
+        }
+        pclose(fp);
+    }
+    emit("log_end %s", name);
+}
+
+static void handle_mods(const char *arg)
+{
+    if (strcmp(arg, "status") == 0) {
+        emit_mods();
+    } else if (strncmp(arg, "log ", 4) == 0) {
+        emit_mod_log(arg + 4);
+    }
+}
+
 static void dispatch_line(char *line)
 {
     /* Strip trailing whitespace. */
@@ -325,6 +449,8 @@ static void dispatch_line(char *line)
         handle_get(line + 4);
     } else if (strncmp(line, "pc_link ", 8) == 0) {
         handle_pc_link(line + 8);
+    } else if (strncmp(line, "mods ", 5) == 0) {
+        handle_mods(line + 5);
     } else if (strcmp(line, "ping") == 0) {
         emit("pong");
     } else {
@@ -414,6 +540,7 @@ int main(void)
         }
         if (now_ms() >= next_push) {
             push_latency();
+            poll_mods();
             next_push = now_ms() + LATENCY_PERIOD_MS;
         }
     }

@@ -118,6 +118,32 @@ pub fn run_picker(
     }
 }
 
+/// [`run_picker`] for a mod: an archive, or the `mod.toml` of a folder. A
+/// dialog opened through rfd picks files or folders, never both.
+pub fn run_mod_picker(
+    title: &str,
+    allowed_types: &[&str],
+    reply: std::sync::mpsc::Sender<Option<std::path::PathBuf>>,
+) {
+    let title = title.to_string();
+    let types: Vec<String> = allowed_types.iter().map(|s| s.to_string()).collect();
+    let spawned = std::thread::Builder::new()
+        .name("cdj3k-emu-file-dialog".into())
+        .spawn({
+            let reply = reply.clone();
+            move || {
+                let pick = rfd::FileDialog::new()
+                    .set_title(&title)
+                    .add_filter("Mod", &types)
+                    .pick_file();
+                let _ = reply.send(pick);
+            }
+        });
+    if spawned.is_err() {
+        let _ = reply.send(None);
+    }
+}
+
 /// Open the desktop's own file-open dialog and return the chosen path, or
 /// `None` if cancelled.
 ///

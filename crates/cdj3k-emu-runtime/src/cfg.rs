@@ -1,8 +1,8 @@
 //! CfgClient - bidirectional bridge to the guest's `cdj3k-cfgd` daemon.
 //!
 //! One Unix socket (`{sock_dir}/cfg.sock`) carries USB attach/detach commands,
-//! `set`/`get` for the whitelisted virtio_snd sysfs parameters, and an
-//! unsolicited 3-second latency push.
+//! `set`/`get` for the whitelisted virtio_snd sysfs parameters, an
+//! unsolicited 3-second latency push, and the boot's mods report.
 //!
 //! Wire protocol (line-based, ASCII, '\n'-terminated):
 //!
@@ -11,6 +11,9 @@
 //!     usb detach              - no-op (EP122 handles unmount)
 //!     set <name> <value>      - write to a whitelisted sysfs param
 //!     get <name>              - request a `param` response
+//!     mods status             - request the mods report
+//!                               (sent on every connection)
+//!     mods log <name>         - request a mod's journal for this boot
 //!
 //!   guest → host
 //!     usb_state <0|1>         - emitted by the in-guest USB hooks
@@ -18,6 +21,11 @@
 //!     latency <g>,<h>,<t>     - pushed every 3s by cdj3k-cfgd
 //!     pc_link on|off          - confirms a host-issued pc_link toggle
 //!     pc_link on_failed|off_failed - systemctl returned non-zero
+//!     mods off|pending        - the boot has no mods / the runner has not finished
+//!     mods begin, mod <name> …, mods end
+//!                             - the runner's report ([`crate::mods_report::ModOutcome`])
+//!     log_begin <name>, log <name> <line>, log_end <name>
+//!                             - a mod's journal, in answer to each `mods log`
 //!
 //! Connection is lazy and self-healing: the reader thread reconnects on EOF
 //! / connect failure, the writer methods retry briefly while QEMU is still
@@ -30,6 +38,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use crate::mods_report::{ModsReport, Partial};
 
 /// Backoff between reader-thread reconnect attempts. Long enough not to thrash
 /// QEMU while it's spinning up its virtio-serial port, short enough that the
@@ -69,6 +79,15 @@ struct Shared {
     guest_ready: bool,
     /// Commands held until `guest_ready`.
     pending: Vec<String>,
+    /// The mods report for this boot; cfgd sends it again on every connection.
+    mods: ModsReport,
+    /// The `mod` lines received after `mods begin`, until `mods end`.
+    mods_partial: Option<Partial>,
+    /// Requested journals: how many answers are still due, and the lines of
+    /// the answer being received.
+    mod_logs_partial: HashMap<String, (u32, Vec<String>)>,
+    /// Complete journals: the answer to the latest request for each mod.
+    mod_logs: HashMap<String, Vec<String>>,
 }
 
 #[derive(Clone)]
@@ -160,6 +179,47 @@ impl CfgClient {
         self.shared.lock().map(|s| s.guest_ready).unwrap_or(false)
     }
 
+    /// The guest's mods report for this boot.
+    /// Forget the mods report and journals of the boot that ended, so the
+    /// next boot's report counts as new even when it reads the same.
+    pub fn new_boot(&self) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.mods = ModsReport::Unknown;
+            s.mods_partial = None;
+            s.mod_logs_partial.clear();
+            s.mod_logs.clear();
+        }
+    }
+
+    pub fn mods_report(&self) -> ModsReport {
+        self.shared
+            .lock()
+            .map(|s| s.mods.clone())
+            .unwrap_or_default()
+    }
+
+    /// Ask cfgd for `name`'s journal; [`Self::mod_log`] returns it once it has
+    /// arrived.
+    pub fn request_mod_log(&self, name: &str) -> std::io::Result<()> {
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a mod name cannot contain spaces",
+            ));
+        }
+        if let Ok(mut s) = self.shared.lock() {
+            s.mod_logs.remove(name);
+            s.mod_logs_partial.entry(name.to_string()).or_default().0 += 1;
+        }
+        self.send_line(&format!("mods log {name}\n"))
+    }
+
+    /// `name`'s journal in answer to the latest [`Self::request_mod_log`],
+    /// once it is complete.
+    pub fn mod_log(&self, name: &str) -> Option<Vec<String>> {
+        self.shared.lock().ok()?.mod_logs.get(name).cloned()
+    }
+
     /// Send `usb attach\n`. Retries briefly while the port is still coming up.
     pub fn usb_attach(&self) -> std::io::Result<()> {
         self.send_line("usb attach\n")
@@ -244,15 +304,19 @@ fn reader_loop(sock_path: PathBuf, shared: std::sync::Weak<Mutex<Shared>>) {
                 if let Ok(mut s) = shared.lock() {
                     s.writer = Some(write_clone);
                     s.guest_ready = false;
+                    // cfgd sends the mods report again on request, so a report
+                    // pushed while nothing was connected is not lost.
+                    let status = "mods status\n".to_string();
+                    if !s.pending.contains(&status) {
+                        s.pending.push(status);
+                    }
                 }
             }
         }
 
-        let reader = BufReader::new(stream);
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
+        let mut reader = BufReader::new(stream);
+        let mut buf = Vec::new();
+        while let Ok(Some(line)) = next_line(&mut reader, &mut buf) {
             let Some(shared) = shared.upgrade() else {
                 return;
             };
@@ -260,7 +324,8 @@ fn reader_loop(sock_path: PathBuf, shared: std::sync::Weak<Mutex<Shared>>) {
         }
 
         // Disconnected: drop the writer and clear the pc_link echo so a QEMU
-        // restart re-issues the command.
+        // restart re-issues the command. The mods report belongs to the boot
+        // that ended; the next connection requests it again.
         let Some(shared) = shared.upgrade() else {
             return;
         };
@@ -269,6 +334,10 @@ fn reader_loop(sock_path: PathBuf, shared: std::sync::Weak<Mutex<Shared>>) {
             s.guest_ready = false;
             s.pc_link_state = None;
             s.pc_link_failures = 0;
+            s.mods = ModsReport::Unknown;
+            s.mods_partial = None;
+            s.mod_logs_partial.clear();
+            s.mod_logs.clear();
         }
         drop(shared);
         thread::sleep(RECONNECT_DELAY);
@@ -352,6 +421,10 @@ fn handle_line(line: &str, shared: &Arc<Mutex<Shared>>) {
         return;
     }
 
+    if handle_mods_line(line, shared) {
+        return;
+    }
+
     if let Some(rest) = line.strip_prefix("pc_link ") {
         // Guest replies: "on", "off", "on_failed", "off_failed", "?".
         // Anything else is a protocol mismatch; log and ignore.
@@ -375,5 +448,161 @@ fn handle_line(line: &str, shared: &Arc<Mutex<Shared>>) {
                 s.pc_link_state = Some(v);
             }
         }
+    }
+}
+
+/// The maximum number of lines kept from a mod's journal (cfgd sends at
+/// most 500).
+const MOD_LOG_LINES: usize = 600;
+/// The maximum length of a journal line, in bytes; a longer line is cut.
+const MOD_LOG_LINE_MAX: usize = 1024;
+/// The maximum length of a line from the guest, in bytes. A longer line is
+/// read to its end and dropped.
+const LINE_MAX: usize = 64 << 10;
+
+/// Read the next line from the guest, without its line ending; `None` when
+/// the stream ends. A line longer than [`LINE_MAX`] is returned empty.
+fn next_line(reader: &mut impl BufRead, buf: &mut Vec<u8>) -> std::io::Result<Option<String>> {
+    buf.clear();
+    let mut over = false;
+    loop {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            if buf.is_empty() && !over {
+                return Ok(None);
+            }
+            break;
+        }
+        let end = chunk.iter().position(|&b| b == b'\n');
+        let part = &chunk[..end.unwrap_or(chunk.len())];
+        if over || buf.len() + part.len() > LINE_MAX {
+            over = true;
+            buf.clear();
+        } else {
+            buf.extend_from_slice(part);
+        }
+        let used = end.map_or(chunk.len(), |i| i + 1);
+        reader.consume(used);
+        if end.is_some() {
+            break;
+        }
+    }
+    let line = String::from_utf8_lossy(buf);
+    Ok(Some(line.trim_end_matches('\r').to_string()))
+}
+
+/// `s` truncated to at most `max` bytes, at a character boundary.
+fn clip(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Handle a `mods`, `mod` or `log*` line; `false` for any other line.
+/// Journal lines are kept only for a mod whose journal
+/// [`CfgClient::request_mod_log`] requested, and only the answer to the
+/// latest request is kept.
+fn handle_mods_line(line: &str, shared: &Arc<Mutex<Shared>>) -> bool {
+    let Ok(mut s) = shared.lock() else {
+        return true;
+    };
+    if let Some(name) = line.strip_prefix("log_begin ") {
+        if let Some((_, lines)) = s.mod_logs_partial.get_mut(name) {
+            lines.clear();
+        }
+    } else if let Some(rest) = line.strip_prefix("log ") {
+        let (name, text) = rest.split_once(' ').unwrap_or((rest, ""));
+        if let Some((_, lines)) = s.mod_logs_partial.get_mut(name) {
+            if lines.len() < MOD_LOG_LINES {
+                lines.push(clip(text, MOD_LOG_LINE_MAX).to_string());
+            }
+        }
+    } else if let Some(name) = line.strip_prefix("log_end ") {
+        if let Some((due, _)) = s.mod_logs_partial.get_mut(name) {
+            *due -= 1;
+            if *due == 0 {
+                let (_, lines) = s.mod_logs_partial.remove(name).unwrap_or_default();
+                s.mod_logs.insert(name.to_string(), lines);
+            }
+        }
+    } else if let Some(rest) = line.strip_prefix("mods ") {
+        match rest {
+            "off" => s.mods = ModsReport::Off,
+            "pending" => s.mods = ModsReport::Pending,
+            "begin" => s.mods_partial = Some(Partial::default()),
+            // An end without its begin is the tail of a report sent before
+            // the host connected.
+            "end" => match s.mods_partial.take() {
+                Some(partial) => s.mods = partial.done(),
+                None => eprintln!("cfg: mods end without mods begin, ignored"),
+            },
+            other => eprintln!("cfg: unrecognised mods line '{other}'"),
+        }
+    } else if let Some(rest) = line.strip_prefix("mod ") {
+        if !s.mods_partial.as_mut().is_some_and(|p| p.push(rest)) {
+            eprintln!("cfg: unexpected mod line '{rest}'");
+        }
+    } else {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_oversize_line_is_dropped_and_reading_goes_on() {
+        let long = "x".repeat(LINE_MAX + 1);
+        let text = format!("a\r\n{long}\nb\nc");
+        let mut reader = std::io::Cursor::new(text.into_bytes());
+        let mut buf = Vec::new();
+        let mut lines = Vec::new();
+        while let Some(line) = next_line(&mut reader, &mut buf).unwrap() {
+            lines.push(line);
+        }
+        assert_eq!(lines, ["a", "", "b", "c"]);
+    }
+
+    #[test]
+    fn a_journal_asked_twice_keeps_the_last_answer_whole() {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let feed = |lines: &[&str]| {
+            for l in lines {
+                assert!(handle_mods_line(l, &shared));
+            }
+        };
+        let log = |name: &str| shared.lock().unwrap().mod_logs.get(name).cloned();
+        shared
+            .lock()
+            .unwrap()
+            .mod_logs_partial
+            .insert("a".into(), (1, Vec::new()));
+        feed(&["log_begin a", "log a one"]);
+        // Requested again while the first answer is still arriving.
+        shared
+            .lock()
+            .unwrap()
+            .mod_logs_partial
+            .get_mut("a")
+            .unwrap()
+            .0 += 1;
+        feed(&["log a two", "log_end a", "log b stray", "log_end b"]);
+        assert_eq!(log("a"), None);
+        assert_eq!(log("b"), None, "never asked for");
+        feed(&[
+            "log_begin a",
+            "log a one",
+            "log a",
+            "log a two",
+            "log_end a",
+        ]);
+        assert_eq!(log("a").unwrap(), ["one", "", "two"]);
     }
 }

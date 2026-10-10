@@ -191,6 +191,7 @@ pub(super) fn draw(
             title: &p.title,
             sub: &p.sub,
             switchable: false,
+            warn: false,
         },
     )
     .body;

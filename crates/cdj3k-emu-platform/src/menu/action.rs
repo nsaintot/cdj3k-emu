@@ -29,6 +29,14 @@ pub fn apply(s: &mut menu_state::AppState, id: &MenuId) -> ActionEffect {
         MenuId::ManageEmulation => {
             s.manage_emulation_requested = true;
         }
+        MenuId::ModsEnabled => {
+            s.mods_enabled = !s.mods_enabled;
+            s.mods_toggle_requested = true;
+            if s.qemu_running {
+                s.shade_forced = true;
+                s.restart_requested = true;
+            }
+        }
         MenuId::CheckForUpdate => {
             s.update_check_requested = true;
         }
