@@ -126,8 +126,14 @@ pub struct CdjShell {
     /// A picker choice waiting for the previous runtime worker to finish
     /// its graceful stop.
     pending_launch: Option<Model>,
-    /// When the slot's staging dir is next looked at for a finished install.
-    next_install_check: Instant,
+    /// Whether `check_for_install` should look in the slot's staging dir for
+    /// a finished install. Startup, an `install-ready` command and the end of
+    /// this window's emulation set it.
+    install_check_due: bool,
+    /// Whether the runtime worker had finished on the previous pass of
+    /// `logic`. `logic` compares it with the current state to detect that the
+    /// emulation stopped.
+    worker_was_finished: bool,
     /// The last probe of another slot: slot, when, whether a window holds it
     /// ([`cdj3k_emu_storage::slot_in_use`]) and whether its emulation runs
     /// ([`cdj3k_emu_storage::slot_running`]). The picker asks every frame;
@@ -217,7 +223,8 @@ impl CdjShell {
             initial_model: cfg.initial_model,
             wizard: FirmwareWizard::new(),
             pending_launch: None,
-            next_install_check: Instant::now(),
+            install_check_due: true,
+            worker_was_finished: true,
             busy_probe: Cell::new(None),
             delete_asked: None,
             sent: Vec::new(),
@@ -426,7 +433,12 @@ impl CdjShell {
                     }
                 }
             }
-            Ok(None) => Installed::Staged,
+            // Another window holds the slot; send it `install-ready` so that it
+            // applies the install.
+            Ok(None) => {
+                self.send_command(slot, Command::InstallReady);
+                Installed::Staged
+            }
             Err(e) => {
                 eprintln!("cdj3k-emu: slot {slot}: claiming it failed: {e}");
                 Installed::Staged
@@ -434,27 +446,27 @@ impl CdjShell {
         }
     }
 
-    /// Once a second, look for a finished install waiting for this window's
-    /// slot - from another window, or from `--provision`. If no emulation is
-    /// running, the install is applied at once. Otherwise the emulation uses it
-    /// at its next start.
+    /// When [`install_check_due`] is set, look for a finished install for
+    /// this window's slot, staged by another window or by `--provision`. If
+    /// the emulation is stopped, apply it now. Otherwise this window applies
+    /// it when the emulation stops.
+    ///
+    /// [`install_check_due`]: Self::install_check_due
     fn check_for_install(&mut self) {
-        let now = Instant::now();
-        if now < self.next_install_check {
-            return;
-        }
-        self.next_install_check = now + Duration::from_secs(1);
-        // Skip the check while this window installs into the slot (this window
-        // applies that install when it finishes), and while an emulation is
-        // stopping, launching or running.
-        if self.installing_here()
+        // Keep the check due while this window installs into the slot or
+        // while the emulation stops or launches. This window applies its own
+        // install when the install finishes.
+        if !self.install_check_due
+            || self.installing_here()
             || self.worker_stopping
             || self.pending_launch.is_some()
-            || !cdj3k_emu_runtime::worker_is_finished()
         {
             return;
         }
-        if cdj3k_emu_storage::pending_install(self.instance).is_some() {
+        self.install_check_due = false;
+        if cdj3k_emu_runtime::worker_is_finished()
+            && cdj3k_emu_storage::pending_install(self.instance).is_some()
+        {
             self.apply_staged();
         }
     }
@@ -470,12 +482,15 @@ impl CdjShell {
             self.window_socket.as_ref().and_then(WindowSocket::next)
         {
             let reply = self.on_command(command);
-            eprintln!(
-                "cdj3k-emu: slot {}: another window sent {}, replied {}",
-                self.instance,
-                command.as_str(),
-                reply.as_str()
-            );
+            // A Mods view asks `restart-pending` every 2 s.
+            if command != Command::RestartPending {
+                eprintln!(
+                    "cdj3k-emu: slot {}: another window sent {}, replied {}",
+                    self.instance,
+                    command.as_str(),
+                    reply.as_str()
+                );
+            }
             responder.reply(reply);
         }
     }
@@ -507,6 +522,13 @@ impl CdjShell {
             }
             Command::RestartMods => self.restart_for_mods(),
             Command::RestartInstall => self.restart_into_install(),
+            Command::InstallReady => {
+                self.install_check_due = true;
+                Reply::Ok
+            }
+            Command::RestartPending if !self.emulation_running() => Reply::NotRunning,
+            Command::RestartPending if mods_view::restart_pending(self.instance) => Reply::Yes,
+            Command::RestartPending => Reply::No,
         }
     }
 
@@ -594,7 +616,9 @@ impl CdjShell {
                     }
                     Ok(Some(Reply::Busy)) => "its window is busy; try again in a moment",
                     Ok(None) => "its window is not listening; close it, then delete the slot",
-                    Err(_) => "asking its window to empty the slot failed",
+                    Err(_) | Ok(Some(Reply::Yes | Reply::No)) => {
+                        "asking its window to empty the slot failed"
+                    }
                 };
                 // Update the status line only if this slot's request is still
                 // the latest one.
@@ -614,6 +638,9 @@ impl CdjShell {
                         Some(format!("Slot {slot} is not running"))
                     }
                     Err(e) => Some(format!("Restarting slot {slot} failed: {e}")),
+                    Ok(Some(Reply::Yes | Reply::No)) => Some(format!(
+                        "Restarting slot {slot} failed: its window sent an unexpected reply"
+                    )),
                 };
                 if self.mods.as_ref().is_some_and(|p| p.slot == slot) {
                     self.note_mods(note);
@@ -627,7 +654,21 @@ impl CdjShell {
                     cdj3k_emu_platform::menu::open_instance(slot);
                 }
             }
-            Command::Quit => {}
+            Command::RestartPending => {
+                let answer = match reply {
+                    Ok(Some(Reply::Yes)) => true,
+                    Ok(Some(Reply::No)) => false,
+                    // Keep the last answer until the window can give one.
+                    _ => return,
+                };
+                if let Some(page) = self.mods.as_mut().filter(|p| p.slot == slot) {
+                    page.remote_pending = answer;
+                    if let mods_view::Run::Restart { pending } = &mut page.run {
+                        *pending = page.remote_pending;
+                    }
+                }
+            }
+            Command::Quit | Command::InstallReady => {}
         }
     }
 
@@ -954,6 +995,7 @@ impl CdjShell {
         self.mods = Some(page);
         self.mods_read = Instant::now();
         self.setup = Some(SetupStep::Mods);
+        self.ask_restart_pending();
     }
 
     fn emulation_running(&self) -> bool {
@@ -1024,6 +1066,23 @@ impl CdjShell {
         }
         self.mods_read = Instant::now();
         self.mods_bar = None;
+        self.ask_restart_pending();
+    }
+
+    /// Send `restart-pending` to the other window that runs the viewed slot,
+    /// unless an earlier one is still waiting for its reply. Do nothing when
+    /// this window or no window runs the slot.
+    fn ask_restart_pending(&mut self) {
+        let Some(slot) = self.mods.as_ref().map(|p| p.slot) else {
+            return;
+        };
+        let asking = self
+            .sent
+            .iter()
+            .any(|&(s, c, _)| s == slot && c == Command::RestartPending);
+        if slot != self.instance && self.slot_runs_elsewhere(slot) && !asking {
+            self.send_command(slot, Command::RestartPending);
+        }
     }
 
     /// Show `error` on the Mods view's toolbar, or clear what it showed.
@@ -1088,7 +1147,7 @@ impl CdjShell {
                 let slot = self.mods.as_ref().map_or(self.instance, |p| p.slot);
                 if slot == self.instance {
                     let note = match self.restart_for_mods() {
-                        Reply::Ok => None,
+                        Reply::Ok | Reply::Yes | Reply::No => None,
                         Reply::Busy => Some("The emulation is busy; try again in a moment"),
                         Reply::NotRunning => Some("The emulation is not running"),
                     };
@@ -1328,10 +1387,19 @@ impl eframe::App for CdjShell {
         }
         self.serve_window_socket();
         self.take_replies();
+        let finished = cdj3k_emu_runtime::worker_is_finished();
+        if finished && !self.worker_was_finished {
+            self.install_check_due = true;
+        }
+        self.worker_was_finished = finished;
         self.check_for_install();
-        // Run `logic` again within a second so that `check_for_install` runs,
-        // even while the window is hidden.
-        ctx.request_repaint_after(Duration::from_secs(1));
+        // While an emulation runs, the runtime worker can ask for a power-off
+        // frame or a relaunch, and only `logic` acts on them. A deck that
+        // draws nothing new produces no frames, so run `logic` at least once
+        // a second, also while the window is hidden.
+        if !finished {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
         if std::mem::take(&mut self.close_window) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
@@ -1403,6 +1471,12 @@ impl eframe::App for CdjShell {
             Screen::Panel => self.app.update(ctx, ui, frame),
         }
 
+        // The picker and the setup window read other slots' state on each
+        // frame. egui draws no frames while the window is idle, so request a
+        // repaint once a second.
+        if self.setup.is_some() || matches!(self.screen, Screen::Picker) {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
         // One window for switching an emulation and installing its firmware.
         // Exempt from the shade gate: the install step must be reachable while
         // QEMU is not running.

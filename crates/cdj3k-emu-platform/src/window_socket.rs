@@ -12,9 +12,15 @@
 //!     quit              - stop the emulation and close, as Quit does
 //!     restart-mods      - restart the emulation with the slot's mods
 //!     restart-install   - restart the emulation into the finished install
+//!     install-ready     - apply the finished install in the slot's staging
+//!                         dir now if the emulation is stopped, otherwise when
+//!                         it stops
+//!     restart-pending   - ask whether a restart would boot different mods;
+//!                         the reply is yes or no
 //!
 //!   window → client
 //!     ok                - the command is done or in progress
+//!     yes, no           - the window's answer to `restart-pending`
 //!     busy              - the window is installing, stopping or closing, or
 //!                         did not take the command within 5 s; ask again later
 //!     not-running       - the command needs a running emulation
@@ -58,14 +64,18 @@ pub enum Command {
     Quit,
     RestartMods,
     RestartInstall,
+    InstallReady,
+    RestartPending,
 }
 
 impl Command {
-    pub const ALL: [Command; 4] = [
+    pub const ALL: [Command; 6] = [
         Command::Delete,
         Command::Quit,
         Command::RestartMods,
         Command::RestartInstall,
+        Command::InstallReady,
+        Command::RestartPending,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -74,6 +84,8 @@ impl Command {
             Self::Quit => "quit",
             Self::RestartMods => "restart-mods",
             Self::RestartInstall => "restart-install",
+            Self::InstallReady => "install-ready",
+            Self::RestartPending => "restart-pending",
         }
     }
 
@@ -85,16 +97,26 @@ impl Command {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reply {
     Ok,
+    Yes,
+    No,
     Busy,
     NotRunning,
 }
 
 impl Reply {
-    pub const ALL: [Reply; 3] = [Reply::Ok, Reply::Busy, Reply::NotRunning];
+    pub const ALL: [Reply; 5] = [
+        Reply::Ok,
+        Reply::Yes,
+        Reply::No,
+        Reply::Busy,
+        Reply::NotRunning,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
+            Self::Yes => "yes",
+            Self::No => "no",
             Self::Busy => "busy",
             Self::NotRunning => "not-running",
         }

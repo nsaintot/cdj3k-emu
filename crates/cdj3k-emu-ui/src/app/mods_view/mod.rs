@@ -238,6 +238,10 @@ pub(in crate::app) struct ModsPage {
     /// A line shown instead of the mod count: the progress of an add, or why
     /// it failed.
     pub note: Option<(String, bool)>,
+    /// Whether the other window that runs the viewed slot answered `yes` to
+    /// the last `restart-pending`. Read only when another window runs the
+    /// slot.
+    pub remote_pending: bool,
 }
 
 /// What the footer offers for the viewed slot's emulation.
@@ -281,6 +285,45 @@ pub(in crate::app) enum ModsAction {
 
 // ── What the view shows, read from the slot ───────────────────────────────────
 
+/// Return each mod that `boot` left out because its files could not be read,
+/// and why.
+fn unpacked(boot: Option<&slot_mods::BootMods>) -> Vec<(String, String)> {
+    boot.iter()
+        .flat_map(|b| &b.incompatible)
+        .filter_map(|(name, c)| match c {
+            Compat::Invalid(e) => Some((name.clone(), e.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Return whether a restart of this window's emulation would boot different
+/// mods than the running emulation booted. `slot` must be this window's slot,
+/// because the running boot is read from this process. The window's reply to
+/// `restart-pending` comes from this function.
+pub(in crate::app) fn restart_pending(slot: u32) -> bool {
+    let Some(model) = InstanceSettings::saved_model(slot) else {
+        return false;
+    };
+    let current = slot_mods::current_boot();
+    let unpacked = unpacked(current.as_ref());
+    let no_mods = current.as_ref().is_some_and(|b| b.no_mods);
+    let release = InstanceSettings::saved_firmware_release(slot);
+    let mut planned = slot_mods::planned_slot_run(
+        slot,
+        model,
+        release.as_deref(),
+        slot_mods::slot_mods_on(slot) && !no_mods,
+    );
+    // Ignore mods that the current boot left out because their files could
+    // not be read.
+    planned.retain(|id| {
+        let name = id.split('\t').next().unwrap_or_default();
+        !unpacked.iter().any(|(n, _)| n == name)
+    });
+    current.map(|b| b.slot_run) != Some(planned)
+}
+
 impl ModsPage {
     pub(in crate::app) fn new(slot: u32) -> Self {
         Self {
@@ -296,6 +339,7 @@ impl ModsPage {
             replace: None,
             url: None,
             note: None,
+            remote_pending: false,
         }
     }
 
@@ -303,45 +347,20 @@ impl ModsPage {
     /// its emulation is up; `elsewhere` whether the viewed slot's emulation
     /// runs in another window.
     pub(in crate::app) fn refresh(&mut self, own: u32, running: bool, elsewhere: bool) {
-        // This window's boot, with the mods it left out because their files
-        // could not be read.
         let current = (self.slot == own && running)
             .then(slot_mods::current_boot)
             .flatten();
-        let unpacked: Vec<(String, String)> = current
-            .iter()
-            .flat_map(|b| &b.incompatible)
-            .filter_map(|(name, c)| match c {
-                Compat::Invalid(e) => Some((name.clone(), e.clone())),
-                _ => None,
-            })
-            .collect();
-        let slot = Slot::read(self.slot, &unpacked);
+        let slot = Slot::read(self.slot, &unpacked(current.as_ref()));
         let up = if self.slot == own { running } else { elsewhere };
         self.run = match slot.model {
-            Some(model) if up => {
-                let no_mods = current.as_ref().is_some_and(|b| b.no_mods);
-                let mut planned = slot_mods::planned_slot_run(
-                    self.slot,
-                    model,
-                    slot.release.as_deref(),
-                    slot_mods::slot_mods_on(self.slot) && !no_mods,
-                );
-                planned.retain(|id| {
-                    let name = id.split('\t').next().unwrap_or_default();
-                    !unpacked.iter().any(|(n, _)| n == name)
-                });
-                // For another window's slot, the last report says what it
-                // booted.
-                let booted = if self.slot == own {
-                    slot_mods::current_boot().map(|b| b.slot_run)
-                } else {
-                    Some(slot_mods::last_boot_ids(self.slot))
-                };
-                Run::Restart {
-                    pending: booted != Some(planned),
-                }
-            }
+            // When another window runs the slot, use that window's last answer
+            // to `restart-pending`.
+            Some(_) if up && self.slot != own => Run::Restart {
+                pending: self.remote_pending,
+            },
+            Some(_) if up => Run::Restart {
+                pending: restart_pending(self.slot),
+            },
             Some(_) if self.slot != own => Run::Start,
             _ => Run::None,
         };

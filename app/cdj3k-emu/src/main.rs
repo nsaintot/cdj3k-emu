@@ -307,9 +307,16 @@ fn main() {
                     std::process::exit(1);
                 }
                 None => {
+                    use cdj3k_emu_platform::window_socket::{send, Command, Reply};
+                    let when = match send(instance, Command::InstallReady) {
+                        Ok(Some(Reply::Ok)) => {
+                            "now if its emulation is stopped, otherwise when the emulation stops"
+                        }
+                        _ => "when the emulation stops or next starts",
+                    };
                     eprintln!(
                         "cdj3k-emu: {model} firmware installed for slot {instance}; its open \
-                         window swaps it in on the emulation's next start"
+                         window swaps it in {when}"
                     );
                     std::process::exit(0);
                 }
