@@ -134,6 +134,12 @@ pub fn send(id: u32, command: Command) -> io::Result<Option<Reply>> {
 }
 
 fn send_at(path: &Path, command: Command) -> io::Result<Option<Reply>> {
+    // No window has run the slot since the runtime folder was removed. On
+    // Windows, connecting into a missing folder fails with WSAENETDOWN, which
+    // is not one of the error kinds below.
+    if path.parent().is_some_and(|dir| !dir.is_dir()) {
+        return Ok(None);
+    }
     let stream = match LocalStream::connect(path) {
         Ok(stream) => stream,
         Err(e)
@@ -310,9 +316,12 @@ fn serve(
     }
     let word = line.trim();
     match Command::parse(word) {
-        Some(command) => writeln!(writer, "{}", ask(command, tx, answer_wait, wake).as_str()),
-        None => writeln!(writer, "error unknown command {word:?}"),
+        Some(command) => writeln!(writer, "{}", ask(command, tx, answer_wait, wake).as_str())?,
+        None => writeln!(writer, "error unknown command {word:?}")?,
     }
+    // Close the connection now, so that the client sees the end of the
+    // stream even while a duplicate of this socket's handle is still open.
+    writer.shutdown(std::net::Shutdown::Both)
 }
 
 /// Pass `command` to the window and wait for its reply.
@@ -437,6 +446,12 @@ mod tests {
             "the window hung up"
         );
         assert!(server.next().is_none());
+    }
+
+    #[test]
+    fn a_socket_in_a_missing_folder_means_no_window() {
+        let path = test_path("ws-missing").join("window.sock");
+        assert_eq!(send_at(&path, Command::Quit).unwrap(), None);
     }
 
     #[test]

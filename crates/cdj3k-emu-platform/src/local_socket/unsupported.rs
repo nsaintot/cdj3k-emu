@@ -44,6 +44,10 @@ impl LocalStream {
     pub fn set_write_timeout(&self, _dur: Option<Duration>) -> io::Result<()> {
         match *self {}
     }
+
+    pub fn shutdown(&self, _how: std::net::Shutdown) -> io::Result<()> {
+        match *self {}
+    }
 }
 
 impl io::Read for LocalStream {
