@@ -119,12 +119,14 @@ fn stream_loop(
     latest_mosi: Arc<Mutex<[u8; 64]>>,
     gate: crate::RepaintGate,
 ) {
-    // Rate-limit connect-failure logging: the socket is absent until QEMU is
-    // spawned and after a guest restart.  Log the first failure, then every
-    // 10th attempt thereafter, so stderr doesn't grow at RECONNECT_DELAY⁻¹
-    // for the entire pre-spawn or post-crash window.
+    // The thread connects only while QEMU runs. A connect can still fail
+    // before QEMU has created the socket: log the first failure for each
+    // guest, then every 10th.
     let mut failed_attempts: u32 = 0;
     loop {
+        if crate::guest::wait_until_running() {
+            failed_attempts = 0;
+        }
         match UnixStream::connect(&sock_path) {
             Ok(stream) => {
                 eprintln!("[ctrl] connected to {}", sock_path.display());

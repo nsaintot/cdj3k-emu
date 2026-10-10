@@ -123,6 +123,9 @@ fn shm_loop(
     loop {
         // Wait for the shm file to appear and contain a valid header.
         let mmap = loop {
+            if crate::guest::wait_until_running() {
+                wait_logged = false;
+            }
             match open_shm(shm_path) {
                 Some(m) => {
                     eprintln!("[main_stream] opened {shm_path}");
