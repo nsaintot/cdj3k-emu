@@ -23,6 +23,11 @@ is the source of truth for the layout and the length limit on it; the copies in
 `boot.sh` and `tools/midi-driver/link.c` must agree with it. Authoritative QEMU
 args are `QemuConfig::build_argv` in `crates/cdj3k-emu-runtime/src/config.rs`.
 
+`{sock_dir}/window.sock` is not a guest stream. The window that holds the slot
+listens on it for commands from other windows, such as `restart-mods` or
+`quit`; `crates/cdj3k-emu-platform/src/window_socket.rs` documents the
+protocol.
+
 The sockets are AF_UNIX on Windows too (Windows 10 1803 and later; the host
 side is `uds_windows`, `platform::local_socket`), so the chardev lines are the
 same on every host; the path limit there is 108 bytes. Patches 15-17 give

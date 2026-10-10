@@ -307,9 +307,16 @@ fn main() {
                     std::process::exit(1);
                 }
                 None => {
+                    use cdj3k_emu_platform::window_socket::{send, Command, Reply};
+                    let when = match send(instance, Command::InstallReady) {
+                        Ok(Some(Reply::Ok)) => {
+                            "now if its emulation is stopped, otherwise when the emulation stops"
+                        }
+                        _ => "when the emulation stops or next starts",
+                    };
                     eprintln!(
                         "cdj3k-emu: {model} firmware installed for slot {instance}; its open \
-                         window swaps it in on the emulation's next start"
+                         window swaps it in {when}"
                     );
                     std::process::exit(0);
                 }
@@ -366,6 +373,19 @@ fn main() {
     );
     cdj3k_emu_platform::desktop::set_app_name(&app_name);
 
+    // Only the process that holds the slot's claim listens on the slot's
+    // window socket.
+    let window_socket = |instance: u32, ctx: &egui::Context| {
+        SLOT_CLAIM.get()?;
+        let ctx = ctx.clone();
+        cdj3k_emu_platform::window_socket::WindowSocket::bind(instance, move || {
+            ctx.request_repaint()
+        })
+        .inspect_err(|e| {
+            eprintln!("cdj3k-emu: slot {instance}: opening the window socket failed: {e}")
+        })
+        .ok()
+    };
     let mut host = Some(host);
     eframe::run_native(
         &app_name,
@@ -381,6 +401,7 @@ fn main() {
                     profile,
                     initial_model,
                     host: Box::new(host.take().expect("app created once")),
+                    window_socket: window_socket(instance, &cc.egui_ctx),
                 },
             )))
         }),

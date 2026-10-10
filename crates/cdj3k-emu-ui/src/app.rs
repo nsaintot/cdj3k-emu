@@ -725,19 +725,26 @@ impl CdjApp {
     /// Pull menu state (set by the native macOS menu or the egui menu):
     /// the pop-out toggles and power-off requests.
     fn poll_menu_state(&mut self) {
-        let (jog, main, debug, want_poweroff) = {
-            let mut s = menu_state::lock();
+        let (jog, main, debug) = {
+            let s = menu_state::lock();
             (
                 s.jog_screen_popped,
                 s.main_screen_popped,
                 s.debug_screen_popped,
-                std::mem::take(&mut s.power_off_stimuli_requested),
             )
         };
         self.jog_screen_popped = jog;
         self.main_screen_popped = main;
         self.debug_screen_popped = debug;
-        if want_poweroff {
+        self.send_requested_power_off();
+    }
+
+    /// Send the power-off frame that the runtime worker asked for when it
+    /// began stopping QEMU. The shell also calls this while the window is
+    /// hidden, so that the guest can shut down cleanly before the worker kills
+    /// QEMU 8 s later.
+    pub fn send_requested_power_off(&mut self) {
+        if std::mem::take(&mut menu_state::lock().power_off_stimuli_requested) {
             self.inject(self.power_off_frame());
         }
     }

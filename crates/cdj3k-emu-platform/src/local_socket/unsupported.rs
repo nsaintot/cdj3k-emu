@@ -1,18 +1,36 @@
-//! A host with no local stream socket: nothing connects, so no stream exists.
+//! On a host without local stream sockets, binding and connecting always
+//! fail.
 
 use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-/// Uninhabited: [`LocalStream::connect`] never returns one.
+/// This type has no values, because [`LocalListener::bind`] always fails.
+pub enum LocalListener {}
+
+impl LocalListener {
+    pub fn bind(_path: &Path) -> io::Result<Self> {
+        Err(unsupported())
+    }
+
+    pub fn accept(&self) -> io::Result<LocalStream> {
+        match *self {}
+    }
+}
+
+fn unsupported() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no local stream sockets on this host",
+    )
+}
+
+/// This type has no values, because [`LocalStream::connect`] always fails.
 pub enum LocalStream {}
 
 impl LocalStream {
     pub fn connect<P: AsRef<Path>>(_path: P) -> io::Result<Self> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "no local stream sockets on this host",
-        ))
+        Err(unsupported())
     }
 
     pub fn try_clone(&self) -> io::Result<Self> {
@@ -24,6 +42,10 @@ impl LocalStream {
     }
 
     pub fn set_write_timeout(&self, _dur: Option<Duration>) -> io::Result<()> {
+        match *self {}
+    }
+
+    pub fn shutdown(&self, _how: std::net::Shutdown) -> io::Result<()> {
         match *self {}
     }
 }

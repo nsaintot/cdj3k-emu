@@ -15,3 +15,4 @@ pub mod menu_state;
 pub mod net;
 pub mod runtime_paths;
 pub mod sparse_file;
+pub mod window_socket;

@@ -7,9 +7,9 @@
 //! owner ([`SlotClaim`]) swaps the files in with [`apply_staged`] whenever the
 //! slot's emulation is not running, so an install never has to stop one.
 //!
-//! Anyone may ask the owner to restart onto a finished install
-//! ([`request_restart`]): that leaves `.staging/restart` beside the record,
-//! and the owner restarts its emulation when it sees it.
+//! To make the owner restart into a finished install, another window sends
+//! `restart-install` on the slot's window socket
+//! ([`cdj3k_emu_platform::window_socket`]).
 //!
 //! The lock is the `flock`, not the file: the OS drops it with the process
 //! however the process ends, and the empty `.lock` file stays. A staging dir
@@ -31,7 +31,6 @@ use crate::{
 pub(crate) const STAGING: &str = ".staging";
 const LOCK: &str = ".lock";
 const RECORD: &str = "complete";
-const RESTART: &str = "restart";
 
 fn staging_dir(instance_id: u32) -> PathBuf {
     instance_dir(instance_id).join(STAGING)
@@ -55,8 +54,6 @@ pub struct StagedRecord {
     pub fs: u32,
     /// The serial the staged eMMC's cabinet was keyed for.
     pub soc_serial: String,
-    /// Someone asked the owner to restart onto it ([`request_restart`]).
-    pub restart: bool,
 }
 
 fn read_record(dir: &Path) -> Option<StagedRecord> {
@@ -71,7 +68,6 @@ fn read_record(dir: &Path) -> Option<StagedRecord> {
         soc_serial: map
             .get("soc_serial")
             .and_then(|v| InstanceSettings::parse_soc_serial(v).ok())?,
-        restart: dir.join(RESTART).exists(),
     })
 }
 
@@ -201,29 +197,32 @@ impl Drop for StagedFirmware {
 /// one. `None` while an install is still writing it. Leftovers of an install
 /// that died part way are deleted.
 pub fn pending_install(instance_id: u32) -> Option<StagedRecord> {
+    read_pending(instance_id, false)
+}
+
+/// Return what [`pending_install`] returns, but wait up to a quarter of a
+/// second while another process reads the staging dir. An install that is
+/// still writing holds the lock for longer, so the result is `None` while an
+/// install is writing.
+pub fn pending_install_retry(instance_id: u32) -> Option<StagedRecord> {
+    read_pending(instance_id, true)
+}
+
+fn read_pending(instance_id: u32, retry: bool) -> Option<StagedRecord> {
     let dir = staging_dir(instance_id);
     // Held for the read, so an install starting now cannot clear the record
     // from under it.
-    let _held = lock_exclusive(&dir.join(LOCK)).ok()??;
+    let lock = if retry {
+        lock_exclusive_retry
+    } else {
+        lock_exclusive
+    };
+    let _held = lock(&dir.join(LOCK)).ok()??;
     let record = read_record(&dir);
     if record.is_none() {
         let _ = clear(&dir);
     }
     record
-}
-
-/// Ask the owner of `instance_id` to restart its emulation onto the finished
-/// install waiting there. `false` when there is none.
-pub fn request_restart(instance_id: u32) -> io::Result<bool> {
-    let dir = staging_dir(instance_id);
-    let Ok(Some(_held)) = lock_exclusive_retry(&dir.join(LOCK)) else {
-        return Ok(false);
-    };
-    if !dir.join(RECORD).exists() {
-        return Ok(false);
-    }
-    std::fs::write(dir.join(RESTART), "")?;
-    Ok(true)
 }
 
 /// Swap the slot's finished install in and record it in the slot's settings;
@@ -321,12 +320,6 @@ mod tests {
         );
         let pending = pending_install(1).expect("a finished install is pending");
         assert_eq!(pending.model, Model::Cdj3kx);
-        assert!(!pending.restart);
-        assert!(request_restart(1).unwrap());
-        assert!(
-            pending_install(1).unwrap().restart,
-            "the owner sees the request"
-        );
 
         let claim = SlotClaim::take(1).unwrap().unwrap();
         let applied = apply_staged(&claim).unwrap().expect("applied");
@@ -337,7 +330,6 @@ mod tests {
         assert_eq!(s.soc_serial, SERIAL);
         assert!(pending_install(1).is_none());
         assert!(apply_staged(&claim).unwrap().is_none(), "applied once");
-        assert!(!request_restart(1).unwrap(), "nothing left to restart onto");
     }
 
     /// An install dropped before it finished, or still writing, is nothing

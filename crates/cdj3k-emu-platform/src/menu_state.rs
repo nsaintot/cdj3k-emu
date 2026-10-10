@@ -79,10 +79,21 @@ pub struct AppState {
     pub stop_requested: bool,
     /// Set to `true` while QEMU is running; updated by the runtime worker.
     pub qemu_running: bool,
+    /// The runtime worker sets this during a restart, from when it clears
+    /// `qemu_running` until the new QEMU has started or failed to start.
+    pub qemu_respawning: bool,
     /// Fires once after provisioning completes to (re)start QEMU.
     pub qemu_boot_requested: bool,
     /// Fires once to stop and immediately restart QEMU.
     pub restart_requested: bool,
+    /// The number of mods restarts requested, by the window socket's
+    /// `restart-mods` or the Mods view's Restart.
+    pub mods_restart_seq: u64,
+    /// `ModsLaunch::boot` copies `mods_restart_seq` here before it reads the
+    /// slot's mods. If `mods_restart_seq` is larger, a mods restart was
+    /// requested after that read, and the runtime worker restarts QEMU once the
+    /// guest's cfgd answers.
+    pub mods_restart_seq_booted: u64,
     /// Fires once to open the setup window - the one place a slot's emulation
     /// is chosen and its firmware installed.
     pub manage_emulation_requested: bool,
@@ -234,8 +245,11 @@ impl AppState {
             debug_screen_popped: false,
             stop_requested: false,
             qemu_running: false,
+            qemu_respawning: false,
             qemu_boot_requested: false,
             restart_requested: false,
+            mods_restart_seq: 0,
+            mods_restart_seq_booted: 0,
             manage_emulation_requested: false,
             update_check_requested: false,
             update_ready: false,

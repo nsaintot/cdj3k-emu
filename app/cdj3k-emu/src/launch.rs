@@ -207,6 +207,12 @@ impl ModsLaunch {
     /// or the base alone when no mod runs or the mods cannot be prepared.
     /// The caller records it with `set_current_boot` once QEMU has started.
     pub fn boot(&self, instance: u32, model: Model) -> cdj3k_emu_storage::mods::BootMods {
+        // Record the request count before reading the mods, so that a mods
+        // restart requested during the read causes another restart.
+        {
+            let mut s = menu_state::lock();
+            s.mods_restart_seq_booted = s.mods_restart_seq;
+        }
         let settings = cdj3k_emu_storage::InstanceSettings::load_or_init(instance);
         // An outdated slot has no mods runner in its guest, so it boots
         // without mods.
