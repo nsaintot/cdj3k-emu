@@ -24,6 +24,8 @@ fn every_published_frame_reaches_the_ui() {
     shm[10..12].copy_from_slice(&(JOG_FB_H as u16).to_le_bytes());
     shm[12..16].copy_from_slice(&1u32.to_le_bytes());
 
+    // The stream maps the file only while the runtime reports a running QEMU.
+    cdj3k_emu_platform::menu_state::lock().qemu_running = true;
     let gate = RepaintGate::new(egui::Context::default(), Duration::from_millis(16));
     let stream = JogLcdStream::new(dir.to_str().unwrap(), gate);
 

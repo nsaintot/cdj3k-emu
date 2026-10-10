@@ -129,12 +129,15 @@ impl JogLcdStream {
     }
 }
 
-/// Maps the ivshmem-backed file. cdj3k-emu-runtime sizes it to 1 MiB before
-/// QEMU starts, so the file exists once the instance has spawned; the function
-/// retries in case the UI starts before the emulator.
+/// Map the ivshmem-backed file once QEMU runs. cdj3k-emu-runtime sets it to
+/// 1 MiB before it launches QEMU, so the file exists once the instance has
+/// spawned.
 fn open_shm(shm_path: &str) -> Mmap {
     let mut log_attempts: u32 = 0;
     loop {
+        if crate::guest::wait_until_running() {
+            log_attempts = 0;
+        }
         match std::fs::OpenOptions::new().read(true).open(shm_path) {
             Ok(f) => match unsafe { Mmap::map(&f) } {
                 Ok(m) if m.len() >= SHM_PIXELS_OFF + FRAME_BYTES => return m,
