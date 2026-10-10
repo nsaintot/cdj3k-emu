@@ -3,13 +3,14 @@
 use std::time::{Duration, Instant};
 
 use cdj3k_emu_platform::menu_state::MAX_INSTANCES;
+use cdj3k_emu_platform::window_socket::{self, Command, Reply};
 
 use crate::Error;
 
 /// How long the other windows get to stop their emulations and close.
 const CLOSE_WAIT: Duration = Duration::from_secs(45);
-/// A quit request lapses after ten seconds; it is renewed well before.
-const RENEW_EVERY: Duration = Duration::from_secs(4);
+/// How often a window that has not accepted `quit` is asked again.
+const ASK_EVERY: Duration = Duration::from_secs(4);
 
 /// The slots other than `own` that a window has open.
 pub fn other_slots_open(own: u32) -> Vec<u32> {
@@ -18,13 +19,13 @@ pub fn other_slots_open(own: u32) -> Vec<u32> {
         .collect()
 }
 
-/// Ask every window but `own`'s to close, and wait until each has. A request
-/// renewed after its window began closing is withdrawn, so it cannot close
-/// the next window to open that slot.
+/// Ask every window except `own`'s to close, and wait until they have. A
+/// window that answers `busy`, or does not answer, is asked again.
 pub fn close_other_slots(own: u32) -> Result<(), Error> {
     let open = other_slots_open(own);
     let deadline = Instant::now() + CLOSE_WAIT;
-    let mut renew_at = Instant::now();
+    let mut ask_at = Instant::now();
+    let mut closing = Vec::new();
     loop {
         let waiting: Vec<u32> = open
             .iter()
@@ -32,9 +33,6 @@ pub fn close_other_slots(own: u32) -> Result<(), Error> {
             .filter(|&n| cdj3k_emu_storage::slot_holder(n).is_some())
             .collect();
         if waiting.is_empty() {
-            for &n in &open {
-                cdj3k_emu_storage::withdraw_quit_request(n);
-            }
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -49,11 +47,25 @@ pub fn close_other_slots(own: u32) -> Result<(), Error> {
                 list.join(", ")
             )));
         }
-        if Instant::now() >= renew_at {
-            for &n in &waiting {
-                cdj3k_emu_storage::request_quit(n)?;
-            }
-            renew_at = Instant::now() + RENEW_EVERY;
+        if Instant::now() >= ask_at {
+            // Ask the waiting windows in parallel, so that one that does not
+            // answer does not delay the others.
+            let asking: Vec<u32> = waiting
+                .into_iter()
+                .filter(|n| !closing.contains(n))
+                .collect();
+            std::thread::scope(|s| {
+                let asked: Vec<_> = asking
+                    .iter()
+                    .map(|&n| s.spawn(move || (n, window_socket::send(n, Command::Quit))))
+                    .collect();
+                for handle in asked {
+                    if let Ok((n, Ok(Some(Reply::Ok)))) = handle.join() {
+                        closing.push(n);
+                    }
+                }
+            });
+            ask_at = Instant::now() + ASK_EVERY;
         }
         std::thread::sleep(Duration::from_millis(250));
     }

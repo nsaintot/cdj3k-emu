@@ -156,7 +156,10 @@ fn run(
             if let Some(mut inst) = instance.take() {
                 inst.stop();
             }
-            menu_state::lock().qemu_running = false;
+            // A restart asked for now would restart the next worker's new QEMU.
+            let mut s = menu_state::lock();
+            s.qemu_running = false;
+            s.restart_requested = false;
             break;
         }
 
@@ -171,9 +174,14 @@ fn run(
             }
             instance = None;
             pc_link_gave_up = false;
-            menu_state::lock().qemu_running = false;
+            {
+                let mut s = menu_state::lock();
+                s.qemu_running = false;
+                s.qemu_respawning = true;
+            }
 
             if APP_SHUTDOWN.load(Ordering::Relaxed) {
+                menu_state::lock().qemu_respawning = false;
                 break;
             }
 
@@ -197,6 +205,23 @@ fn run(
                     s.shade_forced = false;
                 }
                 Err(e) => eprintln!("cdj3k-emu: auto-restart failed: {e:?}"),
+            }
+            menu_state::lock().qemu_respawning = false;
+        }
+
+        // If a mods restart was requested after the current boot read the
+        // slot's mods, restart QEMU. Wait until the guest's cfgd answers: a
+        // guest that is still booting cannot power off and is killed after 8 s.
+        {
+            let mut s = menu_state::lock();
+            if instance.is_some()
+                && s.qemu_running
+                && s.mods_restart_seq != s.mods_restart_seq_booted
+                && cfg_client.guest_heard()
+                && !s.restart_requested
+            {
+                s.restart_requested = true;
+                s.shade_forced = true;
             }
         }
 
@@ -486,6 +511,7 @@ fn run(
             let (prev_phys, prev_virt) = {
                 let mut s = menu_state::lock();
                 s.qemu_running = false;
+                s.qemu_respawning = true;
                 (s.usb_phys_mounted_idx, s.usb_virtual_mounted)
             };
             reset_usb(&mut usb, &config, &cfg_client);
@@ -505,6 +531,7 @@ fn run(
                 }
                 Err(e) => eprintln!("cdj3k-emu: restart failed: {e:?}"),
             }
+            menu_state::lock().qemu_respawning = false;
         }
 
         // ── Network interface selection ───────────────────────────────────────

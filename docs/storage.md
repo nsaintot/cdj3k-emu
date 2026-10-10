@@ -60,10 +60,9 @@ whenever the slot's emulation is not running - at once if nothing runs,
 otherwise at its next start. A restart of a running emulation counts: with a
 finished install waiting, the runtime worker retires instead of restarting
 QEMU in place (`relaunch_requested`) and the shell launches again. Another
-process asks for that restart with `request_restart`, which leaves
-`.staging/restart` beside the record for the owner to find. The swap takes
-the eMMC's `flock`, which the app's `QemuInstance` holds for as long as QEMU
-runs.
+window asks for that restart by sending `restart-install` on the slot's window
+socket (`cdj3k_emu_platform::window_socket`). The swap takes the eMMC's
+`flock`, which the app's `QemuInstance` holds for as long as QEMU runs.
 
 The claim file holds its owner's pid (`slot_holder`): a second process
 started for a slot another one owns brings that one's window forward and
@@ -490,7 +489,7 @@ Nothing is committed to the repo or bundled in the `.dmg`.
 | Path | Role |
 |---|---|
 | `crates/cdj3k-emu-storage/src/lib.rs` | `app_data_dir`, public re-exports |
-| `crates/cdj3k-emu-storage/src/staging.rs` | `StagedFirmware`, `pending_install`, `apply_staged`, `request_restart` |
+| `crates/cdj3k-emu-storage/src/staging.rs` | `StagedFirmware`, `pending_install`, `pending_install_retry`, `apply_staged` |
 | `crates/cdj3k-emu-storage/src/emmc.rs` | Provisioning, partition layout, U-Boot env |
 | `crates/cdj3k-emu-storage/src/gpt.rs` | Pure-Rust GPT writer (protective MBR + primary + backup) |
 | `crates/cdj3k-emu-storage/src/settings/kv.rs` | the `key=value` file layer, `SLOT_KEYS` / `APP_KEYS`, `prune_app_file` |

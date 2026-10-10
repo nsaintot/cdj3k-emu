@@ -366,6 +366,19 @@ fn main() {
     );
     cdj3k_emu_platform::desktop::set_app_name(&app_name);
 
+    // Only the process that holds the slot's claim listens on the slot's
+    // window socket.
+    let window_socket = |instance: u32, ctx: &egui::Context| {
+        SLOT_CLAIM.get()?;
+        let ctx = ctx.clone();
+        cdj3k_emu_platform::window_socket::WindowSocket::bind(instance, move || {
+            ctx.request_repaint()
+        })
+        .inspect_err(|e| {
+            eprintln!("cdj3k-emu: slot {instance}: opening the window socket failed: {e}")
+        })
+        .ok()
+    };
     let mut host = Some(host);
     eframe::run_native(
         &app_name,
@@ -381,6 +394,7 @@ fn main() {
                     profile,
                     initial_model,
                     host: Box::new(host.take().expect("app created once")),
+                    window_socket: window_socket(instance, &cc.egui_ctx),
                 },
             )))
         }),

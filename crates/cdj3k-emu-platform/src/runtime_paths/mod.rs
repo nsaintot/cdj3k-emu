@@ -6,6 +6,7 @@
 //! ```text
 //! <root>/instance-{id}/
 //!   {cfg,ctrl,usb-link,midi-driver}.sock   per-stream UNIX sockets
+//!   window.sock                            commands from other windows
 //!   main.shm  jog.shm                      guest framebuffer + jog LCD
 //!   ram.shm                                guest RAM, hosts without /dev/shm
 //!   usb.placeholder                        always-present USB slot backing
@@ -58,6 +59,12 @@ pub fn runtime_base_dir() -> PathBuf {
 /// `<root>/instance-{id}` — per-instance socket + state directory.
 pub fn instance_dir(id: u32) -> PathBuf {
     runtime_base_dir().join(format!("instance-{id}"))
+}
+
+/// Return `<root>/instance-{id}/window.sock`, where the window that holds slot
+/// `id` listens for commands from other windows ([`crate::window_socket`]).
+pub fn window_sock_path(id: u32) -> PathBuf {
+    instance_dir(id).join("window.sock")
 }
 
 /// Ensure the runtime root exists and carries whatever isolation this host

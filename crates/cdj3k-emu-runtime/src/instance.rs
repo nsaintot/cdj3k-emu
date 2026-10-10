@@ -380,6 +380,8 @@ pub fn cleanup_qemu_files(sock_dir: &Path) {
 ///   Windows links' elevated scripts and hand-over files.
 /// * `midi-driver.sock` is bound by `MidiDriverLink` for as long as PC Link
 ///   is on, and the CoreMIDI plugin dials it by name.
+/// * `window.sock` is bound by `WindowSocket` for as long as the window is
+///   open, and other windows send it commands.
 ///
 /// A new bridge back end names its files here.
 fn app_owned(name: &str) -> bool {
@@ -389,6 +391,7 @@ fn app_owned(name: &str) -> bool {
         || name.starts_with("linuxnet.")
         || name.starts_with("winnet.")
         || name == "midi-driver.sock"
+        || name == "window.sock"
 }
 
 /// Restart-time cleanup: empties the sock dir but keeps the directory, which
@@ -451,6 +454,7 @@ mod cleanup_tests {
                 "linuxnet.sh",
                 "linuxnet.ready",
                 "midi-driver.sock",
+                "window.sock",
                 "ctrl.sock",
             ] {
                 std::fs::write(dir.join(f), "").unwrap();
@@ -470,6 +474,7 @@ mod cleanup_tests {
         assert!(dir.join("linuxnet.sh").exists());
         assert!(dir.join("linuxnet.ready").exists());
         assert!(dir.join("midi-driver.sock").exists());
+        assert!(dir.join("window.sock").exists());
         assert!(!dir.join("ctrl.sock").exists(), "QEMU-owned files still go");
         assert!(dir.exists(), "restart keeps the dir");
 
