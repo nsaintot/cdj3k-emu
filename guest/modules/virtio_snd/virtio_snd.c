@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * virtio_snd.c - Minimal virtio-sound PCM playback driver, Linux 6.6 / AArch64.
+ * virtio_snd.c - a minimal virtio-sound PCM playback driver for Linux 6.6 on
+ * AArch64.
  *
- * ALSA timing: hrtimer fires every qemu_factor ALSA periods (one QEMU TX
- * buf, ~94 Hz at 96 kHz), advancing hw_ptr and waking the EP122/JUCE
- * application at the TX submission rate rather than the ALSA period rate.
+ * ALSA timing: the hrtimer fires once per ALSA period. Its tasklet advances
+ * hw_ptr and calls snd_pcm_period_elapsed, which wakes the EP122 JUCE thread.
  *
- * Audio forwarding: each hrtimer tick copies qemu_factor ALSA periods
- * from the ring buffer (at OLD hw_ptr positions) into one TX buffer and
- * submits it to QEMU.  hw_ptr is only advanced for periods that are actually
- * copied - if the TX pool is exhausted the driver stalls hw_ptr so EP122
- * receives honest back-pressure instead of silent data corruption.
+ * Audio forwarding: the tasklet copies each period from the ring buffer, at
+ * the hw_ptr position before the advance, into the current TX buffer, and
+ * submits the buffer to QEMU once it holds qemu_factor periods (about 94 Hz
+ * at 96 kHz). hw_ptr advances only for copied periods. When the TX pool is
+ * empty, hw_ptr stalls, so EP122 sees back-pressure; only the Phase 2
+ * fallback below advances it without copying.
  *
  * Buffer sizing: periods_min=2 lets EP122 negotiate its preferred buffer.
- * The TX submission count is capped at buffer_size/period_size - 1 so
- * hw_ptr never fully laps appl_ptr within one tasklet run.
+ * One tasklet run processes at most buffer_size/period_size - 1 periods, so
+ * hw_ptr never laps appl_ptr.
  */
 
 #include <linux/module.h>
@@ -49,70 +50,63 @@
 #define VIRTIO_SND_R_PCM_STOP           0x0105
 #define VIRTIO_SND_S_OK                 0x8000
 
-/* PCM format codes - from virtio_snd.h enum virtio_snd_pcm_fmt */
+/* PCM format codes from enum virtio_snd_pcm_fmt in virtio_snd.h. */
 #define VSND_FMT_S16    5   /* VIRTIO_SND_PCM_FMT_S16  (0=IMA_ADPCM,1=MU_LAW,2=A_LAW,3=S8,4=U8,5=S16) */
 #define VSND_FMT_S32    17  /* VIRTIO_SND_PCM_FMT_S32  (...,17=S32) */
 
-/* PCM rate codes - from virtio_snd.h enum virtio_snd_pcm_rate */
+/* PCM rate codes from enum virtio_snd_pcm_rate in virtio_snd.h. */
 #define VSND_RATE_44100 6   /* VIRTIO_SND_PCM_RATE_44100 (0=5512,1=8000,...,5=32000,6=44100) */
 #define VSND_RATE_48000 7   /* VIRTIO_SND_PCM_RATE_48000 */
 #define VSND_RATE_96000 10  /* VIRTIO_SND_PCM_RATE_96000 (8=64000,9=88200,10=96000) */
 
-/* Cap reported latency. Beyond this, the pipeline is in a degraded state
- * (post-preemption backlog) and the raw value would feed runaway in the
- * slave-mode shim (shift grows → audible plays sooner → more bufs in flight
- * → shift grows further). Saturating breaks the loop. */
+/* The cap on the reported latency. Above it the pipeline holds a backlog
+ * after a preemption, and the raw value would start a feedback loop in the
+ * slave-mode shim: a larger shift makes the audio play sooner, which puts
+ * more buffers in flight, which grows the shift further. Capping the value
+ * breaks the loop. */
 #define AUDIO_LATENCY_MS_MAX 200u
 
 /*
- * VSND_QEMU_FACTOR - ALSA periods per QEMU TX buf at the default 64-frame
- * period: 1024 frames, 10.67 ms at 96 kHz, which matches the latency at which
- * the host returns a buf, so the pool does not run dry between submissions.
+ * VSND_QEMU_FACTOR is the number of ALSA periods in one QEMU TX buffer at the
+ * default 64-frame period. That gives 1024 frames (10.67 ms at 96 kHz), which
+ * matches the time the host takes to return a buffer, so the pool does not
+ * run dry between submissions.
  */
 #define VSND_QEMU_FACTOR    16
 
-/* One QEMU TX buf holds this many frames whatever the ALSA period: the
+/* One QEMU TX buffer holds this many frames whatever the ALSA period. The
  * per-stream factor (qemu_factor) is VSND_QEMU_FRAMES / period_size, so a
- * larger period means fewer periods per buf, not a larger buf. Every
- * threshold below counted in periods scales by the same factor and keeps its
- * duration. At the default 64-frame period the factor is VSND_QEMU_FACTOR. */
+ * larger period means fewer periods per buffer and the same buffer size.
+ * Every threshold below that counts periods scales by the same factor and
+ * keeps its duration. At the default 64-frame period the factor is
+ * VSND_QEMU_FACTOR. */
 #define VSND_QEMU_FRAMES    (64 * VSND_QEMU_FACTOR)
 
-/* ALSA period, in frames of S32 stereo. 64 is JUCE/EP122's own cadence; a
- * host that cannot wake the guest that often (TCG) passes a larger one on the
- * kernel command line (cdj3k.snd_period=N, read by insmod-virtio-snd). A
- * power of two from 64 to VSND_QEMU_FRAMES. */
+/* The ALSA period in S32 stereo frames. The default of 64 matches the EP122
+ * JUCE callback cadence. A host that cannot wake the guest that often, such
+ * as TCG, passes a larger value on the kernel command line
+ * (cdj3k.snd_period=N, read by insmod-virtio-snd). The value must be a power
+ * of two from 64 to VSND_QEMU_FRAMES. */
 static unsigned int period_frames = 64;
 
-/* Pool of QEMU TX buffers.  Each holds VSND_QEMU_FRAMES frames (10.67 ms
+/* The pool of QEMU TX buffers. Each holds VSND_QEMU_FRAMES frames (10.67 ms
  * at 96 kHz).
  *
- * With the host-side deferred-return mechanism (return_tx_buffer is held
- * back until CoreAudio's IOProc has actually consumed the bytes), the
- * round-trip becomes "submit → playback complete → ack" ≈ 30-40 ms - much
- * longer than buf duration. Pool size must cover that round-trip plus
- * headroom, otherwise we get pool-empty Phase-1 cycles that show up as
- * latency jitter on Pro DJ Link.
- *
- * 4 bufs × 10.67 ms = ~43 ms max guest-side in-flight, comfortably above
- * the ~30 ms round-trip. Combined with a 32 KiB host ring, end-to-end is
- * ~85 ms but steady - JUCE reports it honestly via snd_pcm_status_get_delay
- * (since hw_ptr advances at deferred-return time) and the network sync to
- * the other CDJ tracks our true playback position.
- *
-/* With deferred TX-buffer return on the QEMU side, each submitted buf stays
- * in flight until CoreAudio actually consumes its frames (~50–100ms for
- * HAL + static device latency + bypass ring, depending on warmup). At
- * 1024 frames per buf @ 96kHz = 10.7ms each, steady state holds 5–10
- * bufs. 32 gives margin for macOS scheduler preemption events (the QEMU
- * main loop can be paused for up to ~25ms; during that window the guest
- * keeps submitting at its own clock, drain timer can't run). */
+ * QEMU returns a TX buffer only after the host audio callback has consumed
+ * its frames, so each buffer stays in flight for about 50-100 ms (HAL and
+ * static device latency plus the bypass ring, depending on warm-up). That
+ * keeps 5-10 buffers in flight in steady state. A pool of 32 leaves margin
+ * for macOS scheduler preemption: the QEMU main loop can pause for up to
+ * about 25 ms, and during that time the guest keeps submitting on its own
+ * clock while the drain timer cannot run. A pool that does not cover the
+ * round trip causes pool-empty Phase 1 cycles, which show as latency jitter
+ * on Pro DJ Link. */
 #define VSND_TX_BUFS        32
 
-/* Verbose periodic stats line in the TX path. Off by default; flip at runtime
- * with `echo 1 > /sys/module/virtio_snd/parameters/verbose_stats` when
- * debugging audio glitches.  Declared up here so vsnd_tx_submit can read it
- * (the matching module_param() goes at the bottom of the file with the rest). */
+/* A periodic stats line in the TX path, off by default. Turn it on at run time
+ * with `echo 1 > /sys/module/virtio_snd/parameters/verbose_stats`. It is
+ * declared here so vsnd_tx_submit can read it; its module_param() is at the
+ * end of the file with the others. */
 static unsigned int verbose_stats;
 
 /* ------------------------------------------------------------------ */
@@ -123,16 +117,16 @@ struct virtio_snd_config {
 	__le32 jacks;
 	__le32 streams;
 	__le32 chmaps;
-	/* QEMU's struct virtio_snd_config has this 4th field (VIRTIO_SND_F_CTLS,
-	 * v1.2 spec). MUST be present here for offset alignment - without it,
-	 * the next field would land at offset 12 instead of 16, and we'd read
-	 * QEMU's controls value (0) instead of pipeline_extra_frames. */
+	/* QEMU's struct virtio_snd_config has this fourth field
+	 * (VIRTIO_SND_F_CTLS, spec v1.2). It keeps pipeline_extra_frames at
+	 * offset 16; without it the driver would read the controls value (0)
+	 * at offset 12. */
 	__le32 controls;
-	/* Extension carried by our QEMU overlay (config space size +4 bytes):
-	 * depth in frames of the host audio pipeline downstream of the virtio
-	 * queue (CoreAudio bypass ring + DAC). The standard upstream virtio
-	 * spec doesn't have this; populated only when running against our
-	 * patched QEMU. Reads as 0 against vanilla QEMU. */
+	/* An extension that the project's QEMU patches add to the config space
+	 * (4 more bytes). It holds the depth in frames of the host audio
+	 * pipeline after the virtio queue: the CoreAudio bypass ring and the
+	 * DAC. It is not in the virtio spec and reads as 0 on an unpatched
+	 * QEMU. */
 	__le32 pipeline_extra_frames;
 } __packed;
 
@@ -166,26 +160,27 @@ struct vsnd_tx_buf {
 	void                        *data;     /* qemu_period_bytes of PCM */
 	struct virtio_snd_pcm_status status;
 	struct scatterlist           sg[3];
-	bool                         in_flight; /* submitted to QEMU, not yet returned */
+	bool                         in_flight; /* submitted to QEMU and not yet returned */
 };
 
 struct vsnd_dev;
 
-/* Set in vsnd_probe, cleared in vsnd_remove. Used by the audio_latency_ms
- * sysfs getter to reach the running stream's frames_in_flight + rate. */
+/* Set in vsnd_probe and cleared in vsnd_remove. The audio_latency_ms getter
+ * uses it to read the running stream's frames_in_flight and rate. */
 static struct vsnd_dev *g_vsnd_dev;
 
 struct vsnd_pcm {
 	struct vsnd_dev          *vsnd;
 	struct snd_pcm_substream *substream;
 
-	/* TX buffer free pool (circular).  Accessed from hardirq + tasklet. */
+	/* The circular pool of free TX buffers. The hardirq handler and the
+	 * tasklet both access it. */
 	struct vsnd_tx_buf  bufs[VSND_TX_BUFS];
 	struct vsnd_tx_buf *pool[VSND_TX_BUFS + 1];
 	int                 pool_head;
 	int                 pool_tail;
 
-	/* Accumulation: qemu_factor ALSA periods → one QEMU TX buf */
+	/* qemu_factor ALSA periods are accumulated into one QEMU TX buffer. */
 	struct vsnd_tx_buf *accum_buf;   /* TX buf currently being filled */
 	unsigned int        accum_count; /* ALSA periods written into accum_buf */
 
@@ -194,39 +189,41 @@ struct vsnd_pcm {
 	snd_pcm_uframes_t   period_size;
 	snd_pcm_uframes_t   buffer_size;
 	unsigned int        rate;             /* current PCM rate (Hz), set in hw_params */
-	long                frames_in_flight; /* submitted - returned; reflects guest pipeline depth */
-	u32                 host_extra_frames;/* cached pipeline_extra_frames from QEMU config; refreshed in tasklet */
+	long                frames_in_flight; /* frames submitted minus frames returned: the guest pipeline depth */
+	u32                 host_extra_frames;/* pipeline_extra_frames cached from the QEMU config, refreshed after each TX submission */
 	unsigned int        period_bytes;     /* bytes per ALSA period */
-	unsigned int        qemu_period_bytes;/* bytes per QEMU TX buffer = qemu_factor × period_bytes */
+	unsigned int        qemu_period_bytes;/* bytes per QEMU TX buffer: qemu_factor × period_bytes */
 	unsigned int        qemu_factor;      /* ALSA periods per QEMU TX buffer */
 	unsigned int        frame_bytes;
 
-	/* hrtimer drives hw_ptr and snd_pcm_period_elapsed */
+	/* The hrtimer drives hw_ptr and snd_pcm_period_elapsed. */
 	struct hrtimer        timer;
 	ktime_t               period_time;
 	struct tasklet_struct tasklet;
 	atomic_t              pending_periods; /* overrun count from hrtimer_forward_now */
 	u32                   pool_stall_ticks; /* consecutive tasklet runs with empty pool */
 	u32                   phase2_streak;   /* consecutive Phase-2 advances; reset on pool recovery */
-	bool                  xrun_pending;    /* set under lock; checked after lock release in tasklet */
+	bool                  xrun_pending;    /* set under the lock; the tasklet reads it after releasing the lock */
 	u64                   dbg_xrun_signals;/* total snd_pcm_stop_xrun calls issued */
 
-	/* Pipeline-depth watchdog: when frames_in_flight stays high for
-	 * sustained time, force an xrun. Only mechanism that drains the
-	 * stream_q backlog (production pause during JUCE recovery lets
-	 * the queue empty). Cooldown limits clicks under chronic stress. */
-	unsigned long         watchdog_deep_start; /* jiffies when deep state entered, 0 = not in deep */
+	/* The pipeline-depth watchdog forces an xrun when frames_in_flight
+	 * stays high for a sustained time. It is the only way to drain the
+	 * stream_q backlog: JUCE pauses production while it recovers, which
+	 * lets the queue empty. A cooldown limits the clicks under chronic
+	 * stress. */
+	unsigned long         watchdog_deep_start; /* jiffies when the deep state began, or 0 outside it */
 	unsigned long         watchdog_last_fired; /* jiffies of last forced xrun */
 	u64                   dbg_watchdog_fires;  /* total forced xruns */
 
-	/* Diagnostics - written from tasklet/hrtimer, racy but ok for stats */
+	/* Diagnostics. The tasklet and the hrtimer write these without the
+	 * lock; the races are acceptable for statistics. */
 	ktime_t  dbg_last_tx_time;      /* ktime of last vsnd_tx_submit call */
 	u64      dbg_tx_count;          /* total TX buffers submitted */
 	u64      dbg_pool_drop;         /* total periods dropped due to pool-empty */
 	u32      dbg_max_overrun;       /* all-time largest hrtimer overrun */
 	u32      dbg_max_tx_gap_us;     /* all-time largest TX gap (µs) */
 	u64      dbg_phase2_drop;       /* total Phase-2 silent hw_ptr advances (audible pops) */
-	/* Per-interval (reset on each 300-TX log print) */
+	/* Per-interval counters, reset by each stats line (every 300 TX buffers). */
 	u64      dbg_interval_drop;     /* pool_drops since last log */
 	u64      dbg_interval_phase2;   /* Phase-2 drops since last log */
 	u32      dbg_interval_overrun;  /* max overrun since last log */
@@ -251,7 +248,7 @@ struct vsnd_dev {
 };
 
 /* ------------------------------------------------------------------ */
-/* Pool helpers (lock must be held by caller)                         */
+/* Pool helpers (the caller holds the lock)                           */
 /* ------------------------------------------------------------------ */
 
 static bool vsnd_pool_empty(struct vsnd_pcm *v)
@@ -292,10 +289,9 @@ static int vsnd_ctl_cmd(struct vsnd_dev *vsnd, void *req, size_t rlen)
 	int err;
 
 	/*
-	 * virtqueue_add_sgs maps req via the DMA API. Stack memory is in
-	 * the kernel linear map but some DMA paths (SWIOTLB, non-coherent
-	 * mappings) require kmalloc-zone memory. Copy req to a fresh heap
-	 * buffer so the DMA mapping always operates on a safe physical page.
+	 * virtqueue_add_sgs maps req through the DMA API. Stack memory is in
+	 * the kernel linear map, but some DMA paths (SWIOTLB, non-coherent
+	 * mappings) need kmalloc memory, so copy req to a new heap buffer.
 	 */
 	buf = kmemdup(req, rlen, GFP_KERNEL);
 	if (!buf)
@@ -336,7 +332,7 @@ static void vsnd_evt_done(struct virtqueue *vq) { }
 static void vsnd_rx_done(struct virtqueue *vq)  { }
 
 /* ------------------------------------------------------------------ */
-/* TX queue - submit accumulated buffer to QEMU                       */
+/* TX queue: submit an accumulated buffer to QEMU                     */
 /* ------------------------------------------------------------------ */
 
 static void vsnd_tx_submit(struct vsnd_pcm *vpcm, struct vsnd_tx_buf *tb)
@@ -353,14 +349,14 @@ static void vsnd_tx_submit(struct vsnd_pcm *vpcm, struct vsnd_tx_buf *tb)
 			  tb, GFP_ATOMIC);
 	virtqueue_kick(vpcm->vsnd->vqs[VSND_VQ_TX]);
 
-	/* Track host pipeline depth: this many frames are now in flight
-	 * downstream (QEMU bypass ring + CoreAudio + USB + DAC).
-	 * vsnd_tx_done decrements when the buffer returns. */
+	/* Count the buffer's frames as in flight downstream (the QEMU bypass
+	 * ring, CoreAudio, USB and the DAC). vsnd_tx_done subtracts them when
+	 * the buffer returns. */
 	if (vpcm->frame_bytes)
 		vpcm->frames_in_flight +=
 			(long)vpcm->qemu_period_bytes / vpcm->frame_bytes;
 
-	/* Diagnostics: track TX cadence */
+	/* Diagnostics: track the TX cadence. */
 	{
 		ktime_t now = ktime_get();
 		if (vpcm->dbg_tx_count > 0) {
@@ -373,11 +369,12 @@ static void vsnd_tx_submit(struct vsnd_pcm *vpcm, struct vsnd_tx_buf *tb)
 		vpcm->dbg_last_tx_time = now;
 		vpcm->dbg_tx_count++;
 		if (verbose_stats && vpcm->dbg_tx_count % 300 == 0) {
-			/* lat = guest pipeline (frames_in_flight) + host pipeline
-			 * (HAL + static device latency cached from QEMU). Same value
-			 * as audio_latency_ms sysfs but uncapped. inflight_n is the
-			 * actual TX-buf-in-flight count (sanity-check vs frames_in_flight).
-			 * wdog is the count of watchdog-triggered xrun recoveries. */
+			/* lat is the guest pipeline depth (frames_in_flight) plus the
+			 * host pipeline depth (HAL and static device latency, cached
+			 * from QEMU). It is the audio_latency_ms value without the cap.
+			 * inflight_n counts the TX buffers in flight, as a check on
+			 * frames_in_flight. wdog counts the xrun recoveries that the
+			 * watchdog triggered. */
 			unsigned int rate = vpcm->rate ? vpcm->rate : 1;
 			long inflight = vpcm->frames_in_flight;
 			unsigned int inflight_ms = inflight > 0
@@ -398,7 +395,6 @@ static void vsnd_tx_submit(struct vsnd_pcm *vpcm, struct vsnd_tx_buf *tb)
 				vpcm->dbg_max_tx_gap_us, vpcm->dbg_interval_gap_us,
 				inflight_ms, host_ms, inflight_ms + host_ms,
 				in_flight_count, VSND_TX_BUFS);
-			/* Reset per-interval counters */
 			vpcm->dbg_interval_drop    = 0;
 			vpcm->dbg_interval_phase2  = 0;
 			vpcm->dbg_interval_overrun = 0;
@@ -408,8 +404,8 @@ static void vsnd_tx_submit(struct vsnd_pcm *vpcm, struct vsnd_tx_buf *tb)
 }
 
 /*
- * TX completion: QEMU is done with the buffer - return it to the free pool.
- * Does NOT touch hw_ptr; hrtimer owns ALSA timing.
+ * Return each TX buffer that QEMU has finished with to the free pool. This
+ * does not touch hw_ptr; the hrtimer owns ALSA timing.
  */
 static void vsnd_tx_done(struct virtqueue *vq)
 {
@@ -431,7 +427,7 @@ static void vsnd_tx_done(struct virtqueue *vq)
 }
 
 /* ------------------------------------------------------------------ */
-/* hrtimer + tasklet - ALSA timing and audio accumulation             */
+/* hrtimer and tasklet: ALSA timing and audio accumulation           */
 /* ------------------------------------------------------------------ */
 
 static void vsnd_tasklet_fn(struct tasklet_struct *t)
@@ -443,11 +439,11 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 	int count, i;
 
 	/*
-	 * Consume pending periods accumulated by the hrtimer.
-	 * Cap at buffer_size/period_size - 1 so we never advance past appl_ptr.
-	 * If the TX pool is empty mid-loop we break early and put the unprocessed
-	 * remainder back so the next tasklet/hrtimer fire can retry - prevents
-	 * silent period loss that caused xruns during track loading.
+	 * Consume the periods that the hrtimer accumulated, capped at
+	 * buffer_size/period_size - 1 so hw_ptr never passes appl_ptr. If the
+	 * TX pool empties mid-loop, put the remainder back for the next tasklet
+	 * run; dropping it would lose periods and cause xruns during track
+	 * loading.
 	 */
 	count = atomic_xchg(&vpcm->pending_periods, 0);
 	if (count <= 0)
@@ -463,10 +459,10 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 
 	r = vpcm->substream->runtime;
 
-	/* Clamp: never process more periods than the ring can hold minus one guard.
-	 * Excess is restored to pending_periods now (before the loop) so the next
-	 * hrtimer tick picks it up; otherwise the discarded excess accumulates
-	 * into a slow clock drift that turns into a JUCE spin after 1–2 minutes. */
+	/* Never process more periods than the ring holds, minus one. The excess
+	 * goes back to pending_periods before the loop, so the next hrtimer tick
+	 * picks it up; discarding it would accumulate into a slow clock drift
+	 * that becomes a JUCE spin after 1-2 minutes. */
 	{
 		int cap = (int)(vpcm->buffer_size / vpcm->period_size) - 1;
 		if (count > cap) {
@@ -476,18 +472,14 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 	}
 
 	for (i = 0; i < count; i++) {
-		/* Grab an accumulation buffer when starting a new TX batch.
-		 * If the pool is empty (all 8 bufs in flight - should be rare with
-		 * 85ms headroom), advance hw_ptr anyway to keep EP122's clock ticking
-		 * and let JUCE continue - the dropped period causes a brief audio
-		 * glitch but prevents the JUCE spin-loop that results from a stalled
-		 * clock. */
+		/* Take a free TX buffer when a new batch starts. When the pool is
+		 * empty, the code below first collects returned buffers, then waits
+		 * (Phase 1) or drops the period (Phase 2). */
 		if (vpcm->accum_buf == NULL) {
 			if (vsnd_pool_empty(vpcm)) {
-				/* Inline drain: QEMU may have marked TX bufs done in
-				 * the used ring but the interrupt hasn't fired yet.
-				 * Draining here avoids a stall when QEMU is slightly
-				 * behind flushing its virtqueue callbacks. */
+				/* QEMU may have marked TX buffers as used before the
+				 * interrupt fired. Collecting them here avoids a stall
+				 * when the virtqueue callbacks lag slightly. */
 				struct vsnd_tx_buf *rtb;
 				unsigned int rlen;
 				while ((rtb = virtqueue_get_buf(
@@ -503,77 +495,72 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 			}
 			if (vsnd_pool_empty(vpcm)) {
 				/*
-				 * Hybrid pool-empty strategy:
+				 * The pool is empty.
 				 *
-				 * Phase 1 - retry (no drift): break without advancing
-				 * hw_ptr for up to qemu_factor*2 consecutive
-				 * tasklet runs (~2 × TX period).  Releasing the lock
-				 * lets vsnd_tx_done refill the pool.  In normal
-				 * operation QEMU returns a buf within ~5 ms - zero
-				 * clock drift, zero cdj3k cascade.
+				 * Phase 1 (retry, no drift): return without advancing
+				 * hw_ptr for up to qemu_factor*2 consecutive tasklet
+				 * runs (about two TX periods). Releasing the lock lets
+				 * vsnd_tx_done refill the pool. In normal operation
+				 * QEMU returns a buffer within about 5 ms, so the retry
+				 * adds no clock drift.
 				 *
-				 * Phase 1 extended - in-flight bufs present: if the
-				 * short Phase-1 window expires but QEMU still holds
-				 * our TX buffers (in_flight > 0), QEMU is consuming
-				 * audio normally and will return the bufs shortly.
-				 * Stay in Phase 1 indefinitely - Phase 2 here would
-				 * cause spurious pops during legitimate recovery after
-				 * a long EP122 thread stall (e.g. 19.9 s freeze).
+				 * Extended Phase 1: if the short window has expired but
+				 * QEMU still holds TX buffers, QEMU is consuming audio
+				 * and will return them soon. Stay in Phase 1 until
+				 * VSND_PHASE1_HARDCAP; entering Phase 2 here would
+				 * cause pops while the stream recovers from a long
+				 * EP122 thread stall.
 				 *
-				 * Phase 2 - drop (no deadlock): only when the pool is
-				 * empty AND no bufs are in flight.  This means QEMU's
-				 * virtio transport is truly broken or QEMU crashed.
-				 * Advance hw_ptr to keep EP122's writei from blocking
-				 * indefinitely (blocking → guest CPU idle → macOS
-				 * deprioritises QEMU vCPU → QEMU never returns bufs
-				 * → permanent deadlock).
+				 * Phase 2 (drop, no deadlock): when no buffer is in
+				 * flight, or the hard cap has passed, the QEMU transport
+				 * is broken or too slow. Advance hw_ptr so EP122's writei
+				 * does not block indefinitely: a blocked writei leaves
+				 * the guest CPU idle, macOS then deprioritises the QEMU
+				 * vCPU, QEMU never returns the buffers, and the stream
+				 * deadlocks.
 				 */
 				vpcm->pool_stall_ticks++;
 				vpcm->dbg_pool_drop++;
 				vpcm->dbg_interval_drop++;
 				if (vpcm->pool_stall_ticks < vpcm->qemu_factor * 2) {
-					break; /* Phase 1: short retry */
+					break; /* Phase 1: short retry. */
 				}
-				/* Phase 2 gate: only fire if no bufs are in flight,
-				 * OR we've been stalled long enough (>VSND_PHASE1_HARDCAP
-				 * tasklet runs ≈ 340 ms wall-clock at normal hrtimer rate)
-				 * that "QEMU will return a buf shortly" is no longer a
-				 * reasonable assumption.  Without the hard cap, sustained
-				 * CoreAudio drain slowness leaves all 32 bufs in_flight,
-				 * Phase-1 extended runs forever, hw_ptr never advances,
-				 * JUCE writei blocks, wall-clock keeps moving → JUCE logs
-				 * "snd over delta" and enters the recovery spin observed
-				 * with stall counter rising at ~1000/s.
-				 * Scan is O(VSND_TX_BUFS) but only runs on pool-empty
-				 * paths which are rare in normal operation. */
-#define VSND_PHASE1_HARDCAP  (vpcm->qemu_factor * 32)  /* ~340 ms */
+				/* Enter Phase 2 only when no buffer is in flight, or when
+				 * the stall has lasted more than VSND_PHASE1_HARDCAP
+				 * tasklet runs (about 340 ms at the normal hrtimer rate),
+				 * after which QEMU is no longer expected to return a
+				 * buffer soon. Without the cap, a slow CoreAudio drain
+				 * keeps all 32 buffers in flight, so Phase 1 never ends
+				 * and hw_ptr stops. JUCE's writei then blocks while
+				 * wall-clock time advances, and JUCE logs "snd over
+				 * delta" and enters its recovery spin. The scan is
+				 * O(VSND_TX_BUFS) and runs only on the pool-empty
+				 * path. */
+#define VSND_PHASE1_HARDCAP  (vpcm->qemu_factor * 32)  /* about 340 ms */
 				if (vpcm->pool_stall_ticks < VSND_PHASE1_HARDCAP) {
 					int j, in_flight = 0;
 					for (j = 0; j < VSND_TX_BUFS; j++)
 						if (vpcm->bufs[j].in_flight)
 							in_flight++;
 					if (in_flight > 0)
-						break; /* Phase 1 extended: wait for QEMU */
+						break; /* Extended Phase 1: wait for QEMU. */
 				}
-				/* Phase 2 fallback - QEMU transport too slow or broken.
-				 * Do NOT reset pool_stall_ticks here: once we've decided
-				 * to give up on QEMU we want to keep advancing hw_ptr at
-				 * real-time pace (one period per hrtimer tick) until the
-				 * pool actually refills.  Resetting would cause Phase-1
-				 * to ramp back up to the hard cap before each Phase-2,
-				 * yielding ~3 pops/s and a ~94 Hz effective sample rate
-				 * during sustained stalls - audibly broken.  The counter
-				 * is reset at line ~448 once vsnd_pool_pop succeeds.
+				/* Phase 2: the QEMU transport is too slow or broken. Do
+				 * not reset pool_stall_ticks here, so hw_ptr keeps
+				 * advancing at one period per hrtimer tick until the pool
+				 * refills. Resetting it would make Phase 1 climb back to
+				 * the hard cap before every Phase 2 step, which gives
+				 * about 3 pops per second and an effective sample rate of
+				 * about 94 Hz during a sustained stall. The counter is
+				 * reset once the pool depth reaches VSND_POOL_HEALTHY.
 				 *
-				 * Track consecutive Phase-2 advances; if we cross
-				 * VSND_XRUN_THRESHOLD periods of dropped audio, arm an
-				 * explicit ALSA xrun signal.  JUCE's xrun-recovery path
-				 * (snd_pcm_recover) resets appl_ptr and hw_ptr in lockstep
-				 * - much cleaner than letting JUCE detect the drift via
-				 * snd-over-delta cascades, which empirically lock the
-				 * EP122 HuiProcessor thread into a userspace tight loop
-				 * that the kernel can't escape. */
-#define VSND_XRUN_THRESHOLD  (vpcm->qemu_factor * 4)  /* ≈ 42 ms */
+				 * After VSND_XRUN_THRESHOLD consecutive Phase 2 periods,
+				 * signal an explicit ALSA xrun. JUCE's xrun recovery
+				 * (snd_pcm_recover) resets appl_ptr and hw_ptr together.
+				 * If JUCE detects the drift through snd-over-delta
+				 * cascades instead, the EP122 HuiProcessor thread locks
+				 * in a user-space busy loop. */
+#define VSND_XRUN_THRESHOLD  (vpcm->qemu_factor * 4)  /* about 42 ms */
 				vpcm->dbg_phase2_drop++;
 				vpcm->dbg_interval_phase2++;
 				vpcm->hw_ptr = (vpcm->hw_ptr + vpcm->period_size) %
@@ -587,29 +574,27 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 				continue;
 			}
 			/*
-			 * Only reset stall_ticks when the pool has recovered to a
-			 * healthy depth (>= VSND_TX_BUFS/4 ≈ 85 ms headroom).
-			 * Resetting on every successful pop would hide chronic
-			 * near-empty oscillation: when QEMU's TX-return rate just
-			 * barely matches the guest submission rate, the pool cycles
-			 * between 0 and 1-2 bufs at ~1000 stalls/sec, but each pop
-			 * wipes the counter so the Phase-1 hardcap never fires and
-			 * Phase-2 never gets to drop audio to break the loop. By
-			 * gating the reset on a depth threshold, the counter
-			 * accumulates across the oscillation, the hardcap eventually
-			 * triggers, hw_ptr advances at real-time pace via Phase-2,
-			 * JUCE's writei unblocks, and the system escapes the spin in
-			 * ~340 ms instead of ~5 minutes (empirically observed).
+			 * Reset pool_stall_ticks only when the pool has recovered to
+			 * a healthy depth (VSND_TX_BUFS/4, about 85 ms of headroom).
+			 * A reset on every pop would hide a chronic near-empty
+			 * oscillation: when QEMU returns TX buffers just as fast as
+			 * the guest submits them, the pool cycles between 0 and 1-2
+			 * buffers at about 1000 stalls per second, and each pop would
+			 * clear the counter before the Phase 1 hard cap fires. With
+			 * the depth threshold, the counter accumulates, the hard cap
+			 * triggers, Phase 2 advances hw_ptr at real-time pace, JUCE's
+			 * writei unblocks, and the system leaves the spin in about
+			 * 340 ms instead of about 5 minutes.
 			 */
 #define VSND_POOL_HEALTHY  (VSND_TX_BUFS / 4)
 			if (vsnd_pool_depth(vpcm) >= VSND_POOL_HEALTHY) {
 				vpcm->pool_stall_ticks = 0;
-				vpcm->phase2_streak    = 0;  /* clear xrun streak - we're healthy again */
+				vpcm->phase2_streak    = 0;  /* The pool is healthy again. */
 			}
 			vpcm->accum_buf = vsnd_pool_pop(vpcm);
 		}
 
-		/* Safe to advance now: EP122 has data and we have a TX buffer. */
+		/* EP122 has data and a TX buffer is available, so advance. */
 		old_hw_ptr = vpcm->hw_ptr;
 		vpcm->hw_ptr = (old_hw_ptr + vpcm->period_size) % vpcm->buffer_size;
 
@@ -624,31 +609,32 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 			vsnd_tx_submit(vpcm, vpcm->accum_buf);
 			vpcm->accum_buf   = NULL;
 			vpcm->accum_count = 0;
-			/* Refresh cached host_extra_frames in process context.
-			 * One submit ≈ 10.7 ms - fast enough that the cache
-			 * tracks pipeline depth changes without lag. */
+			/* Refresh host_extra_frames in process context. A
+			 * submission happens every 10.7 ms, often enough for the
+			 * cache to follow changes in pipeline depth. */
 			schedule_work(&vpcm->refresh_lag_work);
 		}
 	}
 
 	{
-		/* Pipeline-depth watchdog. If frames_in_flight stays above
-		 * VSND_WATCHDOG_DEEP_FRAMES (≈100 ms) for VSND_WATCHDOG_DEEP_JIFFIES
-		 * sustained, and we haven't fired one in VSND_WATCHDOG_COOLDOWN,
-		 * arm an xrun. JUCE re-prepares; the production pause during
-		 * recovery lets QEMU's stream_q drain. Single audible click but
-		 * pipeline returns to baseline.
+		/* The pipeline-depth watchdog. If frames_in_flight stays above
+		 * VSND_WATCHDOG_DEEP_FRAMES (about 100 ms) for
+		 * VSND_WATCHDOG_DEEP_JIFFIES, and none fired within
+		 * VSND_WATCHDOG_COOLDOWN, signal an xrun. JUCE prepares the
+		 * stream again, and its pause in production lets the QEMU
+		 * stream_q drain. The xrun causes one audible click, and the
+		 * pipeline returns to its baseline depth.
 		 *
-		 * Tuning rationale:
-		 *  THRESHOLD: > steady-state max (~50 ms) but well below ceiling
-		 *    (~340 ms = TX_BUFS × period). Triggers when truly stuck.
-		 *  SUSTAIN: long enough that single preemption events (which
-		 *    typically self-recover within a few seconds via natural
-		 *    drain) don't trip it.
-		 *  COOLDOWN: caps clicks at ≤1/min even under chronic stress. */
-#define VSND_WATCHDOG_DEEP_FRAMES   (10 * 1024)        /* ~107 ms at 96 kHz */
-#define VSND_WATCHDOG_DEEP_JIFFIES  (8 * HZ)           /* 8 seconds */
-#define VSND_WATCHDOG_COOLDOWN      (60 * HZ)          /* 60 seconds */
+		 * VSND_WATCHDOG_DEEP_FRAMES is above the steady-state maximum
+		 * (about 50 ms) and well below the ceiling (about 340 ms,
+		 * VSND_TX_BUFS buffers), so it triggers only when the pipeline
+		 * is stuck. VSND_WATCHDOG_DEEP_JIFFIES is long enough that a
+		 * single preemption, which usually drains on its own within a
+		 * few seconds, does not trip it. VSND_WATCHDOG_COOLDOWN limits
+		 * the clicks to one per minute, even under chronic stress. */
+#define VSND_WATCHDOG_DEEP_FRAMES   (10 * 1024)        /* about 107 ms at 96 kHz */
+#define VSND_WATCHDOG_DEEP_JIFFIES  (8 * HZ)
+#define VSND_WATCHDOG_COOLDOWN      (60 * HZ)
 		if (vpcm->frames_in_flight > VSND_WATCHDOG_DEEP_FRAMES) {
 			if (vpcm->watchdog_deep_start == 0) {
 				vpcm->watchdog_deep_start = jiffies;
@@ -673,17 +659,17 @@ static void vsnd_tasklet_fn(struct tasklet_struct *t)
 		vpcm->xrun_pending = false;
 		spin_unlock_irqrestore(&vpcm->lock, flags);
 
-		/* Put back any periods we couldn't process (pool was empty mid-loop). */
+		/* Put back the periods that could not be processed because the
+		 * pool emptied mid-loop. */
 		if (i < count)
 			atomic_add(count - i, &vpcm->pending_periods);
 
 		/*
-		 * Signal an explicit ALSA xrun once we've crossed the Phase-2 burst
-		 * threshold.  Must be called outside vpcm->lock since
-		 * snd_pcm_stop_xrun acquires the substream's stream lock and may
-		 * call back into our trigger op.  Skip the period_elapsed below in
-		 * the same tasklet run - the xrun handler stops the stream and any
-		 * userspace wake on a stopped stream is wasted.
+		 * Signal an explicit ALSA xrun when one is pending. This must run
+		 * outside vpcm->lock, because snd_pcm_stop_xrun takes the
+		 * substream's stream lock and may call back into the trigger op.
+		 * The xrun stops the stream, so skip the period_elapsed call in the
+		 * same tasklet run.
 		 */
 		if (fire_xrun) {
 			snd_pcm_stop_xrun(vpcm->substream);
@@ -707,12 +693,12 @@ static enum hrtimer_restart vsnd_hrtimer_fn(struct hrtimer *t)
 	if ((u32)overrun > vpcm->dbg_interval_overrun)
 		vpcm->dbg_interval_overrun = (u32)overrun;
 	/*
-	 * Clamp a catch-up burst to half the pool (16 TX bufs, ~170 ms): a
-	 * single tasklet run absorbs a host stall of that length without drift,
-	 * and cannot drain the whole pool. Missed intervals beyond it are
-	 * dropped.
+	 * Clamp a catch-up burst to half the pool (16 TX buffers, about
+	 * 170 ms): a single tasklet run absorbs a host stall of that length
+	 * without drift and cannot drain the whole pool. Missed intervals
+	 * beyond it are dropped.
 	 */
-#define VSND_OVERRUN_CLAMP  (vpcm->qemu_factor * VSND_TX_BUFS / 2)  /* ≈ 170 ms */
+#define VSND_OVERRUN_CLAMP  (vpcm->qemu_factor * VSND_TX_BUFS / 2)  /* about 170 ms */
 	if (overrun > VSND_OVERRUN_CLAMP)
 		overrun = VSND_OVERRUN_CLAMP;
 	atomic_add((int)overrun, &vpcm->pending_periods);
@@ -721,7 +707,7 @@ static enum hrtimer_restart vsnd_hrtimer_fn(struct hrtimer *t)
 }
 
 /* ------------------------------------------------------------------ */
-/* Workqueue - START / STOP (process context, can sleep)              */
+/* Workqueue: START and STOP (process context, can sleep)             */
 /* ------------------------------------------------------------------ */
 
 static void vsnd_start_work(struct work_struct *w)
@@ -733,17 +719,17 @@ static void vsnd_start_work(struct work_struct *w)
 	};
 
 	/*
-	 * Tell QEMU to start consuming TX buffers.  The hrtimer is already
-	 * running (started in TRIGGER_START) so EP122 gets period callbacks
-	 * immediately - not after this blocking ctl command completes.
+	 * Tell QEMU to start consuming TX buffers. TRIGGER_START has already
+	 * started the hrtimer, so EP122 gets period callbacks at once instead
+	 * of after this blocking control command completes.
 	 */
 	vsnd_ctl_cmd(vpcm->vsnd, &hdr, sizeof(hdr));
 }
 
-/* Periodically refresh host_extra_frames (HAL + static device latency) from
- * QEMU's config space. Runs in process context - virtio_cread can't be
- * called from the tasklet/hrtimer (may sleep). Scheduled from the tasklet
- * every ~10 ms. */
+/* Refresh host_extra_frames (HAL and static device latency) from QEMU's
+ * config space. This runs in process context because virtio_cread may sleep
+ * and cannot run in the tasklet or the hrtimer. The tasklet schedules it
+ * after each TX submission, about every 10 ms. */
 static void vsnd_refresh_lag_work(struct work_struct *w)
 {
 	struct vsnd_pcm *vpcm = container_of(w, struct vsnd_pcm, refresh_lag_work);
@@ -765,23 +751,23 @@ static void vsnd_stop_work(struct work_struct *w)
 	unsigned long flags;
 
 	/*
-	 * Do NOT hrtimer_cancel/tasklet_kill here: if EP122 rapidly cycles
-	 * STOP→PREPARE→START (xrun recovery), TRIGGER_START has already
-	 * re-armed the hrtimer.  Cancelling it here would kill the fresh
-	 * timer and cause a multi-second gap before the next period callback.
-	 * The hrtimer self-stops on the next fire when running==false; it
-	 * restarts when TRIGGER_START sets running=true.
+	 * Do not cancel the hrtimer or kill the tasklet here. During xrun
+	 * recovery EP122 runs STOP, PREPARE and START in quick succession, and
+	 * TRIGGER_START has already re-armed the hrtimer; cancelling it would
+	 * delay the next period callback by several seconds. The hrtimer stops
+	 * itself on the next fire when running is false, and TRIGGER_START
+	 * restarts it.
 	 */
 
 	vsnd_ctl_cmd(vpcm->vsnd, &hdr, sizeof(hdr));
 
-	/* Drain any QEMU-returned TX bufs back to the pool */
+	/* Return the TX buffers that QEMU has finished with to the pool. */
 	spin_lock_irqsave(&vpcm->lock, flags);
 	while ((tb = virtqueue_get_buf(vpcm->vsnd->vqs[VSND_VQ_TX], &len))) {
 		tb->in_flight = false;
 		vsnd_pool_push(vpcm, tb);
 	}
-	/* Return the partially-filled accumulation buffer */
+	/* Return the partly filled accumulation buffer. */
 	if (vpcm->accum_buf) {
 		vpcm->accum_buf->in_flight = false;
 		vsnd_pool_push(vpcm, vpcm->accum_buf);
@@ -807,10 +793,11 @@ static const struct snd_pcm_hardware vsnd_hw = {
 	.channels_min  = 2,
 	.channels_max  = 2,
 	.buffer_bytes_max = 262144,
-	/* Period locked at 64 frames (= 512 bytes S32 stereo, 8 bytes/frame):
-	 * matches JUCE/EP122's preferred audio-callback cadence (0.67ms wake
-	 * interval) and keeps qemu_period_bytes (= 512 × FACTOR = 8 KiB) at
-	 * 1/4 of the 32 KiB host bypass ring - comfortable backpressure. */
+	/* The default period is 64 frames (512 bytes of S32 stereo);
+	 * vsnd_pcm_open replaces it with period_frames. 64 frames matches the
+	 * EP122 JUCE callback cadence (one wake every 0.67 ms) and makes a
+	 * QEMU TX buffer 8 KiB, a quarter of the 32 KiB host bypass ring,
+	 * which leaves room for back-pressure. */
 	.period_bytes_min = 64 * 8,
 	.period_bytes_max = 64 * 8,
 	.periods_min   = 2,
@@ -872,16 +859,14 @@ static int vsnd_pcm_hw_params(struct snd_pcm_substream *sub,
 	                                 VSND_QEMU_FRAMES / vpcm->period_size);
 	vpcm->qemu_period_bytes  = vpcm->period_bytes * vpcm->qemu_factor;
 
-	/* hrtimer period duration */
 	ns = (u64)vpcm->period_size * 1000000000ULL;
 	do_div(ns, params_rate(params));
 	vpcm->period_time = ktime_set(0, (long)ns);
 
-	/* (Re)allocate TX data buffers sized for one QEMU period.  NULL the
-	 * pointer between kfree and kzalloc so that, if kzalloc fails partway
-	 * and ALSA retries hw_params, the next pass doesn't double-free the
-	 * already-freed slot (or any slot beyond `i` that still holds its
-	 * stale, freed pointer from the previous call). */
+	/* Allocate the TX data buffers, each sized for one QEMU period. Set
+	 * each pointer to NULL between kfree and kzalloc, so that if kzalloc
+	 * fails partway and ALSA retries hw_params, the next pass does not
+	 * free a slot twice. */
 	for (i = 0; i < VSND_TX_BUFS; i++) {
 		kfree(vpcm->bufs[i].data);
 		vpcm->bufs[i].data = NULL;
@@ -939,32 +924,31 @@ static int vsnd_pcm_prepare(struct snd_pcm_substream *sub)
 	int i;
 
 	/*
-	 * Reset pending_periods first (outside lock - atomic).
-	 * Prevents a stale backlog from a previous session causing an immediate
-	 * burst of snd_pcm_period_elapsed calls after the next START.
+	 * Reset pending_periods first; it is atomic, so this needs no lock. A
+	 * stale backlog from a previous session would otherwise cause a burst
+	 * of snd_pcm_period_elapsed calls after the next START.
 	 */
 	atomic_set(&vpcm->pending_periods, 0);
 
 	/*
-	 * Detect post-xrun deep-pipeline state and force a QEMU-side flush.
+	 * After an xrun, natural or forced by the watchdog, JUCE calls
+	 * snd_pcm_prepare. If the pipeline is still deep, force a flush in
+	 * QEMU. Otherwise the QEMU stream->queue and the bypass pending list
+	 * keep the audio backlog from before the xrun: JUCE submits again,
+	 * frames_in_flight stays deep, and the audible pipeline never recovers.
 	 *
-	 * After an xrun (natural or watchdog-forced), JUCE calls snd_pcm_prepare.
-	 * Without intervention, QEMU's stream->queue + bypass pending list
-	 * keep the pre-xrun audio backlog. JUCE re-submits, frames_in_flight
-	 * stays deep, audible pipeline never recovers.
+	 * Sending VIRTIO_SND_R_PCM_RELEASE runs virtio_snd_pcm_flush in QEMU,
+	 * which empties stream->queue and calls vsnd_bypass_pending_flush to
+	 * release the deferred-return list. The bypass voice and ring stay
+	 * active, so there is no AUD_close_out, no PREPARE and no 2 s
+	 * reinitialisation. JUCE's next snd_pcm_start, after recovery, sends a
+	 * fresh VIRTIO_SND_R_PCM_START that resumes playback. The queues clear
+	 * in under 1 ms, the ring plays out what it still holds, and JUCE
+	 * writes fresh audio at the recovered rate.
 	 *
-	 * Sending VIRTIO_SND_R_PCM_RELEASE invokes virtio_snd_pcm_flush in
-	 * QEMU which empties stream->queue AND calls vsnd_bypass_pending_flush
-	 * to release the deferred-return list. The bypass voice and ring stay
-	 * active - no AUD_close_out, no PREPARE, no 2s reinit blocker. JUCE's
-	 * subsequent snd_pcm_start (which fires after recovery) sends a fresh
-	 * VIRTIO_SND_R_PCM_START that resumes things. Net effect: queues
-	 * cleared in <1ms, ring continues playing whatever's left in it, JUCE
-	 * starts writing fresh audio at the recovered rate.
-	 *
-	 * Conditional on actual backlog so initial track-load and benign
-	 * re-prepares don't fire it. Threshold matches the watchdog deep-state
-	 * level (~10 bufs ≈ 100 ms). */
+	 * The flush runs only when there is a real backlog, so the first track
+	 * load and harmless re-prepares do not trigger it. The threshold
+	 * matches the watchdog's deep state (10 buffers, about 100 ms). */
 	{
 		int j, in_flight_count = 0;
 		for (j = 0; j < VSND_TX_BUFS; j++)
@@ -976,8 +960,8 @@ static int vsnd_pcm_prepare(struct snd_pcm_substream *sub)
 				.code = cpu_to_le32(VIRTIO_SND_R_PCM_RELEASE),
 				.stream_id = 0,
 			};
-			pr_info("virtio_snd: prepare flushing QEMU backlog "
-				"(%d bufs in flight)\n", in_flight_count);
+			pr_info("virtio_snd: prepare is flushing the QEMU backlog "
+				"(%d buffers in flight)\n", in_flight_count);
 			vsnd_ctl_cmd(vsnd, &rel, sizeof(rel));
 		}
 	}
@@ -989,17 +973,16 @@ static int vsnd_pcm_prepare(struct snd_pcm_substream *sub)
 	vpcm->phase2_streak    = 0;
 	vpcm->xrun_pending     = false;
 	vpcm->watchdog_deep_start = 0;
-	/* Don't reset watchdog_last_fired - cooldown should persist across
-	 * re-prepares so a single bad event doesn't trigger a click loop. */
+	/* Keep watchdog_last_fired: the cooldown persists across re-prepares,
+	 * so a single bad event does not start a click loop. */
 
 	/*
-	 * Reseed frames_in_flight from the actual in_flight buf count rather
-	 * than zeroing it. After an xrun JUCE calls PREPARE while QEMU still
-	 * owns several TX bufs; those bufs will be returned via vsnd_tx_done
-	 * which decrements frames_in_flight unconditionally. Zeroing here
-	 * caused the counter to go negative buf-by-buf as QEMU drained, which
-	 * made audio_latency_ms_get clamp guest_ms to 0 permanently
-	 * (slave-sync auto offset broken until reboot).
+	 * Reseed frames_in_flight from the number of buffers still in flight.
+	 * After an xrun JUCE calls PREPARE while QEMU still owns several TX
+	 * buffers, and vsnd_tx_done subtracts each one as it returns. A counter
+	 * reset to zero here would go negative, audio_latency_ms_get would
+	 * report guest_ms as 0, and the slave-sync auto offset would stay wrong
+	 * until reboot.
 	 */
 	{
 		int j, n = 0;
@@ -1013,8 +996,8 @@ static int vsnd_pcm_prepare(struct snd_pcm_substream *sub)
 	}
 
 	/*
-	 * Release the partially-filled accumulation buffer back to the pool
-	 * (don't mark it in_flight - it was never submitted to QEMU).
+	 * Release the partly filled accumulation buffer. It was never submitted
+	 * to QEMU, so it is not in flight, and the pool rebuild below takes it.
 	 */
 	if (vpcm->accum_buf) {
 		vpcm->accum_buf->in_flight = false;
@@ -1022,11 +1005,11 @@ static int vsnd_pcm_prepare(struct snd_pcm_substream *sub)
 	}
 
 	/*
-	 * Rebuild the free pool - but only include bufs that QEMU has already
-	 * returned (in_flight == false).  Bufs still in QEMU's virtqueue will
-	 * be pushed by vsnd_tx_done when QEMU returns them.  Pushing them here
-	 * too would cause double-allocation, corrupting the virtio queue and
-	 * triggering the EP122 freeze observed after snd-over recovery.
+	 * Rebuild the free pool from the buffers that QEMU has already returned
+	 * (in_flight is false). vsnd_tx_done pushes the buffers still in QEMU's
+	 * virtqueue when QEMU returns them. Pushing them here as well would
+	 * allocate them twice, corrupt the virtio queue and freeze EP122 after
+	 * snd-over recovery.
 	 */
 	vpcm->pool_head = 0;
 	vpcm->pool_tail = 0;
@@ -1048,12 +1031,11 @@ static int vsnd_pcm_trigger(struct snd_pcm_substream *sub, int cmd)
 	case SNDRV_PCM_TRIGGER_RESUME:
 		vpcm->running = true;
 		/*
-		 * Start the hrtimer HERE in atomic context - not in start_work.
-		 * start_work calls vsnd_ctl_cmd which blocks waiting for QEMU's
-		 * response; under load this can take seconds.  If the hrtimer
-		 * were started there, EP122 would receive no snd_pcm_period_elapsed
-		 * callbacks during that wait and log snd-over deltas of 1–2 s,
-		 * eventually exhausting its recovery retries and freezing.
+		 * Start the hrtimer here, in atomic context. start_work calls
+		 * vsnd_ctl_cmd, which waits for QEMU's reply and can take seconds
+		 * under load; if the hrtimer started there, EP122 would get no
+		 * snd_pcm_period_elapsed callbacks during the wait, log snd-over
+		 * deltas of 1-2 s, run out of recovery retries and freeze.
 		 */
 		hrtimer_start(&vpcm->timer, vpcm->period_time, HRTIMER_MODE_REL);
 		schedule_work(&vpcm->start_work);
@@ -1101,7 +1083,7 @@ static int vsnd_probe(struct virtio_device *vdev)
 
 	if (period_frames < 64 || period_frames > VSND_QEMU_FRAMES ||
 	    (period_frames & (period_frames - 1))) {
-		pr_warn("virtio_snd: period_frames=%u out of range, using 64\n",
+		pr_warn("virtio_snd: period_frames=%u is out of range; using 64.\n",
 			period_frames);
 		period_frames = 64;
 	}
@@ -1144,7 +1126,7 @@ static int vsnd_probe(struct virtio_device *vdev)
 		virtio_cread(vdev, struct virtio_snd_config, jacks,   &cfg_jacks);
 		virtio_cread(vdev, struct virtio_snd_config, streams, &cfg_streams);
 		virtio_cread(vdev, struct virtio_snd_config, chmaps,  &cfg_chmaps);
-		pr_info("virtio_snd: QEMU config: jacks=%u streams=%u chmaps=%u\n",
+		pr_info("virtio_snd: the QEMU config has jacks=%u streams=%u chmaps=%u\n",
 			cfg_jacks, cfg_streams, cfg_chmaps);
 	}
 
@@ -1166,7 +1148,7 @@ static int vsnd_probe(struct virtio_device *vdev)
 
 	virtio_device_ready(vdev);
 	g_vsnd_dev = vsnd;
-	pr_info("virtio_snd: registered as card %d\n", card->number);
+	pr_info("virtio_snd: registered as ALSA card %d\n", card->number);
 	return 0;
 
 err_vqs:   vdev->config->del_vqs(vdev);
@@ -1216,13 +1198,13 @@ static struct virtio_driver virtio_snd_driver = {
 };
 module_virtio_driver(virtio_snd_driver);
 
-/* Read-only: live audio pipeline depth in ms, computed from the
- * frames-in-flight counter (TX submitted - TX returned) and the
- * current PCM rate. Reflects the full host pipeline latency:
- * QEMU bypass ring + CoreAudio output buffer + USB + Focusrite DAC.
- * The clock hook in deck_shim.so (core/clock.c) reads this and uses it
- * as the auto offset for OptFstUdpServer, so slave-mode sync compensates
- * whatever the actual measured latency is at any given moment. */
+/* A read-only parameter that gives the live audio pipeline depth in ms. The
+ * guest part comes from frames_in_flight (TX buffers submitted minus TX
+ * buffers returned) and the current PCM rate; the host part comes from
+ * pipeline_extra_frames, which covers the CoreAudio output buffer, USB and
+ * the DAC. The clock hook in deck_shim.so (core/clock.c) uses it as the
+ * automatic offset for OptFstUdpServer, so slave-mode sync compensates for
+ * the current latency. */
 static int audio_latency_ms_get(char *buffer, const struct kernel_param *kp)
 {
 	struct vsnd_dev *vsnd = g_vsnd_dev;
@@ -1252,8 +1234,8 @@ static int audio_latency_ms_get(char *buffer, const struct kernel_param *kp)
 		ms = guest_ms + host_ms;
 		if (ms > AUDIO_LATENCY_MS_MAX)
 			ms = AUDIO_LATENCY_MS_MAX;
-		/* CSV: guest_ms,host_ms,total_ms - easily parsed by the
-		 * cfg daemon that pushes latency to the host UI. */
+		/* The output is CSV (guest_ms,host_ms,total_ms); cfgd parses it
+		 * and pushes the latency to the host UI. */
 		return scnprintf(buffer, PAGE_SIZE, "%u,%u,%u\n",
 				 guest_ms, host_ms, ms);
 	}
@@ -1263,45 +1245,45 @@ static const struct kernel_param_ops audio_latency_ms_ops = {
 };
 module_param_cb(audio_latency_ms, &audio_latency_ms_ops, NULL, 0444);
 MODULE_PARM_DESC(audio_latency_ms,
-	"Read-only: live audio pipeline depth in ms (frames-in-flight + host). "
-	"Capped at 200ms. Used by deck_shim.so for the slave-mode clock "
-	"shift (clock.c) and the master-mode delay-send (link.c). Tracks actual "
-	"pipeline so slave audible aligns. The watchdog forces an xrun when "
-	"frames_in_flight stays deep too long, recovering pipeline depth.");
+	"Read-only: the live audio pipeline depth in ms, guest plus host, "
+	"capped at 200 ms. deck_shim.so uses it for the slave-mode clock shift "
+	"(clock.c) and the master-mode delayed send (link.c), so the slave's "
+	"audible output stays aligned. The watchdog forces an xrun when "
+	"frames_in_flight stays deep too long, which restores the pipeline depth.");
 
-/* Manual override for the clock shift in deck_shim.so (core/clock.c).
- * When non-zero, the shim uses this value instead of audio_latency_ms.
- * Useful for testing fixed offsets. Set to 0 (default) for automatic
- * tracking. */
+/* The manual override for the clock shift and the delayed send in
+ * deck_shim.so (core/clock.c and core/link.c). When it is non-zero, the shim
+ * uses it instead of audio_latency_ms; 0 (the default) follows
+ * audio_latency_ms. */
 static unsigned int link_pos_offset_ms;
 module_param(link_pos_offset_ms, uint, 0644);
 MODULE_PARM_DESC(link_pos_offset_ms,
-	"Manual override for slave-mode shift in ms. 0 = auto (use "
-	"audio_latency_ms). Non-zero = force this fixed value.");
+	"Manual override for the slave-mode shift in ms. 0 uses "
+	"audio_latency_ms; any other value is used as a fixed shift.");
 
-/* Master switch for ALL audio-latency compensation.
- *  0 (default) = full no-op. Both hooks in deck_shim.so pass through:
- *                - core/clock.c: no clock shift on OptFstUdpServer
- *                - core/link.c:  no sendto/sendmsg delay-send
- *                Audio plays raw with no Pro DJ Link sync compensation.
- *  1          = both hooks active. Slave-mode clock-shift on
- *                OptFstUdpServer, master-mode delay-send on Pro DJ Link
- *                broadcasts. */
+/* The master switch for all audio-latency compensation.
+ *  0 (default): both deck_shim.so hooks pass through. core/clock.c applies
+ *     no clock shift to OptFstUdpServer, core/link.c delays no sendto or
+ *     sendmsg, and audio plays without Pro DJ Link sync compensation.
+ *  1: both hooks are active, with the slave-mode clock shift on
+ *     OptFstUdpServer and the master-mode delayed send on Pro DJ Link
+ *     broadcasts. */
 static unsigned int audio_sync_enabled;
 module_param(audio_sync_enabled, uint, 0644);
 MODULE_PARM_DESC(audio_sync_enabled,
 	"Master switch for the audio-sync hooks in the deck_shim.so LD_PRELOAD. "
-	"0=off (no compensation, raw audio path), 1=on.");
+	"0 off (no compensation), 1 on.");
 
-/* Storage declared at the top of the file (vsnd_tx_submit reads it). */
+/* verbose_stats is declared at the top of the file, because vsnd_tx_submit
+ * reads it. */
 module_param(verbose_stats, uint, 0644);
 module_param(period_frames, uint, 0444);
-MODULE_PARM_DESC(period_frames, "ALSA period in frames (power of two, 64-1024)");
+MODULE_PARM_DESC(period_frames, "The ALSA period in frames (a power of two from 64 to 1024)");
 MODULE_PARM_DESC(verbose_stats,
-	"Emit a per-second pr_info with TX/pool/xrun counters. 0=off, 1=on.");
+	"Log the TX, pool and xrun counters every 300 TX buffers (about 3 s). 0 off, 1 on.");
 
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("cdj3k-emu");
-MODULE_DESCRIPTION("Minimal virtio-sound PCM playback - hrtimer timing, 16× accumulation, in-flight Phase-2 gate");
+MODULE_DESCRIPTION("Minimal virtio-sound PCM playback driver with hrtimer timing and TX buffer accumulation");
 MODULE_VERSION("1.6");

@@ -52,7 +52,7 @@ impl Manifest {
 /// files exist in the folder.
 pub fn read(dir: &Path) -> Result<Manifest, String> {
     let text = std::fs::read_to_string(dir.join(FILE)).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => format!("no {FILE}"),
+        std::io::ErrorKind::NotFound => format!("{FILE} is missing"),
         _ => format!("{FILE}: {e}"),
     })?;
     let manifest = parse(&text)?;
@@ -83,15 +83,15 @@ fn parse_tables(text: &str) -> Result<Manifest, String> {
     let m = table
         .get("mod")
         .and_then(|v| v.as_table())
-        .ok_or_else(|| "no [mod] table".to_string())?;
-    let name = string(m, "name")?.ok_or_else(|| "no mod.name".to_string())?;
+        .ok_or_else(|| "the [mod] table is missing".to_string())?;
+    let name = string(m, "name")?.ok_or_else(|| "mod.name is missing".to_string())?;
     if !valid_name(&name) {
         return Err(format!(
-            "mod.name {name:?}: lowercase letters, digits, '.', '_' and '-', starting with a \
-             letter or digit"
+            "mod.name {name:?}: a name may contain only lowercase letters, digits, '.', '_' \
+             and '-', and must start with a letter or digit"
         ));
     }
-    let version = string(m, "version")?.ok_or_else(|| "no mod.version".to_string())?;
+    let version = string(m, "version")?.ok_or_else(|| "mod.version is missing".to_string())?;
     if version.is_empty() || version.contains(char::is_whitespace) {
         return Err(format!("mod.version {version:?}: must be one word"));
     }
@@ -167,7 +167,9 @@ fn parse_env(v: &toml::Value) -> Result<Vec<(String, String)>, String> {
             .as_str()
             .ok_or_else(|| format!("mod.env.{key} is not a string"))?;
         if !valid_env_key(key) {
-            return Err(format!("mod.env.{key}: not a variable name"));
+            return Err(format!(
+                "mod.env.{key}: the key is not a valid variable name"
+            ));
         }
         if key == "LD_PRELOAD" {
             return Err("mod.env.LD_PRELOAD: use mod.preload".into());
@@ -306,24 +308,27 @@ mod tests {
     fn mod_table_refusals_have_their_messages() {
         let syntax = "[mod".parse::<toml::Table>().unwrap_err();
         assert_eq!(parse_err("[mod"), format!("mod.toml: {syntax}"));
-        assert_eq!(parse_err(""), "mod.toml: no [mod] table");
-        assert_eq!(parse_err("mod = 1\n"), "mod.toml: no [mod] table");
+        assert_eq!(parse_err(""), "mod.toml: the [mod] table is missing");
+        assert_eq!(
+            parse_err("mod = 1\n"),
+            "mod.toml: the [mod] table is missing"
+        );
         assert_eq!(
             parse_err("[mod]\nname = 1\n"),
             "mod.toml: mod.name is not a string"
         );
         assert_eq!(
             parse_err("[mod]\nversion = \"1\"\n"),
-            "mod.toml: no mod.name"
+            "mod.toml: mod.name is missing"
         );
         assert_eq!(
             parse_err("[mod]\nname = \"Stemd Client\"\nversion = 1\n"),
-            "mod.toml: mod.name \"Stemd Client\": lowercase letters, digits, '.', '_' and '-', \
-             starting with a letter or digit"
+            "mod.toml: mod.name \"Stemd Client\": a name may contain only lowercase letters, \
+             digits, '.', '_' and '-', and must start with a letter or digit"
         );
         assert_eq!(
             parse_err("[mod]\nname = \"a\"\n"),
-            "mod.toml: no mod.version"
+            "mod.toml: mod.version is missing"
         );
         assert_eq!(
             parse_err("[mod]\nname = \"a\"\nversion = 1\nauthor = 1\n"),
@@ -388,7 +393,7 @@ mod tests {
         );
         assert_eq!(
             with("env = { \"1A\" = \"x\" }\n"),
-            "mod.toml: mod.env.1A: not a variable name"
+            "mod.toml: mod.env.1A: the key is not a valid variable name"
         );
         assert_eq!(
             with("env = { LD_PRELOAD = \"'\" }\n"),
@@ -452,10 +457,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cdj3k-manifest-read-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(read(&dir).unwrap_err(), "no mod.toml");
+        assert_eq!(read(&dir).unwrap_err(), "mod.toml is missing");
         assert_eq!(
             check_dir(&dir, Model::Cdj3k, None),
-            Compat::Invalid("no mod.toml".into())
+            Compat::Invalid("mod.toml is missing".into())
         );
         std::fs::create_dir_all(dir.join(FILE)).unwrap();
         let err = read(&dir).unwrap_err();

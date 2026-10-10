@@ -20,15 +20,15 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
-/// The job every QEMU child joins. Never closed: the handle goes with the
-/// process, and closing it is what kills the members.
+/// The job that every QEMU child joins. The app never closes the handle: it
+/// closes when this process exits, and closing it kills the members.
 static JOB: OnceLock<usize> = OnceLock::new();
 
 /// The monitor session [`terminate`] asks QEMU to quit on.
 static QUIT_CHANNEL: Mutex<Option<TcpStream>> = Mutex::new(None);
 
-/// `atexit`, and a console handler for the events that end a console app,
-/// which cleans up inline and exits.
+/// Install an `atexit` hook and a console handler for the events that end a
+/// console app. The handler cleans up and exits.
 pub fn install_exit_hooks() {
     extern "C" {
         fn atexit(callback: extern "C" fn()) -> i32;
@@ -51,7 +51,7 @@ pub fn install_exit_hooks() {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         crate::kill_qemu_child_now();
         crate::cleanup_runtime_files();
-        // SAFETY: ends the process; the job takes QEMU with it.
+        // SAFETY: this ends the process, and the job ends QEMU with it.
         unsafe { ExitProcess(0) }
     }
     // SAFETY: both callbacks are functions that live forever.
@@ -70,7 +70,8 @@ pub fn adopt(pid: u32) {
             // SAFETY: all-zero is valid for this plain-data struct.
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            // SAFETY: `info` is the structure the class names, sized as given.
+            // SAFETY: `info` is the structure that JobObjectExtendedLimitInformation
+            // expects, and the size passed is its size.
             unsafe {
                 SetInformationJobObject(
                     job,
@@ -125,7 +126,7 @@ pub fn kill(pid: i32) {
     }
 }
 
-/// Nothing is inherited by descriptor number here.
+/// Do nothing: a Windows child does not inherit descriptors by number.
 pub fn keep_across_exec(_fd: i32) {}
 
 pub fn is_alive(pid: i32) -> bool {

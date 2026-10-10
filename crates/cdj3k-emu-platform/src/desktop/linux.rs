@@ -140,17 +140,18 @@ mod x11 {
 
     use super::{already_applied, mark_applied, Ratio};
 
-    /// A connection of our own: winit's is not reachable through eframe. The
-    /// hints are a property on the window, so whose connection sets them does
-    /// not matter.
+    /// This module opens its own connection, because winit's is not reachable
+    /// through eframe. The hints are a property on the window, so any
+    /// connection can set them.
     fn conn() -> Option<&'static RustConnection> {
         static CONN: OnceLock<Option<RustConnection>> = OnceLock::new();
         CONN.get_or_init(|| RustConnection::connect(None).ok().map(|(c, _)| c))
             .as_ref()
     }
 
-    /// Minimum and maximum aspect set equal, with the strip as the base size:
-    /// ICCCM applies the aspect to the size minus the base. The existing hints
+    /// Set the minimum and maximum aspect to the same ratio, with the strip as
+    /// the base size, because ICCCM applies the aspect to the size minus the
+    /// base. The existing hints
     /// are read first and kept, since winit writes the min and max sizes into
     /// the same property.
     pub(super) fn hold(window: u32, ratio: Option<Ratio>) {

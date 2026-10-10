@@ -1,10 +1,10 @@
 //! Every lamp a player can light, declared once.
 //!
-//! [`Lamp`] names a lamp: the player's
+//! [`Lamp`] names a lamp. The player's
 //! [`MosiCodec::lamp`](crate::mosi_frame::MosiCodec::lamp) knows where its
-//! frame carries one, and how - a bit, a step level, a colour. A slate names
-//! the lamp it draws and asks the frame. A player without the lamp answers
-//! `None`.
+//! frame carries the lamp and whether it is a bit, a step level or a colour.
+//! A slate names the lamp it draws and asks the frame. A player without the
+//! lamp answers `None`.
 
 /// A lamp of the front panel.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

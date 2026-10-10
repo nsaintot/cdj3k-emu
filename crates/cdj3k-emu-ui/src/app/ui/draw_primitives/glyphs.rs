@@ -1,13 +1,13 @@
-//! Pictograms drawn as vectors. The UI font has no dependable coverage for
-//! them and a missing glyph renders as a box.
+//! Pictograms drawn as vectors. The UI font does not reliably cover them, and
+//! a missing glyph renders as a box.
 
 use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2};
 
 use crate::app::ui::{draw_cache::ShapeList, COL_BLACK, COL_DARK};
 
-/// Host-link computer: a stroked screen over a filled trapezoid stand, `w`
-/// wide overall at the stand's foot, `center` on the screen. `notch` cuts the
-/// stand's centre.
+/// Collects the host-link computer: a stroked screen over a filled trapezoid
+/// stand. The screen is centred on `center`, the stand's foot is `w` wide, and
+/// `notch` cuts a notch in the middle of the stand's foot.
 pub(in crate::app) fn collect_computer_glyph(
     out: &mut ShapeList,
     center: Pos2,
@@ -46,8 +46,8 @@ pub(in crate::app) fn collect_computer_glyph(
     }
 }
 
-// The USB trident, reference units: trunk, arrow, and two forks, one ending in
-// a dot and one in a square.
+// The USB trident in reference units: a trunk, an arrow, and two forks, one
+// ending in a dot and one in a square.
 const USB_W: f32 = 70.0;
 const USB_STROKE: f32 = 3.5;
 const USB_TAIL_DOT_R: f32 = 5.0;
@@ -61,9 +61,9 @@ const USB_BOT_FORK_X: [f32; 3] = [-18.0, 0.0, 11.0];
 const USB_SQUARE_S: f32 = 8.0;
 const USB_CIRCLE_R: f32 = 5.0;
 
-/// The USB trident centred on `(cx, cy)` in reference units, placed by `at`
-/// and sized by `len` - a plan's mapping to the screen, or a face's own units
-/// for a tilt to project.
+/// Collects the USB trident centred on `(cx, cy)` in reference units. `at`
+/// maps points and `len` scales lengths, either to the screen for a flat plan
+/// or to a face's own units, which a tilt then projects.
 pub(in crate::app) fn collect_usb_trident(
     list: &mut ShapeList,
     at: impl Fn(f32, f32) -> Pos2,
@@ -73,17 +73,17 @@ pub(in crate::app) fn collect_usb_trident(
 ) {
     let stroke = Stroke::new(len(USB_STROKE), color);
 
-    // Trunk: horizontal line spanning the full width.
+    // The trunk is a horizontal line across the full width.
     let half_w = USB_W * 0.5;
     list.line_segment(
         [at(cx - half_w, cy), at(cx + half_w - USB_ARROW_LEN, cy)],
         stroke,
     );
 
-    // Tail dot (left end of the trunk).
+    // The tail dot at the left end of the trunk.
     list.circle_filled(at(cx - half_w, cy), len(USB_TAIL_DOT_R), color);
 
-    // Arrow head (right end): filled triangle pointing right.
+    // The arrowhead at the right end is a filled triangle pointing right.
     let arrow_base_x = cx + half_w - USB_ARROW_LEN;
     list.add(Shape::convex_polygon(
         vec![
@@ -95,14 +95,16 @@ pub(in crate::app) fn collect_usb_trident(
         Stroke::NONE,
     ));
 
-    // Upper fork: trunk -> diagonal up -> horizontal -> filled circle.
+    // The upper fork goes diagonally up from the trunk, then runs
+    // horizontally and ends in a filled circle.
     let [start, diag_end, end] = USB_TOP_FORK_X.map(|x| cx + x);
     let top_y = cy - USB_FORK_OFF_Y;
     list.line_segment([at(start, cy), at(diag_end, top_y)], stroke);
     list.line_segment([at(diag_end, top_y), at(end, top_y)], stroke);
     list.circle_filled(at(end + USB_CIRCLE_R, top_y), len(USB_CIRCLE_R), color);
 
-    // Lower fork: trunk -> diagonal down -> horizontal -> filled square.
+    // The lower fork goes diagonally down from the trunk, then runs
+    // horizontally and ends in a filled square.
     let [start, diag_end, end] = USB_BOT_FORK_X.map(|x| cx + x);
     let bot_y = cy + USB_FORK_OFF_Y;
     list.line_segment([at(start, cy), at(diag_end, bot_y)], stroke);

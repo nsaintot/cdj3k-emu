@@ -82,7 +82,7 @@ fn a_wrong_key_reports_every_slot_it_tried() {
         )
     };
     let mismatch = format!(
-        "slot 0: digest MISMATCH\n  expected: {:02x?}\n  computed: (none matched)\n",
+        "slot 0: the digest does not match\n  expected: {:02x?}\n  computed: (no candidate matched)\n",
         h.mk_digest
     );
 

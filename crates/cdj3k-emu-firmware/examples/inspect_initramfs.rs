@@ -14,8 +14,8 @@ fn main() {
     let gz = std::fs::read(&path).expect("read");
     eprintln!("{path}: {} bytes compressed", gz.len());
 
-    // GzDecoder, not MultiGzDecoder: a real initramfs is one member, and the
-    // multi-member reader treats any trailing padding as a broken second header.
+    // A real initramfs is a single gzip member. MultiGzDecoder would read
+    // trailing padding as a broken second header, so this uses GzDecoder.
     let mut raw = Vec::new();
     std::io::Read::read_to_end(&mut GzDecoder::new(&gz[..]), &mut raw).expect("gunzip");
     eprintln!("{} bytes of cpio", raw.len());
@@ -23,7 +23,7 @@ fn main() {
     let entries = match cpio::read(&raw) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("PARSE FAILED: {e}");
+            eprintln!("Parsing the cpio failed: {e}");
             std::process::exit(1);
         }
     };
@@ -35,7 +35,7 @@ fn main() {
     round_trip(&entries);
 }
 
-/// Counts by kind, mode and owner, and the largest file.
+/// Prints the entry counts by kind, mode and owner, and the largest file.
 fn summarize(entries: &[Entry]) {
     let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
     let mut modes: BTreeMap<u32, usize> = BTreeMap::new();
@@ -134,12 +134,13 @@ fn lookup(entries: &[Entry], argv: &[String]) {
                 e.uid,
                 e.gid
             ),
-            None => println!("lookup {want}: ABSENT"),
+            None => println!("lookup {want}: absent"),
         }
     }
 }
 
-/// Re-encode and re-parse: proves the codec is lossless on a real archive.
+/// Re-encodes and re-parses the entries to check that the codec is lossless
+/// on a real archive.
 fn round_trip(entries: &[Entry]) {
     let re = cpio::write(entries);
     match cpio::read(&re) {
@@ -148,7 +149,7 @@ fn round_trip(entries: &[Entry]) {
         }
         Ok(again) => {
             println!(
-                "round trip: LOSSY — {} vs {} entries",
+                "round trip: lossy, with {} entries after re-parsing and {} before",
                 again.len(),
                 entries.len()
             );
@@ -156,6 +157,6 @@ fn round_trip(entries: &[Entry]) {
                 println!("  first difference at {}", a.path.display());
             }
         }
-        Err(e) => println!("round trip: RE-PARSE FAILED {e}"),
+        Err(e) => println!("round trip: re-parsing failed: {e}"),
     }
 }

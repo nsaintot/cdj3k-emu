@@ -71,19 +71,21 @@ pub fn patch_initramfs_in_guest(
     let staged = out_path.with_extension("provision.cpio.gz");
     stage_provisioning_image(initramfs_gz, &patch_dir, &tools_dir, &staged)?;
 
-    // 2. Let the guest do the work.
+    // 2. Boot the guest, which patches the rootfs and writes it to the scratch
+    //    disk as a tar.
     guest
         .runner
         .run(guest.kernel, &staged, guest.scratch)
         .map_err(PatchError::CommandFailed)?;
 
-    // 3. Turn what came back into the image the emulator boots.
+    // 3. Convert the tar on the scratch disk into the initramfs the emulator
+    //    boots.
     let entries = read_handback(guest.scratch)?;
     write_cpio_gz(&entries, out_path)?;
     let _ = std::fs::remove_file(&staged);
 
     eprintln!(
-        "[initramfs] guest provision: {} entries in {:.1}s",
+        "[initramfs] The guest provisioned {} entries in {:.1}s.",
         entries.len(),
         started.elapsed().as_secs_f64()
     );
@@ -92,12 +94,14 @@ pub fn patch_initramfs_in_guest(
 
 // ── 1. Staging ────────────────────────────────────────────────────────────────
 
-/// `pristine ++ {patch scripts, tools, /cdj3k-init}`.
+/// Writes the pristine archive followed by a cpio that holds the patch
+/// scripts, the tools and `/cdj3k-init`.
 ///
-/// The pristine bytes are copied, never rebuilt. They are trimmed to the end of
-/// their gzip member first: an archive carved out of a `.UPD` carries slack
-/// past its own, and the kernel stops unpacking at the first thing that is not
-/// a member — so anything appended past the slack is never seen.
+/// The pristine bytes are copied, never rebuilt. They are first trimmed to
+/// the end of their gzip member: an archive cut out of a `.UPD` has extra
+/// bytes after the member, and the kernel stops unpacking at the first data
+/// that is not a gzip member, so it would ignore an archive appended after
+/// those bytes.
 fn stage_provisioning_image(
     initramfs_gz: &Path,
     patch_dir: &Path,
@@ -145,8 +149,8 @@ fn stage_tree(dir: &Path, at: &str, out: &mut Vec<Entry>) {
         if p.is_dir() {
             stage_tree(&p, &child, out);
         } else if let Ok(data) = std::fs::read(&p) {
-            // Derived from the name, not from the host: Windows has no mode
-            // bits to copy, and only the dispatcher and its steps are run.
+            // The mode comes from the file name because Windows has no mode
+            // bits to copy. Only the `.sh` dispatcher and its steps are run.
             let mode = if name.ends_with(".sh") { 0o755 } else { 0o644 };
             out.push(Entry::file(child, data, mode));
         }
@@ -154,15 +158,15 @@ fn stage_tree(dir: &Path, at: &str, out: &mut Vec<Entry>) {
 }
 
 /// Printed by the provisioning guest when a patch step fails.
-const PATCHING_FAILED: &str = "=== cdj3k: PATCHING FAILED";
+const PATCHING_FAILED: &str = "=== cdj3k: patching failed";
 /// Printed by the provisioning guest once the rootfs is written back, with
 /// the handback's exit status after it.
 const HANDED_BACK: &str = "=== cdj3k: handed back rc=";
 
 /// The outcome the provisioning guest reported in its console `log`.
 ///
-/// A patch failure powers off without writing, so success is the handback
-/// marker with status 0, not the absence of a failure.
+/// A failed patch powers off without writing the rootfs, so only the handback
+/// marker with status 0 counts as success.
 pub fn guest_outcome(log: &str) -> Result<(), &'static str> {
     if log.contains(PATCHING_FAILED) {
         Err("the provisioning guest failed to patch the rootfs")
@@ -178,12 +182,12 @@ fn provisioning_init() -> String {
     [
         "#!/usr/bin/bash".into(),
         "set +e".into(),
-        // Real device nodes before anything redirects to /dev/null, or it
-        // becomes a regular file in the image.
+        // Mount real device nodes before anything redirects to /dev/null;
+        // otherwise /dev/null becomes a regular file in the image.
         "/usr/bin/mount -t devtmpfs devtmpfs /dev".into(),
         "/usr/bin/mount -t proc proc /proc".into(),
-        // Guest binaries into place: `patch_initramfs` does this in Rust, so
-        // no patch step owns it.
+        // Copy the guest binaries into place here, because `patch_initramfs`
+        // does this in Rust and no patch step does it.
         format!("/usr/bin/cp {STAGE}/tools/deck_shim.so /home/root/"),
         format!(
             "for t in {STAGE}/tools/*; do case \"$t\" in *deck_shim.so) ;; \
@@ -194,7 +198,7 @@ fn provisioning_init() -> String {
         format!("/usr/bin/bash {STAGE}/patch-rootfs.sh /"),
         "rc=$?".into(),
         format!("/usr/bin/rm -rf {STAGE}"),
-        // Hand back nothing rather than a half-patched rootfs.
+        // If patching failed, power off without handing back the rootfs.
         format!(
             r#"if [ "$rc" != 0 ]; then echo "{PATCHING_FAILED} ($rc) ==="; /usr/bin/busybox poweroff -f; fi"#
         ),
@@ -202,17 +206,17 @@ fn provisioning_init() -> String {
         // so the firmware finds its eMMC where it expects one.
         "/usr/bin/mkdir -p /cdj3k-dev".into(),
         "/usr/bin/mount -t devtmpfs devtmpfs /cdj3k-dev".into(),
-        // Drop the live device tree so the image keeps the /dev the firmware
-        // shipped — one console node.
+        // Unmount the live /dev so the image keeps the /dev the firmware ships,
+        // which holds only a console node.
         "/usr/bin/umount /dev".into(),
         "/usr/bin/rm -f /dev/null".into(),
         // tar's linkname field is 100 bytes and busybox writes no @LongLink for
         // targets, so long symlinks arrive truncated. Ship the real targets.
         // busybox find has no GNU `-not`; `!` is the portable spelling.
         "/usr/bin/find / -type l ! -path '/proc/*' ! -path '/cdj3k-dev/*' > /cdj3k-lp".into(),
-        // One line per link, `path<TAB>target`: pairing across two lines
-        // silently desynchronises everything after a link that reads back
-        // empty.
+        // Write one `path<TAB>target` line per link. With the path and target
+        // on separate lines, a link that reads back empty would shift every
+        // later pair.
         format!(
             "while read -r l; do printf '%s\\t%s\\n' \"$l\" \"$(/usr/bin/readlink \"$l\")\";              done < /cdj3k-lp > {LINKS}"
         ),
@@ -231,12 +235,12 @@ fn provisioning_init() -> String {
 
 // ── 3. Reading the handback ───────────────────────────────────────────────────
 
-/// Parse the tar the guest wrote and rebuild cpio entries from it.
+/// Parses the tar the guest wrote and rebuilds cpio entries from it.
 ///
-/// tar carries everything a cpio header needs — mode, uid/gid, symlink
-/// targets, device nodes — so the crossing is lossless apart from the two
-/// cases handled here: hard links, which cpio can only express with an
-/// ino/nlink model this codec does not have, and over-long symlink targets.
+/// tar carries everything a cpio header needs (the mode, uid and gid, symlink
+/// targets and device nodes). Two cases need handling here: hard links, which
+/// become copies because this cpio codec has no inode or link count, and
+/// symlink targets that tar truncated, which the guest's manifest restores.
 fn read_handback(scratch: &Path) -> Result<Vec<Entry>, PatchError> {
     let mut archive = tar::Archive::new(std::fs::File::open(scratch)?);
     let mut entries: Vec<Entry> = Vec::new();
@@ -299,7 +303,7 @@ fn link_name(header: &tar::Header) -> String {
         .unwrap_or_default()
 }
 
-/// Absolute, with tar's `./` prefix removed.
+/// Makes a tar path absolute, removing its `./` prefix and any trailing slash.
 fn normalise(path: &str) -> String {
     let p = path.trim_start_matches('.');
     let p = if p.starts_with('/') {
@@ -315,7 +319,7 @@ fn normalise(path: &str) -> String {
     }
 }
 
-/// Restore symlink targets tar truncated, from the guest's manifest.
+/// Restores the symlink targets that tar truncated, using the guest's manifest.
 ///
 /// One `path\ttarget` per line.
 fn repair_symlinks(entries: &mut [Entry], manifest: &str) {
@@ -337,7 +341,7 @@ fn repair_symlinks(entries: &mut [Entry], manifest: &str) {
         }
     }
     if repaired > 0 {
-        eprintln!("[initramfs] guest provision: repaired {repaired} truncated symlink target(s)");
+        eprintln!("[initramfs] Restored {repaired} truncated symlink targets.");
     }
 }
 
@@ -354,8 +358,8 @@ fn write_cpio_gz(entries: &[Entry], out_path: &Path) -> Result<(), PatchError> {
 /// The pristine archive's uncompressed size, and how much of the file the
 /// kernel will actually read.
 ///
-/// Accepts a raw cpio (from `extract_initramfs`) or a `.UPD`-carved
-/// `.cpio.gz` with slack after its member (see [`stage_provisioning_image`]).
+/// Accepts a raw cpio (from `extract_initramfs`) or a `.cpio.gz` cut out of a
+/// `.UPD`, with extra bytes after its member (see [`stage_provisioning_image`]).
 ///
 /// A `bufread` decoder consumes exactly one member and leaves the cursor on
 /// the boundary; a whole-slice reader does not.
@@ -384,8 +388,8 @@ struct Pristine {
     member_end: usize,
 }
 
-/// Size the scratch file must be to hold the handback: the uncompressed
-/// rootfs plus tar's per-member overhead and its trailing padding.
+/// Returns the size the scratch file needs to hold the handback: the
+/// uncompressed rootfs plus tar's per-member overhead and trailing padding.
 pub fn scratch_size_for(initramfs_gz: &Path) -> Result<u64, PatchError> {
     let data = std::fs::read(initramfs_gz)?;
     let raw_len = measure_pristine(&data)?.raw_len;
@@ -398,7 +402,7 @@ pub fn scratch_size_for(initramfs_gz: &Path) -> Result<u64, PatchError> {
 mod tests {
     use super::*;
 
-    /// The markers the init script prints are the ones the outcome reads.
+    /// The init script prints the same markers that `guest_outcome` looks for.
     #[test]
     fn the_init_prints_what_the_outcome_reads() {
         let init = provisioning_init();
@@ -406,7 +410,7 @@ mod tests {
         assert!(init.contains(HANDED_BACK), "{init}");
         assert_eq!(guest_outcome("=== cdj3k: handed back rc=0 ==="), Ok(()));
         assert!(guest_outcome("=== cdj3k: handed back rc=1 ===").is_err());
-        assert!(guest_outcome("=== cdj3k: PATCHING FAILED (3) ===").is_err());
+        assert!(guest_outcome("=== cdj3k: patching failed (3) ===").is_err());
         assert!(guest_outcome("").is_err());
     }
 

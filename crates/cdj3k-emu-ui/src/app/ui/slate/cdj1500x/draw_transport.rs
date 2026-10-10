@@ -1,8 +1,8 @@
 //! SHIFT, CUE and PLAY down the left of the jog. SHIFT is a key like the
 //! others; CUE and PLAY stand taller.
 //!
-//! CUE and PLAY light their legends: the word CUE and its
-//! back-to-cue mark in amber, the play/pause mark in the CDJ-3000's green.
+//! CUE lights its word in amber; its back-to-cue mark is printed. PLAY lights
+//! its play/pause mark in the CDJ-3000's green.
 
 use cdj3k_emu_panel::{Btn, Lamp};
 use egui::{FontFamily, Pos2, Rect, Shape, Stroke, Vec2};
@@ -32,7 +32,7 @@ const CUE_MARK_PILL: (f32, f32, f32, f32) = (128.0, 1799.0, 157.0, 1813.0);
 const CUE_MARK_BAR: (f32, f32, f32, f32) = (136.0, 1802.0, 138.0, 1810.0);
 const CUE_MARK_TRI: [(f32, f32); 3] = [(138.5, 1805.5), (148.5, 1801.5), (148.5, 1809.5)];
 
-/// The play/pause mark: a right-pointing triangle, a slash, two bars.
+/// The play/pause mark: a right-pointing triangle, a slash and two bars.
 const PLAY_TRI: [(f32, f32); 3] = [(117.0, 1987.0), (136.0, 1994.5), (117.0, 2002.0)];
 const PLAY_SLASH: [(f32, f32); 4] = [
     (139.0, 2002.0),
@@ -107,7 +107,7 @@ pub(super) fn draw_cue_play(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScal
             |list, pressed| {
                 key::collect_key(list, layout, outline, pressed);
                 list.text_in_ink_box(&ctx, screen_box(layout, CUE_TEXT), "CUE", bold, col);
-                // The mark under the legend is printed.
+                // The back-to-cue mark under the word is printed and never lit.
                 let pill = screen_box(layout, CUE_MARK_PILL);
                 list.rect_stroke(
                     pill,
@@ -161,7 +161,8 @@ fn shift_outline() -> Outline {
     Outline::new(rect, [rect.height() * 0.5; 4])
 }
 
-/// SHIFT's cap, then CUE's and PLAY's, reference units.
+/// Returns the cap outline of SHIFT, then those of CUE and PLAY, in
+/// reference units.
 pub(super) fn footprints() -> (Vec<Pos2>, Vec<Vec<Pos2>>) {
     let cap = |o: Outline| key::face(o).ref_points();
     (

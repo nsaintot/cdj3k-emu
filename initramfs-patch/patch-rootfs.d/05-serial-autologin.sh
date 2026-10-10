@@ -7,18 +7,18 @@
 # one without `nullok`, so the console cannot log in; an --autologin override
 # skips authentication and makes the console a root shell.
 #
-# This is what traces the guest: the emulator can put that console on a unix
-# socket (CDJ3K_SERIAL_SOCKET=1), which gives a scriptable shell for strace and
-# /proc without a debugger or an sshd.
+# Use this console to trace the guest: the emulator can put it on a unix
+# socket (CDJ3K_SERIAL_SOCKET=1), which gives a scriptable shell for strace
+# and /proc without a debugger or an sshd.
 #
-# Applied only with ENABLE_SSH=1, like patches 03 and 04; a default build keeps
-# the stock password prompt.  The console is reachable only through the
+# The patch applies only with ENABLE_SSH=1, like patches 03 and 04, so a
+# default build keeps the stock password prompt.  The console is reachable only through the
 # instance's own socket directory.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 
 if [[ "${ENABLE_SSH:-0}" != "1" ]]; then
-    echo "  -> SSH disabled (ENABLE_SSH != 1) - leaving the serial getty stock"
+    echo "  -> SSH disabled (ENABLE_SSH != 1); the serial getty is left as shipped"
     exit 0
 fi
 
@@ -32,4 +32,4 @@ ExecStart=-/sbin/agetty --autologin root --noclear %I 115200 linux
 CONFEOF
 chmod 644 "$UNIT_DIR/autologin.conf"
 
-echo "  -> serial-getty@ttyAMA0 autologin root"
+echo "  -> serial-getty@ttyAMA0 logs in as root automatically"

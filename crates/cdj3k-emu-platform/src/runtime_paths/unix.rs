@@ -3,8 +3,8 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The BSD `sun_path` field, including the NUL, which is the limit that
-/// actually truncates a socket path.
+/// The macOS `sun_path` size, including the NUL. Linux allows 108, so this
+/// limit holds on both.
 pub const SUN_PATH_LIMIT: usize = 104;
 
 /// `/tmp/cdj3k-emu-<euid>`.
@@ -22,8 +22,8 @@ fn euid() -> u32 {
 
 /// Set the root to 0700.
 ///
-/// Applied on every call, not only at creation, so an existing root made
-/// under a looser umask is tightened too.
+/// This runs on every call, so an existing root made under a looser umask is
+/// tightened too.
 pub fn tighten(base: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(base, std::fs::Permissions::from_mode(0o700))

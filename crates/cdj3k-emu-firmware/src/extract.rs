@@ -1,11 +1,11 @@
 //! Kernel image extraction from a decrypted UPD payload.
 //!
-//! The decrypted LUKS volume is an ISO 9660 image containing:
-//!   images/images.tar.gz  →  Image  (AArch64 kernel, ~72 MB).
+//! The decrypted LUKS volume is an ISO 9660 image. Its `images/images.tar.gz`
+//! holds `Image`, the AArch64 kernel (about 72 MB).
 //!
-//! The simpler cross-platform path: read the ISO directory, locate the file,
-//! stream it out.  ISO 9660 primary volume descriptor is at sector 16 (LBA 16,
-//! 2048 bytes/sector).
+//! The reader parses the ISO directory itself, so it works on every host
+//! without mounting the image. The ISO 9660 primary volume descriptor is at
+//! sector 16, and sectors are 2048 bytes.
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -16,8 +16,8 @@ use tar::Archive;
 /// Version metadata extracted from the firmware ISO.
 ///
 /// All fields are `None` when the corresponding file is missing from the
-/// UPD. Do NOT substitute a specific UPD version's values as a fallback —
-/// downstream callers should know when metadata is unknown.
+/// UPD. Do not fill in values from a specific UPD version: callers need to
+/// know when the metadata is unknown.
 #[derive(Debug, Clone, Default)]
 pub struct FirmwareInfo {
     /// Pioneer release string (e.g. `"X.XX"`).
@@ -87,13 +87,13 @@ impl From<io::Error> for ExtractError {
 impl std::fmt::Display for ExtractError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ExtractError::Io(e) => write!(f, "I/O: {e}"),
+            ExtractError::Io(e) => write!(f, "I/O error: {e}"),
             ExtractError::BadIso(s) => write!(f, "ISO parse error: {s}"),
-            ExtractError::FileNotFound(s) => write!(f, "FileNotFound({s:?})"),
+            ExtractError::FileNotFound(s) => write!(f, "{s}"),
             ExtractError::TarError(e) => write!(f, "tar error: {e}"),
             ExtractError::UnsupportedG2M(detail) => write!(
                 f,
-                "unsupported firmware: Renesas G2M (R-Car) build is not supported by this emulator - use CDJ-3000 RK3399 firmware instead ({detail}). See docs/g2m-renesas.md for background."
+                "unsupported firmware: this is a Renesas G2M (R-Car) build, which the emulator cannot run ({detail}). Use the CDJ-3000 RK3399 firmware instead. See docs/g2m-renesas.md."
             ),
         }
     }
@@ -124,14 +124,14 @@ pub fn extract_kernel(
     let tar_gz_data = match read_iso_file(&mut iso, "IMAGES/CDJ3K-RK3399.ISO") {
         Ok(inner_bytes) => {
             log(&format!(
-                "[kernel] found CDJ3K-RK3399.iso ({} MB), reading inner images.tar.gz",
+                "[kernel] Found CDJ3K-RK3399.iso ({} MB); reading its images.tar.gz.",
                 inner_bytes.len() / 1_048_576
             ));
             let mut inner = std::io::Cursor::new(inner_bytes);
             read_iso_file(&mut inner, "IMAGES/IMAGES.TAR.GZ")?
         }
         Err(_) => {
-            log("[kernel] no CDJ3K-RK3399.iso, reading outer images.tar.gz");
+            log("[kernel] There is no CDJ3K-RK3399.iso; reading the outer images.tar.gz.");
             let _ = iso.seek(SeekFrom::Start(0));
             read_iso_file(&mut iso, "IMAGES/IMAGES.TAR.GZ")?
         }
@@ -167,7 +167,8 @@ fn list_iso_root<R: Read + Seek>(r: &mut R) -> Result<Vec<String>, ExtractError>
 /// CPUs fail to start and the kernel panics on boot under HVF acceleration.
 pub fn patch_kernel_smc_to_hvc(kernel_path: &Path) -> Result<usize, io::Error> {
     let mut data = std::fs::read(kernel_path)?;
-    // AArch64 LE: smc #0 = 0xD4000003, hvc #0 = 0xD4000002
+    // In little-endian AArch64, `smc #0` encodes as 0xD4000003 and `hvc #0`
+    // as 0xD4000002.
     let smc: [u8; 4] = [0x03, 0x00, 0x00, 0xd4];
     let hvc: [u8; 4] = [0x02, 0x00, 0x00, 0xd4];
     let mut count = 0usize;
@@ -185,7 +186,7 @@ pub fn patch_kernel_smc_to_hvc(kernel_path: &Path) -> Result<usize, io::Error> {
     Ok(count)
 }
 
-/// Default output path: next to the ISO, named "Image".
+/// The default kernel path is a file named `Image` next to the ISO.
 pub fn default_kernel_path(iso_path: &Path) -> PathBuf {
     iso_path.with_file_name("Image")
 }
@@ -217,9 +218,9 @@ pub fn read_cabinet_image(iso_path: &Path) -> Option<Vec<u8>> {
     data.starts_with(LUKS_MAGIC).then_some(data)
 }
 
-/// The sibling of `cabinet.img` that the factory cabinet passphrase hashes,
-/// read out of the UPD payload (`images/images.tar.gz` or `images/app.hash`,
-/// whichever the firmware carries).  Same nesting precedence as
+/// Reads the file whose hash forms the factory cabinet passphrase:
+/// `images/images.tar.gz` or `images/app.hash`, whichever the firmware
+/// carries. It searches the inner and outer ISO in the same order as
 /// [`read_cabinet_image`], so both files come from the same package.
 pub fn read_cabinet_seed(iso_path: &Path) -> Option<Vec<u8>> {
     const SEEDS: [&str; 2] = ["IMAGES/IMAGES.TAR.GZ", "IMAGES/APP.HASH"];
@@ -255,7 +256,6 @@ pub(crate) fn read_iso_file<R: Read + Seek>(
     r: &mut R,
     name: &str,
 ) -> Result<Vec<u8>, ExtractError> {
-    // Read Primary Volume Descriptor at LBA 16.
     let mut pvd = [0u8; ISO_SECTOR as usize];
     r.seek(SeekFrom::Start(PVD_LBA * ISO_SECTOR))?;
     r.read_exact(&mut pvd)?;
@@ -266,7 +266,7 @@ pub(crate) fn read_iso_file<R: Read + Seek>(
         ));
     }
 
-    // Root directory record is at offset 156, 34 bytes.
+    // The 34-byte root directory record starts at offset 156.
     let root_lba = le32(&pvd, 158);
     let root_len = le32(&pvd, 166);
 
@@ -278,9 +278,9 @@ fn le32(bytes: &[u8], at: usize) -> u64 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as u64
 }
 
-/// `len` as a buffer size, once the extent at sector `lba` is known to end
-/// inside the image - the record's fields are the ISO's to set, and are only
-/// allocated for when the file backs them.
+/// Returns `len` as a buffer size after checking that the extent at sector
+/// `lba` ends inside the image. The ISO sets these fields, so a buffer is
+/// allocated only when the file holds that many bytes.
 fn extent_len<R: Seek>(r: &mut R, lba: u64, len: u64) -> Result<usize, ExtractError> {
     let image_len = r.seek(SeekFrom::End(0))?;
     lba.checked_mul(ISO_SECTOR)
@@ -359,7 +359,7 @@ fn find_in_dir<R: Read + Seek>(
         (Some((lba, size)), Some(rest)) => find_in_dir(r, lba, size.max(ISO_SECTOR), rest),
         (Some((lba, size)), None) => read_extent(r, lba, size),
         (None, _) => Err(ExtractError::FileNotFound(format!(
-            "looking for {head:?}; dir contains: {:?}",
+            "{head:?} is not in the directory, which contains {:?}",
             dir_listing(&dir)
         ))),
     }
@@ -376,7 +376,8 @@ fn dir_listing(dir: &[u8]) -> Vec<String> {
         .collect()
 }
 
-/// Case-insensitive match; strips ISO 9660 version suffix (`;1`) from both sides.
+/// Compares two names case-insensitively, after stripping the ISO 9660
+/// version suffix, such as `;1`, from both.
 fn names_match(iso_name: &str, target: &str) -> bool {
     let a = iso_name.split(';').next().unwrap_or(iso_name);
     let b = target.split(';').next().unwrap_or(target);
@@ -428,7 +429,7 @@ fn image_candidates(
         let mut buf = Vec::new();
         io::copy(&mut entry, &mut buf).map_err(ExtractError::TarError)?;
         log(&format!(
-            "[kernel] tar Image candidate: {:?}  {} MB",
+            "[kernel] Found the Image candidate {:?} ({} MB).",
             tar_path,
             buf.len() / 1_048_576
         ));
@@ -450,14 +451,14 @@ fn choose_rk3399(
         .position(|(p, _)| p.to_ascii_lowercase().contains("rk3399"))
     {
         log(&format!(
-            "[kernel] selected by path 'rk3399': {:?}",
+            "[kernel] Selected {:?} because its path contains 'rk3399'.",
             candidates[i].0
         ));
         return Ok(i);
     }
     if let Some(i) = candidates.iter().position(|(_, b)| memmem(b, b"rk3399")) {
         log(&format!(
-            "[kernel] selected by content 'rk3399': {:?}",
+            "[kernel] Selected {:?} because its content contains 'rk3399'.",
             candidates[i].0
         ));
         return Ok(i);
@@ -474,14 +475,14 @@ fn choose_rk3399(
     });
     let paths: Vec<&str> = candidates.iter().map(|(p, _)| p.as_str()).collect();
     let detail = if g2m_hint {
-        format!("tar contains rcar/r8a7796/salvator markers, candidates={paths:?}")
+        format!("the tar has R-Car markers such as rcar, r8a7796 or salvator; the candidates are {paths:?}")
     } else {
-        format!("no rk3399 marker found, candidates={paths:?}")
+        format!("no candidate has an rk3399 marker; the candidates are {paths:?}")
     };
     Err(ExtractError::UnsupportedG2M(detail))
 }
 
-/// Naive substring search (avoids pulling in a memchr crate just for this).
+/// Naive substring search, which avoids a dependency on memchr.
 fn memmem(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }

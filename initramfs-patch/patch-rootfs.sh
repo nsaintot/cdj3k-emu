@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # initramfs-patch/patch-rootfs.sh
 #
-# Dispatcher: runs every script in patch-rootfs.d/ (in numeric order).
+# Runs every script in patch-rootfs.d/ in numeric order.
 #
 # These run inside the provisioning guest (`cdj3k-emu-firmware::
 # initramfs_guest`), on a filesystem that holds modes, symlinks and setuid
@@ -14,7 +14,8 @@
 #
 # Each script in patch-rootfs.d/ receives these environment variables:
 #   ROOTFS           - path to the extracted initramfs rootfs (from $1)
-#   PATCH_ASSETS_DIR - path to this directory (contains cfgd_aarch64 binary from tools/)
+#   PATCH_ASSETS_DIR - path to this directory, which holds the staged guest
+#                      binaries and modules in a bundle
 #   APP_UNIT         - the player application's systemd unit, detected from the
 #                      rootfs: EP122.service (CDJ-3000), EP145.service (CDJ-3000X)
 #                      or EP166.service (CDJ-1500X)
@@ -28,8 +29,8 @@ ROOTFS="${1:?Usage: $0 <initramfs-root>}"
 export ROOTFS
 export PATCH_ASSETS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Steps that order a service before the app, or install a drop-in for it, go
-# through APP_UNIT so one patch set serves both models.
+# Steps that order a service before the app, or install a drop-in for it, use
+# APP_UNIT, so one patch set serves every model.
 APP_UNIT="$(cd "$ROOTFS/etc/systemd/system" 2>/dev/null && ls EP1[0-9][0-9].service 2>/dev/null | head -n1 || true)"
 export APP_UNIT="${APP_UNIT:-EP122.service}"
 export APP_NAME="${APP_UNIT%.service}"

@@ -2,7 +2,7 @@
 //!
 //! The jog assembly is the shared `ui::draw_jog`, placed at this slate's jog
 //! zone. The section files reach the shared toolkit through `super::` (the
-//! glob import below), exactly as they did when they lived at the `ui` root.
+//! glob import below).
 
 mod draw_chassis;
 mod draw_left;
@@ -55,12 +55,12 @@ pub(in crate::app) const REF_W: f32 = 3185.0;
 pub(in crate::app) const REF_H: f32 = 4360.0;
 
 // ── The picker's miniature ────────────────────────────────────────────────────
-// Every fraction the card draws is computed from the zones the panel itself
-// draws from, so the two cannot drift apart. Nothing here is eyeballed.
+// Every fraction the card draws is computed from the zones the panel draws
+// from, so the card always matches the panel.
 
-/// The screen's glass, placed as the panel places it: centred in the
-/// top-central block, its width a fraction of that block and its height its
-/// own aspect.
+/// The screen's glass, placed where the panel places it: centred in the
+/// top-central block, with a width that is a fraction of the block and a
+/// height set by the glass's aspect ratio.
 const GLASS_W: f32 = layout::TOP_CENTRAL_REF_SIZE_W * layout::LCD_GLASS_WIDTH_FRAC;
 const GLASS_H: f32 = GLASS_W / layout::LCD_GLASS_ASPECT;
 const GLASS_LEFT: f32 =
@@ -87,12 +87,12 @@ const POD_RING_R: f32 = draw_vinyl_speed::VINYL_SPEED_KNOB_RADIUS_REF
 const POD_X: f32 = layout::MODES_REF_LEFT + layout::NAV_POD_U * layout::MODES_REF_SIZE_W;
 const POD_Y: f32 = layout::MODES_REF_TOP + layout::NAV_POD_V * layout::MODES_REF_SIZE_H;
 
-/// The dash that prefixes a drawn legend (INST. DOUBLES). Drawn rather than
-/// typed so it reads at the same weight at panel scale.
+/// The dash that prefixes a drawn legend (INST. DOUBLES). It is drawn as a
+/// shape so that it has the same weight as the legend at panel scale.
 pub(super) const LEGEND_TAB_W: f32 = 22.0;
 pub(super) const LEGEND_TAB_H: f32 = 6.0;
 
-/// Jog assembly chrome of this slate.
+/// The jog assembly chrome of this slate.
 const JOG_CHROME: JogChrome = JogChrome {
     adjust_label: "JOG ADJUST",
     nav_arrows: true,

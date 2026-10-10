@@ -26,8 +26,8 @@ pub use imp::{qemu_command, run_worker_if_asked};
 /// A command that will run QEMU, and whether it expects our `argv[0]`.
 ///
 /// The worker passes what it is given to QEMU's `main`, so `argv[0]` has to be
-/// there or QEMU reads the first option as its own program name. An executable
-/// supplies its own.
+/// there or QEMU reads the first option as its own program name. When QEMU is
+/// a separate executable, the operating system supplies `argv[0]`.
 pub struct QemuCommand {
     pub command: Command,
     pub wants_argv0: bool,

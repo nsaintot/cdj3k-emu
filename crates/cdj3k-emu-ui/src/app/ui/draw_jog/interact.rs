@@ -7,36 +7,36 @@ use std::f32::consts::TAU;
 use super::super::{rotary_arc_fraction, scroll_detents, CdjApp, UiScale};
 use super::*;
 
-/// Pixels of raw scroll needed to advance one jog-adjust detent step. Tune this.
+/// Pixels of raw scroll needed to move the jog-adjust knob by one detent.
 pub(super) const JOG_ADJUST_SCROLL_PX_PER_STEP: f32 = 10.0;
 /// Pixels of raw vertical wheel scroll that map to one full jog revolution.
 pub(super) const JOG_SCROLL_PX_PER_REV: f32 = 1280.0;
-/// Extra sensitivity multiplier for jog wheel scroll control.
-/// Lower values reduce response (e.g. 0.25 = 4x less sensitive).
+/// A sensitivity multiplier for scrolling the jog wheel. A lower value makes it
+/// less sensitive; 0.25 makes it four times less sensitive.
 pub(super) const JOG_SCROLL_SENSITIVITY_MULT: f32 = 0.25;
 
-// ── Slingshot drag (Ctrl + mousedown + drag → impulse on release) ────────────
-/// Modifier that arms slingshot mode at drag start. Held-then-released during
-/// a drag is fine — the mode latches on `drag_started()`.
+// ── Slingshot drag: a Ctrl-drag applies an impulse on release ────────────────
+/// The modifier that arms slingshot mode when a drag starts. Releasing it during
+/// the drag has no effect, because the mode latches on `drag_started()`.
 pub(super) const JOG_SLINGSHOT_MODIFIER: egui::Modifiers = egui::Modifiers::CTRL;
-/// rad/s of platter spin per screen-pixel of tangential pull. Tune to taste.
-/// A 200 px purely-tangential pull at this gain → ~3 rev/s spin.
+/// Platter spin in rad/s per screen pixel of tangential pull. At this gain, a
+/// 200 px tangential pull spins the platter at about 3 rev/s.
 pub(super) const JOG_SLINGSHOT_GAIN: f32 = 0.094;
-/// Hard cap on impulse magnitude (rad/s) so a runaway pull can't fire absurd
-/// spin. ~4.8 rev/s — well past anything musically useful.
+/// The largest impulse in rad/s, so that a long pull cannot spin the platter
+/// too fast. It is about 4.8 rev/s, above any musically useful speed.
 pub(super) const JOG_SLINGSHOT_MAX_OMEGA: f32 = 60.0;
 /// Stroke width of the slingshot indicator line (reference units).
 pub(super) const JOG_SLINGSHOT_LINE_STROKE_REF: f32 = 6.0;
 /// Slingshot indicator line color at zero pull (weakest spin).
 pub(super) const JOG_SLINGSHOT_LINE_COLOR_MIN: Color32 = Color32::from_rgb(60, 220, 80);
-/// Slingshot indicator line color at saturated pull (clamped to `JOG_SLINGSHOT_MAX_OMEGA`).
+/// Slingshot indicator line color at full pull, which reaches `JOG_SLINGSHOT_MAX_OMEGA`.
 pub(super) const JOG_SLINGSHOT_LINE_COLOR_MAX: Color32 = Color32::from_rgb(240, 60, 60);
 
 impl CdjApp {
-    /// Drive the platter from the pointer: drag, scroll and the slingshot,
-    /// over a platter at `center` whose touch surface ends at `r_touch` and
-    /// whose grip band ends at `r_outer_1` (screen units). Shared by every
-    /// jog skin; runs every frame.
+    /// Drives the platter from the pointer with drag, scroll and the
+    /// slingshot. The platter is at `center`, its touch surface ends at
+    /// `r_touch` and its grip band ends at `r_outer_1`, in screen units. Every
+    /// slate calls it on every frame.
     pub(in crate::app) fn jog_interact(
         &mut self,
         ui: &mut egui::Ui,
@@ -45,9 +45,9 @@ impl CdjApp {
         r_touch: f32,
         r_outer_1: f32,
     ) {
-        // ── Interaction (must run every frame) ────────────────────────────────
-        // Interact rect covers the full grip band (up to r_outer_1) so both
-        // the center platter and the grip ring are captured by a single drag.
+        // This must run on every frame. The interact rect covers the full grip
+        // band up to r_outer_1, so one drag captures both the platter and the
+        // grip ring.
         let drag_rect = Rect::from_center_size(center, Vec2::splat(r_outer_1 * 2.0));
         let dt = ui.input(|i| i.stable_dt.max(1.0e-4));
         let resp = ui.interact(drag_rect, ui.id().with("jog_touch_drag"), Sense::drag());
@@ -56,11 +56,12 @@ impl CdjApp {
         }
         if resp.dragged() {
             if self.jog_slingshot_anchor.is_some() {
-                // Slingshot mode: swallow drag motion. Release-time math
-                // reads pointer position via resp.interact_pointer_pos().
+                // In slingshot mode the drag motion is ignored; the release
+                // reads the pointer position from resp.interact_pointer_pos().
             } else if let Some(pos) = resp.interact_pointer_pos() {
                 let v = pos - center;
-                // Accept drag anywhere inside the grip band (or if already dragging).
+                // Accept a drag anywhere inside the grip band, or one already
+                // in progress.
                 if v.length_sq() <= r_outer_1 * r_outer_1 || self.jog_is_dragging() {
                     self.jog_drag_sample(v.y.atan2(v.x), dt);
                 }
@@ -78,7 +79,8 @@ impl CdjApp {
         }
     }
 
-    /// Determine zone at the moment the drag begins.
+    /// Picks the drag mode when the drag begins: slingshot, grip band or
+    /// platter.
     fn jog_drag_start(
         &mut self,
         ui: &egui::Ui,
@@ -100,10 +102,11 @@ impl CdjApp {
         }
     }
 
-    /// Slingshot release: project pull vector onto tangent at anchor.
-    /// Real-slingshot polarity: spin direction opposite the pull.
-    /// Anchor zone selects the release character: scratch (one-tick
-    /// touch pulse so firmware logs a flick) vs bend (pure impulse).
+    /// Releases the slingshot. The pull is projected onto the platter tangent
+    /// at the anchor, and the platter spins opposite to the pull. An anchor on
+    /// the platter gives a scratch, with a short touch pulse so that the
+    /// firmware registers a flick; an anchor on the grip band gives a bend,
+    /// which is an impulse alone.
     fn jog_slingshot_release(
         &mut self,
         ui: &egui::Ui,
@@ -125,9 +128,9 @@ impl CdjApp {
         self.set_jog_grip_drag(false);
     }
 
-    /// Slingshot visual: line from anchor → current pointer, painted on a
-    /// foreground layer. Color lerps green → red with the same magnitude the release would impart,
-    /// giving a live strength indicator that saturates at JOG_SLINGSHOT_MAX_OMEGA.
+    /// Draws the slingshot line from the anchor to the pointer on a foreground
+    /// layer. Its color goes from green to red with the strength the release
+    /// would apply, and saturates at JOG_SLINGSHOT_MAX_OMEGA.
     fn paint_slingshot_line(&self, ui: &egui::Ui, layout: &UiScale, center: Pos2) {
         let Some(anchor) = self.jog_slingshot_anchor else {
             return;
@@ -169,9 +172,9 @@ impl CdjApp {
         let dist_sq = v.length_sq();
         if dist_sq <= r_outer_1 * r_outer_1 {
             let grip = dist_sq > r_touch * r_touch;
-            // Tangential scroll mapping:
-            // - Left half:  scroll up => forward, scroll down => backward
-            // - Right half: scroll up => backward, scroll down => forward
+            // Scrolling turns the platter tangentially: on the left half,
+            // scrolling up turns it forward; on the right half, scrolling up
+            // turns it backward.
             let side_sign = if v.x < 0.0 { -1.0 } else { 1.0 };
             let delta_rad =
                 side_sign * (scroll_y / JOG_SCROLL_PX_PER_REV) * TAU * JOG_SCROLL_SENSITIVITY_MULT;
@@ -179,8 +182,9 @@ impl CdjApp {
         }
     }
 
-    /// JOG ADJUST drag interaction - separated from drawing so it can run every
-    /// frame while the static geometry is served from [`JogStaticCache`].
+    /// Handles drag and scroll on the JOG ADJUST knob. It is separate from the
+    /// drawing so that it runs on every frame while the static geometry comes
+    /// from [`JogStaticCache`].
     pub(super) fn paint_jog_adjust_interact(
         &mut self,
         ui: &mut egui::Ui,
@@ -232,8 +236,9 @@ impl CdjApp {
     }
 }
 
-/// How far the pull from `anchor` to `pos` runs along the platter's tangent
-/// at `anchor`, and the anchor's distance from `center`; none at the centre.
+/// Returns the length of the pull from `anchor` to `pos` along the platter's
+/// tangent at `anchor`, and the anchor's distance from `center`. It returns
+/// `None` when the anchor is at the centre.
 fn tangential_pull(center: Pos2, anchor: Pos2, pos: Pos2) -> Option<(f32, f32)> {
     let pull = pos - anchor;
     let radial = anchor - center;

@@ -1,8 +1,8 @@
-//! VINYL SPEED ADJUST knob - rotary pot with scroll accumulator + visual
-//! gear/indicator.
+//! The VINYL SPEED ADJUST knob: a rotary pot with a scroll accumulator, drawn
+//! as a gear with an indicator.
 //!
-//! One knob, drawn for every player: the shape constants below are the
-//! control itself, and a slate supplies only where on its panel it sits.
+//! Every player draws the same knob from the shape constants below; a slate
+//! supplies only the knob's position on its panel.
 
 use egui::{Pos2, Rect, Sense, Shape, Stroke, Vec2};
 
@@ -46,22 +46,24 @@ pub(in crate::app) const VINYL_SPEED_TICK_RING_OFFSET_REF: f32 = 40.0;
 pub(in crate::app) const VINYL_SPEED_TICK_DOT_RADIUS_REF: f32 = 8.0;
 pub(in crate::app) const VINYL_SPEED_TICK_CENTER_DOT_RADIUS_REF: f32 = 8.0;
 pub(in crate::app) const VINYL_SPEED_TOP_LABEL_FONT_SIZE: f32 = 32.0;
-/// Gap from knob top to the label baseline (ref units).
+/// Gap from the top of the knob to the label baseline, in reference units.
 pub(in crate::app) const VINYL_SPEED_LABEL_GAP_REF: f32 = 36.0;
-/// Endstop shape dimensions and stroke (ref units).
+/// Size and stroke of the endstop shapes, in reference units.
 pub(in crate::app) const VINYL_SPEED_ENDSHAPE_ARM_W: f32 = 50.0;
 pub(in crate::app) const VINYL_SPEED_ENDSHAPE_H: f32 = 40.0;
 pub(in crate::app) const VINYL_SPEED_ENDSHAPE_STROKE: f32 = 6.0;
-/// Fraction of arm width used as flat horizontals at each end of the ramp.
+/// The fraction of the arm width that is flat at each end of the ramp.
 pub(in crate::app) const VINYL_SPEED_RAMP_ARM_FRAC: f32 = 0.35;
-/// Horizontal inset of each shape toward center from its tick-ring x position (ref units).
+/// Horizontal inset of each endstop shape toward the center from its tick-ring x
+/// position, in reference units.
 pub(in crate::app) const VINYL_SPEED_ENDSHAPE_INSET_X: f32 = -80.0;
-/// Radial length of the min/max endcap lines on the tick ring (ref units).
+/// Radial length of the endcap lines on the tick ring, in reference units.
 pub(in crate::app) const VINYL_SPEED_TICK_ENDCAP_LENGTH_REF: f32 = 50.0;
 pub(in crate::app) const VINYL_SPEED_TICK_ENDCAP_STROKE_REF: f32 = 8.0;
-/// Vertical gap from the arc endpoint tick dot to the shape top (ref units).
+/// Vertical gap from the tick at the arc's end to the top of the endstop shape, in
+/// reference units.
 pub(in crate::app) const VINYL_SPEED_ENDSHAPE_GAP_Y: f32 = 30.0;
-/// Pixels of raw scroll needed to advance one vinyl-speed step (0..255).
+/// Pixels of raw scroll needed to move the vinyl speed by one step out of 0..255.
 pub(in crate::app) const VINYL_SCROLL_PX_PER_STEP: f32 = 5.0;
 
 pub(in crate::app) fn draw_vinyl_speed_adj(
@@ -81,7 +83,6 @@ pub(in crate::app) fn draw_vinyl_speed_adj(
 
     vinyl_speed_interact(app, ui, center, tick_ring_r);
 
-    // Indicator angle derived from current vinyl_speed.
     let t = app.vinyl_speed as f32 / 255.0;
     let indicator_angle = VINYL_SPEED_TICK_ARC_START_CW_RAD + t * VINYL_SPEED_TICK_ARC_SPAN_RAD;
 
@@ -91,10 +92,12 @@ pub(in crate::app) fn draw_vinyl_speed_adj(
         vinyl_speed_spec(&s, r_base, tooth_amp, indicator_angle),
     );
 
-    // Static labels and endstop brackets live in right/statics.rs.
+    // Each slate draws the static labels and endstop brackets in its
+    // draw_right/statics.rs.
 }
 
-/// Drag + scroll interaction - pointer angle snapped to 11 detent positions.
+/// Handles drag and scroll on the knob. A drag maps the pointer angle to a
+/// speed of 0 to 255, and each scroll detent moves the speed by one.
 fn vinyl_speed_interact(app: &mut CdjApp, ui: &mut egui::Ui, center: Pos2, tick_ring_r: f32) {
     let interact_rect = Rect::from_center_size(center, Vec2::splat(tick_ring_r * 2.0));
     let resp = ui.interact(
@@ -140,7 +143,7 @@ fn vinyl_speed_interact(app: &mut CdjApp, ui: &mut egui::Ui, center: Pos2, tick_
     }
 }
 
-/// The knob's gear, indicator and tick ring, sized by `s`.
+/// Builds the knob's gear, indicator and tick ring, sized by `s`.
 fn vinyl_speed_spec(
     s: &impl Fn(f32) -> f32,
     r_base: f32,
@@ -189,8 +192,8 @@ fn vinyl_speed_spec(
     }
 }
 
-/// Endstop brackets at the tick arc's endpoints: a stair at the minimum, a
-/// ramp at the maximum.
+/// Collects the endstop brackets at the ends of the tick arc: a stair at the
+/// minimum and a ramp at the maximum.
 pub(in crate::app) fn collect_vinyl_speed_endstops(
     list: &mut ShapeList,
     layout: &UiScale,
@@ -214,7 +217,7 @@ pub(in crate::app) fn collect_vinyl_speed_endstops(
     let estroke = Stroke::new(s(VINYL_SPEED_ENDSHAPE_STROKE), COL_BTN_TEXT);
     let inset = s(VINYL_SPEED_ENDSHAPE_INSET_X);
 
-    // Min shape (stair).
+    // The minimum shape, a stair.
     let sx = min_tx + inset;
     let sy = min_ty + egap;
     list.add(Shape::line(
@@ -227,7 +230,7 @@ pub(in crate::app) fn collect_vinyl_speed_endstops(
         estroke,
     ));
 
-    // Max shape (ramp).
+    // The maximum shape, a ramp.
     let ramp_total = aw * 2.0;
     let ramp_arm = ramp_total * VINYL_SPEED_RAMP_ARM_FRAC;
     let rx = max_tx - ramp_total - inset;

@@ -20,8 +20,8 @@ pub(in crate::app) enum CardGlyph {
     Flat,
 }
 
-/// Which media bay a deck carries at the head of its transport column - the
-/// one place the two CDJ-3000s part company.
+/// Which media bay a deck carries at the head of its transport column. The bay
+/// is the only part of that column where the CDJ-3000 and the CDJ-3000X differ.
 pub(in crate::app) enum Bay {
     /// CDJ-3000: one USB slot, a round stop beside it, an SD slot under the
     /// pair.
@@ -33,10 +33,9 @@ pub(in crate::app) enum Bay {
 /// Panel miniature: the cabinet, the screen in its frame, the jog and the
 /// browse rotary.
 ///
-/// Every model's outline is drawn at one units-per-pixel, so the bigger
-/// cabinet looks bigger. The screen is drawn larger than scale on purpose -
-/// the two decks differ by so little else that true scale tells them apart
-/// only on a ruler.
+/// Every model's outline is drawn at the same units per pixel, so the bigger
+/// cabinet looks bigger. The screen is drawn larger than scale, because at
+/// true scale the two decks look almost identical.
 pub(in crate::app) struct Glyph {
     /// Cabinet, in the slate's reference-canvas units: its aspect, and its
     /// size next to the other model's. The block the screen sits in is part
@@ -44,11 +43,10 @@ pub(in crate::app) struct Glyph {
     /// below is of this height, not of the drawn outline, which is shorter by
     /// the picker's `GLYPH_FOOT_TRIM_REF`.
     pub canvas: (f32, f32),
-    /// Top of the body, as a fraction of the outline's height. The block the
-    /// screen sits in stands above it, and the CDJ-3000X's screen is big enough that
-    /// its block stands roughly twice as proud as the CDJ-3000's. Drawn
-    /// deeper than the drawings have it - 8.8% and 17.0% against 6.4% and
-    /// 12.4% - because that step is what the silhouette has to carry.
+    /// Top of the body, as a fraction of the outline's height. The screen
+    /// block stands above it, and the CDJ-3000X's block is about twice as tall
+    /// as the CDJ-3000's. The values, 8.8% and 17.0%, are deeper than the true
+    /// 6.4% and 12.4% so that the step stays visible in the silhouette.
     pub body_top: f32,
     /// That block's left and right, as fractions of the outline's width.
     pub riser: (f32, f32),
@@ -63,7 +61,7 @@ pub(in crate::app) struct Glyph {
     pub recessed: bool,
     /// The strip the eight hot-cue keys divide between them, as fractions of
     /// the outline: left and right, then top and bottom. The panel places the
-    /// row in its own block, so both decks give their own.
+    /// row in its own block, so each deck sets its own values.
     pub pads_x: (f32, f32),
     pub pads_y: (f32, f32),
     /// Share of each key's pitch left as the gap to the next.
@@ -76,16 +74,18 @@ pub(in crate::app) struct Glyph {
     pub modes_col: Rect,
     /// Which media bay stands at the head of the transport column.
     pub bay: Bay,
-    /// Jog wheel: centre as fractions of the outline, radius over its width.
+    /// The jog wheel's centre as fractions of the outline, and its radius as a
+    /// fraction of the outline's width.
     pub jog: (f32, f32, f32),
-    /// The jog display in the middle of it, over that radius.
+    /// Radius of the jog display in the middle of the jog, as a fraction of
+    /// the jog radius.
     pub jog_hub: f32,
     /// Centre of the browse pod, as fractions of the outline.
     pub pod: Pos2,
-    /// That pod, in reference units: half the width of the block its four arc
-    /// buttons fill, and the radius of the bezel ring around the rotary. The
-    /// CDJ-3000's ring stands well outside its block, which is the decoration
-    /// the deck is known by; the CDJ-3000X's barely clears its own.
+    /// The browse pod in reference units: half the width of the block its four
+    /// arc buttons fill, and the radius of the bezel ring around the rotary.
+    /// The CDJ-3000's ring stands well outside its block and is the deck's
+    /// characteristic decoration; the CDJ-3000X's ring barely clears its block.
     pub pod_half_w: f32,
     pub pod_ring_r: f32,
 }

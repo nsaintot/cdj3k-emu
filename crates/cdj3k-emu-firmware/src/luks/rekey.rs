@@ -1,10 +1,10 @@
 //! Add a per-unit keyslot to a CDJ-3000X `cabinet.img`.
 //!
 //! The cabinet carries the Widevine material and the Device Library Plus key
-//! file.  Every deck's copy descends from the one container the firmware ships
-//! as `images/cabinet.img`: same UUID, same master key, a different keyslot.
-//! The firmware ships it keyed for a factory passphrase the guest never uses;
-//! the installer opens that slot with the passphrase `genkey_pb` computes from
+//! file. Every deck's copy comes from the container the firmware ships as
+//! `images/cabinet.img`. The copies share its UUID and master key and differ
+//! only in their keyslot. The firmware ships it keyed for a factory passphrase
+//! that the guest never uses. The installer opens that slot with the passphrase `genkey_pb` computes from
 //! the `model` and `images/images.tar.gz` ([`vendor_passphrase`]), recovers the
 //! master key, and adds a slot keyed for this unit's serial.
 //!
@@ -20,8 +20,8 @@ use xts_mode::Xts128;
 use super::crypto::{af_merge, af_split, pbkdf2_derive, random_bytes};
 use super::LUKS_SECTOR;
 
-/// PBKDF2 rounds for the keyslot we add, run once per boot by the guest; the
-/// factory slot's 2,868,880 take ~30 s under TCG on x86_64.
+/// PBKDF2 rounds for the added keyslot, which the guest runs once per boot.
+/// The factory slot's 2,868,880 rounds take about 30 s under TCG on x86_64.
 const SLOT_ITERATIONS: u32 = 200_000;
 
 const SLOT_ACTIVE: u32 = 0x00AC_71F3;
@@ -39,8 +39,8 @@ pub enum RekeyError {
     /// Not a LUKS1 container, or too short to hold the header.
     NotLuks1,
     /// No active keyslot opened with the factory passphrase, so the master
-    /// key could not be recovered - not a CDJ-3000X cabinet, or the wrong
-    /// firmware's `images.tar.gz`.
+    /// key could not be recovered. Either the image is not a CDJ-3000X
+    /// cabinet, or the seed came from a different firmware.
     VendorSlotLocked,
     /// The header declares a cipher, mode or hash this code does not handle.
     UnsupportedCipher(String),
@@ -99,7 +99,7 @@ fn be32(image: &[u8], at: usize) -> u32 {
     u32::from_be_bytes([image[at], image[at + 1], image[at + 2], image[at + 3]])
 }
 
-/// A header field counted in sectors, as a byte offset.
+/// Converts a header field counted in sectors to a byte offset.
 fn sector_offset(sectors: u32, what: &'static str) -> Result<usize, RekeyError> {
     (sectors as usize)
         .checked_mul(SECTOR)
@@ -150,7 +150,8 @@ impl Luks1Layout {
     }
 }
 
-/// Check the magic, version, cipher and mode; the hash spec, lowercased.
+/// Checks the magic, version, cipher and mode, and returns the hash spec in
+/// lowercase.
 fn parse_identity(image: &[u8]) -> Result<String, RekeyError> {
     if image.len() < HEADER_BYTES || &image[0..6] != super::LUKS_MAGIC {
         return Err(RekeyError::NotLuks1);
@@ -181,8 +182,8 @@ impl Keyslot {
         stripes: 0,
     };
 
-    /// Header entry `index`, its material checked to lie between the header
-    /// and the payload.
+    /// Parses header entry `index` and checks that its key material lies
+    /// between the header and the payload.
     fn parse(
         image: &[u8],
         index: usize,
@@ -193,7 +194,11 @@ impl Keyslot {
         let active = match be32(image, entry) {
             SLOT_ACTIVE => true,
             SLOT_INACTIVE => false,
-            _ => return Err(RekeyError::Malformed("keyslot state")),
+            _ => {
+                return Err(RekeyError::Malformed(
+                    "keyslot state is neither active nor inactive",
+                ))
+            }
         };
         let iterations = be32(image, entry + 4);
         if active && iterations == 0 {
@@ -201,7 +206,7 @@ impl Keyslot {
         }
         let stripes = be32(image, entry + 44);
         if stripes != LUKS1_STRIPES {
-            return Err(RekeyError::Malformed("keyslot stripes"));
+            return Err(RekeyError::Malformed("keyslot stripe count is not 4000"));
         }
         let km_start = sector_offset(be32(image, entry + 40), "key material offset")?;
         if km_start < HEADER_BYTES {
@@ -209,7 +214,7 @@ impl Keyslot {
         }
         let km_end = km_start
             .checked_add(key_bytes * stripes as usize)
-            .ok_or(RekeyError::Malformed("key material offset"))?;
+            .ok_or(RekeyError::Malformed("key material end overflows"))?;
         if km_end > image.len() {
             return Err(RekeyError::Truncated);
         }
@@ -227,7 +232,7 @@ impl Keyslot {
     }
 }
 
-/// Refuse two keyslots whose material regions overlap.
+/// Refuses two keyslots whose material regions overlap.
 fn check_disjoint(slots: &[Keyslot]) -> Result<(), RekeyError> {
     for (i, a) in slots.iter().enumerate() {
         for b in &slots[i + 1..] {
@@ -240,7 +245,7 @@ fn check_disjoint(slots: &[Keyslot]) -> Result<(), RekeyError> {
 }
 
 /// The cabinet passphrase `genkey_pr` computes, as it writes it to stdout:
-/// 128 lowercase hex digits, no trailing newline.
+/// 128 lowercase hex digits with no trailing newline.
 ///
 /// ```text
 /// N   = strtol(last two digits of the serial, 16)
@@ -265,17 +270,17 @@ pub fn cabinet_passphrase(model_env: &str, soc_serial: &str) -> Result<Vec<u8>, 
 }
 
 /// The factory cabinet passphrase `genkey_pb` computes, as it writes it to
-/// stdout: 128 lowercase hex digits, no trailing newline.
+/// stdout: 128 lowercase hex digits with no trailing newline.
 ///
 /// ```text
 /// KEY = sha512hex( model + sha512hex(seed) )
 /// ```
 ///
 /// It opens the slot the firmware ships (slot 0 on a vendor cabinet), whose
-/// master key every cabinet of that model shares.  `model_env` is the U-Boot
+/// master key every cabinet of that model shares. `model_env` is the U-Boot
 /// `model` variable ([`cdj3k_emu_panel::ModelSpec::model_env`]); `seed` is the
-/// sibling of `cabinet.img` in the same `.UPD` package that the model hashes
-/// ([`crate::read_cabinet_seed`]).
+/// file in the same `.UPD` package as `cabinet.img` whose hash forms the
+/// passphrase ([`crate::read_cabinet_seed`]).
 pub fn vendor_passphrase(model_env: &str, seed: &[u8]) -> Vec<u8> {
     let inner = hex::encode(Sha512::digest(seed));
     let outer = Sha512::digest(format!("{model_env}{inner}").as_bytes());
@@ -285,11 +290,11 @@ pub fn vendor_passphrase(model_env: &str, seed: &[u8]) -> Vec<u8> {
 /// Add a keyslot to `image` that opens with `unit_passphrase`, as slot 0.
 ///
 /// The master key is recovered first by opening a factory slot with
-/// `vendor_passphrase` ([`vendor_passphrase`]); a container no factory slot
-/// opens is refused rather than corrupted.  The new slot's material goes in a
-/// free region, and its header entry trades places with slot 0's: cryptsetup
-/// tries active slots in order, and the factory slot costs 2,868,880 PBKDF2
-/// rounds.  The payload and the existing slots' material are untouched.
+/// `vendor_passphrase` ([`vendor_passphrase`]); a container that no factory
+/// slot opens is refused and left unchanged. The new slot's material goes in a
+/// free region, and its header entry trades places with slot 0's, because
+/// cryptsetup tries active slots in order and the factory slot costs 2,868,880
+/// PBKDF2 rounds.  The payload and the existing slots' material are untouched.
 pub fn add_keyslot(
     image: &mut [u8],
     vendor_passphrase: &[u8],
@@ -307,8 +312,8 @@ fn add_keyslot_with(
 ) -> Result<usize, RekeyError> {
     let layout = Luks1Layout::parse(image)?;
 
-    // Recover the master key from a factory slot.  This both yields the key to
-    // wrap into the new slot and proves the container is a CDJ-3000X cabinet.
+    // Recover the master key from a factory slot. This yields the key to wrap
+    // into the new slot and proves that the container is a CDJ-3000X cabinet.
     let master_key = unlock(&layout, image, vendor_passphrase)?;
 
     let index = layout
@@ -328,8 +333,8 @@ fn add_keyslot_with(
     Ok(0)
 }
 
-/// Exchange two keyslots' header entries; each keeps pointing at its own
-/// material.
+/// Exchanges two keyslots' header entries. Each entry keeps pointing at its
+/// own material.
 fn swap_slot_entries(image: &mut [u8], a: usize, b: usize) {
     if a == b {
         return;
@@ -340,9 +345,9 @@ fn swap_slot_entries(image: &mut [u8], a: usize, b: usize) {
     head[at(lo)..at(lo) + SLOT_ENTRY_BYTES].swap_with_slice(&mut tail[..SLOT_ENTRY_BYTES]);
 }
 
-/// Key slot `index` of `image` for `passphrase`: fresh salt, PBKDF2 slot key,
-/// AF-split and XTS-encrypted `master_key` into the region `layout` reserves,
-/// and the slot's header entry marked active.
+/// Keys slot `index` of `image` for `passphrase`. It draws a fresh salt,
+/// derives the slot key with PBKDF2, AF-splits and XTS-encrypts `master_key`
+/// into the region `layout` reserves, and marks the slot's header entry active.
 fn write_slot(
     image: &mut [u8],
     layout: &Luks1Layout,
@@ -374,8 +379,8 @@ fn write_slot(
     Ok(())
 }
 
-/// Recover the container's master key by opening an active keyslot with
-/// `passphrase`: parse and validate the header, then [`unlock`].
+/// Recovers the container's master key by opening an active keyslot with
+/// `passphrase`. It parses and validates the header, then calls [`unlock`].
 #[cfg(test)]
 fn open_master_key(
     image: &[u8],
@@ -389,10 +394,10 @@ fn open_master_key(
     unlock(&layout, image, passphrase)
 }
 
-/// The master key of the first active keyslot `passphrase` opens: PBKDF2 the
-/// passphrase into the slot key, XTS-decrypt the slot's key material, AF-merge
-/// it, and accept the result only if the header's mk-digest does.  `image` is
-/// not modified.
+/// Returns the master key of the first active keyslot that `passphrase` opens.
+/// For each slot it derives the slot key with PBKDF2, XTS-decrypts and
+/// AF-merges the key material, and accepts the result only if it matches the
+/// header's mk-digest. `image` is not modified.
 fn unlock(layout: &Luks1Layout, image: &[u8], passphrase: &[u8]) -> Result<Vec<u8>, RekeyError> {
     let hash_spec = &layout.hash_spec;
     for slot in layout.slots.iter().filter(|s| s.active) {
@@ -422,10 +427,11 @@ fn unlock(layout: &Luks1Layout, image: &[u8], passphrase: &[u8]) -> Result<Vec<u
     Err(RekeyError::VendorSlotLocked)
 }
 
-/// XTS-encrypt (or decrypt) keyslot material in place, 512-byte sectors
-/// numbered from 0 - cryptsetup encrypts keyslot material at sector 0 whatever
-/// its offset.  The key's first half is the data key, the second the tweak
-/// key: AES-128 halves for a 32-byte key, AES-256 halves for a 64-byte one.
+/// Encrypts or decrypts keyslot material in place with XTS. The 512-byte
+/// sectors are numbered from 0, because cryptsetup encrypts keyslot material
+/// from sector 0 whatever its offset. The key's first half is the data key and
+/// the second the tweak key: AES-128 halves for a 32-byte key, AES-256 halves
+/// for a 64-byte one.
 fn xts_material(material: &mut [u8], slot_key: &[u8], encrypt: bool) -> Result<(), RekeyError> {
     match slot_key.len() {
         32 => xts_sectors::<Aes128>(material, slot_key, encrypt),

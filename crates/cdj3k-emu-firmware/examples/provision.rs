@@ -14,7 +14,7 @@ fn main() {
     {
         Ok(()) => println!("provisioned {out}"),
         Err(e) => {
-            eprintln!("FAILED: {e}");
+            eprintln!("Provisioning failed: {e}");
             std::process::exit(1);
         }
     }

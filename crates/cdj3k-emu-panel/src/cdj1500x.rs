@@ -1,10 +1,11 @@
 //! CDJ-1500X.
 //!
-//! Its MISO frame is its own: the app reads 32 bytes from
-//! `/dev/subucom_spi3.0`, a non-zero format version at byte 0, data to byte
-//! 23 and a CRC-16/X-25 over them, big-endian at 24. Bytes 26-31 are not
-//! checked: the touch words ride at 26 (see the guest shim's touch path) and
-//! the emulator's power flag at 30 (the guest forwarder's power-off check).
+//! The CDJ-1500X has a MISO frame of its own. The app reads 32 bytes from
+//! `/dev/subucom_spi3.0`: a non-zero format version at byte 0, data up to byte
+//! 23, and a big-endian CRC-16/X-25 over those bytes at 24. The app does not
+//! check bytes 26-31: the touch words sit at 26 (see the guest shim's touch
+//! path) and the emulator's power flag sits at 30 (see the guest forwarder's
+//! power-off check).
 //! Buttons are set while pressed. The two encoders (BROWSE at 20-21, BEAT
 //! LOOP at 8-9) are absolute counters, big-endian; the deck differentiates
 //! them and swallows the first frame, so where they start does not matter.
@@ -15,26 +16,28 @@
 //! wiper at 4-5 and the unit's centre-detent reading at 6-7. The deck places
 //! the wiper on a 0-1023 scale, 511 at the detent, linear from 0 up to it and
 //! from it up to [`TEMPO_TOP`]. The jog is a position counter at 12-13 and
-//! the time between its encoder pulses at 14-15, in microseconds, both
-//! big-endian, `0xFFFF` stopped. The deck reads `1111.11 / word` as the jog's
+//! the time between its encoder pulses, in microseconds, at 14-15. Both are
+//! big-endian, and the period is `0xFFFF` when the jog is stopped. The deck
+//! reads `1111.11 / word` as the jog's
 //! speed in seconds of track a second, moves the track by it over time and
 //! ignores the counter: the period has to follow the platter's actual motion,
 //! slow drags included. One platter turn is [`JOG_SPEED_PER_TURN`] seconds of
 //! track.
 //!
-//! Its MOSI frame is 32 bytes on the same node, 0-13 meaningful: PLAY, CUE
-//! and the power lamp as bits, the hot cue pads and the EJECT lamp as 2-bit
-//! levels (3 is full), the jog's ring meter as a value, the front casing's
-//! light in the USB cavity as a colour, then two state bytes and a big-endian
-//! CRC.
+//! Its MOSI frame is 32 bytes on the same node, and only bytes 0-13 carry
+//! data. PLAY, CUE and the power lamp are bits; the hot cue pads and the EJECT
+//! lamp are 2-bit levels (3 is full); the jog's ring meter is a value; the
+//! light in the front casing's USB cavity is a colour. Two state bytes and a
+//! big-endian CRC follow.
 //! Byte 8 and the auto-standby request (byte 8 = 2, byte 10 = 0x53) are deck
 //! state for the sub-CPU; byte 9 bits 0-2 are the sub-CPU test pattern
 //! (service mode page 1) and bit 3 is always set.
 //! Service mode's LED ALL ON page sends `c0 ff ff 63 ff ff ff 00 00 e8`.
-//! BROWSE, BEAT LOOP and CALL/DELETE are not lit; the phone pad's bar is not
-//! driven (always lit white).
+//! BROWSE, BEAT LOOP and CALL/DELETE are not lit. The phone pad's bar is not
+//! driven and is always lit white.
 //!
-//! Service mode holds SHIFT + HOT CUE B (`pre-setting.sh`). Its page 1
+//! Holding SHIFT and HOT CUE B enters service mode (see `pre-setting.sh`). Its
+//! page 1
 //! releases the page keys (BACK, TAG TRACK) once DELETE has been pressed and
 //! released on it.
 
@@ -46,7 +49,8 @@ use crate::miso_frame::{self, MisoCodec, PanelState, MISO_SIZE};
 use crate::mosi_frame::{LampState, MosiCodec, StepLed, MOSI_SIZE};
 use crate::spec::{JogBrake, ModelSpec, TouchSpace};
 
-/// The emulator's power flag; clear, the guest forwarder powers the deck off.
+/// The emulator's power flag. When it is clear, the guest forwarder powers the
+/// deck off.
 pub const POWER_FLAG: FrameBit = (30, 0x80);
 
 /// Where the two big-endian encoder counters sit: BROWSE (rotarySelector) and
@@ -68,16 +72,16 @@ const JOG_POS_AT: usize = 12;
 const JOG_PERIOD_AT: usize = 14;
 const JOG_TOUCH: FrameBit = (19, 0x01);
 const JOG_FORWARD: FrameBit = (19, 0x02);
-/// The deck's jog speed for the platter turning once a second, in seconds of
-/// track a second, matched by hand so a turn of the platter on screen follows
-/// the hub ring (which the deck turns once per 1.8 s of track).
+/// The deck's jog speed, in seconds of track per second, when the platter
+/// turns once a second. At this value a platter turn on screen follows the hub
+/// ring, which the deck turns once per 1.8 s of track.
 pub const JOG_SPEED_PER_TURN: f64 = 0.8;
-/// Encoder pulses a turn: the deck reads `1111.11 / period_us` as its speed,
-/// 900 pulses a second per unit.
+/// Encoder pulses per turn. The deck reads `1111.11 / period_us` as its speed,
+/// so one unit of speed is 900 pulses a second.
 pub const JOG_PULSES_PER_REV: f64 = 900.0 * JOG_SPEED_PER_TURN;
-/// Seconds the platter takes to stop from one turn a second: service mode's
-/// jog load check wants its speed to fall from 3 to 1.5 in 100-150 ms, and
-/// this brake takes 125.
+/// The time, in seconds, the platter takes to stop from one turn a second.
+/// Service mode's jog load check expects the speed to fall from 3 to 1.5
+/// within 100-150 ms; this brake takes 125 ms.
 const JOG_STOP_SECS: f32 = 0.125 * JOG_SPEED_PER_TURN as f32 / 1.5;
 /// The period word of a stopped jog.
 const JOG_STOPPED: u16 = 0xFFFF;
@@ -92,13 +96,13 @@ fn jog_period(rps: f32) -> u16 {
     }
 }
 
-/// A 14-bit tempo word at `at`, high byte first.
+/// Writes a 14-bit tempo word at `at`, high byte first.
 fn put_tempo_word(f: &mut [u8; MISO_SIZE], at: usize, v: u16) {
     miso_frame::put_be(f, at, v & 0x3FFF);
 }
 
-/// Idle frame payload: the format version and the power flag, nothing
-/// pressed.
+/// The idle frame payload: the format version and the power flag are set, and
+/// no button is pressed.
 pub const IDLE: [u8; 62] = {
     let mut f = [0u8; 62];
     f[0] = 0x01;
@@ -130,14 +134,16 @@ const BUTTONS: &[(Btn, FrameBit)] = &[
     (Btn::UsbStop, (23, 0x02)),
 ];
 
-/// Where the frame's CRC sits: over every byte before it, big-endian.
+/// The offset of the frame's big-endian CRC, which covers every byte before it.
 const CRC_AT: usize = 24;
 
 /// Where the shim reads the touch words, u16 LE X then Y.
 const TOUCH_AT: usize = 26;
 
-/// The CDJ-1500X's MISO encoder: [`IDLE`], the pressed bits, the touch
-/// words, the cleared bits, power at [`POWER_FLAG`], the CRC.
+/// The CDJ-1500X's MISO encoder. It starts from [`IDLE`], sets the pressed
+/// bits, writes the encoders, the tempo, the jog and the touch words, clears
+/// the released bits,
+/// clears [`POWER_FLAG`] when the power is off and writes the CRC.
 #[derive(Debug)]
 pub struct Miso;
 
@@ -173,9 +179,7 @@ impl MisoCodec for Miso {
     }
 }
 
-/// Lamp bits, each read off service mode's operator check, which lights a
-/// control's lamp until the control is pressed. The power lamp left of DELETE
-/// goes out with DELETE.
+/// Lamp bits. `LED_STANDBY` is the power lamp left of DELETE.
 const LED_PLAY: FrameBit = (0, 0x40);
 const LED_CUE: FrameBit = (0, 0x80);
 const LED_STANDBY: FrameBit = (9, 0x20);
@@ -205,8 +209,8 @@ pub enum JogRing {
     At(u8),
 }
 
-/// The ring for a byte-3 meter value. A value outside the positions and
-/// [`JogRing::All`] has not been seen lit and reads off.
+/// The ring for a byte-3 meter value. A value that is neither a position nor
+/// [`JogRing::All`] reads as off.
 pub fn jog_ring(meter: u8) -> JogRing {
     match meter {
         JOG_RING_ALL => JogRing::All,
@@ -224,7 +228,7 @@ const SLOT_AT: usize = 4;
 #[derive(Copy, Clone)]
 enum Wire {
     Bit(FrameBit),
-    /// A 2-bit level at `(byte, shift)`: 0 off, 3 full, between dim.
+    /// A 2-bit level at `(byte, shift)`: 0 is off, 3 is full, and 1 or 2 is dim.
     Step((usize, u32)),
     /// HOT CUE pad, A = 0, from [`PADS_AT`].
     Pad(usize),
@@ -312,18 +316,18 @@ pub const SPEC: ModelSpec = ModelSpec {
     // The CDJ-3000X's 10.1-inch panel.
     main_lcd: (1280, 800),
     touch: TouchSpace::ScreenPixels,
-    // Read from a real unit: the product UUID.
+    // The product UUID.
     model_env: "6516d11b-fad9-4f28-9a01-fd2af5e1ef40",
     emmc_index: 0,
-    // The dumped unit's environment carries no `rev_*` variable.
+    // The CDJ-1500X's environment has no `rev_*` variable.
     system_rev_env: None,
     // `CDJ1500Xv110.UPD`; the updater also takes `EP166v….UPD`.
     firmware_file_names: &["CDJ1500X", "EP166"],
     miso: &Miso,
     mosi: &Mosi,
     leds: cdj3kx::SPEC.leds,
-    // No JOG ADJUST knob: a fixed brake that passes service mode's jog load
-    // check.
+    // The CDJ-1500X has no JOG ADJUST knob, so it uses a fixed brake that
+    // passes service mode's jog load check.
     jog_brake: JogBrake::Fixed {
         stop_secs: JOG_STOP_SECS,
     },
@@ -509,7 +513,7 @@ mod tests {
         for pad in Lamp::HOT_CUES {
             assert!(!f.lit(pad), "{pad:?}");
         }
-        // The state bytes and the CRC are no lamp.
+        // The state bytes and the CRC light no lamp.
         let mut raw = [0u8; MOSI_SIZE];
         raw[10..14].copy_from_slice(&[0x53, 0x55, 0xff, 0xff]);
         let f = Model::Cdj1500x.mosi_frame(raw);

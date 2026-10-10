@@ -1,8 +1,8 @@
 //! The players the emulator boots, and the front panel each one presents.
 //!
-//! A model is a [`ModelSpec`] constant - [`cdj3k::SPEC`] is the CDJ-3000,
-//! [`cdj3kx::SPEC`] the CDJ-3000X, [`cdj1500x::SPEC`] the CDJ-1500X - holding
-//! its scalars, its MISO encoder and its MOSI decoder. The UI describes the
+//! A model is a [`ModelSpec`] constant that holds its scalars, its MISO
+//! encoder and its MOSI decoder: [`cdj3k::SPEC`] is the CDJ-3000,
+//! [`cdj3kx::SPEC`] the CDJ-3000X and [`cdj1500x::SPEC`] the CDJ-1500X. The UI describes the
 //! panel in a [`PanelState`] and the player's [`MisoCodec`] writes its frame,
 //! quirks included; the UI names a [`Lamp`] and the player's [`MosiCodec`]
 //! reads it back out of a [`MosiFrame`]. Adding a player is a new spec file
@@ -10,8 +10,8 @@
 //! match arm.
 //!
 //! The [`Btn`](button::Btn) bits, the CDJ-3000's `LED_*` bits and its MISO
-//! field offsets are in its frame coordinates, which the CDJ-3000X's map and
-//! encoder move from.
+//! field offsets use the CDJ-3000's frame coordinates. The CDJ-3000X's map and
+//! encoder offset them.
 
 pub mod button;
 pub mod cdj1500x;

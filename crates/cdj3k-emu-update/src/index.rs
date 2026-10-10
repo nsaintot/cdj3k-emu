@@ -52,8 +52,8 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Whether this crate installs the format itself. A deb or an rpm is the
-    /// system package manager's to install, and a macOS bundle Sparkle's
+    /// Whether this crate installs the format itself. The system package
+    /// manager installs a deb or an rpm, and Sparkle installs a macOS bundle
     /// ([`crate::native`]).
     pub fn installs_itself(self) -> bool {
         matches!(self, Self::AppImage | Self::Inno)
@@ -77,7 +77,7 @@ impl Index {
             .map_err(|e| Error::new(format!("the update index is malformed: {e}")))?;
         if index.schema > SCHEMA {
             return Err(Error::new(format!(
-                "the update index is schema {}, newer than this build reads; \
+                "the update index uses schema {}, which this build cannot read; \
                  download the new release from its page",
                 index.schema
             )));

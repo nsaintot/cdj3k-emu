@@ -8,7 +8,7 @@ pub(super) const MONO_FONT: f32 = 10.5;
 const LINE_GAP: f32 = 3.0;
 pub(super) const STATUS_FONT: f32 = 9.0;
 pub(super) const STATUS_TRACK: f32 = 1.26;
-/// A note line, and a mod's author.
+/// The font size of a note line and of a mod's author.
 pub(super) const NOTE_FONT: f32 = 12.0;
 const CHIP_H: f32 = 16.0;
 const CHIP_PAD: f32 = 5.0;
@@ -20,9 +20,9 @@ const TOOL_PAD: f32 = 14.0;
 const TOOL_GLYPH: f32 = 11.0;
 const TOOL_GLYPH_GAP: f32 = 7.0;
 const ACTION_GLYPH: f32 = 14.0;
-/// Back, and the dialogs' buttons.
+/// The width of Back and of the dialogs' buttons.
 pub(super) const BACK_W: f32 = 100.0;
-/// Room either side of a button label sized to its text.
+/// The room on both sides of the label of a button sized to its text.
 pub(super) const COPY_PAD: f32 = 32.0;
 
 // ── Dashes and links ──────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ const LINK_FONT: f32 = 13.0;
 const LINK_GLYPH: f32 = 14.0;
 pub(super) const LINKS_H: f32 = 20.0;
 
-/// The footer bar, without the app version at its left end.
+/// Draws the footer bar without the app version at its left end.
 pub(super) fn plain_footer(ui: &egui::Ui, bar: Rect, k: f32, pal: &Palette) -> Rect {
     let p = ui.painter();
     p.rect_filled(bar, 0.0, pal.plate);
@@ -106,7 +106,8 @@ pub(super) fn chip_width(p: &egui::Painter, text: &str, k: f32) -> f32 {
     ) + 2.0 * CHIP_PAD * k
 }
 
-/// `BUILT-IN`, `DEV`: a word in a hairline box, left edge at `x`.
+/// Draws a word such as `BUILT-IN` or `DEV` in a hairline box whose left
+/// edge is at `x`.
 pub(super) fn chip(p: &egui::Painter, x: f32, cy: f32, text: &str, k: f32, pal: &Palette) {
     let w = chip_width(p, text, k);
     let rect = Rect::from_min_size(
@@ -129,7 +130,7 @@ pub(super) fn chip(p: &egui::Painter, x: f32, cy: f32, text: &str, k: f32, pal: 
     );
 }
 
-/// `text` cut to `max` with an ellipsis.
+/// Returns `text` cut to the width `max`, with an ellipsis.
 pub(super) fn elide(p: &egui::Painter, text: &str, font: &FontId, max: f32) -> String {
     if text_width(p, text, font, 0.0) <= max {
         return text.to_owned();
@@ -145,7 +146,7 @@ pub(super) fn elide(p: &egui::Painter, text: &str, font: &FontId, max: f32) -> S
     "…".into()
 }
 
-/// [`elide`] from the front: a path or a URL keeps its end.
+/// Like [`elide`], but cuts from the front, so a path or a URL keeps its end.
 pub(super) fn elide_start(p: &egui::Painter, text: &str, font: &FontId, max: f32) -> String {
     if text_width(p, text, font, 0.0) <= max {
         return text.to_owned();
@@ -195,7 +196,8 @@ pub(super) fn tool_width(p: &egui::Painter, label: &str, plus: bool, k: f32) -> 
     w
 }
 
-/// A toolbar button, right edge at `right`: outlined, or filled with ink.
+/// Draws a toolbar button with its right edge at `right`, either outlined or
+/// filled with ink.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tool_button(
     ui: &egui::Ui,
@@ -282,8 +284,9 @@ pub(super) fn glyph_button(
     resp
 }
 
-/// A link out of the app: glyph, label, underlined under the pointer. `at`
-/// is its left end, centred on the line.
+/// Draws a link that opens outside the app: a glyph and a label, underlined
+/// while the pointer is over it. `at` is its left end, centred vertically on
+/// the line.
 pub(super) fn link(
     ui: &egui::Ui,
     at: Pos2,

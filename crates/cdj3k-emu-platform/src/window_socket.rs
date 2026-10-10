@@ -166,7 +166,7 @@ fn send_at(path: &Path, command: Command) -> io::Result<Option<Reply>> {
     Reply::parse(line).map(Some).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("unexpected reply {line:?}"),
+            format!("the window sent an unexpected reply {line:?}"),
         )
     })
 }

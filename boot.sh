@@ -1,71 +1,71 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# boot.sh - boot CDJ-3000 Linux in QEMU/UTM on Apple Silicon Mac
+# boot.sh - boot the CDJ-3000 firmware in QEMU on an Apple silicon Mac, for
+# development without the app.
 #
-# CDJ-3000 hardware: Rockchip RK3399 (aarch64, dual Cortex-A72 + quad A53)
-# OS: Buildroot 2018.02 rootfs (Pioneer EP122 firmware), Linux 6.6 LTS kernel
-#
-# QEMU machine: virt (generic ARM64 virtual platform)
-# CPU: cortex-a72 (matches RK3399's big cores)
-# Acceleration: HVF (Apple Hypervisor Framework) - native aarch64 on M1/M2/M3
+# The guest runs the Pioneer EP122 rootfs (Buildroot 2018.02) on the project's
+# Linux 6.6 LTS kernel, on QEMU's -machine virt with HVF acceleration.
 #
 # Prerequisites:
 #   brew install qemu
 #
 # Usage:
-#   ./qemu/boot.sh [--patched] [--hvf] [--debug] [--gl] [--shm] [--vmnet[=N]]
+#   ./boot.sh [--id N] [--patched] [--no-hvf] [--debug] [--gl] [--shm]
+#             [--service] [--audio] [--usb-blk] [--net-bridge=IFACE]
 #
-#   --patched   use build/initramfs-patched.cpio.gz (with Xorg + shims)
-#   --hvf       (default) use HVF acceleration
-#   --debug     add -s -S to wait for GDB on port 1234 (kernel debug)
-#   --gl        expose virtio-gpu-device (MMIO, 2D) to the guest and open a
-#               native macOS Cocoa window on the host.  Xorg modesetting driver
-#               inside the guest renders to the DRM framebuffer; QEMU blits it
-#               to the Cocoa window.  Requires patched initramfs (virtio_gpu.ko).
-#               Note: Homebrew QEMU 9.x has no virglrenderer/SDL - 3D virgl is
-#               unavailable; this path provides a clean 2D display instead.
-#   --shm       back guest RAM with ${CDJ3K_SOCK_DIR}/ram.shm (MAP_SHARED file) so the
-#               host can inject MISO frames via mmap without GDB RSP.
-#               Without this flag, QEMU uses anonymous RAM - faster emulation.
-#               Required for tools/cdj-inject.py (Phase 5 injection).
-#   --service   boot into EP122TestMode (service/test mode). Injects
-#               BTN_CALL_PREV + BTN_TEMPO_RANGE via subucom_virt.ko for ~5s
-#               so subucom_read writes "on1" to /tmp/testmode on boot.
+#   --id N      the instance number, which selects the socket directory
+#               (/tmp/cdj3k-emu-<uid>/instance-N) and the SSH port (2222 + N)
+#   --patched   use build/initramfs-patched.cpio.gz, the initramfs that
+#               build.sh patches
+#   --no-hvf    accepted, but the script always uses HVF
+#   --debug     add -s -S, so QEMU waits for GDB on port 1234
+#   --gl        expose virtio-gpu-device (MMIO, 2D) to the guest. Xorg's
+#               modesetting driver renders to the DRM framebuffer, and the
+#               patched QEMU's shm display shares it with the host. The script
+#               checks that the initramfs carries virtio_gpu.ko. Homebrew
+#               QEMU has no virglrenderer, so 3D virgl is unavailable.
+#   --shm       back the guest RAM with ${CDJ3K_SOCK_DIR}/ram.shm, a
+#               MAP_SHARED file, so a host tool can write MISO frames through
+#               mmap without GDB. Without this flag, QEMU uses anonymous RAM,
+#               which emulates faster.
+#   --service   boot into EP122TestMode (service mode). subucom_virt.ko holds
+#               BTN_CALL_PREV and BTN_TEMPO_RANGE for about 5 s, so
+#               subucom_read writes "on1" to /tmp/testmode at boot.
 #               Implies --patched.
-#   --audio     expose virtio-sound-device to the guest (uses CoreAudio on macOS).
-#               virtio_snd.ko registers as ALSA card 0 (EP122 writes here → host audio).
+#   --audio     expose virtio-sound-device to the guest, with CoreAudio on the
+#               host. virtio_snd.ko registers as ALSA card 0; EP122 plays to it
+#               and the host outputs the sound. Implies --patched.
+#   --usb-blk   expose a virtio-blk-device (MMIO). As the first virtio-blk
+#               disk, it appears as /dev/mmcblk1 in the guest (kernel patch
+#               01-virtio-blk-naming). The script creates build/usb-hot.img
+#               (256 MiB, sparse, raw, no file system) if it is missing;
+#               format it from the guest with `mkfs.vfat /dev/mmcblk1`. This
+#               tests live USB hot-plug; the loopback drive from /opt/usb.img
+#               stays active alongside it. Implies --patched.
+#   --net-bridge=IFACE
+#               bridge the guest's NIC onto IFACE with vmnet-bridged.
 #               Implies --patched.
-#   --usb-blk   expose virtio-blk-device (MMIO) → /dev/vda inside the guest.
-#               Auto-creates build/usb-hot.img (256 MiB sparse, raw, no FS) if
-#               missing; format from the guest with `mkfs.vfat /dev/vda`.
-#               First-pass smoke test for live-USB hot-plug; loopback-backed
-#               /opt/usb.img path remains active in parallel.  Implies --patched.
 #
-# GDB injection port (Phase 5):
-#   Port 1235 is always open when --patched is used.
-#   tools/cdj-inject.py uses it to write MISO frames into the running guest.
+# GDB injection port:
+#   Port 1235 is open whenever --patched is used. A host tool can write MISO
+#   frames into the running guest through it.
 #   Connect: gdb-multiarch -ex 'target remote localhost:1235'
 #
-# NOTE: The CDJ kernel was built for RK3399 but we use -machine virt.
-#       - Kernel has NO PL011 UART support: serial console is non-functional.
-#         Use QMP (port 4445) + pmemsave to read kernel ring buffer.
-#       - Kernel has NO built-in virtio or display drivers; the patched
-#         initramfs loads them as modules: virtio.ko, virtio_mmio.ko,
-#         virtio_net.ko, virtio_blk.ko, virtio_gpu.ko (if --gl is used).
-#         Network: LD_PRELOAD djlink_shim captures UDP traffic.
-#       - Image.hvf patches out arm_smccc_smc to work with HVF acceleration.
+# The guest kernel has PL011 and the virtio drivers built in. The serial
+# console goes to ${CDJ3K_SOCK_DIR}/serial.log; QMP on port 4445 with
+# pmemsave can also read the kernel ring buffer.
 #
 # QMP usage:
 #   nc localhost 4445  # then: {"execute":"qmp_capabilities"}
-#   See tools/read_ringbuf.py for kernel log extraction via pmemsave.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR" && pwd)"
 
 # ---- QEMU binary ----
-# Default: system QEMU (Homebrew).  --gl switches to our patched build which
-# includes the shm display backend (-display shm,path=FILE).
+# The script uses the system QEMU from Homebrew by default; --gl switches to
+# the patched build, which includes the shm display backend
+# (-display shm,path=FILE).
 QEMU_BIN="qemu-system-aarch64"
 PATCHED_QEMU="${REPO_ROOT}/qemu/install/bin/qemu-system-aarch64"
 
@@ -73,7 +73,7 @@ PATCHED_QEMU="${REPO_ROOT}/qemu/install/bin/qemu-system-aarch64"
 KERNEL="$REPO_ROOT/build/Image"
 INITRAMFS_PATCHED="$REPO_ROOT/build/initramfs-patched.cpio.gz"
 
-# QMP port - used by tools/read_ringbuf.py to extract kernel log
+# The QMP port, through which pmemsave can read the kernel log.
 QMP_PORT=4445
 
 # ---- instance ID (--id N) ----
@@ -121,7 +121,7 @@ ACCEL_ARGS=(-accel hvf)
 CPU_ARG=host
 
 if [[ ! -f "$KERNEL" ]]; then
-    echo "ERROR: Kernel not found at $KERNEL - run ./build-initramfs.sh first"
+    echo "ERROR: Kernel not found at $KERNEL; run ./build.sh first."
     exit 1
 fi
 
@@ -129,11 +129,11 @@ INITRD="$INITRAMFS_PATCHED"
 if [[ "$USE_PATCHED" -eq 1 ]]; then
     if [[ ! -f "$INITRAMFS_PATCHED" ]]; then
         echo "ERROR: Patched initramfs not found at $INITRAMFS_PATCHED"
-        echo "  Run: ./build-initramfs.sh"
+        echo "  Run: ./build.sh"
         exit 1
     fi
 else
-    echo "Using ORIGINAL initramfs (raw boot)"
+    echo "Using the original initramfs (raw boot)."
 fi
 
 echo "Kernel: $KERNEL"
@@ -144,22 +144,22 @@ echo "QMP:    localhost:$QMP_PORT"
 GDB_ARGS=()
 if [[ "$DEBUG_GDB" -eq 1 ]]; then
     GDB_ARGS=(-s -S)
-    echo "GDB debug: waiting for connection on localhost:1234 (-S freeze)"
+    echo "GDB debug: waiting for a connection on localhost:1234; -S keeps the CPU stopped until then."
 fi
 
-# ---- GDB injection port (Phase 5 - always-on for --patched) ----
-# Port 1235 is opened so tools/cdj-inject.py can write MISO frames into
-# the running guest via QMP stop / GDB RSP M / QMP cont.
-# Zero overhead when nothing is connected.
+# ---- GDB injection port (always on with --patched) ----
+# Port 1235 lets a host tool write MISO frames into the running guest: it
+# stops the guest over QMP, writes with the GDB RSP M command and resumes with
+# QMP cont. The port costs nothing while no debugger is connected.
 GDB_INJECT_ARGS=()
 if [[ "$USE_PATCHED" -eq 1 ]]; then
     GDB_INJECT_ARGS=(-gdb tcp::1235)
-    echo "GDB inject: localhost:1235  (tools/cdj-inject.py)"
+    echo "GDB inject: localhost:1235"
 fi
 
-# ---- RNG (entropy for dropbear key exchange) ----
-# Without this, the guest kernel pool on ARM64 virt is unseeded and dropbear
-# blocks forever in getrandom() - TCP connects but no SSH banner is sent.
+# ---- RNG (entropy for the dropbear key exchange) ----
+# Without it, the guest's entropy pool on ARM64 virt stays unseeded and
+# dropbear blocks in getrandom(): TCP connects, but no SSH banner arrives.
 RNG_ARGS=()
 if [[ "$USE_PATCHED" -eq 1 ]]; then
     RNG_ARGS=(
@@ -168,29 +168,31 @@ if [[ "$USE_PATCHED" -eq 1 ]]; then
     )
 fi
 
-# ---- virtio-sound (host audio via CoreAudio) ----
-# virtio_snd.ko loads first and claims ALSA card 0; EP122/JUCE routes its audio
-# PCM playback through the TX virtqueue → QEMU CoreAudio backend → Mac speakers.
-# Only active when --audio is passed.
+# ---- virtio-sound (host audio through CoreAudio) ----
+# virtio_snd.ko loads first and claims ALSA card 0. EP122's JUCE audio goes
+# through the TX virtqueue to the QEMU CoreAudio backend and the Mac's output.
+# This is active only with --audio.
 AUDIO_ARGS=()
 if [[ "$USE_AUDIO" -eq 1 ]]; then
     AUDIO_ARGS=(
-        # in.voices=0: suppress CoreAudio capture voice - macOS requires
-        # explicit microphone permission and QEMU doesn't have it.
-        # streams=1: advertise one PCM stream (output only).  With the default
-        # streams=2 and in.voices=0, QEMU 11 fails to realize both streams and
-        # writes streams=0 to the virtio config space → guest virtio_snd probe
-        # fails with "device does not comply with spec version 1.x" (-EINVAL).
+        # in.voices=0 disables the CoreAudio capture voice, because macOS
+        # requires a microphone permission that QEMU does not have.
+        # streams=1 advertises one PCM stream, for output only. With the
+        # default streams=2 and in.voices=0, QEMU 11 fails to realise both
+        # streams and writes streams=0 to the virtio config space, so the
+        # guest's virtio_snd probe fails with "device does not comply with
+        # spec version 1.x" (-EINVAL).
         -audiodev "coreaudio,id=audio0,in.voices=0"
         -device  "virtio-sound-device,audiodev=audio0,streams=1"
     )
-    echo "Audio:      virtio-sound-device (CoreAudio)  →  ALSA card 0 in guest"
+    echo "Audio:      virtio-sound-device (CoreAudio), ALSA card 0 in the guest"
 fi
 
-# ---- virtio-serial channels (main / jog / sub) ----
-# Three Unix-socket-backed virtserialports are always created when --patched.
-# cdj-ui connects to ${CDJ3K_SOCK_DIR}/{main,jog,sub}.sock as a client.
-# server=on,wait=off - QEMU listens; cdj-ui may connect/disconnect at will.
+# ---- virtio-serial channels (main, sub and led) ----
+# With --patched, the script always creates three virtserialports backed by
+# Unix sockets: ${CDJ3K_SOCK_DIR}/main.sock, sub.sock and led.sock. With
+# server=on,wait=off, QEMU listens, and a client can connect and disconnect
+# at any time.
 VSERIAL_ARGS=()
 if [[ "$USE_PATCHED" -eq 1 ]]; then
     VSERIAL_ARGS=(
@@ -205,14 +207,15 @@ if [[ "$USE_PATCHED" -eq 1 ]]; then
 fi
 
 # ---- ivshmem (jog LCD zero-copy frame buffer) ----
-# A 1 MiB shared memory region between guest and host.
-# Layout (see crates/cdj3k-emu-streams/src/jog_stream.rs and guest/shim/jog.c):
+# A 1 MiB shared memory region between the guest and the host.
+# Layout (see crates/cdj3k-emu-streams/src/jog_stream.rs and
+# guest/deck_shim/core/deck_shim.h):
 #   offset 0x0000  u32 magic = 'JOG1' (0x31474F4A LE)
 #   offset 0x0004  u32 seq      (seqlock counter; odd = write in progress)
 #   offset 0x0008  u16 width, u16 height
 #   offset 0x000C  u32 format   (XRGB8888)
 #   offset 0x1000  pixel data (W*H*4 bytes)
-# Host polls `seq` from the mmap'd region - no wake channel.
+# The host polls `seq` in the mapped region; there is no wake-up channel.
 JOG_SHM_FILE="${CDJ3K_SOCK_DIR}/jog.shm"
 IVSHMEM_ARGS=()
 if [[ "$USE_PATCHED" -eq 1 ]]; then
@@ -223,15 +226,16 @@ if [[ "$USE_PATCHED" -eq 1 ]]; then
         -object  "memory-backend-file,id=jogshm,mem-path=${JOG_SHM_FILE},size=1M,share=on"
         -device  "ivshmem-plain,memdev=jogshm,master=on"
     )
-    echo "Jog shm:    ivshmem-plain  →  ${JOG_SHM_FILE}  (1 MiB, host mmap zero-copy)"
+    echo "Jog shm:    ivshmem-plain backed by ${JOG_SHM_FILE} (1 MiB, mapped zero-copy by the host)"
 fi
 
-# ---- SSH / network (e1000 user-mode NIC) ----
-# When --patched, expose a QEMU user-mode e1000 NIC.
-# The guest insmod-e1000.service loads e1000.ko → eth0 appears.
-# link-monitor.sh runs udhcpc → eth0 gets 10.0.2.15/24 from QEMU DHCP.
-# dropbear listens on :22 inside the guest → forwarded to host :2222.
-#   ssh -p 2222 root@localhost           (key auth or blank password via -B)
+# ---- SSH and network (virtio-net NIC) ----
+# With --patched, the guest gets a virtio-net NIC: QEMU user-mode networking
+# by default, or vmnet-bridged with --net-bridge=IFACE. In user mode,
+# link-monitor.sh runs udhcpc, and eth0 gets 10.0.2.15/24 from QEMU's DHCP
+# server. dropbear listens on port 22 in the guest, which QEMU forwards to
+# host port 2222 + ID; UDP port 8801 is forwarded too.
+#   ssh -p 2222 root@localhost           (key or blank password through -B)
 #   scp -P 2222 file root@localhost:/tmp/
 NET_ARGS=()
 if [[ "$USE_PATCHED" -eq 1 ]]; then
@@ -242,31 +246,32 @@ if [[ "$USE_PATCHED" -eq 1 ]]; then
             -device "virtio-net-device,netdev=net0,mac=${vmnet_mac},mrg_rxbuf=off"
         )
         echo "Network:    vmnet-bridged (Pro DJ Link)  iface=${NET_BRIDGE_IFACE}  MAC=${vmnet_mac}"
-        echo "            After boot, find IP:  arp -an | grep ${vmnet_mac}"
-        echo "            Then SSH:  ssh root@<IP>"
+        echo "            After boot, find the IP with:  arp -an | grep ${vmnet_mac}"
+        echo "            Then connect with:  ssh root@<IP>"
     else
         NET_ARGS=(
             -netdev "user,id=net0,hostfwd=tcp::${CDJ3K_SSH_PORT}-:22,hostfwd=udp::8801-:8801"
             -device "virtio-net-device,netdev=net0,mrg_rxbuf=off"
         )
-        echo "Network:    virtio-net-device (MMIO)  →  ssh -p ${CDJ3K_SSH_PORT} root@localhost subucom:8801  socks: ${CDJ3K_SOCK_DIR}"
+        echo "Network:    virtio-net-device (MMIO); SSH with ssh -p ${CDJ3K_SSH_PORT} root@localhost; subucom on port 8801; sockets in ${CDJ3K_SOCK_DIR}"
     fi
 fi
 
-# ---- Fake rekordbox USB drive (loop device from /opt/usb.img in initramfs) ----
-# Default path (always on with --patched): usb.img embedded in initramfs at
-# /opt/usb.img → losetup /dev/loop0 → mount /media/usb/sda[1] → /proc/udev_usb1.
-# Driven by usb-drive-mount.service.  No QEMU block device args needed for this.
+# ---- Fake rekordbox USB drive (a loop device on /opt/usb.img in the initramfs) ----
+# By default (always on with --patched), the initramfs carries usb.img at
+# /opt/usb.img. usb-drive-mount.service attaches it to /dev/loop0 with
+# losetup, mounts it at /media/usb/sdb1 and reports it in /proc/udev_usb1.
+# This path needs no QEMU block device arguments.
 #
-# Live path (--usb-blk): virtio-blk-device on the MMIO bus exposes
-# build/usb-hot.img as /dev/vda.
+# With --usb-blk, a virtio-blk-device on the MMIO bus exposes
+# build/usb-hot.img as /dev/mmcblk1.
 USB_IMG="$REPO_ROOT/build/usb.img"
 if [[ "$USE_PATCHED" -eq 1 ]]; then
     if [[ -f "$USB_IMG" ]]; then
-        echo "USB drive:  embedded in initramfs as /opt/usb.img  →  /dev/loop0 (losetup)"
+        echo "USB drive:  embedded in the initramfs as /opt/usb.img and attached to /dev/loop0 with losetup"
     else
-        echo "USB drive:  $USB_IMG not found - rebuild after adding build/usb.img"
-        echo "            EP122 will show 'No Media' screen"
+        echo "USB drive:  $USB_IMG not found; rebuild after adding build/usb.img."
+        echo "            EP122 will show the 'No Media' screen."
     fi
 fi
 
@@ -275,9 +280,9 @@ USB_BLK_IMG="$REPO_ROOT/build/usb-hot.img"
 USB_BLK_ARGS=()
 if [[ "$USE_USB_BLK" -eq 1 ]]; then
     if [[ ! -f "$USB_BLK_IMG" ]]; then
-        echo "USB blk:    creating empty 256 MiB sparse image at $USB_BLK_IMG"
+        echo "USB blk:    creating an empty 256 MiB sparse image at $USB_BLK_IMG"
         mkdir -p "$(dirname "$USB_BLK_IMG")"
-        # macOS-friendly sparse allocation; raw, unformatted.
+        # Create a raw, unformatted sparse image in a way that also works on macOS.
         : > "$USB_BLK_IMG"
         /usr/bin/truncate -s 256M "$USB_BLK_IMG" 2>/dev/null \
             || dd if=/dev/zero of="$USB_BLK_IMG" bs=1 count=0 seek=256m status=none
@@ -286,29 +291,30 @@ if [[ "$USE_USB_BLK" -eq 1 ]]; then
         -drive  "file=${USB_BLK_IMG},if=none,id=usbblk0,format=raw,cache=writeback"
         -device "virtio-blk-device,drive=usbblk0,id=usbblk0"
     )
-    echo "USB blk:    virtio-blk-device  →  /dev/vda  (image: ${USB_BLK_IMG})"
+    echo "USB blk:    virtio-blk-device, /dev/mmcblk1 in the guest (image: ${USB_BLK_IMG})"
 fi
 echo ""
 
-# ---- Shared RAM file (Phase 5 injection) ----
-# With --shm, back the guest RAM with a MAP_SHARED file so the Mac host
-# can inject MISO frames directly via mmap without any GDB RSP.
-# (QEMU 9.x HVF on aarch64 crashes on any GDB m/M memory command.)
+# ---- Shared RAM file (host injection) ----
+# With --shm, back the guest RAM with a MAP_SHARED file, so the host can write
+# MISO frames directly through mmap without GDB. QEMU's HVF on aarch64 crashes
+# on GDB m and M memory commands.
 #
-# Without --shm, QEMU uses anonymous RAM - no file, faster emulation.
-# File is sparse on APFS - no actual disk usage until pages are written.
+# Without --shm, QEMU uses anonymous RAM, which needs no file and emulates
+# faster. The file is sparse on APFS and uses no disk space until pages are
+# written.
 SHARED_RAM=""
-# MEM_BYTES is the exact byte count matching the CDJ-3000's Linux-visible RAM.
-# IMPORTANT: always pass as "${MEM_BYTES}B" to QEMU - without the 'B' suffix,
-# QEMU interprets the value as MiB (~3.9 PB), which exceeds HVF's 40-bit PA limit.
-# The jog-LCD framebuffer sits at GPA ~0xD6C0C000 (~3.6 GiB), so we need at least
-# that much RAM - the old "size=3G" (3072 MiB) was too small and caused jog garbage.
-MEM_BYTES=4038197248   # 0xF0B20000 - must be 64 KiB-aligned (QEMU 9.x mmap requirement)
-MEM_ARGS=(-machine virt -m "${MEM_BYTES}B")   # default: anonymous RAM
+# MEM_BYTES is the exact byte count of the CDJ-3000's Linux-visible RAM.
+# Always pass it to QEMU as "${MEM_BYTES}B": without the 'B' suffix, QEMU reads
+# the value as MiB (about 3.9 PB), which exceeds HVF's 40-bit PA limit.
+# The jog LCD framebuffer sits at GPA 0xD6C0C000 (about 3.6 GiB), so the guest
+# needs at least that much RAM.
+MEM_BYTES=4038197248   # 0xF0B20000; QEMU's mmap needs it 64 KiB-aligned.
+MEM_ARGS=(-machine virt -m "${MEM_BYTES}B")   # Anonymous RAM by default.
 if [[ "$USE_SHM" -eq 1 ]]; then
     SHARED_RAM="${CDJ3K_SOCK_DIR}/ram.shm"
-    # Always recreate as a fresh sparse file - stale SUBUCOM\x00 magic from
-    # previous sessions would cause the host to write to the wrong mailbox offset.
+    # Always recreate the sparse file: a stale SUBUCOM\x00 magic from an
+    # earlier session would make the host write to the wrong mailbox offset.
     echo "Clearing shared RAM file (${MEM_BYTES} bytes): $SHARED_RAM"
     python3 -c "
 import os
@@ -324,110 +330,96 @@ print('  Ready (sparse).')
     )
     echo "Shared RAM: $SHARED_RAM  (host mmap injection enabled)"
 else
-    echo "Shared RAM: disabled (anonymous RAM - use --shm for host mmap injection)"
+    echo "Shared RAM: disabled (anonymous RAM; use --shm for host mmap injection)"
 fi
 
 # ---- Display / GPU ----
-# virtio-gpu-device is always exposed when --patched.  The guest Xorg modesetting
-# driver needs /dev/dri/card0 (from virtio_gpu.ko) to start X :0; without it
-# x11-only.service fails and EP122 never spawns.
-# Default (--patched, no --gl): -display none - GPU renders to memory, no host window.
-# --gl: switches host display to a native Cocoa window (virtio-gpu-device MMIO, 2D).
-#   Xorg modesetting uses the DRM framebuffer as a dumb KMS buffer.
-#   NOTE: Homebrew QEMU 9.x has no virglrenderer - virtio-gpu-gl / sdl,gl=on are
-#   unavailable; virtio-gpu-device + cocoa is the supported 2D path.
-#   Requires: virtio_gpu.ko in initramfs (./guest/modules/build/build-initramfs.sh)
+# By default (--patched without --gl), the script exposes no GPU and passes
+# -display none; the guest's Xorg uses the dummy driver (patch 25).
+# --gl exposes virtio-gpu-device (MMIO, 2D), and Xorg's modesetting driver
+# uses the DRM framebuffer as a dumb KMS buffer. Homebrew QEMU 9.x has no
+# virglrenderer, so virtio-gpu-gl and sdl,gl=on are unavailable. The script
+# checks that the initramfs carries virtio_gpu.ko.
 VIRTIO_GPU_KO="$REPO_ROOT/build/initramfs-work/rootfs/lib/modules/virtio_gpu.ko"
 VIRTIO_GPU_KO_ALT="$REPO_ROOT/build/initramfs-work/rootfs/usr/lib/modules/virtio_gpu.ko"
 DISPLAY_ARGS=(-display none)
 GPU_DEVICE_ARGS=()
 if [[ "$USE_PATCHED" -eq 1 ]]; then
     if [[ "$USE_GL" -eq 1 ]]; then
-        # --gl mode: expose virtio-gpu-device (MMIO) + Cocoa window for DRM/KMS display.
-        # Pioneer Xorg uses modesetting driver on /dev/dri/card0 (from virtio_gpu.ko).
-        # NOTE: virtio_gpu.ko has struct ABI issues with Pioneer kernel; --gl may crash.
-        #       Headless mode (no --gl) uses Xorg dummy driver - no DRM hardware needed.
+        # In --gl mode, expose virtio-gpu-device (MMIO) for the DRM/KMS display.
+        # Pioneer's Xorg uses the modesetting driver on /dev/dri/card0.
+        # Headless mode (without --gl) uses the Xorg dummy driver and needs no
+        # DRM hardware.
         VIRTIO_GPU_AVAILABLE=0
         if [[ -f "$VIRTIO_GPU_KO" ]] || [[ -f "$VIRTIO_GPU_KO_ALT" ]]; then
             VIRTIO_GPU_AVAILABLE=1
         elif [[ -f "$INITRD" ]]; then
-            # rootfs may be removed by build-initramfs.sh --clean; verify packed archive.
+            # build.sh --clean removes the rootfs, so check the packed archive instead.
             if gzip -dc "$INITRD" 2>/dev/null | cpio -it 2>/dev/null | rg -q '(^|/)virtio_gpu\.ko$'; then
                 VIRTIO_GPU_AVAILABLE=1
             fi
         fi
 
         if [[ "$VIRTIO_GPU_AVAILABLE" -eq 0 ]]; then
-            echo "WARNING: virtio_gpu.ko not found in initramfs (needed for --gl)."
-            echo "         Run:  ./build-initramfs.sh"
+            echo "WARNING: virtio_gpu.ko not found in the initramfs (needed for --gl)."
+            echo "         Run:  ./build.sh"
         else
-            # max_outputs=2: exposes both virtual outputs to the Pioneer kernel.
-            #   output 0 (1280×720) → CRTC 29 (main LCD / DSI-1)
-            #   output 1 (1280×240) → CRTC 32 (jog LCD / DSI-2)
-            # With max_outputs=1 (old default), the Pioneer kernel's SETCRTC for CRTC 32
-            # fails silently → EP122TestMode detects the failure and stops rendering to
-            # the jog framebuffer → deck_shim.so captures only zeros.
-            # max_outputs=1: Xorg only sees CRTC 29 (main LCD). CRTC 32 (jog LCD) is
-            # intercepted by deck_shim.so which fakes SETCRTC success so EP122TestMode
-            # renders into the GEM buffer; deck_shim then copies it to the memfd.
-            # max_outputs=2 caused Pioneer _pw_dc to crash inside Xorg's dumb alloc.
+            # max_outputs=1: Xorg sees only CRTC 29 (the main LCD). The guest
+            # kernel adds the jog LCD as a second, synthetic output (CRTC 32,
+            # DSI-2), and deck_shim.so reads the app's jog framebuffer and
+            # publishes it through ivshmem.
+            # Do not use max_outputs=2: Pioneer's _pw_dc crashes inside Xorg's
+            # dumb buffer allocation.
             GPU_DEVICE_ARGS=(-device "virtio-gpu-device,id=virtio-gpu0,xres=1280,yres=720,max_outputs=1")
             if [[ -x "${PATCHED_QEMU}" ]]; then
                 QEMU_BIN="${PATCHED_QEMU}"
                 DISPLAY_ARGS=(-display "shm,path=${CDJ3K_SOCK_DIR}/main.shm")
                 echo "GPU:        virtio-gpu-device (id=virtio-gpu0, MMIO 2D)  xres=1280 yres=720  max_outputs=1"
-                echo "Display:    shm → ${CDJ3K_SOCK_DIR}/main.shm  (zero-copy mmap, cdj-ui reads directly)"
+                echo "Display:    shm in ${CDJ3K_SOCK_DIR}/main.shm (the UI maps it and reads it zero-copy)"
             else
                 DISPLAY_ARGS=(-display none)
                 echo "GPU:        virtio-gpu-device (id=virtio-gpu0, MMIO 2D)  xres=1280 yres=720  max_outputs=1"
-                echo "Display:    headless (patched QEMU not found at ${PATCHED_QEMU}, run qemu/build.sh)"
+                echo "Display:    headless (patched QEMU not found at ${PATCHED_QEMU}; run qemu/build.sh)"
             fi
         fi
     else
-        # Headless mode: no virtio-gpu-device exposed.
-        # Guest Xorg uses the 'dummy' video driver (ABI 24.0, from Ubuntu 20.04 arm64).
-        # dummy_drv.so creates a virtual framebuffer in memory - no DRM hardware required.
+        # Headless mode exposes no virtio-gpu-device. The guest's Xorg uses the
+        # dummy video driver (ABI 24.0, from Ubuntu 20.04 arm64), which creates
+        # a framebuffer in memory and needs no DRM hardware.
         echo "Display:    headless (-display none)  Xorg dummy driver"
     fi
 fi
 if [[ "$USE_PATCHED" -eq 0 ]]; then
-    echo "Display:    headless (no GPU device - original boot)"
+    echo "Display:    headless (no GPU device; original boot)"
 fi
 echo ""
 
 # ---- QEMU launch ----
-# NOTE: CDJ kernel has no PL011 UART support - console= is decorative.
-#       Use QMP pmemsave + tools/read_ringbuf.py to read kernel ring buffer.
-#       virtio-net-device and virtio_gpu are loaded as modules (patched initramfs).
-#       Display (headless default):  Xorg dummy driver inside the guest (-display none)
-#       Display (--gl mode):         virtio-gpu-device (MMIO 2D) → Xorg modesetting → DRM KMS;
-#                                    host Cocoa window shows framebuffer via shm display.
-#       DJ Link UDP packets captured by djlink_shim.so → /tmp/djlink.log
-#       Phase 5 injection: host writes to $SHARED_RAM (MAP_SHARED mmap).
-#         tools/cdj-inject.py uses file_offset = GPA - 0x40000000.
+# The serial console (console=ttyAMA0) goes to ${CDJ3K_SOCK_DIR}/serial.log.
+# Display, headless by default: the Xorg dummy driver in the guest
+#   (-display none).
+# Display in --gl mode: Xorg modesetting drives DRM KMS on virtio-gpu-device
+#   (MMIO 2D), and the patched QEMU's shm display shares the framebuffer.
+# Injection: with --shm, the host writes to $SHARED_RAM (MAP_SHARED mmap); a
+#   guest physical address maps to file offset GPA - 0x40000000.
 #
-# CPU/performance notes:
-#   loglevel=1  - suppresses DEBUG/INFO/NOTICE/WARNING kernel messages.
-#                 The CDJ kernel is a debug build (CONFIG_DEBUG_PREEMPT=y,
-#                 CONFIG_DEBUG_SPINLOCK=y, SCHED_DEBUG) - every printk hits
-#                 the spinlock-guarded ring buffer with debug validation.
-#                 loglevel=7 during boot spams thousands of messages.
-#   nowatchdog  - disables the soft/hard lockup watchdog. Saves periodic
-#                 watchdog-tick overhead (not needed in emulation).
-#   Remaining CPU load is inherent: EP122 renders its full GUI at ~60fps
-#   through Xvfb (pure software X, no GPU). Use --gl for virtio-gpu KMS.
-# ---- Service mode (testmode) kernel cmdline ----
+# Kernel command line:
+#   nowatchdog  disables the soft and hard lockup watchdog, whose periodic
+#               ticks emulation does not need.
+#   Most of the remaining CPU load comes from EP122 rendering its full GUI at
+#   about 60 fps in software X. Use --gl for virtio-gpu KMS.
+# ---- Service mode (testmode) kernel command line ----
 KCMDLINE="root=/dev/ram0 rdinit=/init loglevel=7 nowatchdog rng_core.default_quality=1024 console=ttyAMA0,115200 systemd.journald.forward_to_console=1"
 if [[ "$USE_SERVICE" -eq 1 ]]; then
     KCMDLINE="$KCMDLINE subucom_testmode"
-    echo "Service mode: EP122TestMode (subucom_virt inject_testmode=1, auto-clear ~5s)"
+    echo "Service mode: EP122TestMode (subucom_virt inject_testmode=1, released after about 5 s)"
     echo ""
 fi
 
 echo "CDJ3K instance: ${CDJ3K_ID}  SSH: ${CDJ3K_SSH_PORT}  Sockets: ${CDJ3K_SOCK_DIR}"
 
 SERIAL_LOG="${CDJ3K_SOCK_DIR}/serial.log"
-echo "Serial log:  $SERIAL_LOG  (tail -f to read PL011 console)"
+echo "Serial log:  $SERIAL_LOG  (tail -f it to read the PL011 console)"
 
 echo "+ ${QEMU_BIN} ${MEM_ARGS[@]} -cpu $CPU_ARG ${ACCEL_ARGS[@]} -smp 6 -kernel $KERNEL -initrd $INITRD -append \"$KCMDLINE\" ${DISPLAY_ARGS[@]} -serial file:${SERIAL_LOG} -qmp tcp:localhost:${QMP_PORT},server=on,wait=off ${RNG_ARGS[@]+"${RNG_ARGS[@]}"} ${AUDIO_ARGS[@]+"${AUDIO_ARGS[@]}"} ${NET_ARGS[@]+"${NET_ARGS[@]}"} ${GPU_DEVICE_ARGS[@]+"${GPU_DEVICE_ARGS[@]}"} ${USB_BLK_ARGS[@]+"${USB_BLK_ARGS[@]}"} ${VSERIAL_ARGS[@]+"${VSERIAL_ARGS[@]}"} ${GDB_ARGS[@]+"${GDB_ARGS[@]}"} ${GDB_INJECT_ARGS[@]+"${GDB_INJECT_ARGS[@]}"}"
 

@@ -19,14 +19,13 @@ const NOWHERE: Pos2 = Pos2::new(-1.0e6, -1.0e6);
 pub(super) struct RawPointer {
     pub pos: Option<Pos2>,
     pub down: bool,
-    /// The primary button went down this frame.
+    /// Whether the primary button went down this frame.
     pub pressed: bool,
 }
 
-/// What the input hook needs to map the pointer: the tilt drawn last frame
-/// and the panel it was drawn in, the plan's canvas size, and the tops of
-/// the parts standing above the panel - on screen, with their heights -
-/// frontmost first.
+/// What the input hook needs to map the pointer: the tilt drawn last frame,
+/// the panel it was drawn in, the plan's canvas size, and the on-screen tops
+/// of the parts standing above the panel with their heights, frontmost first.
 pub(super) struct TiltInput {
     pub tilt: Tilt,
     pub panel: Rect,

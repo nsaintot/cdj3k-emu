@@ -14,7 +14,7 @@ pub const DRAWING_H: f32 = 2125.0;
 /// Reference units per drawing pixel.
 const PX: f32 = super::REF_W / DRAWING_W;
 
-/// A drawing-pixel length or coordinate, in reference units.
+/// Converts a length or coordinate in drawing pixels to reference units.
 pub const fn px(v: f32) -> f32 {
     v * PX
 }
@@ -39,7 +39,7 @@ pub const SLAB: Rect = Rect::from_min_max(
 );
 pub const SLAB_R: f32 = px(8.0);
 pub const SLAB_BEVEL: f32 = px(7.0);
-/// The bevel line's pen, in reference units.
+/// The bevel line's width, in reference units.
 pub const SLAB_BEVEL_STROKE: f32 = 2.0;
 
 /// The housing's front edge, running the cabinet's whole width.
@@ -54,12 +54,13 @@ pub const GLASS: Rect = Rect::from_min_max(
 /// The panel is 1280 x 800.
 const LCD_ASPECT: f32 = 1280.0 / 800.0;
 
-/// The LCD's bezel: the aperture's width, at the panel's own aspect, on the
-/// aperture's centre (the drawing's aperture is 1.6 % shallower than 16:10).
+/// Returns the LCD's bezel: the aperture's width at the panel's aspect ratio,
+/// centred on the aperture. The drawing's aperture is 1.6 % shallower than
+/// 16:10.
 ///
-/// `View > Extend Screen` grows it to the slab's whole width inside the bevel
-/// line, which stays visible; at 16:10 that is the tighter bound, the slab
-/// being deeper than the panel then is.
+/// `View > Extend Screen` widens it to the slab's full width inside the bevel
+/// line, which stays visible. At 16:10 the width is the limiting bound,
+/// because the slab is deeper than the panel at that width.
 pub fn lcd_bezel(extended: bool) -> Rect {
     let w = if extended {
         SLAB.shrink(SLAB_BEVEL + SLAB_BEVEL_STROKE).width()

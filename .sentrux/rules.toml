@@ -1,5 +1,5 @@
 # Structural limits CI enforces with `sentrux check .`. Raise min_quality and
-# lower the size limits as the code improves; never the other way.
+# lower the size limits as the code improves; do not loosen them.
 # max_file_lines admits guest/modules/virtio_snd/virtio_snd.c, a single-file
 # kernel module.
 [constraints]

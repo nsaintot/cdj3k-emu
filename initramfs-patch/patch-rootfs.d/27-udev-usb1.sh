@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # 27-udev-usb1.sh
 #
-# Install insmod-udev-usb1.service - loads udev_usb1.ko which creates
-# /proc/udev_usb1, the Pioneer USB event channel that the app reads.
-# Must run before the app unit so the app finds the proc entry at startup.
+# Install insmod-udev-usb1.service, which loads udev_usb1.ko. The module
+# creates /proc/udev_usb1, the Pioneer USB event channel that the app reads,
+# and the other media event nodes. The service runs before the app unit, so
+# the app finds the proc entries at startup.
 set -eu
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 : "${APP_UNIT:?APP_UNIT must be set by dispatcher}"

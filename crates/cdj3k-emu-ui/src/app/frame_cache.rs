@@ -1,19 +1,14 @@
-//! Whole-framebuffer cache: stores the final post-bloom screen contents in a
-//! GPU texture so the next "nothing-changed" frame can blit it back instead
-//! of running the entire CPU draw + bloom pipeline.
+//! Whole-framebuffer cache. It stores the final screen contents, after bloom,
+//! in a GPU texture, so the next unchanged frame can blit them back without
+//! running the CPU draw and the bloom pipeline.
 //!
-//! Intended call order on an unchanged frame:
-//!   1. `restore(gl, w, h)` → `glBlitFramebuffer(cache → screen)`
-//!   2. (nothing else)
+//! On an unchanged frame, call only `restore(gl, w, h)`, which blits the cache
+//! to the screen. On a frame with changes, egui renders, bloom runs, and then
+//! `capture(gl, w, h)` blits the screen into the cache.
 //!
-//! On a "real" frame:
-//!   1. egui renders normally
-//!   2. bloom runs
-//!   3. `capture(gl, w, h)` → `glBlitFramebuffer(screen → cache)`
-//!
-//! The cache is a single `RGBA8` texture sized to the current viewport
-//! (physical pixels). Resize invalidates `has_data` so the next frame is
-//! forced through the full render path even if the scene key matches.
+//! The cache is one `RGBA8` texture at the current viewport size in physical
+//! pixels. A resize clears `has_data`, so the next frame takes the full render
+//! path even if the scene key matches.
 
 use glow::HasContext as _;
 use std::sync::{Arc, Mutex};
@@ -22,8 +17,8 @@ pub struct FrameCache {
     tex: Option<glow::Texture>,
     fbo: Option<glow::Framebuffer>,
     size: [i32; 2],
-    /// `true` once at least one `capture` succeeded at the current `size`.
-    /// Reset on resize (the cached texture is the wrong dimensions).
+    /// `true` once a `capture` has succeeded at the current `size`. A resize
+    /// clears it, because the cached texture then has the wrong size.
     has_data: bool,
 }
 
@@ -48,7 +43,9 @@ impl FrameCache {
             if let Some(f) = self.fbo.take() {
                 gl.delete_framebuffer(f);
             }
-            let tex = gl.create_texture().expect("frame_cache tex");
+            let tex = gl
+                .create_texture()
+                .expect("could not create the frame cache texture");
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
@@ -69,7 +66,9 @@ impl FrameCache {
             ] {
                 gl.tex_parameter_i32(glow::TEXTURE_2D, param, val);
             }
-            let fbo = gl.create_framebuffer().expect("frame_cache fbo");
+            let fbo = gl
+                .create_framebuffer()
+                .expect("could not create the frame cache framebuffer");
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
             gl.framebuffer_texture_2d(
                 glow::FRAMEBUFFER,
@@ -87,8 +86,8 @@ impl FrameCache {
         }
     }
 
-    /// Copy the current default-framebuffer (screen) contents into the cache.
-    /// Call after bloom finishes.
+    /// Copy the screen, the default framebuffer, into the cache. Call it after
+    /// bloom finishes.
     pub fn capture(&mut self, gl: &glow::Context, w: i32, h: i32) {
         if w <= 0 || h <= 0 {
             return;
@@ -102,8 +101,14 @@ impl FrameCache {
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, None);
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(fbo));
             gl.blit_framebuffer(
-                0, 0, w, h,
-                0, 0, w, h,
+                0,
+                0,
+                w,
+                h,
+                0,
+                0,
+                w,
+                h,
                 glow::COLOR_BUFFER_BIT,
                 glow::NEAREST,
             );
@@ -113,10 +118,10 @@ impl FrameCache {
         self.has_data = true;
     }
 
-    /// Copy the cached framebuffer back to the default framebuffer (screen).
-    /// Call this exactly once on a "skip-frame" before the buffer swap.
-    /// Returns `false` if there's no usable cache (e.g. first frame, or after
-    /// a resize) so the caller can fall back to the full render path.
+    /// Copy the cache back to the screen, the default framebuffer. Call it
+    /// once on a skipped frame, before the buffer swap. Returns `false` when
+    /// there is no usable cache, such as on the first frame or after a resize,
+    /// so the caller can take the full render path.
     pub fn restore(&self, gl: &glow::Context, w: i32, h: i32) -> bool {
         if !self.has_data || self.size != [w, h] || self.fbo.is_none() {
             return false;
@@ -126,8 +131,14 @@ impl FrameCache {
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(fbo));
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
             gl.blit_framebuffer(
-                0, 0, w, h,
-                0, 0, w, h,
+                0,
+                0,
+                w,
+                h,
+                0,
+                0,
+                w,
+                h,
                 glow::COLOR_BUFFER_BIT,
                 glow::NEAREST,
             );

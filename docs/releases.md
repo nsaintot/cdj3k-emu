@@ -4,18 +4,19 @@
 
 | Workflow | Runs on | Does |
 |---|---|---|
-| `.github/workflows/ci.yml` | pull requests into `main` | rustfmt; clippy `-D warnings` for Linux and Windows, `cargo check` at the MSRV, actionlint; `cargo test` on Linux, macOS (with clippy) and Windows (gnullvm) |
+| `.github/workflows/ci.yml` | pull requests into `main` | rustfmt; clippy `-D warnings` for Linux and Windows, `cargo check` at the MSRV, actionlint; `sentrux check` and `sentrux gate`; `cargo test` on Linux, macOS (with clippy) and Windows (gnullvm) |
 | `.github/workflows/cd.yml` | pushes to `main`, `v*` tags, manual runs, pull requests into `main` touching the build | the guest payload (`build.sh --artifacts-only`, no Pioneer firmware), QEMU for every target, the universal `.dmg`, `.deb`/`.rpm`/AppImage for x86_64 and aarch64, the Windows x64 and arm64 installers; each smoke-tested, all kept on the run |
 
-`main` takes changes through pull requests only: the four CI jobs must pass and
-one review approve, which an admin can bypass. Only an admin creates `v*` tags.
+`main` takes changes through pull requests only. The Lint job and the three
+Test jobs must pass, and every review thread must be resolved; an admin can
+bypass both. Only an admin creates `v*` tags.
 
-A release is a `v<major>.<minor>.<patch>[-<pre>]` tag on `main`; the tag is
-the version every artefact and the app itself carry (`CDJ3K_VERSION` at build
-time), so nothing is bumped first. Its CD run notarizes the macOS build and puts
-every artefact, with `SHA256SUMS.txt` and the update feeds
-(`cdj3k-emu-update.json`, its `.sig`, `appcast.xml`), in a draft release,
-published by hand; a version with a hyphen is a pre-release:
+A release is a `v<major>.<minor>.<patch>[-<pre>]` tag on `main`. The tag sets
+the version that every artefact and the app carry (`CDJ3K_VERSION` at build
+time), so no version needs bumping first. The tag's CD run notarizes the macOS
+build and puts every artefact, `SHA256SUMS.txt` and the update feeds
+(`cdj3k-emu-update.json`, its `.sig`, `appcast.xml`) in a draft release, which
+is published by hand. A version with a hyphen is a pre-release. To release:
 
 ```bash
 git tag v0.2.0 origin/main && git push origin v0.2.0
@@ -79,9 +80,9 @@ bundle holding both slices. A package names its own `kind` in a
 `Contents/Resources/`); a build without one, such as a developer's, is not
 updated. `schema` goes up only for a change an older app would read wrongly.
 
-The download and the update run while the emulation keeps going; the restart
-is left with only the swap. Declining the restart puts the update in when the
-last window quits.
+The app downloads and prepares the update while the emulation keeps running,
+so the restart only swaps in the new version. If the user declines the
+restart, the update is installed when the last window closes.
 
 | `kind` | Updated while running | At the restart | Prompt |
 |---|---|---|---|

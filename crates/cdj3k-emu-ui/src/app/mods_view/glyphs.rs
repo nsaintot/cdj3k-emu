@@ -16,7 +16,8 @@ pub(super) enum Glyph {
     Folder,
 }
 
-/// A glyph's grid laid over its rect: grid units to points, and its stroke.
+/// Maps a glyph's grid units to points inside its rect, and holds the
+/// glyph's stroke.
 struct Grid<'a> {
     p: &'a egui::Painter,
     /// The grid's top-left corner.

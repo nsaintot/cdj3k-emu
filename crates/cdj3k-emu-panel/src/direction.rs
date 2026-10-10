@@ -1,13 +1,11 @@
-//! Direction switch — the 3-position rocker on the deck (byte 4 of the
-//! MISO frame is a 2-bit encoded value, **not** a bitmask).
+//! The direction switch, a 3-position rocker on the deck. Byte 4 of the MISO
+//! frame holds its position as a 2-bit value:
 //!
-//! Wire encoding (byte 4):
-//!   `1` → REV       (latched)
-//!   `2` → SLIP REV  (momentary; springs back to FWD on release)
-//!   `3` → FWD       (default)
-//!
-//! Modeled here as an enum to stop the rest of the codebase from passing
-//! around bare `i8`s and comparing to magic literals.
+//! | value | position |
+//! |---|---|
+//! | `1` | REV (latched) |
+//! | `2` | SLIP REV (momentary; it springs back to FWD on release) |
+//! | `3` | FWD (the default) |
 
 /// One of the three positions the direction rocker can encode.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -20,7 +18,7 @@ pub enum Direction {
 }
 
 impl Direction {
-    /// Wire-encoded byte for the MISO frame's direction slot.
+    /// The byte the MISO frame's direction field holds.
     #[inline]
     pub fn as_byte(self) -> u8 {
         self as u8

@@ -18,48 +18,49 @@ pub(super) const TRAY_L: f32 = 654.0;
 pub(super) const TRAY_R: f32 = 1780.0;
 pub(super) const TRAY_H: f32 = 300.0;
 const TRAY_DEPTH: f32 = 420.0;
-/// The ports on the tray's left wall: along the wall (back from the opening)
-/// and down it.
+/// Port rectangles on the tray's left wall: x runs along the wall back from
+/// the opening, and y runs down it.
 const PORT_C: (f32, f32, f32, f32) = (110.0, 70.0, 230.0, 110.0);
 const PORT_A: (f32, f32, f32, f32) = (110.0, 170.0, 260.0, 225.0);
-/// The USB trident printed on the tray's floor: its centre (across from the
-/// left wall, back from the mouth), and its size against the CDJ-3000's.
+/// The centre of the USB trident printed on the tray's floor, measured across
+/// from the left wall and back from the mouth, and its size relative to the
+/// CDJ-3000's trident.
 const FLOOR_MARK: (f32, f32) = (255.0, 45.0);
 const FLOOR_MARK_SCALE: f32 = 1.36;
-/// The mouth's corners.
+/// The corner radius of the mouth.
 pub(super) const TRAY_CORNER_R: f32 = 30.0;
 
-/// Share of the lower body's finish the tray shows, darkening with depth: at
-/// the mouth and at the back.
+/// Brightness of the tray relative to the lower body's finish, at the mouth
+/// and at the back; the tray darkens with depth.
 const SHADE_MOUTH: f32 = 1.0;
 const SHADE_DEEP: f32 = 0.4;
 /// The slot lamp's light in the tray: a strip along the floor's front edge,
-/// its glow spreading back across the floor and faintly up the walls.
+/// with a glow that spreads back across the floor and faintly up the walls.
 const GLOW_EDGE: f32 = 0.55;
 const GLOW_FLOOR: f32 = 0.3;
 const GLOW_FLOOR_REACH: f32 = 0.7;
 const GLOW_WALL: f32 = 0.12;
 const GLOW_EDGE_W: f32 = 5.0;
-/// How tall the mouth stands on screen, in points, before the light inside
-/// shows at full strength; edge-on it shows none.
+/// The mouth's on-screen height, in points, at which the light inside reaches
+/// full strength. When the mouth is seen edge-on, no light shows.
 const GLOW_OPEN_PTS: f32 = 6.0;
 const COL_TRAY_EDGE: Color32 = Color32::from_rgb(74, 74, 82);
 
-/// `c` with its channels scaled by `k`, opaque.
+/// Returns `c`, opaque, with its channels scaled by `k`.
 fn scaled(c: Color32, k: f32) -> Color32 {
     let f = |v: u8| (v as f32 * k).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgb(f(c.r()), f(c.g()), f(c.b()))
 }
 
-/// `c` scaled by `k` as light added to what is under it: premultiplied with
-/// no alpha, so it blends by addition.
+/// Returns `c` scaled by `k` as a premultiplied colour with zero alpha, so
+/// that it adds to the colour under it.
 fn additive(c: Color32, k: f32) -> Color32 {
     let f = |v: u8| (v as f32 * k).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgba_premultiplied(f(c.r()), f(c.g()), f(c.b()), 0)
 }
 
-/// A rectangle shaded from `near` to `far`: down it when `down`, else
-/// across it.
+/// Returns a rectangle shaded from `near` to `far`, from top to bottom when
+/// `down` is set and from left to right otherwise.
 fn gradient(r: Rect, near: Color32, far: Color32, down: bool) -> egui::Mesh {
     let mut m = egui::Mesh::default();
     let (a, b) = if down {
@@ -82,15 +83,16 @@ fn gradient(r: Rect, near: Color32, far: Color32, down: bool) -> egui::Mesh {
     m
 }
 
-/// The tray's light: the colour the deck drives the casing's cavity light.
+/// Returns the colour the deck sets for the casing's cavity light, which
+/// lights the tray.
 fn tray_light(app: &CdjApp) -> Option<Color32> {
     let mosi = app.mosi();
     let (r, g, b) = mosi.rgb(Lamp::Slot1)?;
     mosi.led_color(LedPart::Slot, r, g, b)
 }
 
-/// The tray's light at the mouth: the lamp's colour, and how far the mouth
-/// stands open on screen.
+/// The light that shows through the mouth: the lamp's colour and how far
+/// open the mouth appears on screen.
 pub(super) struct TrayGlow {
     light: Option<Color32>,
     open: f32,
@@ -105,19 +107,20 @@ impl TrayGlow {
         }
     }
 
-    /// The lamp's light at strength `k`, as light added to the surface.
+    /// Returns the lamp's light at strength `k`, as an additive colour.
     fn at(&self, k: f32) -> Color32 {
         self.light
             .map_or(Color32::TRANSPARENT, |c| additive(c, k * self.open))
     }
 }
 
-/// The lower body's finish at shade `k`.
+/// Returns the lower body's finish at shade `k`.
 fn body(k: f32) -> Color32 {
     scaled(COL_LOWER, k)
 }
 
-/// The tray's inside shows only through its mouth: the mouth's bounds on screen.
+/// Returns the mouth's bounds on screen. The inside of the tray shows only
+/// through the mouth.
 pub(super) fn mouth_clip(tilt: &Tilt) -> Rect {
     [
         (TRAY_L, 0.0),
@@ -131,8 +134,8 @@ pub(super) fn mouth_clip(tilt: &Tilt) -> Rect {
     })
 }
 
-/// The tray, through its opening: back wall, floor, side walls, then the
-/// corners where they meet.
+/// Draws the tray as seen through its opening: the back wall, the floor and
+/// the side walls, then the corners where they meet.
 pub(super) fn collect_tray(app: &mut CdjApp, pr: &Projector, glow: &TrayGlow) -> Vec<Shape> {
     let mut shapes = Vec::new();
     shapes.extend(back_wall(app, pr, glow));
@@ -144,7 +147,8 @@ pub(super) fn collect_tray(app: &mut CdjApp, pr: &Projector, glow: &TrayGlow) ->
     shapes
 }
 
-/// The back wall: deep, so dark; lit faintly from its foot.
+/// Draws the back wall, which is dark because it is deep and is lit faintly
+/// from its foot.
 fn back_wall(app: &mut CdjApp, pr: &Projector, glow: &TrayGlow) -> Vec<Shape> {
     let tray_w = TRAY_R - TRAY_L;
     let back_y = REF_H - SETBACK - TRAY_DEPTH;
@@ -165,8 +169,8 @@ fn back_wall(app: &mut CdjApp, pr: &Projector, glow: &TrayGlow) -> Vec<Shape> {
     pr.project(&mut app.tilt_cache, back_wall, l)
 }
 
-/// The floor: darkening back from the mouth, the lamp's strip along its
-/// front edge and its glow spreading back.
+/// Draws the floor, which darkens back from the mouth, with the lamp's strip
+/// along its front edge and the glow spreading back.
 fn floor(app: &mut CdjApp, pr: &Projector, glow: &TrayGlow) -> Vec<Shape> {
     let tray_w = TRAY_R - TRAY_L;
     let mouth_y = REF_H - SETBACK;
@@ -213,8 +217,8 @@ fn floor(app: &mut CdjApp, pr: &Projector, glow: &TrayGlow) -> Vec<Shape> {
     )
 }
 
-/// A side wall: darkening back from the mouth, lit faintly from the floor;
-/// the left one carries the ports.
+/// Draws a side wall, which darkens back from the mouth and is lit faintly
+/// from the floor. The left wall carries the ports.
 fn side_wall(app: &mut CdjApp, pr: &Projector, glow: &TrayGlow, x: f32, ports: bool) -> Vec<Shape> {
     let mouth_y = REF_H - SETBACK;
     let mut l = ShapeList::default();
@@ -251,8 +255,8 @@ fn side_wall(app: &mut CdjApp, pr: &Projector, glow: &TrayGlow, x: f32, ports: b
     )
 }
 
-/// The tray's corners: where its walls meet the floor and its ceiling,
-/// running back from the mouth, and the back wall's edge.
+/// Draws the tray's corner lines: where the side walls meet the floor and the
+/// ceiling, running back from the mouth, and the edges of the back wall.
 fn corners(layout: &UiScale, tilt: &Tilt) -> Vec<Shape> {
     let mouth_y = REF_H - SETBACK;
     let back_y = mouth_y - TRAY_DEPTH;

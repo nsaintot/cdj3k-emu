@@ -11,7 +11,7 @@
 //!   appended ([`boot`])
 //! - `last-boot.txt`: the guest's mods report for the last boot, as the
 //!   runtime received it, followed by an `id <boot id>` line for each slot
-//!   mod that boot ran ([`SlotMods::boot_id`])
+//!   mod that ran in the last boot ([`SlotMods::boot_id`])
 //! - `last-boot/<name>.log`: each mod's journal from that boot
 
 mod add;

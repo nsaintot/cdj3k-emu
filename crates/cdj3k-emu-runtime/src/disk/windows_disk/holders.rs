@@ -1,4 +1,5 @@
-//! Naming the programs that keep a volume busy, through the Restart Manager.
+//! Find the names of the programs that keep a volume busy, through the
+//! Restart Manager.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -11,15 +12,17 @@ use windows_sys::Win32::System::RestartManager::{
 
 use super::wide_os;
 
-/// Most entries handed to the Restart Manager when naming what holds a
-/// volume. A stick with more files than this is named from the first ones.
+/// The maximum number of entries passed to the Restart Manager when it looks
+/// for the programs that hold a volume. On a stick with more files than this,
+/// only the first entries are checked.
 const HOLDER_SCAN_LIMIT: usize = 4096;
 
-/// Names of the programs with a file open under `root`, each once.
+/// Return the names of the programs that have a file open under `root`,
+/// without duplicates.
 ///
-/// The Restart Manager names the holders of files, not of a volume, so this
-/// registers what lies under `root`, breadth first up to [`HOLDER_SCAN_LIMIT`]
-/// entries.
+/// The Restart Manager reports the holders of files and cannot report the
+/// holders of a volume, so this registers the entries under `root`, breadth
+/// first, up to [`HOLDER_SCAN_LIMIT`] entries.
 pub(super) fn holders_of(root: &str) -> Vec<String> {
     let paths = files_under(root);
     if paths.is_empty() {
@@ -37,8 +40,8 @@ pub(super) fn holders_of(root: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// The entries under `root`, breadth first, at most [`HOLDER_SCAN_LIMIT`],
-/// as NUL-terminated wide paths.
+/// Return up to [`HOLDER_SCAN_LIMIT`] entries under `root`, breadth first, as
+/// NUL-terminated wide paths.
 fn files_under(root: &str) -> Vec<Vec<u16>> {
     let mut paths: Vec<Vec<u16>> = Vec::new();
     let mut queue = VecDeque::from([PathBuf::from(root)]);
@@ -60,7 +63,7 @@ fn files_under(root: &str) -> Vec<Vec<u16>> {
     paths
 }
 
-/// Each program's name once, in the order listed.
+/// Return each program's name once, in the order listed.
 fn app_names(infos: &[RM_PROCESS_INFO]) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for info in infos {
@@ -77,7 +80,7 @@ fn app_names(infos: &[RM_PROCESS_INFO]) -> Vec<String> {
     names
 }
 
-/// A Restart Manager session, ended when it goes.
+/// A Restart Manager session that ends when the value is dropped.
 struct RmSession(u32);
 
 impl RmSession {
@@ -91,8 +94,8 @@ impl RmSession {
         Some(Self(session))
     }
 
-    /// Register `paths` as the files to ask about. Returns whether the
-    /// session took them.
+    /// Register `paths` as the files to ask about. Return whether the session
+    /// accepted them.
     fn register(&self, paths: &[Vec<u16>]) -> bool {
         let ptrs: Vec<*const u16> = paths.iter().map(|p| p.as_ptr()).collect();
         // SAFETY: every pointer is a NUL-terminated string that outlives the call.
@@ -110,7 +113,7 @@ impl RmSession {
         registered == 0
     }
 
-    /// The processes holding the registered files.
+    /// Return the processes that hold the registered files.
     fn processes(&self) -> Option<Vec<RM_PROCESS_INFO>> {
         let mut have = 16u32;
         loop {

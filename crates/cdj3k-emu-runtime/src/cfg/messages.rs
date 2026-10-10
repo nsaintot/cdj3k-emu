@@ -15,7 +15,8 @@ const MOD_LOG_LINE_MAX: usize = 1024;
 /// Applies the rest of a guest message's line to the shared state.
 type Handler = fn(&str, &mut Shared);
 
-/// Each guest message's prefix and its handler. No prefix starts another.
+/// Each guest message's prefix and its handler. No prefix is the start of
+/// another, so at most one entry matches a line.
 const MESSAGES: [(&str, Handler); 9] = [
     ("usb_state ", on_usb_state),
     ("latency ", on_latency),
@@ -101,7 +102,7 @@ fn on_mods(rest: &str, s: &mut Shared) {
         "begin" => s.mods_partial = Some(Partial::default()),
         "end" => match s.mods_partial.take() {
             Some(partial) => s.mods = partial.done(),
-            None => eprintln!("cfg: mods end without mods begin, ignored"),
+            None => eprintln!("cfg: ignoring `mods end` without a `mods begin`"),
         },
         other => eprintln!("cfg: unrecognised mods line '{other}'"),
     }

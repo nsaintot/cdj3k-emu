@@ -46,9 +46,8 @@ pub(super) fn draw_log(ui: &mut egui::Ui, page: &mut ModsPage) -> Option<ModsAct
     log_footer(ui, bar, &log, pal, k).or(meta)
 }
 
-/// The title, the DEV chip after it, and the status pill at the right end:
-/// the title shortened to fit between them. Returns the title, its width and
-/// the pill's width.
+/// Shortens the title to fit between the DEV chip after it and the status
+/// pill at the right end. Returns the title, its width and the pill's width.
 fn fit_title(
     p: &egui::Painter,
     area: Rect,
@@ -71,8 +70,8 @@ fn fit_title(
     (title, title_w, pw)
 }
 
-/// The DEV chip after the title, `title_w` wide, and the status pill, `pw`
-/// wide, at the right end of the title line.
+/// Draws the DEV chip after the title, which is `title_w` wide, and the
+/// status pill, `pw` wide, at the right end of the title line.
 fn title_marks(
     p: &egui::Painter,
     area: Rect,
@@ -117,7 +116,7 @@ fn title_marks(
     );
 }
 
-/// The details box, the facts box and the journal, top to bottom in
+/// Draws the details box, the facts box and the journal, top to bottom in
 /// `space`. Returns a link clicked in the details.
 fn draw_sections(
     ui: &mut egui::Ui,
@@ -130,7 +129,7 @@ fn draw_sections(
     let width = space.width() - 2.0 * theme::GUTTER * k;
     let mut y = space.top();
     let mut action = None;
-    // No details box when mod.toml cannot be read.
+    // The details box is left out when mod.toml cannot be read.
     let lines = meta_lines(log);
     if !lines.is_empty() {
         let meta = Rect::from_min_size(
@@ -309,7 +308,7 @@ pub(super) fn pill(log: &LogView, pal: &Palette) -> (String, Color32) {
     }
 }
 
-/// ORDER, BOOT SCRIPT and LIBRARIES, side by side.
+/// Draws the ORDER, BOOT SCRIPT and LIBRARIES boxes side by side.
 pub(super) fn draw_facts(p: &egui::Painter, rect: Rect, log: &LogView, k: f32, pal: &Palette) {
     plate(p, rect, k, pal);
     let ran = matches!(

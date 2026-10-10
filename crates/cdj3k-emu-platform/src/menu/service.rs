@@ -22,7 +22,7 @@ const AUDIO_DEVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// these files at any time, and the menu syncs every frame.
 const SLOT_NOTE_TTL: Duration = Duration::from_secs(2);
 
-/// Content source for the menu. One per window.
+/// The content source for the menu; each window has one.
 pub struct MenuService {
     audio_device_last_refresh: Instant,
     net_version_seen: u32,
@@ -42,8 +42,7 @@ impl Default for MenuService {
 
 impl MenuService {
     pub fn new() -> Self {
-        // Seed both lists so the very first model is populated rather than
-        // empty-then-corrected on the second frame.
+        // Seed both lists so that the first model is already populated.
         menu_state::refresh_net_interfaces();
         menu_state::refresh_audio_devices();
         Self {
@@ -149,8 +148,8 @@ fn tcg_notice(why: SoftwareEmulation) -> Notice {
                 .to_string()
         }
         SoftwareEmulation::ForeignArch(arch) => format!(
-            "Host is {arch}, target is arm64 and virtualizes only same-arch guests. \
-             All instructions are translated."
+            "This host is {arch} and the guest is arm64. Hardware virtualization runs \
+             only guests of the host's own architecture, so every instruction is translated."
         ),
         SoftwareEmulation::NoKvm => "/dev/kvm is missing: the kernel has no KVM, or \
              virtualization is turned off in the firmware."
@@ -173,14 +172,14 @@ fn tcg_notice(why: SoftwareEmulation) -> Notice {
         title: "Software emulation (TCG)".into(),
         body: vec![
             reason,
-            "Expect a slower/unstable emulation, audio pops and tempo drift.".into(),
+            "Expect slower, less stable emulation, audio pops and tempo drift.".into(),
         ],
     }
 }
 
 // ── Sections ──────────────────────────────────────────────────────────────────
 
-/// First position, which is the app-name menu on macOS.
+/// The Emulation menu. It comes first, which makes it the app-name menu on macOS.
 ///
 /// Choosing the deck a slot emulates and installing the firmware it runs are
 /// steps of one window, so they are one entry.
@@ -199,7 +198,8 @@ fn emulation(snap: &Snapshot, deck: Option<String>) -> MenuNode {
         MenuNode::check(MenuId::ModsEnabled, "Enable Mods", snap.mods_enabled),
         MenuNode::check(MenuId::ServiceMode, "Service Mode", snap.service_mode),
     ];
-    // An actuator opened at startup: a Force Touch trackpad.
+    // Show the row only when an actuator opened at startup, which takes a Force
+    // Touch trackpad.
     if crate::haptic::available() {
         rows.push(MenuNode::check(
             MenuId::Haptic,
@@ -222,7 +222,8 @@ fn emulation(snap: &Snapshot, deck: Option<String>) -> MenuNode {
     rows.push(MenuNode::Separator);
     rows.push(MenuNode::Predefined(Predefined::Quit));
 
-    // What this window *is*: the deck, and the firmware release on it.
+    // The status names the deck this window emulates and the firmware release
+    // on it.
     let (title, release) = match deck {
         Some(note) => match note.rsplit_once(' ') {
             Some((model, rel)) => (model.to_string(), Some(rel.to_string())),
@@ -237,7 +238,7 @@ fn emulation(snap: &Snapshot, deck: Option<String>) -> MenuNode {
     }
 }
 
-/// One Eject verb covers both virtual and physical mounts.
+/// One Eject row covers both virtual and physical mounts.
 fn storage(snap: &Snapshot) -> MenuNode {
     let anything_mounted = snap.usb_virtual_mounted || snap.usb_phys_mounted_idx >= 0;
 
@@ -256,9 +257,9 @@ fn storage(snap: &Snapshot) -> MenuNode {
         rows.push(MenuNode::Label("No removable disks".into()));
     }
     for (i, disk) in snap.phys_disks.iter().enumerate() {
-        // Radio-style: clicking selects or switches. Eject is the top-level
-        // verb. The device node is data, so it trails rather than joining the
-        // label.
+        // The rows act as a radio group: a click selects or switches the disk,
+        // and only Eject Current Media ejects. The device node trails the label
+        // as a separate value.
         rows.push(
             MenuNode::check(
                 MenuId::PhysicalDisk(i),
@@ -333,7 +334,7 @@ fn network(snap: &Snapshot) -> MenuNode {
 }
 
 fn audio(snap: &Snapshot) -> MenuNode {
-    // Driven by the cfg daemon's 3 s push.
+    // The guest cfg daemon pushes the latency every 3 s.
     let (value, detail) = match menu_state::unpack_latency(snap.latency_packed) {
         Some((total, guest, host)) => (
             format!("{total} ms"),
@@ -370,10 +371,10 @@ fn audio_devices(snap: &Snapshot) -> Vec<MenuNode> {
     let selected = snap.audio_device_uid.as_deref();
     let devices = &snap.audio_devices;
 
-    // A persisted UID can point at a device that is gone — Bluetooth off, USB
-    // interface unplugged. Show the default as ticked rather than leaving the
-    // radio group with nothing ticked at all. The persisted UID is left alone,
-    // so reconnecting the device restores the binding.
+    // A persisted UID can point at a device that is gone, such as a Bluetooth
+    // device that is off or a USB interface that is unplugged. The default row
+    // is then ticked, so the radio group always has a ticked row. The persisted
+    // UID is kept, so reconnecting the device restores the binding.
     let selection_present = selected.is_none_or(|uid| devices.iter().any(|d| d.uid == uid));
 
     let mut rows = vec![MenuNode::check(
@@ -448,9 +449,9 @@ fn format_rate(hz: u32) -> String {
 
 /// Everything the model needs, read under one lock acquisition.
 ///
-/// The three lists are cloned rather than borrowed: the lock must not be held
-/// while the model is built, because a provider may be reached from the same
-/// thread and `menu_state::lock()` is not reentrant.
+/// The three lists are cloned so that the lock is released before the model
+/// is built: a provider may run on the same thread, and `menu_state::lock()`
+/// is not reentrant.
 struct Snapshot {
     net_ifaces: Vec<menu_state::NetIf>,
     phys_disks: Vec<menu_state::PhysicalDisk>,

@@ -8,7 +8,7 @@ use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
 use windows_sys::Win32::System::IO::DeviceIoControl;
 
-/// Best effort: FAT and exFAT have no sparse files.
+/// This is best effort, because FAT and exFAT have no sparse files.
 pub fn allow_holes(file: &std::fs::File) -> io::Result<()> {
     let mut returned = 0u32;
     // SAFETY: `file` holds an open handle for the duration of the call; no

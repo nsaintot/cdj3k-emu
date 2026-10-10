@@ -37,7 +37,8 @@ pub(super) fn collect_left_statics(list: &mut ShapeList, ctx: &egui::Context, la
     collect_play_label(list, ctx, layout);
 }
 
-/// USB STOP icon + label (button is interactive, drawn separately).
+/// Collects the USB STOP icon and label; the interactive button is drawn
+/// separately.
 fn collect_usb_stop_legend(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let col = PERF_TRANSPORT_COL_REF;
     let cx_ref = col.left() + col.width() * PERF_U_USB_STOP;
@@ -94,8 +95,8 @@ fn collect_usb_sign(list: &mut ShapeList, layout: &UiScale) {
     );
 }
 
-/// USB rating under the casing: "5V <dc> 1A". The DC symbol is drawn
-/// rather than typed: the UI font has no U+2393.
+/// Collects the USB rating under the casing, `5V <dc> 1A`. The DC symbol is
+/// drawn as shapes because the UI font has no U+2393.
 fn collect_usb_rating(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let col = PERF_TRANSPORT_COL_REF;
     let cx_ref = col.left() + col.width() * PERF_U_USB_RATING;
@@ -119,7 +120,7 @@ fn collect_usb_rating(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScal
     );
     let half = PERF_USB_DC_W * 0.5;
     let stroke = Stroke::new(layout.sc(PERF_USB_DC_STROKE), COL_BTN_TEXT);
-    // Solid bar over a broken one - the IEC direct-current mark.
+    // A solid bar over a broken one is the IEC direct-current mark.
     list.line_segment(
         [
             layout.sp(cx_ref - half, cy_ref - PERF_USB_DC_SPLIT),
@@ -227,7 +228,7 @@ fn collect_column_labels(list: &mut ShapeList, ctx: &egui::Context, layout: &UiS
     );
 }
 
-/// Back-capsule border behind a pair of circle buttons at `v`.
+/// Collects the capsule border behind a pair of circle buttons at `v`.
 fn collect_pair_capsule(list: &mut ShapeList, layout: &UiScale, v: f32) {
     let left = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.5 - PERF_PAIR_U_OFF_FRAC, v);
     let right = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.5 + PERF_PAIR_U_OFF_FRAC, v);
@@ -242,13 +243,12 @@ fn collect_pair_capsule(list: &mut ShapeList, layout: &UiScale, v: f32) {
     );
 }
 
-/// CALL / DELETE outer bordered container.
+/// Collects the bordered outer container of CALL/DELETE.
 fn collect_call_delete_chrome(list: &mut ShapeList, layout: &UiScale) {
     let col = PERF_TRANSPORT_COL_REF;
     let cy_ref = col.top() + col.height() * PERF_V_CALL_DELETE;
     let btn_cx_ref = col.left() + col.width() * PERF_CALL_DELETE_BTN_U;
 
-    // Outer bordered container.
     let outer_ref = Rect::from_center_size(
         Pos2::new(btn_cx_ref, cy_ref),
         Vec2::new(PERF_CALL_DELETE_OUTER_W, PERF_CALL_DELETE_OUTER_H),
@@ -333,7 +333,8 @@ fn collect_call_delete_labels(list: &mut ShapeList, ctx: &egui::Context, layout:
     );
 }
 
-/// Loop row: "IN/CUE" / "OUT" / "RELOOP/EXIT" labels + 3 separator lines.
+/// Collects the loop row: the "IN/CUE", "OUT" and "RELOOP/EXIT" labels and
+/// three separator lines.
 fn collect_loop_row(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     list.text(
         ctx,
@@ -372,7 +373,7 @@ fn collect_loop_row(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale)
     }
 }
 
-/// "LOOP" + IN/OUT ADJUST sublabels.
+/// Collects the "LOOP" label and the IN ADJUST and OUT ADJUST sublabels.
 fn collect_loop_adjust(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     list.text(
         ctx,
@@ -423,7 +424,8 @@ fn collect_loop_adjust(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSca
     );
 }
 
-/// BEAT LOOP separator lines + label + 1/2X / 2X sublabels.
+/// Collects the BEAT LOOP separator lines, its label, and the 1/2X and 2X
+/// sublabels.
 fn collect_beat_loop_labels(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let line_stroke = Stroke::new(layout.sc(PERF_BEAT_LOOP_LINE_THICKNESS), COL_BTN_TEXT);
     for &u in &[0.45_f32, 0.95] {
@@ -476,7 +478,7 @@ fn collect_beat_loop_labels(list: &mut ShapeList, ctx: &egui::Context, layout: &
     );
 }
 
-/// DIRECTION label + combo bordered container.
+/// Collects the DIRECTION label and the bordered container around the switch.
 fn collect_direction_chrome(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let col = PERF_TRANSPORT_COL_REF;
     let combo_ref = DIRECTION_PLACE.combo_ref();

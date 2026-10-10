@@ -19,7 +19,8 @@ pub const HOST_ONLY: bool = false;
 
 pub fn enumerate() -> Vec<NetIf> {
     let all = adapters();
-    // A bridge member's address is the bridge's: Windows has at most one.
+    // A bridge member takes the bridge's address; Windows has at most one
+    // bridge.
     let bridge_ipv4 = all
         .iter()
         .find(|a| a.is_bridge())
@@ -82,8 +83,8 @@ fn wide(chars: &[u16]) -> String {
 /// The first IPv4 address of every IP interface, by interface LUID.
 fn ipv4_by_luid() -> HashMap<u64, (String, u8)> {
     let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
-    // Regrown until the list fits; it can grow between calls. u64 elements
-    // keep the structs aligned.
+    // Grow the buffer until the list fits, because the list can grow between
+    // calls. u64 elements keep the structs aligned.
     let mut len = 16 * 1024u32;
     let mut buf: Vec<u64> = Vec::new();
     for _ in 0..4 {

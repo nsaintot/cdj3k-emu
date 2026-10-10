@@ -57,7 +57,7 @@ in vec2 v_uv;
 out vec4 out_color;
 uniform sampler2D u_scene;
 uniform float u_threshold;
-uniform float u_threshold_knee; // upper edge = threshold * (1 + knee)
+uniform float u_threshold_knee; // The upper edge is threshold * (1 + knee).
 uniform float u_sat_min;
 uniform float u_sat_knee;
 "#,
@@ -88,7 +88,7 @@ pub(super) const BLUR_FRAG: &str = r#"
 in vec2 v_uv;
 out vec4 out_color;
 uniform sampler2D u_tex;
-uniform vec2 u_dir; // (step_x, 0) for H-pass, (0, step_y) for V-pass
+uniform vec2 u_dir; // (step_x, 0) for the horizontal pass, (0, step_y) for the vertical pass
 const float W[5] = float[5](
     0.2270270, // offset 0
     0.1945946, // offset ±1
@@ -106,7 +106,7 @@ void main() {
 }
 "#;
 
-// Bloom-only overlay - drawn additively on top of egui's framebuffer.
+// The bloom overlay, drawn additively over egui's framebuffer.
 pub(super) const COMPOSITE_FRAG: &str = concat!(
     r#"
 #version 330 core

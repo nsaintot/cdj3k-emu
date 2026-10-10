@@ -1,5 +1,5 @@
-//! Tilting a slate: the panel turned back about its front edge, in
-//! perspective, so the face below that edge comes into view.
+//! Tilts a slate: the panel turns back about its front edge in perspective,
+//! so that the face below that edge comes into view.
 //!
 //! Coordinates are the slate's reference units: `x` across, `y` from the
 //! back edge to the front, `z` up from the top surface. The tilt turns the
@@ -21,18 +21,19 @@ use super::UiScale;
 mod raised;
 pub(in crate::app) use raised::{Facet, Footprint, Lift, Raised, Rib};
 
-/// A point on the deck, reference units.
+/// A point on the deck, in reference units.
 pub(in crate::app) type P3 = [f32; 3];
 
-/// Longest a textured triangle's side may be on screen before it is split:
-/// a projection is not affine, but each triangle's texture still is.
+/// The longest on-screen side a textured triangle may have before it is
+/// split. The perspective projection is not affine, but the texture mapping
+/// inside each triangle is.
 const MAX_TEXTURED_EDGE_PX: f32 = 24.0;
 
-/// How far across a crease a triangle may reach, reference units, before it
-/// is split so that it bends with the surface.
+/// How far across a crease a triangle may reach, in reference units, before
+/// it is split so that it bends with the surface.
 const MAX_CREASE_SPAN: f32 = 4.0;
-/// How far past a crease a triangle must reach to count as crossing it: an
-/// edge drawn on the crease, feathering and all, does not.
+/// How far past a crease a triangle must reach to count as crossing it, so
+/// that an edge drawn on the crease, including its feathering, does not.
 const CREASE_SLACK: f32 = 3.0;
 
 /// One tilt of one slate.
@@ -42,10 +43,10 @@ pub(in crate::app) struct Tilt {
     ref_h: f32,
     sin: f32,
     cos: f32,
-    /// Perspective strength: `t` over the camera's distance.
+    /// The perspective strength: `t` divided by the camera distance.
     k: f32,
-    /// Where the camera looks, down the canvas: the middle of the turned
-    /// deck, so its front is seen as squarely as its back.
+    /// The camera's y on the canvas: the middle of the turned deck, so that
+    /// its front and back are seen equally squarely.
     cam_y: f32,
     fit_scale: f32,
     fit_off: Vec2,
@@ -53,17 +54,17 @@ pub(in crate::app) struct Tilt {
     ox: f32,
     oy: f32,
     scale: f32,
-    /// Where the surface bends: behind `y`, it rises at `slope` (height per
-    /// unit toward the back).
+    /// The crease `(y, slope)`: behind `y`, the surface rises by `slope`
+    /// units of height per unit toward the back.
     crease: Option<(f32, f32)>,
 }
 
 impl Tilt {
-    /// The tilt at `t` (0 = plan, 1 = fully tilted to `max_angle` radians),
-    /// seen from `cam_dist` reference units, fitted so the points of
-    /// `extent` fill the canvas the way the plan does. With a `crease`
-    /// `(y, angle)`, the panel's surface rises behind `y` at `angle` radians,
-    /// by `t` of it.
+    /// Builds the tilt at `t`, where 0 is the plan and 1 is fully tilted to
+    /// `max_angle` radians, seen from `cam_dist` reference units. The fit
+    /// makes the points of `extent` fill the canvas as the plan does. With a
+    /// `crease` `(y, angle)`, the panel's surface rises behind `y` at
+    /// `t * angle` radians.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::app) fn new(
         layout: &UiScale,
@@ -110,8 +111,8 @@ impl Tilt {
         tilt
     }
 
-    /// The panel's surface height at `y`: flat in front of the crease,
-    /// rising behind it.
+    /// Returns the panel's surface height at `y`: zero in front of the
+    /// crease, rising behind it.
     pub(in crate::app) fn surface_z(&self, y: f32) -> f32 {
         match self.crease {
             Some((cy, slope)) if y < cy => (cy - y) * slope,
@@ -119,13 +120,13 @@ impl Tilt {
         }
     }
 
-    /// Camera position across and down the canvas.
+    /// Returns the camera's x and y on the canvas.
     fn cam(&self) -> (f32, f32) {
         (self.ref_w * 0.5, self.cam_y)
     }
 
-    /// Turn a deck point about the front edge: its `y` down the canvas and
-    /// its height toward the camera.
+    /// Turns a deck point about the front edge and returns its `y` down the
+    /// canvas and its height toward the camera.
     fn turn(&self, [_, y, z]: P3) -> (f32, f32) {
         let dy = y - self.ref_h;
         (
@@ -134,7 +135,7 @@ impl Tilt {
         )
     }
 
-    /// Turn and project, before the fit.
+    /// Turns and projects a deck point, before the fit.
     fn raw(&self, p: P3) -> Pos2 {
         let x = p[0];
         let (ty, tz) = self.turn(p);
@@ -143,34 +144,36 @@ impl Tilt {
         Pos2::new(cx + (x - cx) * s, cy + (ty - cy) * s)
     }
 
-    /// Where a deck point lands on the canvas, reference units.
+    /// Returns where a deck point lands on the canvas, in reference units.
     pub(in crate::app) fn canvas_point(&self, p: P3) -> Pos2 {
         self.raw(p) * self.fit_scale + self.fit_off
     }
 
-    /// Where a deck point `(x, y)` on the top surface is in the plan, on
-    /// screen.
+    /// Returns the screen position of the top-surface point `(x, y)` in the
+    /// untilted plan.
     pub(in crate::app) fn plan_screen(&self, p: Pos2) -> Pos2 {
         Pos2::new(self.ox + p.x * self.scale, self.oy + p.y * self.scale)
     }
 
-    /// Where a deck point lands on screen.
+    /// Returns where a deck point lands on screen.
     pub(in crate::app) fn project(&self, p: P3) -> Pos2 {
         let c = self.canvas_point(p);
         Pos2::new(self.ox + c.x * self.scale, self.oy + c.y * self.scale)
     }
 
-    /// The deck point at height `z` that projects to `screen`, as `(x, y)`
-    /// reference units; `None` where the plane faces away.
+    /// Returns the deck point at height `z` that projects to `screen`, as
+    /// `(x, y)` in reference units, or `None` when the plane is seen edge-on
+    /// or the point is behind the camera.
     pub(in crate::app) fn unproject(&self, screen: Pos2, z: f32) -> Option<Pos2> {
         self.unproject_plane(screen, z, 0.0)
     }
 
-    /// The point of the panel's surface - creased or not - that projects to
-    /// `screen`.
+    /// Returns the point on the panel's surface, creased or flat, that
+    /// projects to `screen`.
     pub(in crate::app) fn unproject_surface(&self, screen: Pos2) -> Option<Pos2> {
         if let Some((y, slope)) = self.crease {
-            // The rising plane, as height at the front edge plus a slope.
+            // Describe the rising plane by its height at the front edge and
+            // its slope.
             let z_front = (y - self.ref_h) * slope;
             if let Some(p) = self.unproject_plane(screen, z_front, -slope) {
                 if p.y < y {
@@ -181,8 +184,8 @@ impl Tilt {
         self.unproject(screen, 0.0)
     }
 
-    /// The point of the plane `z = z_front + m * (y - ref_h)` that projects
-    /// to `screen`.
+    /// Returns the point on the plane `z = z_front + m * (y - ref_h)` that
+    /// projects to `screen`.
     fn unproject_plane(&self, screen: Pos2, z_front: f32, m: f32) -> Option<Pos2> {
         let c = Pos2::new(
             (screen.x - self.ox) / self.scale,
@@ -190,7 +193,7 @@ impl Tilt {
         );
         let r = (c - self.fit_off) / self.fit_scale;
         let (cx, cy) = self.cam();
-        // Solve the projection of the plane for `dy`, then `x`: both are
+        // Solve the projection of the plane for `dy`, then for `x`. Both are
         // linear once the perspective divide is cleared.
         let ys = r.y - cy;
         let (sn, cs, k) = (self.sin, self.cos, self.k);
@@ -209,8 +212,8 @@ impl Tilt {
     }
 }
 
-/// Where a face of the deck lies: a point on the deck for each `(u, v)` of
-/// the face's own reference-unit drawing, `origin + u * u_axis + v * v_axis`.
+/// The placement of a face of the deck. The point `(u, v)` of the face's own
+/// drawing, in reference units, lies at `origin + u * u_axis + v * v_axis`.
 #[derive(Copy, Clone, Debug)]
 pub(in crate::app) struct Face {
     pub origin: P3,
@@ -237,8 +240,9 @@ fn tessellator(ctx: &egui::Context, pixels_per_point: f32) -> Tessellator {
     Tessellator::new(pixels_per_point, options, font_tex_size, Vec::new())
 }
 
-/// Bisect each triangle `split` asks for along its longest side until none
-/// is, so a texture follows the perspective and a surface its crease.
+/// Bisects each triangle that `split` selects along its longest side, until
+/// `split` selects none, so that a texture follows the perspective and a
+/// surface follows its crease.
 fn subdivide(mesh: &mut Mesh, split: impl Fn([Pos2; 3]) -> bool) {
     let mut out: Vec<[Vertex; 3]> = Vec::with_capacity(mesh.indices.len() / 3);
     let mut stack: Vec<[Vertex; 3]> = mesh
@@ -275,21 +279,24 @@ fn subdivide(mesh: &mut Mesh, split: impl Fn([Pos2; 3]) -> bool) {
     }
 }
 
-/// Projected meshes kept from frame to frame. A shape is known by its
-/// tessellated mesh and how it stands, so a tilted panel that is not
-/// changing costs a tessellation and a hash per shape, not a projection;
-/// a new tilt starts it afresh, and fills it only once it holds.
+/// Projected meshes kept from frame to frame, keyed by each shape's
+/// tessellated mesh and its lift. While the tilt stays the same, each shape
+/// costs a tessellation and a hash instead of a projection. A new tilt clears
+/// the cache, and the cache fills again once the tilt is the same on two
+/// consecutive frames.
 #[derive(Default)]
 pub(in crate::app) struct TiltCache {
     tilt: Option<Tilt>,
-    /// The tilt is the previous frame's: what this frame projects is kept.
+    /// Whether the tilt equals the previous frame's; only then are the meshes
+    /// that this frame projects cached.
     steady: bool,
     meshes: std::collections::HashMap<u64, Mesh>,
     seen: std::collections::HashSet<u64>,
 }
 
 impl TiltCache {
-    /// Start a frame under `tilt`, forgetting what the last one did not draw.
+    /// Starts a frame under `tilt`. When the tilt is unchanged, it drops the
+    /// meshes that the last frame did not draw; otherwise it clears them all.
     fn begin(&mut self, tilt: &Tilt) {
         self.steady = self.tilt == Some(*tilt);
         if self.steady {
@@ -303,7 +310,7 @@ impl TiltCache {
     }
 }
 
-/// A mesh's identity: its bytes, its texture, and `salt`.
+/// Hashes a mesh's vertices, indices and texture together with `salt`.
 fn mesh_key(mesh: &Mesh, salt: &[u32]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -314,8 +321,8 @@ fn mesh_key(mesh: &Mesh, salt: &[u32]) -> u64 {
     h.finish()
 }
 
-/// Tessellate `shape` and pass every vertex through `map`, after splitting
-/// the triangles `split` asks for - told whether the mesh is textured. With
+/// Tessellates `shape`, splits the triangles that `split` selects (it is told
+/// whether the mesh is textured), and passes every vertex through `map`. With
 /// a cache, a mesh already projected under `salt` is reused.
 fn project_shape(
     tess: &mut Tessellator,
@@ -357,10 +364,10 @@ fn long_on_screen(t: [Pos2; 3], map: &impl Fn(Pos2) -> Pos2) -> bool {
     (0..3).any(|i| p[i].distance(p[(i + 1) % 3]) > MAX_TEXTURED_EDGE_PX)
 }
 
-/// Replace what `layer` painted from `start` on - the slate's plan, in
-/// screen coordinates - with its projection under `tilt`: on the panel's
-/// plane, except the `raised` parts, which stand on their walls at their
-/// own height.
+/// Replaces the shapes that `layer` painted from `start` onward, which are
+/// the slate's plan in screen coordinates, with their projection under
+/// `tilt`. Shapes lie on the panel's surface, except the `raised` parts,
+/// which stand on their walls at their own height.
 pub(in crate::app) fn project_layer(
     ctx: &egui::Context,
     layer: LayerId,
@@ -396,9 +403,9 @@ pub(in crate::app) fn project_layer(
             list.mutate_shape(ShapeIdx(i), |cs| {
                 let shape = std::mem::replace(&mut cs.shape, Shape::Noop);
                 let at = |p: Pos2| map(p, lift);
-                // A triangle reaching across a line where the height bends -
-                // the surface's crease, a cone's rims - is split until none
-                // reaches across.
+                // Split any triangle that reaches across a line where the
+                // height bends, such as the surface's crease or a cone's rims,
+                // until no triangle does.
                 let split = |t: [Pos2; 3], textured: bool| {
                     let across = |v: [f32; 3], at: f32| {
                         let (lo, hi) = (v[0].min(v[1]).min(v[2]), v[0].max(v[1]).max(v[2]));
@@ -431,8 +438,9 @@ pub(in crate::app) fn project_layer(
     });
 }
 
-/// Project shapes drawn in `face`'s own reference units onto the screen,
-/// after [`project_layer`] in the same frame, which starts `cache`'s frame.
+/// Projects shapes drawn in `face`'s own reference units onto the screen.
+/// Call it after [`project_layer`] in the same frame, because that call
+/// starts the frame in `cache`.
 pub(in crate::app) fn project_face(
     ctx: &egui::Context,
     layout: &UiScale,
@@ -442,8 +450,8 @@ pub(in crate::app) fn project_face(
     cache: &mut TiltCache,
 ) -> Vec<Shape> {
     let (_, _, scale) = layout.cache_key();
-    // A face unit is a reference unit: one physical pixel is this many of
-    // them, which keeps the edges' feathering a pixel wide.
+    // A face unit is a reference unit. Passing the physical pixels per
+    // reference unit keeps the edges' feathering one pixel wide.
     let mut tess = tessellator(ctx, ctx.pixels_per_point() * scale);
     let map = |p: Pos2| tilt.project(face.at(p.x, p.y));
     let split = |t: [Pos2; 3], textured: bool| textured && long_on_screen(t, &map);
@@ -490,7 +498,7 @@ mod tests {
         (layout, tilt)
     }
 
-    /// Flat, the projection is the plan the slate draws.
+    /// When the deck is flat, the projection matches the plan the slate draws.
     #[test]
     fn untilted_is_the_plan() {
         let (layout, tilt) = tilt(0.0);
@@ -500,8 +508,8 @@ mod tests {
         }
     }
 
-    /// A pointer over a projected point maps back to it, on the plane it is
-    /// on - the input remap the tilted panel relies on.
+    /// A pointer over a projected point maps back to that point on its plane.
+    /// The tilted panel relies on this to remap input.
     #[test]
     fn unproject_inverts_project() {
         for t in [0.3, 1.0] {

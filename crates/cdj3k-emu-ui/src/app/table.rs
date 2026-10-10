@@ -26,8 +26,8 @@ pub(in crate::app) struct Column {
     pub width: Width,
 }
 
-/// `rect` cut left to right into `widths`, scaled by `k`; the `Fill` ones
-/// share the rest evenly.
+/// Cuts `rect` left to right into `widths`, scaled by `k`; the `Fill`
+/// columns share the rest evenly.
 pub(in crate::app) fn columns(rect: Rect, widths: &[Width], k: f32) -> Vec<Rect> {
     let fixed: f32 = widths
         .iter()
@@ -57,8 +57,8 @@ pub(in crate::app) fn columns(rect: Rect, widths: &[Width], k: f32) -> Vec<Rect>
         .collect()
 }
 
-/// `n` boxes of `size`, right to left from `cell`'s right edge, centred on
-/// its middle.
+/// Lays out `n` boxes of `size` right to left from `cell`'s right edge,
+/// centred vertically on the cell.
 pub(in crate::app) fn from_right(cell: Rect, size: Vec2, gap: f32, n: usize) -> Vec<Rect> {
     let mut right = cell.right();
     (0..n)
@@ -77,9 +77,11 @@ pub(in crate::app) fn from_right(cell: Rect, size: Vec2, gap: f32, n: usize) -> 
 pub(in crate::app) struct Row<'u, 'h> {
     pub ui: &'u mut Ui,
     pub rect: Rect,
-    /// One per column, inside the row's side padding, the row's full height.
+    /// One rect per column, inside the row's side padding and as tall as the
+    /// row.
     pub cells: Vec<Rect>,
-    /// Being dragged: drawn above the table, and its clicks are ignored.
+    /// The row is being dragged: it is drawn above the table and its clicks
+    /// are ignored.
     pub dragged: bool,
     handle: Option<Handle<'h>>,
 }
@@ -119,7 +121,8 @@ pub(in crate::app) struct Table<'a> {
     pub columns: &'a [Column],
     pub head_h: f32,
     pub row_h: f32,
-    /// Left and right of the first and last column.
+    /// The padding to the left of the first column and to the right of the
+    /// last.
     pub pad: f32,
     pub k: f32,
 }
@@ -132,8 +135,8 @@ impl<T> DragDropItem for Keyed<'_, T> {
     }
 }
 
-/// Where a row sits: its width, and whether it is the first row or being
-/// dragged.
+/// A row's placement: its width, and whether it is the first row or is
+/// being dragged.
 struct RowFrame {
     width: f32,
     first: bool,
@@ -182,8 +185,9 @@ impl Table<'_> {
         let mut moved = None;
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
             ui.set_clip_rect(body);
-            // Inset from the plate's edge and visible without hover: otherwise
-            // a half-cut row is the only sign of more rows below.
+            // Inset the scroll bar from the plate's edge and keep it visible
+            // without hover; otherwise a half-cut row is the only sign of more
+            // rows below.
             let scroll = &mut ui.spacing_mut().scroll;
             scroll.bar_outer_margin = 4.0 * k;
             scroll.dormant_handle_opacity = 0.6;
@@ -218,8 +222,8 @@ impl Table<'_> {
         moved
     }
 
-    /// The table's plate, and the head band across its top with the column
-    /// labels. Returns the head band.
+    /// Draws the table's plate and the head band with the column labels
+    /// across its top. Returns the head band.
     fn draw_head(&self, p: &Painter, table: Rect, pal: &Palette) -> Rect {
         let k = self.k;
         let round = theme::ROUND * k;
@@ -250,7 +254,7 @@ impl Table<'_> {
         head
     }
 
-    /// `r` cut into the columns, inside the side padding.
+    /// Cuts `r` into the columns, inside the side padding.
     fn cells(&self, r: Rect) -> Vec<Rect> {
         let widths: Vec<Width> = self.columns.iter().map(|c| c.width).collect();
         columns(
@@ -260,8 +264,8 @@ impl Table<'_> {
         )
     }
 
-    /// One row at the cursor: its plate, the rule above it, then the caller's
-    /// content.
+    /// Draws one row at the cursor: its plate, the rule above it, then the
+    /// caller's content.
     fn draw_row<T>(
         &self,
         ui: &mut Ui,

@@ -65,9 +65,9 @@ fn the_cdj3000x_aqua_is_not_green() {
 /// in a CDJ-3000X frame; the codec reads each where its player puts it.
 #[test]
 fn lamp_reads_follow_the_codec() {
-    // The ring's colour shifts with the bitfield (3 -> 9), but the CDJ-3000X keeps
-    // its brightness on a byte of its own as a plain level, where the
-    // CDJ-3000 packs it into the colour byte as two bits.
+    // The ring's colour moves with the bitfield, from byte 3 to byte 9. The
+    // CDJ-3000X keeps its brightness as a plain level in a byte of its own;
+    // the CDJ-3000 packs it into the colour byte as two bits.
     let mut raw = [0u8; MOSI_SIZE];
     raw[3] = 0x0c; // CDJ-3000 byte 3: white, full
     raw[3 + cdj3kx::BIT_SHIFT] = 0x03; // the CDJ-3000X's byte 9: red
@@ -108,7 +108,8 @@ fn the_cdj3000x_transport_lamps_are_not_hot_cue_pads() {
     let x = frame(raw, Model::Cdj3kx);
     assert_eq!(x.rgb(Lamp::Play).map(|rgb| rgb.0), Some(0x31));
     assert_eq!(x.rgb(Lamp::Cue).map(|rgb| rgb.0), Some(0x42));
-    // The CDJ-3000 bases the CDJ-3000X's transport lamps overlap are pads C and D.
+    // On the CDJ-3000, the bases that the CDJ-3000X's transport lamps overlap
+    // are pads C and D.
     assert_eq!(cdj3k::MOSI.lamps.hot_cue[2], play);
     assert_eq!(cdj3k::MOSI.lamps.hot_cue[3], cue);
     for pad in Lamp::HOT_CUES {
@@ -129,7 +130,7 @@ fn the_cdj3000x_slot_grid_ends_at_the_selector_ring() {
     assert_eq!(lamps.slot_2, Some(slot_1 + 3));
     assert_eq!(lamps.rotary, Some(slot_1 + 6));
 
-    // Captured with both slots idle.
+    // Both slots are idle in this frame.
     let wire: [u8; 9] = [0x0a, 0x08, 0x07, 0x0a, 0x08, 0x07, 0x4a, 0x57, 0x39];
     let mut raw = [0u8; MOSI_SIZE];
     raw[slot_1..slot_1 + 9].copy_from_slice(&wire);

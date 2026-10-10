@@ -15,17 +15,18 @@ const ANIM_TIME: f32 = 0.13;
 const CARD_GAP: f32 = 22.0;
 const CARD_PAD: f32 = 16.0;
 
-/// A card is a plate of its own size, centred in the row with the space left
-/// over around it - not a panel stretched to whatever the window has. Three
-/// decks fit the window's width before the cap does anything.
+/// The largest size of a card. Cards are centred in the row with the spare
+/// space around them, and three cards fit the window's width before this cap
+/// applies.
 const CARD_MAX_W: f32 = 250.0;
 const CARD_MAX_H: f32 = 300.0;
-/// Under the card row, so it does not sit on the action bar.
+/// The space under the card row, so that the cards do not touch the action
+/// bar.
 const CARD_ROW_BOTTOM: f32 = 20.0;
-/// The band of deck colour across the head of a card - the one place the
-/// window lets a hue run full width.
+/// The height of the band of deck colour across the top of a card. It is the
+/// only full-width colour in the window.
 const CARD_CAP_H: f32 = 3.0;
-/// How far a card's edge darkens towards the ink under the pointer.
+/// How far a card's edge darkens towards the ink on hover.
 const CARD_HOVER_EDGE: f32 = 0.55;
 
 // ── A card's contents, measured up from its foot ──────────────────────────────
@@ -33,20 +34,21 @@ const CARD_TITLE_FONT: f32 = 20.0;
 const CARD_SUB_FONT: f32 = 12.0;
 const CARD_ERA_FONT: f32 = 10.0;
 const CARD_ERA_TRACK: f32 = 1.4;
-/// Up from the pill to the era line, and from there to the subtitle and the
-/// title above it.
+/// The gaps up from the pill to the era line, and from there to the subtitle
+/// and the title above it.
 const CARD_ERA_GAP: f32 = 18.0;
 const CARD_SUB_GAP: f32 = 16.0;
 const CARD_TITLE_GAP: f32 = 20.0;
-/// Between the title and the foot of the miniature standing above it.
+/// The gap between the title and the foot of the miniature above it.
 const CARD_GLYPH_GAP: f32 = 14.0;
 
-/// "INSTALLED" in the top-right corner of the slot's own model.
+/// The "INSTALLED" chip in the top-right corner of the slot's own model.
 pub(super) const CHIP_FONT: f32 = 9.0;
 pub(super) const CHIP_TRACK: f32 = 1.3;
 const CHIP_PAD_X: f32 = 7.0;
 const CHIP_H: f32 = 18.0;
-/// Below the accent cap, and below the chip where the miniature starts.
+/// The chip's offset below the accent cap. CHIP_GLYPH_GAP is the gap between
+/// the chip and the top of the miniature.
 const CHIP_TOP: f32 = 12.0;
 const CHIP_GLYPH_GAP: f32 = 10.0;
 
@@ -55,14 +57,14 @@ const PILL_TRACK: f32 = 1.5;
 
 /// What a card's foot pill offers for its model.
 enum Pill {
-    /// The slot's model, already emulating. Launching it again is no offer, so
-    /// the card offers the one thing left: laying its firmware down afresh.
+    /// The slot's model, already running. The card offers to reinstall its
+    /// firmware.
     Reinstall,
     /// The slot's model, ready to boot.
     Launch,
     /// An empty slot.
     Install,
-    /// Another model's slot: installing takes it over.
+    /// The slot holds another model, which an install replaces.
     Replace,
 }
 
@@ -70,7 +72,7 @@ impl Pill {
     fn of(model: Model, view: &PickerView<'_>) -> Self {
         let installed = view.installed == Some(model);
         // Another slot's deck launches in its own window; while that window
-        // is up, its card lays the firmware down again instead.
+        // is open, its card offers a reinstall instead.
         let (reinstall, launch) = if view.foreign {
             (installed && view.busy, installed)
         } else {
@@ -110,8 +112,8 @@ struct CardState {
     hover_t: f32,
 }
 
-/// One card per model, centred in `space`. Returns what a clicked card asks
-/// for.
+/// Draws one card per model, centred in `space`. Returns the action of a
+/// clicked card.
 pub(super) fn draw_cards(
     ui: &egui::Ui,
     view: &PickerView<'_>,
@@ -179,8 +181,8 @@ fn draw_card(p: &egui::Painter, rect: Rect, card: &CardState, k: f32, pal: &Pale
     );
     let title_y = card_lines(p, rect.center().x, pill.top(), card.model, pal, k);
 
-    // The miniature stands on whatever the chip above and the title below
-    // leave it.
+    // The miniature fills the space between the chip above and the title
+    // below.
     let area = Rect::from_min_max(
         Pos2::new(
             rect.left() + pad,
@@ -205,9 +207,9 @@ fn draw_card(p: &egui::Painter, rect: Rect, card: &CardState, k: f32, pal: &Pale
     draw_pill(p, pill, &card.pill, card.hover_t, pal, k);
 }
 
-/// A flat plate under a hairline, and the deck's own colour across its head.
-/// Under the pointer the plate lifts and the edge darkens towards the ink;
-/// nothing grows and nothing glows. Returns the coloured cap.
+/// Draws a flat plate with a hairline edge and the deck's colour across its
+/// top. On hover the plate takes its hover shade and the edge darkens towards
+/// the ink. Returns the coloured cap.
 fn card_plate(
     p: &egui::Painter,
     rect: Rect,
@@ -241,8 +243,8 @@ fn card_plate(
     cap
 }
 
-/// "INSTALLED" in the card's top-right corner, under the cap whose foot is
-/// at `top`.
+/// Draws "INSTALLED" in the card's top-right corner, under the cap whose foot
+/// is at `top`.
 fn installed_chip(p: &egui::Painter, rect: Rect, top: f32, pal: &Palette, k: f32) {
     let font = FontId::proportional(CHIP_FONT * k);
     let w = text_width(p, "INSTALLED", &font, CHIP_TRACK * k) + 2.0 * CHIP_PAD_X * k;
@@ -266,8 +268,8 @@ fn installed_chip(p: &egui::Painter, rect: Rect, top: f32, pal: &Palette, k: f32
     );
 }
 
-/// The era, the subtitle and the title, centred on `cx` and stacked up from
-/// the pill's top. Returns the title's centre line.
+/// Draws the era, the subtitle and the title, centred on `cx` and stacked up
+/// from the pill's top. Returns the title's centre line.
 fn card_lines(
     p: &egui::Painter,
     cx: f32,
@@ -305,10 +307,10 @@ fn card_lines(
     title_y
 }
 
-/// The foot pill: what clicking the card does to the slot. Every pill is the
-/// same outline, filling under the pointer; colour is kept for what
-/// destroys, and a card never does. The deck accents stay on the cap - they
-/// say which deck, never what the button does.
+/// Draws the foot pill, which names what clicking the card does to the slot.
+/// Every pill has the same outline and fills on hover. Pills use no colour,
+/// because colour marks destructive actions and the deck accent marks the
+/// model.
 fn draw_pill(p: &egui::Painter, pill: Rect, kind: &Pill, hover_t: f32, pal: &Palette, k: f32) {
     let round = theme::ROUND * k;
     let fill = lerp_color(pal.plate, pal.ink, hover_t);

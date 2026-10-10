@@ -1,13 +1,13 @@
-//! Soft-shutdown plumbing: lets `CdjApp::on_exit` (in cdj3k-emu-ui) wait for
-//! the runtime worker thread (owned by the bin crate) to finish its graceful
-//! `instance.stop()` sequence before falling back to a hard kill.
+//! Soft shutdown. `CdjApp::on_exit` (in cdj3k-emu-ui) uses this module to wait
+//! for the runtime worker thread, which the bin crate owns, to finish its
+//! graceful `instance.stop()` sequence before it falls back to a hard kill.
 //!
-//! Flow on app exit:
-//!   1. UI sets `menu_state::lock().app_shutdown = true`.
-//!   2. UI calls [`wait_for_worker(timeout)`] - polls until the registered
-//!      worker thread finishes (it observes `APP_SHUTDOWN` at the top of its
-//!      loop and runs `instance.stop()` before breaking).
-//!   3. If the watchdog elapses, UI calls `kill_qemu_child()` as fallback.
+//! On app exit:
+//!   1. The UI sets `menu_state::lock().app_shutdown = true`.
+//!   2. The UI calls [`wait_for_worker(timeout)`], which polls until the
+//!      registered worker thread finishes. The worker checks `APP_SHUTDOWN` at
+//!      the top of its loop and runs `instance.stop()` before it breaks.
+//!   3. If the watchdog elapses, the UI calls `kill_qemu_child()` as a fallback.
 
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -26,8 +26,8 @@ pub fn register_worker_thread(handle: JoinHandle<()>) {
     }
 }
 
-/// Non-blocking check: true when the registered worker has finished (or was
-/// never spawned).  Used by the UI update loop to decide whether to keep
+/// Return true, without blocking, when the registered worker has finished or
+/// was never spawned. The UI update loop uses it to decide whether to keep
 /// deferring the window close while the graceful runtime stop runs.
 pub fn worker_is_finished() -> bool {
     let Some(slot) = WORKER_JOIN.get() else {
@@ -39,8 +39,9 @@ pub fn worker_is_finished() -> bool {
         .unwrap_or(true)
 }
 
-/// Join the registered worker if it has finished; `true` when no live worker
-/// remains (never spawned, already reaped, or reaped now). Non-blocking.
+/// Join the registered worker if it has finished, without blocking. Return
+/// `true` when no live worker remains: it was never spawned, was already
+/// reaped, or is reaped by this call.
 pub fn reap_finished_worker() -> bool {
     let Some(slot) = WORKER_JOIN.get() else {
         return true;
@@ -64,7 +65,7 @@ pub fn reap_finished_worker() -> bool {
 /// Returns `true` when joined cleanly, `false` if the watchdog elapsed.
 pub fn wait_for_worker(timeout: Duration) -> bool {
     let Some(slot) = WORKER_JOIN.get() else {
-        // Worker never spawned (e.g. firmware-wizard-only path).
+        // The worker was never spawned, for example when only the firmware wizard ran.
         return true;
     };
     let deadline = Instant::now() + timeout;
@@ -75,7 +76,7 @@ pub fn wait_for_worker(timeout: Duration) -> bool {
             .and_then(|g| g.as_ref().map(|h| h.is_finished()))
             .unwrap_or(true);
         if finished {
-            // Take and join - drops the JoinHandle so libc cleanup is clean.
+            // Take the JoinHandle and join the thread, so that the libc cleanup at exit is clean.
             if let Ok(mut g) = slot.lock() {
                 if let Some(h) = g.take() {
                     let _ = h.join();

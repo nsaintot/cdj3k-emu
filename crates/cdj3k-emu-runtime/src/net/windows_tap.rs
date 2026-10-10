@@ -216,7 +216,7 @@ pub(super) fn create_tap(inf: &Path, name: &str) -> io::Result<String> {
 }
 
 /// Put the package in the driver store, where the compatible-driver search
-/// finds it. Already there is fine.
+/// finds it. A package that is already in the store is not an error.
 fn stage_driver_package(inf: &Path) {
     // SAFETY: a NUL-terminated path; no output buffers are asked for.
     let _ = unsafe {

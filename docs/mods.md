@@ -1,7 +1,7 @@
 # Mods
 
 The emulator supports loading mods into a slot.
-A mod is a compatible file/folder with a `mod.toml` file that describes it.
+A mod is a folder, or an archive of one, with a `mod.toml` file that describes it.
 A mod can load shared libraries (`.so`) into the deck's player app,  
 set environment variables for the player app, and run a `loader.sh` script as root just before the player app starts,  
 for example to start a background service or put files in place.
@@ -38,11 +38,11 @@ cdj3kx = "*"
 | `name`        | Name of the mod.                                                                                                                            | Required. Lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit; at most 48 characters; not ending in `.`; not a Windows device name (`con`, `nul`, `com1`…). |
 | `version`     | Version of the mod.                                                                                                                         | Required. One word.                                                                                                                                                                  |
 | `author`      | Author of the mod.                                                                                                                          | Optional.                                                                                                                                                                            |
-| `description` | A short description of what the mod do.                                                                                                     | Optional.                                                                                                                                                                            |
+| `description` | A short description of what the mod does.                                                                                                   | Optional.                                                                                                                                                                            |
 | `url`         | Web page of the mod's project. The log page links to it.                                                                                  | Optional. An `http://` or `https://` address; anything else is shown as text.                                                                                                       |
 | `preload`     | Libraries (`.so`) loaded into the player app, after the emulator's `deck_shim.so` and after the libraries of the mods above it in the list. | Optional. Paths relative to the mod's folder, without `..`, `:`, spaces, quotes or backslashes; each file must exist.                                                               |
 | `env`         | Environment variables for the player app.                                                                                                   | Optional. Values may not contain `"`, `\` or control characters, nor start or end with a space. `LD_PRELOAD` is refused: use `preload` instead.                    |
-| `[compat]`    | Compatibility table of what the mod does support (model/firmware version)                                                                   | Optional. See Firmware ranges below.                                                                                                                                                 |
+| `[compat]`    | The models and firmware releases the mod supports.                                                                                          | Optional. See Firmware ranges below.                                                                                                                                                 |
 
 
 

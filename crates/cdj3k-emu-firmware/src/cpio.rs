@@ -1,9 +1,9 @@
 //! `newc` cpio, read and written in Rust.
 //!
-//! An initramfs is a cpio archive, and the archive — not the host filesystem —
-//! is where guest file modes, ownership and symlinks live. Handling it as bytes
-//! means those survive on hosts that cannot represent them: NTFS has no mode
-//! bits and gates symlink creation, and a macOS unpack/repack round trip stamps
+//! An initramfs is a cpio archive, and the guest's file modes, ownership and
+//! symlinks are stored in the archive itself. Handling the archive as bytes
+//! keeps them on hosts that cannot represent them: NTFS has no mode bits and
+//! restricts symlink creation, and unpacking and repacking on macOS stamps
 //! every entry with the host UID.
 //!
 //! Only `newc` (magic `070701`) is produced. `crc` (`070702`) is accepted on
@@ -65,12 +65,12 @@ impl fmt::Display for CpioError {
 
 impl std::error::Error for CpioError {}
 
-/// What an entry is, and whatever that kind carries.
+/// The type of an entry and the data that type carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
     File(Vec<u8>),
     Dir,
-    /// Target is stored as the record's payload.
+    /// The target is stored as the record's payload.
     Symlink(String),
     CharDev {
         major: u32,
@@ -131,8 +131,8 @@ impl Entry {
 
 // ── Reading ───────────────────────────────────────────────────────────────────
 
-/// Parse an archive. Stops at the first `TRAILER!!!`, so a concatenation reads
-/// as just its first member archive.
+/// Parses an archive. Parsing stops at the first `TRAILER!!!`, so for
+/// concatenated archives it returns only the entries of the first one.
 pub fn read(bytes: &[u8]) -> Result<Vec<Entry>, CpioError> {
     let mut entries = Vec::new();
     let mut at = 0usize;
@@ -260,8 +260,9 @@ impl<'a> Record<'a> {
 
 /// Serialise entries, in the order given, terminated by `TRAILER!!!`.
 ///
-/// The kernel applies concatenated archives in order and lets later entries
-/// win, so an overlay's order is its precedence.
+/// The kernel unpacks concatenated archives in order, and a later entry
+/// replaces an earlier one with the same path, so the order of the archives
+/// sets their precedence.
 pub fn write(entries: &[Entry]) -> Vec<u8> {
     let mut out = Vec::new();
     for (i, e) in entries.iter().enumerate() {
@@ -301,7 +302,7 @@ fn write_record(out: &mut Vec<u8>, e: &Entry, ino: u32) {
         rdevmajor,
         rdevminor,
         name.len() as u32 + 1, // namesize, including the NUL
-        0,                     // check — unused for newc
+        0,                     // check, which newc does not use
     ] {
         out.extend_from_slice(format!("{v:08X}").as_bytes());
     }
@@ -363,11 +364,12 @@ fn pad_to_4(out: &mut Vec<u8>, from: usize) {
 
 // ── Merge ─────────────────────────────────────────────────────────────────────
 
-/// Apply archives in order, later entries winning — what the kernel's
-/// `unpack_to_rootfs` does across a concatenation.
+/// Applies archives in order, so that a later entry replaces an earlier one
+/// with the same path, as the kernel's `unpack_to_rootfs` does for
+/// concatenated archives.
 ///
-/// A removal cannot be expressed, as in the kernel. Deletions are the
-/// prelude's job.
+/// As in the kernel, a merge cannot remove a file; the `/cdj3k-init` prelude
+/// script handles deletions.
 pub fn merge(archives: &[Vec<Entry>]) -> Vec<Entry> {
     let mut merged: BTreeMap<PathBuf, Entry> = BTreeMap::new();
     for archive in archives {

@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Patch 14: usb-drive-mount.service - mount loop-backed USB image and notify the app
+# Patch 10: usb-drive-mount.service mounts the loop-backed USB image and
+# notifies the app.
 #
-# virtio_blk.ko crashes on the Pioneer kernel (struct ABI mismatch in add_disk()).
-# QEMU's USB host controllers are PCI-only; -machine virt has no PCI bus.
+# build.sh copies build/usb.img into the initramfs as /opt/usb.img when that
+# file exists. A mostly empty FAT32 image compresses to under 1 MB. At boot
+# this service attaches the image to /dev/loop0 with the built-in loop driver
+# (CONFIG_BLK_DEV_LOOP=y), mounts it and notifies the app through
+# /proc/udev_usb1, so the app sees a connected USB drive. Without the image the
+# service does nothing; a drive that the host attaches at run time goes through
+# 19-usb-external.sh instead.
 #
-# Solution: build-initramfs.sh embeds build/usb.img into the initramfs as
-# /opt/usb.img (compresses to <1MB - mostly-empty FAT32 = zeros).  At boot this
-# service uses the Pioneer kernel's built-in loop driver (CONFIG_BLK_DEV_LOOP=y)
-# to expose the image as /dev/loop0, then mounts it and notifies EP122 via the
-# Pioneer kernel proc interface so it sees a connected USB drive.
+# Sequence, the same as a real deck booting with a USB drive inserted:
+#   1. losetup /dev/loop0 /opt/usb.img; the kernel scans the partitions and
+#      creates /dev/loop0p1.
+#   2. Mount at /media/usb/sdb1, or at /media/usb/sdb for an image without a
+#      partition table.
+#   3. Write "mount ..." to /proc/udev_usb1, as device-mount.sh does.
 #
-# Sequence (mirrors real CDJ boot with USB pre-inserted):
-#   1. losetup /dev/loop0 /opt/usb.img  → kernel scans partitions → /dev/loop0p1
-#   2. Mount at /media/usb/sda[1]       (same path device-mount.sh uses for bus 5-1)
-#   3. Write "mount ..." to /proc/udev_usb1  (mirrors device-mount.sh)
-#
-# NOTE: "connect," is intentionally NOT written. It comes from GPIO/USB hardware
-# detection via 90-usb-caution.rules (KERNELS=="5-1", ENV{CONNECT}=="1"). Writing
-# it without a real USB controller bind sequence causes EP122 to show
-# "USB Error. Remove the device." - the mount event alone is sufficient.
+# The service does not write "connect,". That event comes from GPIO/USB
+# hardware detection through 90-usb-caution.rules (KERNELS=="5-1",
+# ENV{CONNECT}=="1"). Writing it without a real USB controller bind sequence
+# makes EP122 show "USB Error. Remove the device."; the mount event alone is
+# enough.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 : "${APP_UNIT:?APP_UNIT must be set by dispatcher}"
@@ -31,11 +34,11 @@ mkdir -p "$SERVICE_DIR"
 cat > "$ROOTFS/usr/sbin/usb-drive-mount.sh" << 'SCRIPTEOF'
 #!/bin/sh
 USB_IMG="/opt/usb.img"
-# Exit cleanly if no image (build without embedded USB)
+# Exit cleanly when the build embedded no USB image.
 [ -f "$USB_IMG" ] || exit 0
 
 /sbin/losetup /dev/loop0 "$USB_IMG"
-sleep 1   # kernel partition scan (blkdev_reread_part)
+sleep 1   # Wait for the kernel's partition scan (blkdev_reread_part).
 
 if [ -b /dev/loop0p1 ]; then PART=/dev/loop0p1; DEVBASE=sdb1
 else                          PART=/dev/loop0;   DEVBASE=sdb;  fi
@@ -53,13 +56,13 @@ case "$FS_TYPE" in
   exfat) mount -t exfat -o rw,noatime,flush "$PART" "$MNT" ;;
   hfsplus) mount -t hfsplus -o rw,noatime,force "$PART" "$MNT" ;;
   *)
-    echo "usb-drive-mount: unsupported fs '$FS_TYPE'"
+    echo "usb-drive-mount: unsupported file system '$FS_TYPE'"
     rmdir "$MNT" 2>/dev/null; /sbin/losetup -d /dev/loop0 2>/dev/null
     exit 0 ;;
 esac
 
 printf 'mount %s %s protect:0' "$MNT" "$FS_TYPE" > /proc/udev_usb1
-echo "usb-drive-mount: $PART → $MNT ($FS_TYPE)"
+echo "usb-drive-mount: mounted $PART on $MNT ($FS_TYPE)"
 SCRIPTEOF
 
 chmod 755 "$ROOTFS/usr/sbin/usb-drive-mount.sh"
@@ -70,10 +73,10 @@ cat > "$SERVICE_DIR/usb-drive-mount.service" << SVCEOF
 [Unit]
 Description=Mount loop-backed USB image (/opt/usb.img) and notify ${APP_NAME} via /proc/udev_usb1
 DefaultDependencies=no
-# Loop device is built-in (CONFIG_BLK_DEV_LOOP=y); no module load needed.
-# Use insmod-virtio-rng.service as ordering anchor (it's an early oneshot service).
+# The loop driver is built in (CONFIG_BLK_DEV_LOOP=y), so no module needs loading.
+# Order after insmod-virtio-rng.service, an early oneshot service.
 After=insmod-virtio-rng.service
-# Must complete before ${APP_NAME} reads /proc/udev_usb1
+# The mount must complete before ${APP_NAME} reads /proc/udev_usb1.
 Before=${APP_UNIT}
 Before=multi-user.target
 

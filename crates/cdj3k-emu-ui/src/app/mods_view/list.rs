@@ -124,8 +124,9 @@ pub(super) fn draw_toolbar(
     action
 }
 
-/// The toolbar's left end, up to `note_right`: the last add's note, why the
-/// mods do not run, or how many there are and how many are on.
+/// Draws the note at the toolbar's left end, up to `note_right`: the result
+/// of the last add, the reason the mods do not run, or the number of mods and
+/// how many of them are enabled.
 fn toolbar_note(ui: &egui::Ui, page: &ModsPage, tb: Rect, note_right: f32, pal: &Palette, k: f32) {
     let p = ui.painter();
     let cy = tb.center().y;
@@ -134,7 +135,8 @@ fn toolbar_note(ui: &egui::Ui, page: &ModsPage, tb: Rect, note_right: f32, pal: 
         .iter()
         .filter(|r| matches!(r.status, RowStatus::Incompatible(_)))
         .count();
-    // Draws `text` on one line; returns where, and whether it was shortened.
+    // Draws `text` on one line and returns its rect and whether it was
+    // shortened.
     let warn = |text: &str, col: Color32| {
         let r = NOTE_DOT * k * 0.5;
         let x = tb.left() + 2.0 * r + NOTE_DOT_GAP * k;
@@ -208,8 +210,8 @@ pub(super) fn draw_list_footer(
                 Run::Start => Some(("Start Emulation", false, ModsAction::Start)),
                 Run::None => None,
             };
-            // Set apart from Back and Close by a rule, because it acts on the
-            // deck, not on the window.
+            // A rule separates this button from Back and Close, because it
+            // acts on the deck and they act on the window.
             if let Some((label, pending, asked)) = run {
                 crate::app::picker::footer_rule(ui, pal, k);
                 let size = [
@@ -254,8 +256,8 @@ pub(super) fn draw_empty(
     draw_links(ui, zone.left(), space, k, pal).or(action)
 }
 
-/// The cube, "Drop a mod here" and what it takes, centred in `zone` above
-/// the buttons. Returns where the buttons go.
+/// Draws the cube, "Drop a mod here" and the accepted formats, centred in
+/// `zone` above the buttons. Returns the y where the buttons start.
 fn drop_message(p: &egui::Painter, zone: Rect, pal: &Palette, k: f32) -> f32 {
     let title_h = ZONE_TITLE_FONT * k * 1.25;
     let sub_h = ZONE_SUB_FONT * k * 1.3;
@@ -290,8 +292,8 @@ fn drop_message(p: &egui::Painter, zone: Rect, pal: &Palette, k: f32) -> f32 {
     y + sub_h + 18.0 * k
 }
 
-/// The two add buttons, centred in `zone` from `y`, and the last add's note
-/// under them.
+/// Draws the two add buttons, centred in `zone` from `y`, and the result of
+/// the last add under them.
 fn empty_buttons(
     ui: &egui::Ui,
     zone: Rect,
@@ -344,7 +346,8 @@ fn links_top(space: Rect, k: f32) -> f32 {
     space.bottom() - (ZONE_BOTTOM + LINKS_H + ZONE_LINKS_GAP) * k
 }
 
-/// The documentation and the example mod, at the foot of `space`.
+/// Draws the links to the documentation and the example mod at the foot of
+/// `space`.
 fn draw_links(ui: &egui::Ui, left: f32, space: Rect, k: f32, pal: &Palette) -> Option<ModsAction> {
     let mut action = None;
     let ly = links_top(space, k) + ZONE_LINKS_GAP * k + LINKS_H * k * 0.5;

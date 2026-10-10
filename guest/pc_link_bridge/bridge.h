@@ -1,44 +1,44 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * pc_link_bridge: bidirectional HID + MIDI pump between the dummy_hcd-
- * attached USB gadget (inside this guest) and the cdj3k.usb-link virtio-
- * serial port (out to cdj3k-emu-runtime on the Mac).
+ * pc_link_bridge copies HID and MIDI traffic in both directions between the
+ * USB gadget that dummy_hcd attaches inside this guest and the cdj3k.usb-link
+ * virtio-serial port, which leads to cdj3k-emu-runtime on the host.
  *
- * Direction summary (HID; MIDI is symmetric):
+ * The HID data path; MIDI works the same way:
  *
- *   app    →  /dev/hidg0  ─[ f_hid + dummy_hcd ]─→  /dev/hidraw0
- *                                                   └─ this daemon reads
- *                                                        and frames out to
- *                                                        cdj3k.usb-link
- *                                                        → host CoreHID
- *                                                          (virtual HID dev)
+ *   Guest to host: the app writes a report to /dev/hidg0, and f_hid on
+ *   dummy_hcd delivers it to /dev/hidraw0. This daemon reads it and sends it
+ *   as a frame over cdj3k.usb-link to the host's virtual HID device.
  *
- *   host CoreHID ← virtual HID dev → cdj3k.usb-link → this daemon
- *      writes to /dev/hidraw0 ─[ dummy_hcd ]→ /dev/hidg0 ← app read
+ *   Host to guest: this daemon receives a frame from cdj3k.usb-link and
+ *   writes the report to /dev/hidraw0; dummy_hcd delivers it, and the app
+ *   reads it from /dev/hidg0.
  *
- * The wire payload is the bare HID report in both directions.  The leading
- * report-number byte hidraw_write() expects is added in io.c, next to the fd
- * that needs it.
+ * The wire payload is the bare HID report in both directions. io.c adds the
+ * leading report-number byte that hidraw_write() expects, next to the fd that
+ * needs it.
  *
- * Wire frame (over virtio-serial; both directions identical):
- *   byte 0       : type    (0x01=HID, 0x02=MIDI, 0x03=HELLO, 0x04=IDENTITY)
- *   bytes 1..2   : length  (big-endian u16, payload only)
- *   bytes 3..    : payload
+ * The wire frame is the same in both directions:
+ *   | Bytes | Field                                                        |
+ *   |-------|--------------------------------------------------------------|
+ *   | 0     | type: 0x01 HID, 0x02 MIDI, 0x03 HELLO, 0x04 IDENTITY         |
+ *   | 1-2   | payload length, big-endian u16                               |
+ *   | 3-    | payload                                                      |
  *
  * The host opens every connection with an empty HELLO and waits for the
- * IDENTITY reply (gadget.c) before registering its endpoints, so the macOS
- * devices carry the identity the firmware gave the gadget.
+ * IDENTITY reply (gadget.c) before it registers its endpoints, so the host's
+ * devices carry the identity that the firmware gave the gadget.
  *
  * HID reports are as long as the gadget's report descriptor says (64 bytes on
  * the CDJ-3000, up to 1024 on the CDJ-3000X) and USB-MIDI uses 4-byte event
  * packets, so a 4 KiB framing buffer covers both.
  *
- * The systemd unit (installed by initramfs patch 29) is NOT enabled by
- * default; cfgd starts/stops it when the host toggles `pc_link` on/off, which
- * keeps the bridge silent until the user plugs the "virtual cable" in.
+ * The systemd unit, which initramfs patch 29 installs, is not enabled by
+ * default. cfgd starts or stops it when the host toggles `pc_link`, so the
+ * bridge stays silent until the user plugs in the virtual cable.
  *
- * Translation units:
- *   io.c      endpoint discovery + the virtio-serial wire protocol
+ * Source files:
+ *   io.c      endpoint discovery and the virtio-serial wire protocol
  *   gadget.c  the gadget identity read back from configfs
  *   pcmode.c  force PC mode on apps that cannot enter it themselves
  *   usbg.c    the /tmp/usbg1 FIFO that gates the SOURCE CONTROL MODE row
@@ -66,7 +66,7 @@
 #define FRAME_IDENTITY 0x04
 #define MAX_PAYLOAD 4096
 
-/* Set by SIGTERM/SIGINT; every blocking wait loop polls it. */
+/* SIGTERM and SIGINT set this; every blocking wait loop checks it. */
 extern volatile sig_atomic_t g_stop;
 
 /* io.c: endpoint discovery and the virtio-serial wire protocol. */
@@ -85,7 +85,7 @@ int gadget_identity(char *out, size_t cap);
 void force_pc_mode(void);
 void unforce_pc_mode(void);
 
-/* usbg.c: the /tmp/usbg1 FIFO gating the app's SOURCE CONTROL MODE row. */
+/* usbg.c: the /tmp/usbg1 FIFO that gates the app's SOURCE CONTROL MODE row. */
 int  usbg_open(void);
 void usbg_close(void);
 void set_usb_connected(int on);

@@ -3,11 +3,11 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// `temp_dir()`, without the per-user isolation of the Unix and Windows
-/// roots.
+/// A host without AF_UNIX places no limit on socket paths.
 pub const SUN_PATH_LIMIT: usize = usize::MAX;
 
-/// The host's temporary directory, namespaced.
+/// A `cdj3k-emu` directory in `temp_dir()`, without the per-user isolation
+/// of the Unix and Windows roots.
 pub fn base_dir() -> PathBuf {
     std::env::temp_dir().join("cdj3k-emu")
 }

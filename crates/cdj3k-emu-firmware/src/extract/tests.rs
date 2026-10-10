@@ -16,7 +16,7 @@ fn record(name: &[u8], lba: u32, size: u32, dir: bool) -> Vec<u8> {
     r
 }
 
-/// An ISO holding `IMAGES/APP.REV` = `14926`: the PVD at sector 16, the
+/// An ISO whose `IMAGES/APP.REV` contains `14926`: the PVD at sector 16, the
 /// root directory at 17, `IMAGES` at 18 and the file at 19.  `extra_root`
 /// is appended to the root directory's records.
 fn iso(app_rev_size: u32, extra_root: &[u8]) -> Vec<u8> {
@@ -59,13 +59,19 @@ fn a_nested_file_is_found_case_insensitively() {
 fn a_missing_file_lists_the_directory_it_searched() {
     match lookup(iso(5, &[]), "IMAGES/NOPE") {
         Err(ExtractError::FileNotFound(s)) => {
-            assert_eq!(s, r#"looking for "NOPE"; dir contains: ["[F]APP.REV;1"]"#)
+            assert_eq!(
+                s,
+                r#""NOPE" is not in the directory, which contains ["[F]APP.REV;1"]"#
+            )
         }
         other => panic!("unexpected {other:?}"),
     }
     match lookup(iso(5, &[]), "BOOT") {
         Err(ExtractError::FileNotFound(s)) => {
-            assert_eq!(s, r#"looking for "BOOT"; dir contains: ["[D]IMAGES"]"#)
+            assert_eq!(
+                s,
+                r#""BOOT" is not in the directory, which contains ["[D]IMAGES"]"#
+            )
         }
         other => panic!("unexpected {other:?}"),
     }
@@ -105,7 +111,10 @@ fn a_short_record_ends_the_directory() {
     short[0] = 20;
     match lookup(iso(5, &short), "BOOT") {
         Err(ExtractError::FileNotFound(s)) => {
-            assert_eq!(s, r#"looking for "BOOT"; dir contains: ["[D]IMAGES"]"#)
+            assert_eq!(
+                s,
+                r#""BOOT" is not in the directory, which contains ["[D]IMAGES"]"#
+            )
         }
         other => panic!("unexpected {other:?}"),
     }
@@ -125,8 +134,8 @@ fn tar_gz(files: &[(&str, &[u8])]) -> Vec<u8> {
     tar.into_inner().unwrap().finish().unwrap()
 }
 
-/// Run [`extract_image_from_tar_gz`] on `files`: the kernel it wrote, and
-/// the lines it logged.
+/// Runs [`extract_image_from_tar_gz`] on `files` and returns the kernel it
+/// wrote and the lines it logged.
 fn extract(files: &[(&str, &[u8])]) -> (Result<Vec<u8>, ExtractError>, Vec<String>) {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -146,15 +155,18 @@ fn the_rk3399_kernel_is_chosen_by_path_then_by_content() {
     assert_eq!(got.unwrap(), b"k");
     assert_eq!(
         log.last().unwrap(),
-        r#"[kernel] selected by path 'rk3399': "rk3399/Image""#
+        r#"[kernel] Selected "rk3399/Image" because its path contains 'rk3399'."#
     );
 
     let (got, log) = extract(&[("a/Image", b"plain"), ("b/IMAGE", b"..rk3399..")]);
     assert_eq!(got.unwrap(), b"..rk3399..");
-    assert_eq!(log[0], r#"[kernel] tar Image candidate: "a/Image"  0 MB"#);
+    assert_eq!(
+        log[0],
+        r#"[kernel] Found the Image candidate "a/Image" (0 MB)."#
+    );
     assert_eq!(
         log.last().unwrap(),
-        r#"[kernel] selected by content 'rk3399': "b/IMAGE""#
+        r#"[kernel] Selected "b/IMAGE" because its content contains 'rk3399'."#
     );
 }
 
@@ -170,13 +182,13 @@ fn a_tar_without_an_rk3399_kernel_is_refused() {
     assert!(matches!(
         got,
         Err(ExtractError::UnsupportedG2M(d))
-            if d == r#"tar contains rcar/r8a7796/salvator markers, candidates=["salvator/Image"]"#
+            if d == r#"the tar has R-Car markers such as rcar, r8a7796 or salvator; the candidates are ["salvator/Image"]"#
     ));
 
     let (got, _) = extract(&[("a/Image", b"x"), ("b/Image", b"y")]);
     assert!(matches!(
         got,
         Err(ExtractError::UnsupportedG2M(d))
-            if d == r#"no rk3399 marker found, candidates=["a/Image", "b/Image"]"#
+            if d == r#"no candidate has an rk3399 marker; the candidates are ["a/Image", "b/Image"]"#
     ));
 }

@@ -1,7 +1,7 @@
 //! CoreAudio output devices, through raw HAL FFI.
 //!
-//! Raw rather than a `coreaudio-sys` dependency: the HAL property constants
-//! are stable.
+//! The crate calls the HAL directly instead of depending on `coreaudio-sys`,
+//! because the HAL property constants are stable.
 
 use std::ffi::{c_char, c_void, CStr};
 
@@ -30,7 +30,9 @@ struct AudioBuffer {
 #[repr(C)]
 struct AudioBufferList {
     number_buffers: u32,
-    buffers: [AudioBuffer; 1], // variable-length tail; we only read `number_buffers`
+    // A variable-length tail; `device_has_output_streams` walks it from this
+    // field's offset.
+    buffers: [AudioBuffer; 1],
 }
 
 // ── Constants (FourCC) ───────────────────────────────────────────────────────
@@ -211,10 +213,10 @@ fn device_has_output_streams(id: AudioObjectID) -> bool {
     if st != 0 {
         return false;
     }
-    // AudioBufferList layout: u32 mNumberBuffers + variable AudioBuffer
-    // tail. AudioBuffer holds a pointer so it is 8-byte aligned, which means
-    // there are 4 padding bytes after mNumberBuffers before mBuffers[0].
-    // Walk the buffers via the struct field offset, not sizeof(u32).
+    // An AudioBufferList is a u32 mNumberBuffers followed by a variable
+    // AudioBuffer array. AudioBuffer holds a pointer, so it is 8-byte aligned
+    // and 4 padding bytes follow mNumberBuffers. The loop reaches the buffers
+    // through the struct field offset, not through sizeof(u32).
 
     let list = unsafe { &*(buf.as_ptr() as *const AudioBufferList) };
     if list.number_buffers == 0 {

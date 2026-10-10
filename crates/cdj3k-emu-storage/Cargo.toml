@@ -1,6 +1,6 @@
 [package]
 name = "cdj3k-emu-storage"
-description = "Per-instance eMMC qcow2 provisioning, GPT layout, persistent slot settings."
+description = "The slot's storage: eMMC qcow2 provisioning, the GPT layout, slot and app settings, staged installs and mods."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

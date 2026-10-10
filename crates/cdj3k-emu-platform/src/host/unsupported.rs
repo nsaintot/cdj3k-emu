@@ -6,7 +6,7 @@ pub(super) fn accelerators() -> Result<Vec<Accelerator>, SoftwareEmulation> {
     Err(SoftwareEmulation::Unsupported)
 }
 
-/// No `-audiodev` at all, which QEMU runs with: the guest's `snd-dummy` still
+/// QEMU runs without any `-audiodev`; the guest's `snd-dummy` still
 /// enumerates a card.
 pub const AUDIO: Option<AudioBackend> = None;
 

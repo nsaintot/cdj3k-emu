@@ -1,22 +1,24 @@
-//! JogLcdStream - receives jog LCD frames from the guest via ivshmem.
+//! JogLcdStream receives jog LCD frames from the guest through ivshmem.
 //!
-//! Transport (zero-copy, polling):
-//!   * The guest's `deck_shim.so` extracts the visible 320×240 region from
-//!     EP122's 1280×240 stretched DRM framebuffer on every flip and writes the
-//!     XRGB8888 pixels directly into an ivshmem BAR. The same memory is
-//!     visible on the host as the file at `{socket_dir}/jog.shm` (mapped here
-//!     read-only).
-//!   * Each publish bumps a 32-bit `seq` counter (seqlock-style: odd = write
-//!     in progress, even = stable). This thread polls `seq` at ~60 Hz; when
-//!     it advances we read pixels via the seqlock and publish a `JogFrame`.
+//! - On every flip, the guest's `deck_shim.so` extracts the visible 320×240
+//!   region from EP122's 1280×240 stretched DRM framebuffer and writes the
+//!   XRGB8888 pixels into an ivshmem BAR. The host sees the same memory as the
+//!   file `{socket_dir}/jog.shm`, which this module maps read-only.
+//! - Each publish increments a 32-bit `seq` counter, seqlock style: an odd
+//!   value means a write is in progress and an even value means the frame is
+//!   stable. This thread polls `seq` at about 60 Hz; when it advances, the
+//!   thread copies the pixels under the seqlock and publishes a `JogFrame`.
 //!
-//! Layout - must match `JOG_SHM_*` in `guest/shim/shim.h`:
-//!   0x0000 u32 magic = 'JOG1' (LE 0x31474F4A)
-//!   0x0004 u32 seq      seqlock counter (odd = write in progress)
-//!   0x0008 u16 width
-//!   0x000A u16 height
-//!   0x000C u32 format   1 = XRGB8888
-//!   0x1000 pixels       width*height*4 bytes
+//! The layout must match `JOG_SHM_*` in `guest/shim/shim.h`:
+//!
+//! | offset | type | field |
+//! |---|---|---|
+//! | 0x0000 | u32 | magic, 'JOG1' (LE 0x31474F4A) |
+//! | 0x0004 | u32 | seq, the seqlock counter (odd while a write is in progress) |
+//! | 0x0008 | u16 | width |
+//! | 0x000A | u16 | height |
+//! | 0x000C | u32 | format, 1 for XRGB8888 |
+//! | 0x1000 | bytes | pixels, width*height*4 bytes |
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,9 +27,9 @@ use std::time::{Duration, Instant};
 
 use memmap2::Mmap;
 
-/// Logical jog LCD width after guest-side crop (physical panel).
+/// Jog LCD width after the guest's crop, which is the physical panel's width.
 pub const JOG_FB_W: usize = 320;
-/// Logical jog LCD height (matches DRM jog plane height).
+/// Jog LCD height, the same as the DRM jog plane's height.
 pub const JOG_FB_H: usize = 240;
 
 const FRAME_BYTES: usize = JOG_FB_W * JOG_FB_H * 4;
@@ -41,22 +43,24 @@ const SHM_OFF_W: usize = 0x0008;
 const SHM_OFF_H: usize = 0x000A;
 const SHM_OFF_FMT: usize = 0x000C;
 
-/// Poll period for `seq`. 16 ms ≈ 60 Hz, which matches the upstream jog
-/// refresh and is well below the guest's ~100 Hz publish rate.
+/// Poll period for `seq`. 16 ms is about 60 Hz, which matches the upstream jog
+/// refresh and is well below the guest's publish rate of about 100 Hz.
 const POLL_INTERVAL: Duration = Duration::from_millis(16);
 
-/// If `seq` doesn't advance for this long we mark the stream disconnected so
-/// the UI can show a "wait" badge. The guest publishes on every DRM flip - a
-/// 2 s gap means EP122 has stalled or the guest hasn't booted yet.
+/// If `seq` does not advance for this long, the stream is marked disconnected
+/// so the UI can show a "wait" badge. The guest publishes on every DRM flip, so
+/// a 2 s gap means EP122 has stalled or the guest has not booted yet.
 const ALIVE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Horizontal inset from left/right edges as a fraction of width (4:3 panel - slightly larger than Y).
+/// Horizontal inset from the left and right edges, as a fraction of the width.
+/// It is larger than the vertical inset because the panel is 4:3.
 const CORNER_SAMPLE_FRAC_X: f32 = 0.2;
-/// Vertical inset from top/bottom edges as a fraction of height.
+/// Vertical inset from the top and bottom edges, as a fraction of the height.
 const CORNER_SAMPLE_FRAC_Y: f32 = 0.1;
 
-/// Framebuffer `(x, y)` pixel indices used for [`JogFrame::corner_rgba`], in the same order:
-/// top-left, top-right, bottom-left, bottom-right (SLIP, VINYL, SYNC, MASTER).
+/// Framebuffer `(x, y)` pixel indices that [`JogFrame::corner_rgba`] samples,
+/// in the same order: top-left, top-right, bottom-left and bottom-right (SLIP,
+/// VINYL, SYNC and MASTER).
 pub fn jog_corner_probe_fb_pixels() -> [(usize, usize); 4] {
     let dx = ((JOG_FB_W as f32) * CORNER_SAMPLE_FRAC_X).round() as usize;
     let dy = ((JOG_FB_H as f32) * CORNER_SAMPLE_FRAC_Y).round() as usize;
@@ -67,19 +71,20 @@ pub fn jog_corner_probe_fb_pixels() -> [(usize, usize); 4] {
     [(dx, dy), (xm, dy), (dx, ym), (xm, ym)]
 }
 
-/// Dirty RGBA8 region for the jog LCD (same semantics as [`crate::display::DisplayFrame`]).
+/// A jog LCD frame and its dirty region. `image` holds the wire-format XRGB
+/// bytes (B, G, R, X); the GPU reorders them through a channel swizzle.
 pub struct JogFrame {
     pub image: std::sync::Arc<egui::ColorImage>,
     pub x: u32,
     pub y: u32,
     pub w: u32,
     pub h: u32,
-    /// Non-premultiplied RGBA from full canvas: SLIP, VINYL, SYNC, MASTER (top-left, top-right,
-    /// bottom-left, bottom-right).
+    /// Non-premultiplied RGBA sampled from the full canvas at SLIP, VINYL, SYNC
+    /// and MASTER (top-left, top-right, bottom-left and bottom-right).
     pub corner_rgba: [[u8; 4]; 4],
 }
 
-/// Background-thread reader for the jog LCD ivshmem region.
+/// Reads the jog LCD ivshmem region on a background thread.
 pub struct JogLcdStream {
     slot: Arc<Mutex<Option<JogFrame>>>,
     connected: Arc<AtomicBool>,
@@ -122,9 +127,9 @@ impl JogLcdStream {
     }
 }
 
-/// Map the ivshmem-backed file. cdj3k-emu-runtime truncates it to 1 MiB before
-/// QEMU launch, so the file always exists once the instance has spawned;
-/// loop in case the UI runs ahead of the emulator.
+/// Maps the ivshmem-backed file. cdj3k-emu-runtime sizes it to 1 MiB before
+/// QEMU starts, so the file exists once the instance has spawned; the function
+/// retries in case the UI starts before the emulator.
 fn open_shm(shm_path: &str) -> Mmap {
     let mut log_attempts: u32 = 0;
     loop {
@@ -133,16 +138,18 @@ fn open_shm(shm_path: &str) -> Mmap {
                 Ok(m) if m.len() >= SHM_PIXELS_OFF + FRAME_BYTES => return m,
                 Ok(m) => {
                     eprintln!(
-                        "[jog_stream] {shm_path}: too small ({} bytes), waiting…",
+                        "[jog_stream] {shm_path} is too small ({} bytes); waiting.",
                         m.len()
                     );
                 }
-                Err(e) => eprintln!("[jog_stream] mmap {shm_path}: {e}"),
+                Err(e) => eprintln!("[jog_stream] Mapping {shm_path} failed: {e}"),
             },
             Err(e) => {
                 log_attempts += 1;
                 if log_attempts == 1 || log_attempts.is_multiple_of(10) {
-                    eprintln!("[jog_stream] open {shm_path}: {e} (attempt {log_attempts})");
+                    eprintln!(
+                        "[jog_stream] Opening {shm_path} failed: {e} (attempt {log_attempts})"
+                    );
                 }
             }
         }
@@ -163,26 +170,26 @@ fn stream_loop(
     };
     let mut bufs = FrameBuffers::new();
 
-    // Outer loop: re-mmap whenever the QEMU worker exits/restarts. The
-    // runtime unlinks jog.shm on cleanup and re-creates it on spawn (new
-    // inode), so a held mapping would freeze on the previous session's last
-    // frame. The cleanup hook zeros the magic before unlink, giving us a
-    // reliable in-band signal to drop and re-open.
-    // Logged once, and again after each session that carried frames. Until
-    // the guest publishes (a deck without a jog LCD never does) the mapping
-    // is re-made silently.
+    // Map the file again whenever the QEMU worker exits or restarts. The
+    // runtime unlinks jog.shm on cleanup and creates it again, with a new
+    // inode, on spawn, so a held mapping would freeze on the previous
+    // session's last frame. The cleanup hook zeros the magic before the
+    // unlink, which tells this loop to drop the mapping and reopen it.
+    // The mapping is logged once, and again after each session that carried
+    // frames. Until the guest publishes (a deck without a jog LCD never does),
+    // it is remapped silently.
     let mut announce = true;
     loop {
         let shm = open_shm(shm_path);
         if announce {
-            eprintln!("[jog_stream] shm mapped: {shm_path} ({} bytes)", shm.len());
+            eprintln!("[jog_stream] Mapped {shm_path} ({} bytes).", shm.len());
             announce = false;
         }
 
-        // Before the first publish the mapping is re-made at the reconnect
-        // pace below, which picks up a restart's new file.
+        // Before the first publish, the file is remapped at the reconnect
+        // pace below, which picks up the new file after a restart.
         if poll_session(&shm, &mut bufs, &sink) {
-            eprintln!("[jog_stream] magic gone, reconnecting");
+            eprintln!("[jog_stream] The shm magic was cleared; reconnecting.");
             announce = true;
         }
         sink.disconnect();
@@ -227,8 +234,9 @@ impl JogSink {
     }
 }
 
-/// Two `Arc<ColorImage>` buffers - rotate so the receiver can read while we
-/// write the next frame without reallocating the 76 800-element pixel Vec.
+/// Two `Arc<ColorImage>` buffers used in turn, so the receiver can read one
+/// while the next frame is written to the other, without reallocating the
+/// 76 800-pixel Vec.
 struct FrameBuffers {
     bufs: [Arc<egui::ColorImage>; 2],
     next: usize,
@@ -242,8 +250,8 @@ impl FrameBuffers {
         }
     }
 
-    /// A buffer no reader still holds: the next one, the other, or a fresh
-    /// one in place of the other.
+    /// Returns a buffer that no reader holds: the next one if it is free, else
+    /// the other one, else a fresh buffer that replaces the other one.
     fn writable(&mut self) -> &mut egui::ColorImage {
         if Arc::get_mut(&mut self.bufs[self.next]).is_none() {
             self.next ^= 1;
@@ -320,7 +328,7 @@ impl Session {
         let corners = corner_colors_from_canvas(canvas);
         if self.frame_count == 0 {
             let nonzero = canvas.iter().any(|&b| b != 0);
-            eprintln!("[jog_stream] first frame: nonzero={nonzero} seq={seq_now}");
+            eprintln!("[jog_stream] The first frame arrived (nonzero={nonzero}, seq={seq_now}).");
         }
         self.frame_count += 1;
         sink.publish(bufs.publish(), corners);
@@ -332,20 +340,20 @@ impl Session {
 fn header_is_xrgb_panel(shm: &[u8]) -> bool {
     let fmt = read_u32(shm, SHM_OFF_FMT);
     if fmt != SHM_FMT_XRGB8888 {
-        eprintln!("[jog_stream] unexpected format {fmt}");
+        eprintln!("[jog_stream] The frame format {fmt} is not XRGB8888.");
         return false;
     }
     let w = read_u16(shm, SHM_OFF_W) as usize;
     let h = read_u16(shm, SHM_OFF_H) as usize;
     if w != JOG_FB_W || h != JOG_FB_H {
-        eprintln!("[jog_stream] unexpected size {w}x{h}");
+        eprintln!("[jog_stream] The frame size {w}x{h} does not match the panel.");
         return false;
     }
     true
 }
 
-/// Copy the pixels into `canvas` under the seqlock: the `seq` they were
-/// copied at, or `None` if no attempt of four saw it stable.
+/// Copies the pixels into `canvas` under the seqlock. Returns the `seq` of the
+/// copy, or `None` if none of four attempts found `seq` stable.
 fn copy_stable(shm: &[u8], canvas: &mut [u8]) -> Option<u32> {
     for _ in 0..4 {
         let seq_before = read_u32(shm, SHM_OFF_SEQ);
@@ -371,11 +379,10 @@ fn read_u16(shm: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([shm[off], shm[off + 1]])
 }
 
-/// Sample the canvas at (x, y) and return RGBA bytes for UI consumption.
-/// The canvas stores raw wire-format XRGB bytes (B, G, R, X) - the GPU
-/// re-orders them via channel-swizzle, but `corner_rgba` is consumed by
-/// `Color32::from_rgba_unmultiplied` on the host side and so needs the
-/// CPU-visible RGBA layout. Swap on read.
+/// Sample the canvas at (x, y) and return RGBA bytes for the UI. The canvas
+/// holds wire-format XRGB bytes (B, G, R, X), which the GPU reorders through a
+/// channel swizzle; `corner_rgba` goes to `Color32::from_rgba_unmultiplied`,
+/// so the bytes are swapped here.
 fn sample_corner_rgba(canvas: &[u8], x: usize, y: usize) -> [u8; 4] {
     let i = (y * JOG_FB_W + x) * 4;
     if i + 4 <= canvas.len() {
@@ -395,8 +402,8 @@ fn corner_colors_from_canvas(canvas: &[u8]) -> [[u8; 4]; 4] {
     ]
 }
 
-/// Reinterpret a `ColorImage`'s pixel storage as a mutable byte slice. Sound
-/// because [`egui::Color32`] is `#[repr(C)] [u8; 4]`.
+/// Reinterpret a `ColorImage`'s pixel storage as a mutable byte slice. This is
+/// sound because [`egui::Color32`] is `#[repr(C)] [u8; 4]`.
 fn color_image_bytes_mut(img: &mut egui::ColorImage) -> &mut [u8] {
     let len = img.pixels.len() * 4;
     unsafe { std::slice::from_raw_parts_mut(img.pixels.as_mut_ptr() as *mut u8, len) }
@@ -450,12 +457,12 @@ mod tests {
         let first = bufs.publish();
         let second_ptr = Arc::as_ptr(&bufs.bufs[1]);
 
-        // The UI still holds the first: the second is written.
+        // The UI still holds the first buffer, so the second is written.
         bufs.writable().pixels[0] = egui::Color32::RED;
         let second = bufs.publish();
         assert_eq!(Arc::as_ptr(&second), second_ptr);
 
-        // Both held: a fresh buffer replaces one of them.
+        // With both held, a fresh buffer replaces one of them.
         let fresh: *const egui::ColorImage = bufs.writable();
         assert!(fresh != Arc::as_ptr(&first) && fresh != Arc::as_ptr(&second));
         assert_eq!(first.pixels[0], egui::Color32::WHITE);

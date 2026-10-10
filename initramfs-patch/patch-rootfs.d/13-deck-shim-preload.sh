@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Patch 13: <app unit>.d/10-qemu.conf - load deck_shim.so via LD_PRELOAD
+# Patch 13: <app unit>.d/10-qemu.conf loads deck_shim.so through LD_PRELOAD.
 #
 # Without deck_shim.so preloaded into the app, the USB bind intercept is
-# inactive. When the app processes the "mount /media/usb/sda …" event from
+# inactive. When the app processes the "mount /media/usb/sdb1 …" event from
 # /proc/udev_usb1, it writes the USB interface name to:
 #   /sys/bus/usb/drivers/usb-storage/bind
 #   /sys/bus/usb/drivers/usb-storage/unbind
 #   /sys/bus/usb/drivers/usb/unbind
-# In QEMU -machine virt there is no xHCI/EHCI controller so these sysfs writes
-# return ENODEV → the app shows "USB Error. Remove the device."
+# QEMU -machine virt has no xHCI or EHCI controller, so these sysfs writes
+# return ENODEV and the app shows "USB Error. Remove the device."
 #
 # The drop-in reads LD_PRELOAD from two environment files; the second one,
 # when present, wins:
@@ -18,9 +18,9 @@
 #                                    this boot's mods (patch 30); absent when
 #                                    the boot has no mods
 # systemd reads both at every start of the unit, so a mod's libraries need no
-# daemon-reload. The app and all children inherit LD_PRELOAD; deck_shim.so
-# intercepts the bind writes → /dev/null. The shim hooks libc entry points
-# only, so it serves every player binary.
+# daemon-reload. The app and all its children inherit LD_PRELOAD, and
+# deck_shim.so redirects the bind writes to /dev/null. The shim hooks only libc
+# entry points, so it serves every player binary.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 : "${APP_UNIT:?APP_UNIT must be set by dispatcher}"
@@ -51,4 +51,4 @@ EnvironmentFile=-/run/cdj3k-mods/preload.env
 SVCEOF
 
 chmod 644 "$DROP_IN_DIR/10-qemu.conf"
-echo "  -> ${APP_UNIT}.d/10-qemu.conf installed (LD_PRELOAD from /etc/cdj3k + /run/cdj3k-mods)"
+echo "  -> ${APP_UNIT}.d/10-qemu.conf installed (LD_PRELOAD from /etc/cdj3k and /run/cdj3k-mods)"

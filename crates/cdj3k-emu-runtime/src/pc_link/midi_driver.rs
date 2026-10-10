@@ -1,18 +1,18 @@
-//! Link between `PcLink` and the CoreMIDI driver plugin.
+//! The link between `PcLink` and the CoreMIDI driver plugin.
 //!
 //! The driver runs inside `MIDIServer`, so it cannot share the emulator's
-//! virtio-serial socket. It connects here instead, over a unix socket carrying
-//! a raw MIDI byte stream in both directions: the same bytes the guest reads
+//! virtio-serial socket. It connects here instead, over a Unix socket that
+//! carries a raw MIDI byte stream in both directions: the same bytes the guest reads
 //! from and writes to the gadget's rawmidi device, with no extra framing.
 //!
-//! Why a driver at all: apps that walk endpoint → entity → device (djay Pro)
-//! ignore endpoints made with `MIDISourceCreate`, because a virtual endpoint
-//! has no entity, and `MIDIDeviceCreate` is refused outside a driver. See
-//! `docs/pc-link.md`.
+//! A driver is needed because apps that walk from an endpoint to its entity
+//! and device, such as djay Pro, ignore endpoints made with
+//! `MIDISourceCreate`: a virtual endpoint has no entity, and
+//! `MIDIDeviceCreate` is refused outside a driver. See `docs/pc-link.md`.
 //!
 //! The socket lives at `{instance_dir}/midi-driver.sock`, beside the instance's
-//! other channels.  Binding it is how the instance advertises that PC Link is
-//! on: the plugin scans `instance-*` and dials each one it finds, so every
+//! other channels. Binding it tells the plugin that PC Link is on for the
+//! instance: the plugin scans `instance-*` and dials each one it finds, so every
 //! instance gets its own connection and its own `MIDIDevice`, and no instance
 //! can disturb another's.
 
@@ -30,23 +30,23 @@ use crate::pc_link::frame::FRAME_MIDI;
 use crate::pc_link::gadget::GadgetIdentity;
 use crate::pc_link::transport::OutFrame;
 
-/// Cap on a write to the attached driver.  A driver that stops draining is
-/// dropped.
+/// The longest a write to the attached driver may take. A driver that stops
+/// reading is dropped.
 const WRITE_TIMEOUT: Duration = Duration::from_millis(250);
 
-/// How often the accept thread re-checks the stop flag.  It also bounds how
-/// long `drop` waits to join that thread.
+/// How often the accept thread checks the stop flag. It also limits how long
+/// `drop` waits to join that thread.
 const ACCEPT_POLL: Duration = Duration::from_millis(200);
 
-/// Pause after a failed accept (EMFILE, ENFILE, ...), so an error that
-/// persists does not spin the accept thread.
+/// The pause after a failed accept (EMFILE, ENFILE, ...), so that a lasting
+/// error does not spin the accept thread.
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 
-/// Guest→driver messages held while the driver is slow.  Beyond this the
-/// oldest are dropped; MIDI is only useful live.
+/// The number of messages from the guest held for a slow driver. Beyond this,
+/// the oldest are dropped, because late MIDI is of no use.
 const OUTBOX_CAP: usize = 1024;
 
-/// Queue between the transport reader and the driver writer thread.  The
+/// The queue between the transport reader and the driver writer thread. The
 /// reader also dispatches HID, and `FrameSink` must not block.
 #[derive(Default)]
 struct Outbox {
@@ -64,7 +64,8 @@ impl Outbox {
         self.ready.notify_one();
     }
 
-    /// Next message, or `None` once `stop` is set and the queue is drained.
+    /// Return the next message, or `None` once `stop` is set and the queue is
+    /// empty.
     fn pop(&self, stop: &AtomicBool) -> Option<Vec<u8>> {
         let mut q = self.queue.lock().unwrap();
         loop {
@@ -80,10 +81,10 @@ impl Outbox {
     }
 }
 
-/// Identity handed to the driver plugin when it connects.  It carries every
-/// string and id the plugin puts on its `MIDIDevice`, so the plugin holds no
-/// identity of its own and a rebrand needs no new plugin binary.  Fixed size:
-/// the raw MIDI byte stream follows it with no framing.
+/// The identity sent to the driver plugin when it connects. It carries every
+/// string and ID that the plugin puts on its `MIDIDevice`, so the plugin holds
+/// no identity of its own and a rebrand needs no new plugin binary. Its size
+/// is fixed, because the raw MIDI byte stream follows it with no framing.
 #[repr(C)]
 struct Identity {
     magic: u32,
@@ -99,8 +100,8 @@ struct Identity {
 
 const IDENTITY_MAGIC: u32 = 0x4344_4a31; // 'CDJ1'
 
-/// The plugin parses this layout byte for byte; a size change here without a
-/// matching one in tools/midi-driver is a silent protocol break.
+/// The plugin parses this layout byte for byte. A size change here without a
+/// matching change in tools/midi-driver breaks the protocol silently.
 const _: () = assert!(std::mem::size_of::<Identity>() == 112);
 const IDENTITY_VERSION: u16 = 1;
 
@@ -126,8 +127,8 @@ impl Identity {
     }
 
     fn as_bytes(&self) -> &[u8] {
-        // SAFETY: #[repr(C)] POD with no padding-sensitive reads; the driver
-        // parses the same layout.
+        // SAFETY: `Identity` is `#[repr(C)]` plain data with no padding, and
+        // the driver parses the same layout.
         unsafe {
             std::slice::from_raw_parts(
                 self as *const Self as *const u8,
@@ -137,7 +138,8 @@ impl Identity {
     }
 }
 
-/// NUL-padded copy, truncated to fit.
+/// Copy `src` into the zeroed `dst`, truncated so that at least one NUL byte
+/// ends it.
 fn copy_field(dst: &mut [u8; 32], src: &str) {
     let n = src.len().min(dst.len() - 1);
     dst[..n].copy_from_slice(&src.as_bytes()[..n]);
@@ -148,7 +150,7 @@ pub fn midi_driver_sock_path(sock_dir: &Path) -> PathBuf {
     sock_dir.join("midi-driver.sock")
 }
 
-/// Bind `path`, clearing a socket left behind by a crash.  A node that still
+/// Bind `path`, removing a socket left behind by a crash. A socket that still
 /// answers `connect` belongs to a live process and is left alone.
 fn bind_clearing_stale(path: &Path) -> std::io::Result<UnixListener> {
     match UnixListener::bind(path) {
@@ -162,7 +164,7 @@ fn bind_clearing_stale(path: &Path) -> std::io::Result<UnixListener> {
                 ));
             }
             let _ = std::fs::remove_file(path);
-            eprintln!("pc-link: cleared stale {}: {e}", path.display());
+            eprintln!("pc-link: removed the stale socket {}: {e}", path.display());
         }
     }
     UnixListener::bind(path)
@@ -170,11 +172,11 @@ fn bind_clearing_stale(path: &Path) -> std::io::Result<UnixListener> {
 
 const PLUGIN_NAME: &str = "CDJ3KEmuMIDI.plugin";
 
-/// Install or refresh the CoreMIDI driver plugin into the per-user MIDI
-/// Drivers directory, where MIDIServer loads it from.  The plugin ships in the
-/// app bundle's Resources; an unbundled dev build is a no-op (install by hand
-/// with `make -C tools/midi-driver install`).  MIDIServer picks up a new or
-/// changed plugin on its next client connection.
+/// Install or refresh the CoreMIDI driver plugin in the per-user MIDI Drivers
+/// directory, where MIDIServer loads it from. The plugin ships in the app
+/// bundle's Resources. An unbundled development build does nothing; install
+/// the plugin by hand with `make -C tools/midi-driver install`. MIDIServer
+/// picks up a new or changed plugin on its next client connection.
 pub fn ensure_driver_installed() {
     let Some(src) = shipped_plugin() else { return };
     let Some(home) = std::env::var_os("HOME") else {
@@ -188,8 +190,8 @@ pub fn ensure_driver_installed() {
     }
 
     let _ = std::fs::create_dir_all(&dest_dir);
-    // Staging is per process and outside the directory MIDIServer scans for
-    // bundles; instances install concurrently.
+    // Each process stages its own copy outside the directory that MIDIServer
+    // scans for bundles, because instances can install at the same time.
     let staged = dest_dir
         .parent()
         .unwrap_or(&dest_dir)
@@ -205,40 +207,42 @@ pub fn ensure_driver_installed() {
             let _ = std::fs::remove_dir_all(&dest);
             if let Err(e) = std::fs::rename(&staged, &dest) {
                 let _ = std::fs::remove_dir_all(&staged);
-                eprintln!("pc-link: MIDI driver install failed: {e}");
+                eprintln!("pc-link: could not install the MIDI driver: {e}");
                 return;
             }
-            eprintln!("pc-link: installed MIDI driver -> {}", dest.display());
-            // A running MIDIServer has the previous binary mapped and keeps
-            // serving it; only its exit loads the new one.  Ending it drops
-            // every MIDI app's connection, and they do not reconnect.
+            eprintln!("pc-link: installed the MIDI driver at {}.", dest.display());
+            // A running MIDIServer keeps serving the previous binary, which it
+            // has mapped, until it exits. Ending it drops every MIDI app's
+            // connection, and the apps do not reconnect.
             if midi_server_running() {
                 cdj3k_emu_platform::menu_state::lock().midi_driver_replaced = true;
             }
         }
         Ok(s) => {
             let _ = std::fs::remove_dir_all(&staged);
-            eprintln!("pc-link: MIDI driver install failed (ditto {s})");
+            eprintln!("pc-link: could not install the MIDI driver (ditto {s})");
         }
         Err(e) => {
             let _ = std::fs::remove_dir_all(&staged);
-            eprintln!("pc-link: MIDI driver install failed: {e}");
+            eprintln!("pc-link: could not install the MIDI driver: {e}");
         }
     }
 }
 
-/// The plugin shipped in the running app bundle
-/// (`<app>.app/Contents/Resources/CDJ3KEmuMIDI.plugin`), or `None` when running
-/// unbundled or the executable path can't be resolved.
+/// Return the plugin shipped in the running app bundle
+/// (`<app>.app/Contents/Resources/CDJ3KEmuMIDI.plugin`), or `None` when the
+/// app runs unbundled or the executable path cannot be resolved.
 fn shipped_plugin() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    // <app>/Contents/MacOS/<exe> -> <app>/Contents/Resources/<plugin>
+    // The executable is <app>/Contents/MacOS/<exe>, and the plugin is
+    // <app>/Contents/Resources/<plugin>.
     let plugin = exe.parent()?.parent()?.join("Resources").join(PLUGIN_NAME);
     plugin.is_dir().then_some(plugin)
 }
 
-/// The wire format an installed plugin declares, from `CDJ3KEmuMIDIVersion`
-/// in its `Info.plist`.  `None` when absent or unparsable.
+/// Return the wire format version that an installed plugin declares in
+/// `CDJ3KEmuMIDIVersion` in its `Info.plist`, or `None` when the key is
+/// missing or cannot be parsed.
 fn installed_plugin_version(plugin: &Path) -> Option<u16> {
     let plist = std::fs::read_to_string(plugin.join("Contents/Info.plist")).ok()?;
     let key = "<key>CDJ3KEmuMIDIVersion</key><string>";
@@ -255,9 +259,9 @@ fn midi_server_running() -> bool {
         .unwrap_or(false)
 }
 
-/// Accepts the driver plugin and pumps MIDI both ways.
+/// Accepts the driver plugin and carries MIDI both ways.
 pub struct MidiDriverLink {
-    /// Write half of the connected driver, if one has attached.
+    /// The write half of the connected driver, if one has attached.
     client: Client,
     outbox: Arc<Outbox>,
     stop: Arc<AtomicBool>,
@@ -267,8 +271,9 @@ pub struct MidiDriverLink {
 }
 
 impl MidiDriverLink {
-    /// Bind the socket and start accepting. `tx` receives driver→guest MIDI;
-    /// each driver that attaches is handed `gadget`'s identity.
+    /// Bind the socket and start accepting. `tx` receives the MIDI that the
+    /// driver sends to the guest, and each driver that attaches receives
+    /// `gadget`'s identity.
     pub fn start(
         sock_dir: &Path,
         tx: Sender<OutFrame>,
@@ -308,9 +313,9 @@ impl MidiDriverLink {
         })
     }
 
-    /// Queue guest-originated MIDI for the driver, which publishes it on the
-    /// device's source endpoint.  Returns immediately: this runs on the
-    /// transport reader thread, which also dispatches HID.
+    /// Queue MIDI from the guest for the driver, which publishes it on the
+    /// device's source endpoint. This returns immediately, because it runs on
+    /// the transport reader thread, which also dispatches HID.
     pub fn publish_from_guest(&self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
@@ -329,10 +334,10 @@ fn write_loop(client: &Client, outbox: &Outbox, stop: &AtomicBool) {
         let mut guard = client.lock().unwrap();
         if let Some(stream) = guard.as_mut() {
             if stream.write_all(&msg).is_err() {
-                // A failed write leaves a partial message on the
-                // wire, so the link is dropped.  Shutdown, not just a
-                // drop: read_loop holds a clone of the fd, and
-                // only a shutdown ends its read().
+                // A failed write leaves a partial message on the wire, so
+                // the link is dropped. Shut the stream down as well, because
+                // read_loop holds a clone of the fd and only a shutdown ends
+                // its read().
                 let _ = stream.shutdown(std::net::Shutdown::Both);
                 *guard = None;
             }
@@ -361,9 +366,9 @@ fn accept_loop(
             continue;
         };
         {
-            // Checked under the lock `drop` takes after setting
-            // `stop`: either `drop` finds this stream and shuts it
-            // down, or this sees `stop` and never reads.
+            // Check `stop` under the lock that `drop` takes after setting
+            // `stop`. Either `drop` finds this stream and shuts it down, or
+            // this thread sees `stop` and never reads.
             let mut guard = client.lock().unwrap();
             if stop.load(Ordering::Acquire) {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
@@ -371,18 +376,18 @@ fn accept_loop(
             }
             *guard = Some(stream);
         }
-        eprintln!("pc-link: MIDI driver attached");
+        eprintln!("pc-link: the MIDI driver attached.");
 
-        // One driver at a time: read until it goes away, then
-        // loop back and wait for it to reconnect.
+        // Serve one driver at a time. Read until it goes away, then wait for
+        // it to reconnect.
         read_loop(reader, tx, stop);
         *client.lock().unwrap() = None;
-        eprintln!("pc-link: MIDI driver detached");
+        eprintln!("pc-link: the MIDI driver detached.");
     }
 }
 
-/// The next driver connection, or `None` after a pause when there is none
-/// yet or the accept failed.
+/// Return the next driver connection, or `None` after a pause when there is
+/// none yet or the accept failed.
 fn accept_driver(listener: &UnixListener) -> Option<UnixStream> {
     match listener.accept() {
         Ok((s, _)) => Some(s),
@@ -399,14 +404,14 @@ fn accept_driver(listener: &UnixListener) -> Option<UnixStream> {
 }
 
 /// Make a new driver connection blocking, with a write timeout, and send it
-/// `identity`. Returns the stream and a read half, or `None` when the driver
+/// `identity`. Return the stream and a read half, or `None` when the driver
 /// cannot be served.
 fn greet(mut stream: UnixStream, identity: &Identity) -> Option<(UnixStream, UnixStream)> {
     // accept() may hand back the listener's non-blocking flag.
     let _ = stream.set_nonblocking(false);
     let reader = stream.try_clone().ok()?;
     let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
-    // Identity first, then the raw MIDI stream.
+    // Send the identity first; the raw MIDI stream follows.
     stream.write_all(identity.as_bytes()).ok()?;
     Some((stream, reader))
 }
@@ -418,7 +423,8 @@ fn read_loop(mut reader: UnixStream, tx: &Sender<OutFrame>, stop: &AtomicBool) {
             Ok(0) => return,
             Ok(n) => {
                 if tx.send((FRAME_MIDI, buf[..n].to_vec())).is_err() {
-                    return; // writer thread gone; PcLink is shutting down
+                    // The writer thread has exited, so PcLink is shutting down.
+                    return;
                 }
             }
             Err(_) => return,

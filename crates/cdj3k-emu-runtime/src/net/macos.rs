@@ -17,7 +17,8 @@ pub enum NetKeepAlive {
     Tap(TapBridge),
 }
 
-/// vmnet's host-only network: the guests and this Mac, nothing else.
+/// Attaches to vmnet's host-only network, which connects only the guests and
+/// this Mac.
 pub fn attach_host_only() -> io::Result<NetAttachment> {
     Ok(NetAttachment {
         vmnet: Some(VmnetMode::Host),

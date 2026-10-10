@@ -9,25 +9,26 @@ use cdj3k_emu_runtime::{CfgClient, QemuConfig};
 
 use super::{persist_inst, Requests, Worker};
 
-// Resend interval for an unacknowledged `pc_link` command (cfgd echoes only
-// after its `systemctl` returns).
+/// The resend interval for an unacknowledged `pc_link` command. cfgd echoes
+/// the command only after its `systemctl` call returns.
 const PC_LINK_CFG_RESEND: Duration = Duration::from_millis(1500);
-/// Spacing between `PcLink::start` attempts while the guest socket is absent.
+/// The interval between `PcLink::start` attempts while the guest socket is absent.
 const PC_LINK_RETRY: Duration = Duration::from_millis(500);
-/// `pc_link` failure replies tolerated before the reconcile stops reissuing
-/// the command.  An unanswered send means the guest has not opened the cfg
-/// port yet and is retried indefinitely; a failure reply means cfgd ran
-/// systemctl and it did not work.
+/// The number of `pc_link` failure replies after which the command is no
+/// longer sent. An unanswered send means the guest has not opened the cfg
+/// port yet, and it is retried without limit. A failure reply means cfgd ran
+/// systemctl and the call failed.
 const PC_LINK_CFG_MAX_FAILURES: u32 = 4;
 
 pub(super) struct PcLinkState {
-    /// Host-side PC-link bridge.  `Some` from the first successful connect
-    /// until the toggle goes off or the app stops.  Owns the OS-visible
-    /// endpoints across a QEMU respawn and re-dials the socket underneath them.
+    /// The host-side PC-link bridge. It is `Some` from the first successful
+    /// connect until the toggle goes off or the app stops. It keeps the
+    /// endpoints the OS sees across a QEMU restart and reconnects the socket
+    /// underneath them.
     link: Option<PcLink>,
-    /// True if the user wants pc_link on but the latest connect attempt
-    /// failed (typically because the guest's bridge service isn't up yet).
-    /// Next worker iteration retries.
+    /// True when the user wants pc_link on but the latest connect attempt
+    /// failed, usually because the guest's bridge service is not up yet. The
+    /// next worker iteration retries.
     retry_pending: bool,
     last_cfg: Instant,
     last_retry: Instant,
@@ -36,8 +37,8 @@ pub(super) struct PcLinkState {
 }
 
 impl Worker {
-    /// Persist a toggle, then drive the guest cfg, the host bridge and its
-    /// socket towards the menu's `pc_link_enabled`.
+    /// Save a toggle, then bring the guest's cfg setting, the host bridge and
+    /// its socket in line with the menu's `pc_link_enabled`.
     pub(super) fn reconcile_pc_link(&mut self, req: &Requests) {
         if req.pc_link_toggle {
             persist_inst(self.config.instance_id, |s| {
@@ -69,7 +70,7 @@ impl PcLinkState {
         self.link = None;
     }
 
-    /// The menu's Stop: the bridge comes down with QEMU.
+    /// Handle the menu's Stop by closing the bridge along with QEMU.
     pub(super) fn stop(&mut self) {
         self.link = None;
         self.retry_pending = false;
@@ -90,9 +91,10 @@ impl PcLinkState {
         }
     }
 
-    /// Resend `pc_link on/off` until cfgd echoes it.  A lone send can be
-    /// dropped (boot race / single-client cfg vport).  On a desired change,
-    /// clear the echo so a stale/lost one can't skip it.
+    /// Resend `pc_link on` or `pc_link off` until cfgd echoes it. A single send
+    /// can be lost while the guest boots, or because the cfg virtio port takes
+    /// only one client. When the wanted state changes, clear the recorded echo
+    /// so that a stale or lost echo cannot skip the resend.
     fn reconcile_cfg(&mut self, cfg: &CfgClient, want: bool, qemu_up: bool) {
         if self.last_want != Some(want) {
             self.last_want = Some(want);
@@ -108,8 +110,8 @@ impl PcLinkState {
             && self.last_cfg.elapsed() >= PC_LINK_CFG_RESEND
         {
             match cfg.pc_link(want) {
-                Ok(()) => eprintln!("cdj3k-emu: pc_link cfg to guest ({})", on_off(want)),
-                Err(e) => eprintln!("cdj3k-emu: pc_link cfg send failed: {e}"),
+                Ok(()) => eprintln!("cdj3k-emu: sent pc_link {} to the guest", on_off(want)),
+                Err(e) => eprintln!("cdj3k-emu: sending pc_link to the guest failed: {e}"),
             }
             self.last_cfg = Instant::now();
         } else if failures >= PC_LINK_CFG_MAX_FAILURES && !self.gave_up {
@@ -117,14 +119,15 @@ impl PcLinkState {
         }
     }
 
-    /// The bridge is not running, so the toggle goes back to off and the host
-    /// endpoints come down with it.  The item stays clickable: toggling clears
-    /// the failure count and tries again.  Written to menu_state rather than
-    /// persisted, so the next launch starts from the user's own setting.
+    /// Stop sending a command that the guest keeps refusing. When the toggle
+    /// is on, it goes back to off and the host endpoints close. The menu item
+    /// stays clickable, and toggling it clears the failure count and tries
+    /// again. The change goes to menu_state only, so the next launch starts
+    /// from the user's saved setting.
     fn give_up(&mut self, want: bool) {
         self.gave_up = true;
         eprintln!(
-            "cdj3k-emu: guest refused pc_link {} {} times; not reissuing",
+            "cdj3k-emu: the guest refused pc_link {} {} times; the command is no longer sent",
             on_off(want),
             PC_LINK_CFG_MAX_FAILURES
         );
@@ -135,10 +138,10 @@ impl PcLinkState {
         }
     }
 
-    /// Bring the host bridge up while the toggle is on and QEMU is up.  Each
-    /// attempt that gets past the dial registers an IOKit device, and
-    /// rekordbox's polled HID name goes stale if that happens repeatedly, so
-    /// the attempts are paced rather than run at the poll cadence.
+    /// Start the host bridge while the toggle is on and QEMU runs. Each attempt
+    /// that connects registers an IOKit device, and repeated registrations make
+    /// the HID name that rekordbox polls go stale, so attempts are spaced by
+    /// `PC_LINK_RETRY`.
     fn ensure_started(&mut self, want: bool, qemu_up: bool, config: &QemuConfig) {
         if want && self.link.is_none() && qemu_up {
             self.retry_pending = true;
@@ -149,8 +152,8 @@ impl PcLinkState {
             && self.last_retry.elapsed() >= PC_LINK_RETRY
         {
             self.last_retry = Instant::now();
-            // A failed start retries on a later tick, unlogged: the worker
-            // polls every 50 ms.
+            // A failed start is retried on a later tick without a log line,
+            // because the worker polls every 50 ms.
             if let Ok(link) = PcLink::start(&config.sock_dir(), config.instance_id) {
                 eprintln!("cdj3k-emu: pc-link bridge connected");
                 self.link = Some(link);
@@ -159,10 +162,10 @@ impl PcLinkState {
         }
     }
 
-    /// A QEMU respawn closes the socket without touching the endpoints, so a
-    /// live bridge whose socket died is re-dialed rather than rebuilt, keeping
-    /// the HID identity rekordbox polled.  While QEMU is down nothing consumes
-    /// host->guest frames, so they are discarded as they arrive.
+    /// A QEMU restart closes the socket and leaves the endpoints open, so a
+    /// bridge whose socket closed is reconnected and keeps the HID identity
+    /// that rekordbox polled. While QEMU is down, nothing reads the frames
+    /// sent to the guest, so they are discarded as they arrive.
     fn keep_alive(&mut self, want: bool, qemu_up: bool) {
         if !qemu_up {
             if let Some(link) = self.link.as_mut() {
@@ -183,13 +186,14 @@ impl PcLinkState {
         }
         self.last_retry = Instant::now();
         match link.reconnect() {
-            Ok(()) => eprintln!("cdj3k-emu: pc-link re-dialed"),
-            // Refused dial is normal during guest boot; retry next tick.
+            Ok(()) => eprintln!("cdj3k-emu: pc-link reconnected"),
+            // A refused connection is normal while the guest boots; retry on
+            // the next tick.
             Err(e) if e.is_retryable() => {}
-            // Outbound channel gone; the backends cannot reach the
-            // guest.  Rebuild (costs a fresh HID identity).
+            // The outbound channel is gone, so the backends cannot reach the
+            // guest. Rebuild the bridge, which gives it a new HID identity.
             Err(e) => {
-                eprintln!("cdj3k-emu: pc-link unrecoverable ({e}) - rebuilding");
+                eprintln!("cdj3k-emu: the pc-link bridge cannot recover ({e}); rebuilding it");
                 self.link = None;
                 self.retry_pending = true;
             }

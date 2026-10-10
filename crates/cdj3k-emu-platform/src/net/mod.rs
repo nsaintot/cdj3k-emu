@@ -1,9 +1,9 @@
 //! Interfaces a guest can be put on, as a host sees them.
 //!
-//! The walk over the host's address list is the same everywhere it exists;
-//! what differs is which interfaces it keeps. macOS has only names to go on,
-//! Linux asks the kernel. So the walk lives in [`unix`] and takes the host's
-//! filter as a parameter, and each host supplies its own.
+//! The walk over the host's address list is the same on every host that has
+//! one; only the interfaces it keeps differ. macOS decides by name and Linux
+//! asks the kernel, so the walk lives in [`unix`] and each host passes its own
+//! filter.
 //!
 //! Windows lists adapters with `GetIfTable2`, filtered by [`windows_kind`].
 //!
@@ -29,24 +29,24 @@ mod imp;
 pub mod linux_kind;
 pub mod windows_kind;
 
-/// Whether the host offers a host-only network (vmnet's), which a QEMU built
-/// without it has no netdev for.
+/// Whether the host offers vmnet's host-only network. A QEMU built without
+/// vmnet has no netdev for it.
 pub use imp::HOST_ONLY;
 
 /// A single discovered network interface.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NetIf {
-    /// e.g. "en0"
+    /// The interface name, such as "en0".
     pub name: String,
-    /// IPv4 address, e.g. "192.168.1.42"
+    /// The IPv4 address, such as "192.168.1.42".
     pub addr: String,
-    /// CIDR prefix length, e.g. 24
+    /// The CIDR prefix length, such as 24.
     pub prefix_len: u8,
 }
 
 impl NetIf {
-    /// Menu label: "192.168.1.42/24 (en0)", or the bare name for an interface
-    /// with no IPv4 address.
+    /// The menu label, such as "192.168.1.42/24 (en0)", or the bare name for an
+    /// interface with no IPv4 address.
     pub fn label(&self) -> String {
         if self.addr.is_empty() {
             return self.name.clone();
@@ -79,12 +79,11 @@ pub fn is_valid_mac(mac: &str) -> bool {
     octets == 6
 }
 
-/// Every interface this host can carry a guest, in the order the host
-/// reports them.
+/// Every interface on which this host can carry a guest, in the order the
+/// host reports them.
 ///
-/// An entry with an empty [`NetIf::addr`] is one that has no address of its
-/// own — a tap or a bridge waiting for a guest — which some hosts can offer
-/// and others cannot.
+/// An entry with an empty [`NetIf::addr`] has no address of its own, such as a
+/// tap or a bridge waiting for a guest. Only some hosts offer these.
 pub fn enumerate_interfaces() -> Vec<NetIf> {
     imp::enumerate()
 }
@@ -98,8 +97,8 @@ pub fn interface_exists(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Both reach a root shell, so neither may carry anything but its own
-    /// characters.
+    /// Both values reach a root shell, so each may contain only the characters
+    /// its format allows.
     #[test]
     fn nothing_shell_shaped_passes_validation() {
         for bad in [

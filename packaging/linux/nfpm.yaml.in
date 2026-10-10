@@ -36,8 +36,8 @@ contents:
   - src: /opt/cdj3k-emu/bin/cdj3k-emu
     dst: /usr/bin/cdj3k-emu
     type: symlink
-  # The format this package is, for the updater: the tree is shared by all
-  # three. build.sh writes the files.
+  # Record the package format for the updater. All three formats share one
+  # tree, so build.sh writes one file per format.
   - src: .package-kind/deb
     dst: /opt/cdj3k-emu/share/cdj3k-emu/package-kind
     packager: deb
@@ -45,8 +45,8 @@ contents:
     dst: /opt/cdj3k-emu/share/cdj3k-emu/package-kind
     packager: rpm
 
-# The libraries scripts/bundle-sos.sh refuses to vendor: they talk to a
-# driver, a display server or a sound daemon. Everything else the emulator and
+# These are the libraries that scripts/bundle-sos.sh does not vendor, because
+# they talk to a driver, a display server or a sound daemon. Everything else the emulator and
 # QEMU need is inside /opt/cdj3k-emu/lib.
 overrides:
   deb:

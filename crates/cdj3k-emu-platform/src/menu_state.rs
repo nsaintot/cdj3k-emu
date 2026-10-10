@@ -3,8 +3,8 @@
 //! `lock()` to snapshot everything.
 //!
 //! The lock is never held across I/O. Hot loops (menu sync, runtime poll)
-//! snapshot what they need, drop the guard, then perform work. Audio thread
-//! and DRM-stream threads do NOT touch this state.
+//! snapshot what they need, drop the guard, then do the work. The audio thread
+//! and the DRM stream threads do not touch this state.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -16,34 +16,34 @@ use crate::audio::AudioOutDevice;
 pub const MAX_INSTANCES: u32 = 4;
 
 /// Sentinel value for [`AppState::usb_phys_mounted_idx`] and
-/// `usb_phys_toggle_idx` meaning "no physical disk".  `i32` because the
-/// menu uses signed indices to make the "none" state representable
-/// without an `Option`.
+/// `usb_phys_toggle_idx` that means "no physical disk". The indices are
+/// signed so that this state needs no `Option`.
 pub const NO_USB_MOUNTED: i32 = -1;
 
 /// Sentinel value for [`AppState::selected_interface`] meaning "no network
-/// interface picked" (QEMU runs with user-mode NAT, the menu's "None (NAT)"
-/// entry).
+/// interface picked": QEMU runs with user-mode NAT, the menu's "Default (NAT)"
+/// entry.
 pub const NET_SEL_NONE: u32 = u32::MAX;
 
 /// Sentinel value for [`AppState::selected_interface`] meaning "vmnet host-only
-/// network" (menu's "Host-only (link-local)" entry). All instances selecting this
-/// open a `vmnet-host` interface under one shared network UUID, giving a
-/// host-side `bridgeN` interface that vmnet.framework creates. Pure L2,
-/// host-sniffable in Wireshark with no encapsulation. The daemon runs with
-/// `--vmnet-network-identifier`, so the segment has no DHCP server: guests
-/// self-assign 169.254/16 link-local via avahi-autoipd, like real gear.
+/// network", the menu's "Host-only (link-local)" entry. Every instance that
+/// selects it opens a `vmnet-host` interface under one shared network UUID,
+/// and vmnet.framework creates a `bridgeN` interface for it on the host. The
+/// segment is plain layer 2, and Wireshark on the host sees its frames without
+/// encapsulation. The daemon runs with `--vmnet-network-identifier`, so the
+/// segment has no DHCP server: guests assign themselves a 169.254/16
+/// link-local address through avahi-autoipd, as real decks do.
 pub const NET_SEL_VMNET_HOST: u32 = u32::MAX - 1;
 
-/// Token written to `InstanceSettings::net_iface` to persist the vmnet-host
-/// mode across launches. Not a valid BSD ifname, so it can never collide with
-/// a real interface returned by `getifaddrs`.
+/// The token written to `InstanceSettings::net_iface` to keep the vmnet-host
+/// mode across launches. It is not a valid BSD interface name, so it cannot
+/// collide with an interface that `getifaddrs` returns.
 pub const NET_IFACE_VMNET_HOST_TOKEN: &str = "__vmnet_host__";
 
-/// Latched on shutdown.  **Async-signal-safe** so the SIGTERM/SIGINT handler
-/// can set it without taking the mutex (which would deadlock if a signal
-/// arrives while another thread already holds `AppState`).  Every other
-/// shutdown-related state lives in [`AppState`].
+/// Set on shutdown. It is async-signal-safe, so the SIGTERM/SIGINT handler can
+/// set it without taking the mutex, which would deadlock if the signal arrives
+/// while another thread holds `AppState`. All other shutdown state lives in
+/// [`AppState`].
 pub static APP_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 // ── Domain types ──────────────────────────────────────────────────────────────
@@ -57,7 +57,8 @@ pub struct PhysicalDisk {
 
 // ── Aggregate state ───────────────────────────────────────────────────────────
 
-/// All cross-thread UI / runtime state. Access via [`lock()`].
+/// All UI and runtime state shared between threads; access it through
+/// [`lock()`].
 pub struct AppState {
     // ── Instance ────────────────────────────────────────────────────────────
     /// 1..=MAX_INSTANCES. Set once at startup from main.rs (`--instance N`).
@@ -75,7 +76,7 @@ pub struct AppState {
     pub debug_screen_popped: bool,
 
     // ── Emulation lifecycle ─────────────────────────────────────────────────
-    /// Fires once; consumer clears after acting.
+    /// A one-shot request; the consumer clears it after acting.
     pub stop_requested: bool,
     /// Set to `true` while QEMU is running; updated by the runtime worker.
     pub qemu_running: bool,
@@ -94,8 +95,8 @@ pub struct AppState {
     /// requested after that read, and the runtime worker restarts QEMU once the
     /// guest's cfgd answers.
     pub mods_restart_seq_booted: u64,
-    /// Fires once to open the setup window - the one place a slot's emulation
-    /// is chosen and its firmware installed.
+    /// Fires once to open the setup window, where the user chooses a slot's
+    /// emulation and installs its firmware.
     pub manage_emulation_requested: bool,
     /// Fires once to open the update window: a check for a newer release, or
     /// the restart an installed one is waiting for.
@@ -106,15 +107,15 @@ pub struct AppState {
     /// Fires once to retire the runtime worker (stop QEMU, exit its loop)
     /// without shutting the app down; a later launch spawns a fresh worker.
     pub worker_exit_requested: bool,
-    /// Set by a worker that retired itself instead of restarting QEMU, a
-    /// finished install waiting for the slot: the shell launches again,
-    /// which swaps the install in.
+    /// Set by a worker that retired itself instead of restarting QEMU because a
+    /// finished install is waiting for the slot. The shell then launches
+    /// again, and the new launch swaps the install in.
     pub relaunch_requested: bool,
     /// Set by menu actions that require a restart so the boot shade engages
     /// immediately. Cleared by the runtime worker once QEMU has respawned.
     pub shade_forced: bool,
-    /// Set by the runtime on graceful shutdown; UI injects a `set_power(false)`
-    /// MISO stimuli and clears.
+    /// Set by the runtime on a graceful shutdown; the UI injects a
+    /// `set_power(false)` MISO stimulus and clears the flag.
     pub power_off_stimuli_requested: bool,
     /// Draw the LCD larger than the deck's own, over the decoration around
     /// it. The panel reproduces the real form factor, which leaves the
@@ -123,71 +124,74 @@ pub struct AppState {
     pub service_mode: bool,
 
     // ── Audio toggles ───────────────────────────────────────────────────────
-    /// Mirror of the per-instance `audio_enabled` setting. Toggled by the
-    /// "Enable audio" menu item; `audio_toggle_requested` fires the runtime
-    /// worker to persist + restart QEMU.
+    /// Mirror of the per-instance `audio_enabled` setting. The "Enable Audio"
+    /// menu item toggles it; `audio_toggle_requested` tells the runtime worker
+    /// to persist it and restart QEMU.
     pub audio_enabled: bool,
     pub audio_toggle_requested: bool,
 
     // ── Audio output device ─────────────────────────────────────────────────
-    /// Selected output device ([`AudioOutDevice::uid`]), or `None` for
-    /// "system default output". Persisted in InstanceSettings. The runtime
-    /// worker passes it to QEMU's `-audiodev` config on (re)spawn.
+    /// The selected output device ([`AudioOutDevice::uid`]), or `None` for the
+    /// system default output. It is persisted in InstanceSettings, and the
+    /// runtime worker passes it to QEMU's `-audiodev` option at each start.
     pub audio_device_uid: Option<String>,
-    /// Cached enumeration of host output devices; refreshed by the menu
-    /// thread on a 5 s tick via [`refresh_audio_devices`].
+    /// The cached list of host output devices. The menu thread refreshes it
+    /// every 5 s through [`refresh_audio_devices`].
     pub audio_devices: Vec<AudioOutDevice>,
-    /// Bumped when [`audio_devices`] changes; menu compares vs a local copy
-    /// to rebuild the radio list.
+    /// Incremented when [`Self::audio_devices`] changes; the menu compares it with a
+    /// local copy to rebuild the radio list.
     pub audio_device_list_version: u32,
-    /// One-shot: set when the user picks a different device. The runtime
-    /// worker persists the new UID and restarts QEMU.
+    /// A one-shot request, set when the user picks a different device. The
+    /// runtime worker persists the new UID and restarts QEMU.
     pub audio_device_toggle_requested: bool,
 
-    /// "Enable ALC (Experimental)" toggle. Mirrors the guest's
-    /// `audio_sync_enabled` sysfs param.
+    /// The "Enable ALC (Experimental)" toggle. It mirrors the guest's
+    /// `audio_sync_enabled` sysfs parameter.
     pub alc_enabled: bool,
     pub alc_toggle_requested: bool,
 
-    /// "Trackpad Haptics" toggle. Gates the Force Touch detent clicks
-    /// emitted as the jog wheel crosses detents.  No QEMU/guest side
-    /// effect - read at the haptic-actuate call site only.
+    /// The "Jog Haptics" toggle, which gates the Force Touch detent clicks
+    /// emitted as the jog wheel crosses detents. It has no effect on QEMU or
+    /// the guest; only the haptic call site reads it.
     pub haptic_enabled: bool,
-    /// One-shot: set when the user toggles the menu item; the runtime worker
-    /// consumes it and persists `haptic_enabled` to InstanceSettings.
+    /// A one-shot request, set when the user toggles the menu item; the
+    /// runtime worker consumes it and persists `haptic_enabled` to
+    /// InstanceSettings.
     pub haptic_toggle_requested: bool,
 
     /// "Enable Mods": whether the slot boots with its mods. Toggling it
     /// restarts a running emulation; the list stays editable either way.
     pub mods_enabled: bool,
-    /// One-shot: the runtime worker persists `mods_enabled`.
+    /// A one-shot request; the runtime worker persists `mods_enabled`.
     pub mods_toggle_requested: bool,
 
     /// Whether this build can publish PC Link endpoints. Set once at startup.
     pub pc_link_supported: bool,
-    /// "PC Link (USB-B cable)" toggle.
-    /// Models the rear-panel USB-B cable being plugged into the PC.
+    /// The "PC Link (USB-B)" toggle. It models the rear-panel USB-B cable
+    /// being plugged into a PC.
     pub pc_link_enabled: bool,
-    /// One-shot: set when the user toggles the menu item; the runtime
-    /// worker consumes it, persists, and applies start/stop.
+    /// A one-shot request, set when the user toggles the menu item; the
+    /// runtime worker consumes it, persists the state, and starts or stops
+    /// PC Link.
     pub pc_link_toggle_requested: bool,
 
-    /// Latest audio pipeline depth, pushed by the guest cfg daemon every 3 s.
-    /// Packed `(total << 32) | (guest << 16) | host`, all ms.  `u64::MAX` means
-    /// "no data yet" and the menu shows `--` instead.
+    /// The latest audio pipeline depth, which the guest cfg daemon pushes every
+    /// 3 s. It is packed as `(total << 32) | (guest << 16) | host`, all in ms.
+    /// `u64::MAX` means that no sample has arrived, and the menu shows `--`.
     pub latency_packed: u64,
 
     // ── Network ─────────────────────────────────────────────────────────────
-    /// Index into [`net_ifaces`], or one of [`NET_SEL_NONE`] / [`NET_SEL_MCAST`].
+    /// Index into [`Self::net_ifaces`], or one of [`NET_SEL_NONE`] and
+    /// [`NET_SEL_VMNET_HOST`].
     pub selected_interface: u32,
-    /// Cached interface list; updated by [`refresh_net_interfaces`].
+    /// The cached interface list, which [`refresh_net_interfaces`] updates.
     pub net_ifaces: Vec<NetIf>,
-    /// Bumped whenever [`net_ifaces`] changes; consumers compare against a
+    /// Incremented whenever [`Self::net_ifaces`] changes; consumers compare it with a
     /// local copy to rebuild.
     pub net_list_version: u32,
-    /// Set by the runtime worker when network setup (vmnet / tap bridge)
-    /// fails.  Consumed by the menu thread on next sync: shows an `rfd`
-    /// error popup and clears.
+    /// Set by the runtime worker when network setup (vmnet or the tap bridge)
+    /// fails. The menu thread takes it on its next sync and shows an `rfd`
+    /// error dialog.
     pub net_error_message: Option<String>,
 
     // ── Storage / virtual USB ───────────────────────────────────────────────
@@ -195,10 +199,10 @@ pub struct AppState {
     pub usb_virtual_img: Option<PathBuf>,
     /// True while the virtual USB image is mounted in the guest.
     pub usb_virtual_mounted: bool,
-    /// Menu→worker one-shot requests.
+    /// One-shot requests from the menu to the worker.
     pub usb_virtual_mount_req: bool,
     pub usb_create_req: bool,
-    /// Unified eject for both virtual and physical mounts.
+    /// One eject request covers both virtual and physical mounts.
     pub usb_eject_req: bool,
 
     // ── Storage / physical USB ──────────────────────────────────────────────
@@ -212,14 +216,15 @@ pub struct AppState {
     /// Index of the physical disk currently mounted in the guest, or
     /// [`NO_USB_MOUNTED`] when nothing is mounted.
     pub usb_phys_mounted_idx: i32,
-    /// Disk index whose toggle was requested by the menu, or [`NO_USB_MOUNTED`].
+    /// The index of the disk the menu asked to toggle, or [`NO_USB_MOUNTED`].
     pub usb_phys_toggle_idx: i32,
-    /// Bumped by the USB worker whenever the disk list changes.
+    /// Incremented by the USB worker whenever the disk list changes.
     pub usb_phys_list_version: u32,
-    /// Set by the runtime when attach_physical fails with PermissionDenied:
-    /// the host's retry prompt, for a one-shot alert.
+    /// Set by the runtime when `attach_physical` fails with PermissionDenied.
+    /// It holds the host's retry prompt for a one-shot alert.
     pub usb_phys_perm_denied: Option<&'static str>,
-    /// Set by the alert "Retry" button; runtime worker re-fires the toggle.
+    /// Set by the alert's "Retry" button; the runtime worker then fires the
+    /// toggle again.
     pub usb_phys_retry_req: bool,
     /// Why the last physical attach failed, for a one-shot alert.
     pub usb_error_message: Option<String>,
@@ -302,8 +307,8 @@ impl AppState {
 /// firmware release on it, e.g. `"CDJ-3000 3.20"`.
 ///
 /// The slot settings live in `cdj3k-emu-storage`, which depends on this
-/// crate, so the app registers a reader here rather than the menu reaching
-/// for the files itself.
+/// crate, so the app registers a reader here and the menu does not read the
+/// files itself.
 pub type SlotNoteFn = fn(u32) -> Option<String>;
 
 static SLOT_NOTE_FN: Mutex<Option<SlotNoteFn>> = Mutex::new(None);
@@ -331,7 +336,7 @@ pub fn slot_busy(n: u32) -> bool {
     f.is_some_and(|busy| busy(n))
 }
 
-/// What slot `n` holds, or `None` for an empty slot - and for every slot
+/// What slot `n` holds, or `None` for an empty slot. Every slot returns `None`
 /// until [`set_slot_note_fn`] has run.
 pub fn slot_note(n: u32) -> Option<String> {
     let f = *SLOT_NOTE_FN.lock().unwrap();
@@ -340,8 +345,8 @@ pub fn slot_note(n: u32) -> Option<String> {
 
 static APP_STATE: Mutex<AppState> = Mutex::new(AppState::new());
 
-/// Acquire the global state lock. Held only for the duration of struct field
-/// accesses - never across I/O.
+/// Acquire the global state lock. Hold it only while reading or writing
+/// fields, never across I/O.
 pub fn lock() -> MutexGuard<'static, AppState> {
     APP_STATE.lock().unwrap()
 }
@@ -367,14 +372,14 @@ pub fn unpack_latency(packed: u64) -> Option<(u32, u32, u32)> {
 // ── Network helpers ───────────────────────────────────────────────────────────
 
 /// The host decides which interfaces can carry a guest; see
-/// [`crate::net`]. Re-exported here because this module is where the menu
-/// reads the list from.
+/// [`crate::net`]. It is re-exported here because the menu reads the list
+/// from this module.
 pub use crate::net::NetIf;
 
 // ── Interface list refresh ────────────────────────────────────────────────────
 
-/// Re-enumerate interfaces and update the cached list.
-/// Bumps `net_list_version` only when the list actually changed.
+/// Re-enumerate interfaces and update the cached list. `net_list_version`
+/// changes only when the list changed.
 pub fn refresh_net_interfaces() {
     let fresh = crate::net::enumerate_interfaces();
     let mut s = lock();
@@ -393,18 +398,19 @@ pub fn refresh_net_interfaces() {
 
 /// Re-enumerate the host's audio outputs and update the cached list.
 ///
-/// Bumps `audio_device_list_version` only when the list actually changed, so
-/// the menu rebuilds its radio group only when it has to. A host with no
+/// `audio_device_list_version` changes only when the list changed, so the
+/// menu rebuilds its radio group only when it has to. A host with no
 /// enumeration leaves the list empty, and the guest follows the system
 /// default.
 pub fn refresh_audio_devices() {
     store_devices(crate::audio::enumerate_output_devices());
 }
 
-/// Replace the cached device list, bumping the version only on a real change.
+/// Replace the cached device list, and increment the version only when the
+/// list changed.
 ///
-/// The version drives a menu rebuild, and this is polled every few seconds —
-/// so an unconditional bump would rebuild the radio group forever.
+/// The version triggers a menu rebuild and this runs every few seconds, so an
+/// unconditional increment would rebuild the radio group continuously.
 fn store_devices(fresh: Vec<AudioOutDevice>) {
     let mut s = lock();
     let changed = s.audio_devices.len() != fresh.len()

@@ -115,7 +115,7 @@ for dir in "$MODS"/[0-9][0-9]-*/; do
                 echo "$name: loader.sh stopped after 60 s" ;;
             *) echo "$name: loader.sh exited with status $rc" ;;
         esac
-        # What systemd-run itself said, when the loader did not succeed.
+        # When the loader did not succeed, print what systemd-run reported.
         if [ "$rc" != 0 ]; then
             printf '%s\n' "$out" | while IFS= read -r l; do
                 echo "$name: systemd-run: $l"

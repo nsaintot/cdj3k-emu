@@ -17,13 +17,15 @@ fn ns_window_for_handle(
         .as_raw();
 
     let RawWindowHandle::AppKit(appkit) = raw else {
-        return Err("expected AppKit window handle".into());
+        return Err("the window handle is not an AppKit handle".into());
     };
 
     let view_ptr = appkit.ns_view.as_ptr().cast::<NSView>();
-    let mut current = unsafe { Retained::retain(view_ptr) }.ok_or("nil NSView")?;
+    let mut current =
+        unsafe { Retained::retain(view_ptr) }.ok_or("the window handle has a nil NSView")?;
 
-    // Safety cap so a malformed/cyclic NSView graph cannot wedge us forever.
+    // Cap the walk so that a malformed or cyclic NSView graph cannot loop
+    // forever.
     const MAX_SUPERVIEW_DEPTH: usize = 32;
     for _ in 0..MAX_SUPERVIEW_DEPTH {
         if let Some(w) = current.window() {
@@ -32,32 +34,32 @@ fn ns_window_for_handle(
         let next = unsafe { current.superview() };
         match next {
             Some(s) => current = s,
-            None => return Err("NSView not in a window hierarchy".into()),
+            None => return Err("the NSView is not in a window hierarchy".into()),
         }
     }
-    Err("NSView hierarchy too deep".into())
+    Err("the NSView hierarchy is too deep".into())
 }
 
 /// Enable AppKit's built-in window-frame persistence for this window.
 ///
-/// `setFrameAutosaveName:` makes AppKit transparently save the window's
-/// position+size to `NSUserDefaults` whenever the user moves/resizes it, and
-/// `setFrameUsingName:` applies any previously-saved frame for that name.
-/// Off-screen-recovery (e.g. a monitor was unplugged) is handled by AppKit.
-/// Use a per-instance name so multiple emulator instances keep separate frames.
-/// Returns whether a previously saved frame was applied.
+/// `setFrameAutosaveName:` makes AppKit save the window's position and size
+/// to `NSUserDefaults` whenever the user moves or resizes it, and
+/// `setFrameUsingName:` applies a frame saved earlier under that name. AppKit
+/// moves a saved frame back on screen, for example after a monitor is
+/// unplugged. Each slot uses its own name, so instances keep separate frames.
+/// Returns whether a saved frame was applied.
 fn set_window_autosave_name(
     handle: &impl raw_window_handle::HasWindowHandle,
     name: &str,
 ) -> Result<bool, String> {
     use objc2_foundation::{MainThreadMarker, NSString};
 
-    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+    MainThreadMarker::new().ok_or("AppKit: this call must run on the main thread")?;
 
     let window = ns_window_for_handle(handle)?;
     let ns_name = NSString::from_str(name);
     let restored: bool = unsafe {
-        // Restore first (if a saved frame exists), then enable autosave going forward.
+        // Apply the saved frame first, if there is one, then turn on autosave.
         let restored: bool = objc2::msg_send![&*window, setFrameUsingName: &*ns_name];
         let _: bool = objc2::msg_send![&*window, setFrameAutosaveName: &*ns_name];
         restored
@@ -73,7 +75,7 @@ fn clear_window_autosave_name(
 ) -> Result<(), String> {
     use objc2_foundation::{MainThreadMarker, NSString};
 
-    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+    MainThreadMarker::new().ok_or("AppKit: this call must run on the main thread")?;
 
     let window = ns_window_for_handle(handle)?;
     let empty = NSString::from_str("");
@@ -83,14 +85,15 @@ fn clear_window_autosave_name(
     Ok(())
 }
 
-/// Toggle `NSWindowStyleMaskResizable` (user resizing via the window edges).
+/// Set or clear `NSWindowStyleMaskResizable`, which lets the user resize the
+/// window by its edges.
 fn set_window_resizable(
     handle: &impl raw_window_handle::HasWindowHandle,
     resizable: bool,
 ) -> Result<(), String> {
     use objc2_foundation::MainThreadMarker;
 
-    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+    MainThreadMarker::new().ok_or("AppKit: this call must run on the main thread")?;
 
     const NS_WINDOW_STYLE_MASK_RESIZABLE: usize = 1 << 3;
     let window = ns_window_for_handle(handle)?;
@@ -107,7 +110,7 @@ fn set_window_resizable(
 }
 
 /// Resize the content area to `w` x `h` points, keeping the window centre
-/// where it is (the frame grows/shrinks around it).
+/// where it is (the frame grows or shrinks around it).
 fn set_window_content_size_centered(
     handle: &impl raw_window_handle::HasWindowHandle,
     w: f64,
@@ -115,7 +118,7 @@ fn set_window_content_size_centered(
 ) -> Result<(), String> {
     use objc2_foundation::{MainThreadMarker, NSRect, NSSize};
 
-    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+    MainThreadMarker::new().ok_or("AppKit: this call must run on the main thread")?;
 
     let window = ns_window_for_handle(handle)?;
     unsafe {
@@ -137,7 +140,7 @@ fn set_window_content_size_centered(
 fn disable_window_tabbing(handle: &impl raw_window_handle::HasWindowHandle) -> Result<(), String> {
     use objc2_foundation::MainThreadMarker;
 
-    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+    MainThreadMarker::new().ok_or("AppKit: this call must run on the main thread")?;
 
     let window = ns_window_for_handle(handle)?;
     // NSWindowTabbingModeDisallowed = 2
@@ -147,38 +150,37 @@ fn disable_window_tabbing(handle: &impl raw_window_handle::HasWindowHandle) -> R
     Ok(())
 }
 
-/// App-wide kill switch for the system "Show Tab Bar" / "Show All Tabs" View
-/// menu entries. Per-window `setTabbingMode:` only suppresses tabbing on the
-/// main eframe window; any extra `NSWindow` AppKit creates (e.g. the deferred
-/// debug viewport) still opts into tabbing and re-introduces those menu items.
-/// Setting the class property to `NO` covers every current and future window.
+/// Remove the system "Show Tab Bar" and "Show All Tabs" View menu entries for
+/// the whole app. Per-window `setTabbingMode:` covers only the main eframe
+/// window; any other `NSWindow` that AppKit creates, such as the deferred
+/// debug viewport, still allows tabbing and adds those entries back. Setting
+/// the class property to `NO` covers every current and future window.
 fn disable_automatic_window_tabbing_global() -> Result<(), String> {
     use objc2::runtime::AnyClass;
     use objc2_foundation::MainThreadMarker;
 
-    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+    MainThreadMarker::new().ok_or("AppKit: this call must run on the main thread")?;
 
-    let cls = AnyClass::get("NSWindow").ok_or("NSWindow class not found")?;
+    let cls = AnyClass::get("NSWindow").ok_or("the NSWindow class was not found")?;
     unsafe {
         let _: () = objc2::msg_send![cls, setAllowsAutomaticWindowTabbing: false];
     }
     Ok(())
 }
 
-/// Drop any runtime-installed dock icon override so the Dock falls back to
-/// the bundle's `CFBundleIconFile` (`cdj3k-emu.icns` in `Contents/Resources/`).
+/// Remove any Dock icon set at run time, so that the Dock falls back to the
+/// bundle's `CFBundleIconFile` (`cdj3k-emu.icns` in `Contents/Resources/`).
 ///
-/// `eframe` installs a default egui-logo placeholder via
-/// `NSApplication.applicationIconImage` during window creation; without this
-/// reset, that placeholder shadows the bundle icon for the lifetime of the
-/// process - visible as the bundle icon briefly flashing as the override is
-/// torn down on quit.  Passing nil to `setApplicationIconImage:` is the
-/// AppKit-blessed way to revert to the Info.plist-declared icon.
+/// eframe sets a default egui-logo placeholder through
+/// `NSApplication.applicationIconImage` when it creates the window; without
+/// this reset, the placeholder replaces the bundle icon until the process
+/// quits. Passing nil to `setApplicationIconImage:` restores the icon that
+/// Info.plist declares.
 fn reset_dock_icon_to_bundle() -> Result<(), String> {
     use objc2_app_kit::NSApplication;
     use objc2_foundation::MainThreadMarker;
 
-    let mtm = MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+    let mtm = MainThreadMarker::new().ok_or("AppKit: this call must run on the main thread")?;
     let app = NSApplication::sharedApplication(mtm);
     unsafe {
         let _: () = objc2::msg_send![&app, setApplicationIconImage: std::ptr::null::<objc2::runtime::AnyObject>()];
@@ -193,14 +195,13 @@ fn set_window_aspect_constraints(
 ) -> Result<(), String> {
     use objc2_foundation::{MainThreadMarker, NSSize};
 
-    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+    MainThreadMarker::new().ok_or("AppKit: this call must run on the main thread")?;
 
     let window = ns_window_for_handle(handle)?;
-    // NOTE: do NOT also call `setAspectRatio` here - that locks the whole
-    // window frame (incl. title bar) to the ratio, while we want the *content
-    // area* locked. Setting both leaves AppKit arbitrating between two
-    // mutually-incompatible constraints (differ by the title bar height),
-    // which manifests as a snap/fight after each resize.
+    // Do not also call `setAspectRatio`: it locks the whole frame, title bar
+    // included, while this call locks the content area. The two constraints
+    // differ by the title bar height, and AppKit then snaps the window after
+    // each resize.
     let s = NSSize::new(aspect_w, aspect_h);
     unsafe {
         window.setContentAspectRatio(s);
@@ -212,54 +213,56 @@ fn set_window_aspect_constraints(
 pub fn activate_process(pid: u32) -> Result<(), String> {
     use objc2::runtime::{AnyClass, AnyObject, Bool};
 
-    let cls = AnyClass::get("NSRunningApplication").ok_or("NSRunningApplication not found")?;
+    let cls = AnyClass::get("NSRunningApplication")
+        .ok_or("the NSRunningApplication class was not found")?;
     unsafe {
         let app: *mut AnyObject =
             objc2::msg_send![cls, runningApplicationWithProcessIdentifier: pid as libc::pid_t];
         if app.is_null() {
-            return Err(format!("no running application with pid {pid}"));
+            return Err(format!("there is no running application with pid {pid}"));
         }
         // NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps
         let ok: Bool = objc2::msg_send![app, activateWithOptions: 3usize];
         if !ok.as_bool() {
-            return Err(format!("pid {pid} refused activation"));
+            return Err(format!("process {pid} refused activation"));
         }
     }
     Ok(())
 }
 
-/// Override the Dock tile / menu-bar / Activity Monitor name for this process.
+/// Set the name that the Dock tile, the menu bar and Activity Monitor show for
+/// this process.
 ///
 /// The Dock and the application menu read `CFBundleName` from
 /// `[NSBundle mainBundle].infoDictionary` at launch. The returned dictionary
 /// is documented as immutable, but the backing store is a mutable
 /// `CFDictionary`, so an `NSMutableDictionary`-typed `setObject:forKey:`
 /// message lands in the real storage and is picked up by both surfaces.
-/// We also update `NSProcessInfo.processName` so `ps`, `top`, and Activity
-/// Monitor agree.
+/// It also sets `NSProcessInfo.processName`, so that `ps`, `top` and Activity
+/// Monitor show the same name.
 ///
-/// Must be called before `eframe::run_native` — once `NSApplication` finishes
-/// launching, the menu-bar title is cached and won't refresh.
+/// Call it before `eframe::run_native`: once `NSApplication` finishes
+/// launching, it caches the menu bar title and does not refresh it.
 pub fn set_app_name(name: &str) -> Result<(), String> {
     use objc2::runtime::{AnyClass, AnyObject};
     use objc2_foundation::{MainThreadMarker, NSString};
 
-    MainThreadMarker::new().ok_or("AppKit: not on main thread")?;
+    MainThreadMarker::new().ok_or("AppKit: this call must run on the main thread")?;
 
     let ns_name = NSString::from_str(name);
     let key = NSString::from_str("CFBundleName");
 
-    let bundle_cls = AnyClass::get("NSBundle").ok_or("NSBundle class not found")?;
-    let proc_cls = AnyClass::get("NSProcessInfo").ok_or("NSProcessInfo class not found")?;
+    let bundle_cls = AnyClass::get("NSBundle").ok_or("the NSBundle class was not found")?;
+    let proc_cls = AnyClass::get("NSProcessInfo").ok_or("the NSProcessInfo class was not found")?;
 
     unsafe {
         let bundle: *mut AnyObject = objc2::msg_send![bundle_cls, mainBundle];
         if bundle.is_null() {
-            return Err("nil mainBundle".into());
+            return Err("mainBundle returned nil".into());
         }
         let info: *mut AnyObject = objc2::msg_send![bundle, infoDictionary];
         if info.is_null() {
-            return Err("nil infoDictionary".into());
+            return Err("infoDictionary returned nil".into());
         }
         let _: () = objc2::msg_send![info, setObject: &*ns_name, forKey: &*key];
 
@@ -271,15 +274,17 @@ pub fn set_app_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Best-effort from [`eframe::CreationContext`] (view may not be in a window yet).
+/// Apply the window settings that can be made from
+/// [`eframe::CreationContext`]. Each is best effort, because the view may not
+/// be in a window yet.
 pub fn on_creation_context(cc: &eframe::CreationContext<'_>) {
     let _ = disable_window_tabbing(cc);
-    // Class-level kill switch: prevents the deferred debug viewport (and
-    // any other NSWindow AppKit spawns) from re-adding "Show Tab Bar" /
-    // "Show All Tabs" to the View menu.
+    // The class-level switch stops the deferred debug viewport, and any other
+    // NSWindow that AppKit creates, from adding "Show Tab Bar" and "Show All
+    // Tabs" back to the View menu.
     let _ = disable_automatic_window_tabbing_global();
-    // Drop eframe's default placeholder icon so the Dock reads our
-    // bundle's CFBundleIconFile instead.
+    // Remove eframe's placeholder icon so that the Dock shows the bundle's
+    // CFBundleIconFile.
     let _ = reset_dock_icon_to_bundle();
 }
 
@@ -305,9 +310,9 @@ pub fn enter_panel_window(
     let _ = ctx;
 }
 
-/// Turn the main window back into the compact picker: stop frame autosave (so
-/// the picker size is never recorded as the panel frame), fixed size, centred
-/// where the panel was.
+/// Turn the main window back into the compact picker: stop frame autosave, so
+/// that the picker size is never recorded as the panel frame, and give the
+/// window a fixed size centred where the panel was.
 pub fn enter_picker_window(ctx: &egui::Context, frame: &eframe::Frame) {
     let _ = clear_window_autosave_name(frame);
     let _ = set_window_content_size_centered(frame, PICKER_SIZE[0] as f64, PICKER_SIZE[1] as f64);
@@ -315,8 +320,9 @@ pub fn enter_picker_window(ctx: &egui::Context, frame: &eframe::Frame) {
     let _ = ctx;
 }
 
-/// Re-apply AppKit aspect constraints every frame so nothing in the stack
-/// resets them during resize. `None` while the picker is up (fixed size).
+/// Apply the AppKit aspect constraints again every frame, so that nothing
+/// else resets them during a resize. `ref_canvas` is `None` while the
+/// fixed-size picker is up.
 pub fn apply_resize_constraints(
     ctx: &egui::Context,
     frame: &eframe::Frame,
@@ -350,14 +356,16 @@ pub(super) fn run_mod_picker(
     let _ = reply.send(open_panel(title, &[], true));
 }
 
-/// Open a native file-open dialog and return the chosen path, or `None` if cancelled.
-/// `title` is the panel's message text; `allowed_types` filters by UTType identifier
-/// (e.g. `&["public.data"]` for any file).  Pass an empty slice for no filter.
+/// Open a native file-open dialog and return the chosen path, or `None` if
+/// the user cancels. `title` is the panel's message text; `allowed_types`
+/// filters by UTType identifier, for example `&["public.data"]` for any file.
+/// An empty slice applies no filter.
 pub fn open_file_picker(title: &str, allowed_types: &[&str]) -> Option<std::path::PathBuf> {
     open_panel(title, allowed_types, false)
 }
 
-/// `NSOpenPanel` for one file; with `folders`, a folder can be chosen too.
+/// Run an `NSOpenPanel` that picks one file, or also a folder when `folders`
+/// is true.
 fn open_panel(title: &str, allowed_types: &[&str], folders: bool) -> Option<std::path::PathBuf> {
     use objc2::msg_send_id;
     use objc2::rc::Retained;
@@ -373,7 +381,8 @@ fn open_panel(title: &str, allowed_types: &[&str], folders: bool) -> Option<std:
         panel.setAllowsOtherFileTypes(false);
         panel.setAllowsMultipleSelection(false);
         if !allowed_types.is_empty() {
-            // NSOpenPanel.allowedFileTypes is deprecated in 12+ but still functional.
+            // NSOpenPanel.allowedFileTypes is deprecated since macOS 12 but still
+            // works.
             let types: Vec<Retained<NSString>> = allowed_types
                 .iter()
                 .map(|t| NSString::from_str(t))

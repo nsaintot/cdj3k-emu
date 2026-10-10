@@ -16,7 +16,7 @@ use super::{Action, Phase, Step};
 const PROGRESS_H: f32 = 6.0;
 const ROW_LABEL_W: f32 = 120.0;
 
-/// Header text for a phase.
+/// The header text for a phase.
 struct Page {
     state: Option<&'static str>,
     title: String,
@@ -86,7 +86,7 @@ fn page(phase: &Phase) -> Page {
     Page { state, title, sub }
 }
 
-/// Header text for a step of the restart.
+/// The header text for a step of the restart.
 fn restart_page(step: &Step) -> (Option<&'static str>, String, String) {
     match step {
         Step::Closing => (
@@ -112,7 +112,7 @@ fn restart_page(step: &Step) -> (Option<&'static str>, String, String) {
     }
 }
 
-/// This build's version, package format and architecture, e.g.
+/// This build's version, package format and architecture, such as
 /// `v0.3.0 (AppImage, x86_64)`.
 fn installed() -> &'static str {
     static TEXT: OnceLock<String> = OnceLock::new();
@@ -167,7 +167,8 @@ fn install_note(kind: Kind) -> &'static str {
 /// The command that installs the deb or rpm at `path`.
 fn package_command(kind: Kind, path: &Path) -> Option<String> {
     let path = path.to_string_lossy();
-    // Single-quoted for the shell; a quote inside closes and reopens it.
+    // Quote the path for the shell with single quotes; a quote inside the
+    // path closes the quoting and reopens it.
     let path = format!("'{}'", path.replace('\'', r"'\''"));
     match kind {
         Kind::Deb => Some(format!("sudo apt install {path}")),
@@ -252,7 +253,8 @@ fn draw_content(
             notes,
             release_notes,
         } => {
-            // The notes are this build's only when it is that release.
+            // The notes describe this build only when this build is the
+            // latest release.
             if *latest == VERSION {
                 notes_box(ui, release_notes, pal, k);
                 release_page_link(ui, notes, pal, k);
@@ -317,7 +319,7 @@ fn download_progress(ui: &mut egui::Ui, done: u64, total: u64, pal: &Palette, k:
     );
 }
 
-/// The failure, its first letter capitalised.
+/// Shows the failure message with its first letter capitalised.
 fn failure(ui: &mut egui::Ui, message: &str, pal: &Palette, k: f32) {
     let mut chars = message.chars();
     let message: String = chars
@@ -331,7 +333,7 @@ fn failure(ui: &mut egui::Ui, message: &str, pal: &Palette, k: f32) {
     );
 }
 
-/// A checkbox; true when it changed.
+/// Draws a checkbox and returns true when it changed.
 fn checkbox(ui: &mut egui::Ui, on: &mut bool, label: &str, k: f32) -> bool {
     ui.checkbox(on, RichText::new(label).size(theme::BODY_FONT * k))
         .changed()
@@ -435,7 +437,7 @@ fn draw_buttons(ui: &mut egui::Ui, phase: &Phase, pal: &Palette, k: f32) -> Opti
     }
 }
 
-/// Take the offer, put it off, or skip it.
+/// Draws the buttons that take the offer, put it off, or skip it.
 fn offer_buttons(ui: &mut egui::Ui, bar: &Bar<'_>, offer: &Offer) -> Option<Action> {
     let label = if offer.kind.installs_itself() {
         "Update"

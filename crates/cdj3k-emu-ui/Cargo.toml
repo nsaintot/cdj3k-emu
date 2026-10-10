@@ -20,10 +20,10 @@ eframe = { version = "0.36", default-features = false, features = ["default_font
 egui = "0.36"
 # Drag reordering for the Mods table.
 egui_dnd = "0.17"
-# Hashing tessellated meshes for the tilt cache; already in the tree via egui.
+# Hashes tessellated meshes for the tilt cache. egui already depends on it.
 bytemuck = "1"
 glow = "0.17"
-# Screenshot encoder (CDJ3K_SCREENSHOT); same version muda already pulls in.
+# Encodes screenshots for CDJ3K_SCREENSHOT. It is the version muda already uses.
 png = "0.17"
 puffin = "0.19"
 puffin_http = "0.16"

@@ -82,7 +82,8 @@ pub struct AudioBackend {
     /// Options the driver needs beyond its name, or `""`.
     pub options: &'static str,
     /// Prefix of the output device option, spelled per driver: CoreAudio
-    /// addresses a device by UID, PipeWire a sink by node name.
+    /// addresses a device by UID, PipeWire a sink by node name, and WASAPI an
+    /// endpoint by its id.
     pub device_selector: &'static str,
 }
 

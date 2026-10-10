@@ -1,8 +1,9 @@
 //! Trackpad haptic feedback.
 //!
-//! `init()` once at startup, `actuate(waveform)` per click, `shutdown()` on
-//! exit; `available()` and `stats()` are the debug surface.  Each `actuate()`
-//! is a non-blocking enqueue, so a jog at any speed cannot stall the UI.
+//! Call `init()` once at startup, `actuate(waveform)` for each click and
+//! `shutdown()` on exit; `available()` and `stats()` are for debugging. Each
+//! `actuate()` only queues the pulse, so a jog at any speed cannot stall the
+//! UI.
 //!
 //! macOS drives the trackpad actuator through the private
 //! `MultitouchSupport.framework`; a host without one has the same five
@@ -19,7 +20,7 @@
 //!   15 - soft thud
 //!   16 - strong thud           (~30 ms, ~30 Hz)        - heaviest single pulse
 //!
-//! The ID is the caller's to choose; the hardware paces the rate.
+//! The caller chooses the ID; the hardware paces the rate.
 
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]

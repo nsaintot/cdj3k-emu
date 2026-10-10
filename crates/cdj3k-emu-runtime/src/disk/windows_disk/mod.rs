@@ -63,7 +63,7 @@ fn open(path: &str, access: u32) -> io::Result<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(h) })
 }
 
-/// `DeviceIoControl`, returning the bytes written to `out`.
+/// Call `DeviceIoControl` and return the number of bytes written to `out`.
 fn ioctl(h: &OwnedHandle, code: u32, input: &[u8], out: &mut [u8]) -> io::Result<usize> {
     let mut returned = 0u32;
     // SAFETY: both buffers are live for the call and their lengths are passed.

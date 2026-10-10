@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# Patch 24: replace unbind-usb-device.sh with a version that works under QEMU virtio-mmio.
+# Patch 20: replace unbind-usb-device.sh with a version that works on QEMU
+# virtio-mmio.
 #
-# Changes vs. the original script:
-#   1. DEVICE sed: relaxed regex - no /host requirement, matches any parent path.
-#   2. [ -z $DEVICE ]: quoted (prevents "too many arguments" under set -u).
-#   3. udev_usb1 notify: mount-path grep instead of USB1_BUS_NAME="5-1" hardcode.
-#   4. usb/unbind: guarded with N-N pattern - skips virtio and other non-USB buses.
-#   5. virtio detection via sysfs: the immediate parent of /dev/sdb1 is the
-#      block device "sdb", not "virtio0", so the original DEV_BUS_ID==virtio*
-#      pattern never matched.  We now check /sys/class/block/<dev> -> ...
-#      for "/virtio[0-9]+/" and emit `usb_state 0` on cdj3k.cfg so the host
-#      CfgClient knows the guest ejected the drive.
+# Changes from the original script:
+#   1. The DEVICE sed uses a looser regex: it does not require /host and
+#      matches any parent path.
+#   2. $DEVICE is quoted in the -z test, which prevents "too many arguments"
+#      under set -u.
+#   3. The udev_usb1 notification greps the mount path instead of hardcoding
+#      USB1_BUS_NAME="5-1".
+#   4. The usb/unbind write is guarded by an N-N pattern, so virtio and other
+#      non-USB buses are skipped.
+#   5. virtio is detected through sysfs: the immediate parent of /dev/sdb1 is
+#      the block device "sdb", not "virtio0", so a DEV_BUS_ID == virtio*
+#      match would never fire. The script checks the /sys/class/block/<dev>
+#      link for "/virtio[0-9]+/" and signals cfgd, which sends `usb_state 0`
+#      on cdj3k.cfg so the host's CfgClient knows the guest ejected the
+#      drive.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 : "${APP_NAME:?APP_NAME must be set by dispatcher}"
@@ -65,12 +71,12 @@ if [ -z ${DEV_NAME} ]; then
     exit 2
 fi
 
-# Fix 1: relaxed sed - match path up to closing quote, no /host requirement.
+# Fix 1: match the path up to the closing quote, without requiring /host.
 DEVICE=$(udevadm info --query=path --name=${DEV_NAME} --attribute-walk | \
     egrep "looking at parent device" | head -n 1 | \
     sed -e "s/.*looking at parent device '\([^']*\)'.*/\1/g")
 
-# Fix 2: quoted $DEVICE.
+# Fix 2: quote $DEVICE.
 if [ -z "$DEVICE" ]; then
     1>&2 echo "cannot find appropriate parent USB/Firewire device, "
     1>&2 echo "perhaps ${DEV_NAME} is not an USB/Firewire device?"
@@ -113,7 +119,7 @@ if [ ${SHOW_DEVICE_ONLY} -eq 0 ]; then
     for MOUNT_NAME in ${MOUNT_LIST}
     do
         /bin/umount -l ${MOUNT_NAME}
-        # Fix 3: mount-path check instead of USB1_BUS_NAME="5-1" hardcode.
+        # Fix 3: check the mount path instead of hardcoding USB1_BUS_NAME="5-1".
         if echo "${MOUNT_NAME}" | grep -q "^/media/usb/"; then
             /bin/echo -n umount ${MOUNT_NAME} > /proc/udev_usb1
         fi
@@ -122,11 +128,11 @@ fi
 
 [[ $VERBOSE == 1 ]] && echo "Unbinding device $DEV_BUS_ID"
 
-# Fix 5: detect virtio-backed block devices via sysfs.  DEV_BUS_ID is the
-# immediate parent basename (e.g. "sdb"), not "virtio0", so the old
-# string-match `[[ $DEV_BUS_ID == virtio* ]]` never fired for virtio_blk.
-# /sys/class/block/<dev_or_partition> symlinks include the full ancestor
-# chain - look for "/virtio<N>/" anywhere in it.
+# Fix 5: detect virtio-backed block devices through sysfs. DEV_BUS_ID is the
+# basename of the immediate parent, such as "sdb", not "virtio0", so a match
+# on `[[ $DEV_BUS_ID == virtio* ]]` never fires for virtio_blk. The
+# /sys/class/block/<device or partition> link holds the full chain of
+# ancestors; look for "/virtio<N>/" anywhere in it.
 DEV_BASE=$(echo "${DEV_NAME}" | /bin/sed -e 's|^/dev/||')
 IS_VIRTIO=0
 if /bin/readlink "/sys/class/block/${DEV_BASE}" 2>/dev/null | grep -q "/virtio[0-9]"; then
@@ -138,16 +144,16 @@ then
     echo -n "${DEV_BUS_ID}" > /sys/bus/firewire/drivers/sbp2/unbind
 elif [ $IS_VIRTIO -eq 1 ]
 then
-    # virtio-blk has no USB bus to unbind from.
-    # Signal cfgd to emit `usb_state 0` on the cdj3k.cfg port - we can't
-    # write the port directly because cfgd holds it O_RDWR (virtio-serial
-    # is single-opener on Linux, second open returns EBUSY).
+    # virtio-blk has no USB bus to unbind from. Ask cfgd to send
+    # `usb_state 0` on the cdj3k.cfg port. The script cannot write the port
+    # itself: cfgd holds it open O_RDWR, and Linux allows one opener per
+    # virtio-serial port, so a second open returns EBUSY.
     CFGD_PID=$(/bin/pidof cdj3k-cfgd 2>/dev/null)
     if [ -n "$CFGD_PID" ]; then
         /bin/kill -USR1 $CFGD_PID 2>/dev/null || true
     fi
 else
-    # Fix 4: guard usb/unbind - skip for non-USB bus IDs.
+    # Fix 4: write usb/unbind only for USB bus IDs.
     if echo "${DEV_BUS_ID}" | grep -qE "^[0-9]+-[0-9]+$"; then
         echo -n "${DEV_BUS_ID}" > /sys/bus/usb/drivers/usb/unbind
     fi
@@ -171,9 +177,9 @@ EOF
 fi
 SCRIPTEOF
 
-# The open-file wait greps lsof for the player: the CDJ-3000's lines carry
-# "PIONEER", the CDJ-3000X's the binary path.
+# The open-file wait greps lsof for the player: on the CDJ-3000 the lines
+# carry "PIONEER", and on the CDJ-3000X they carry the binary path.
 sed -i "s|grep \"PIONEER\"|grep -E \"PIONEER\\|/pdj/${APP_NAME}\"|" \
     "$ROOTFS/home/root/scripts/unbind-usb-device.sh"
 chmod 755 "$ROOTFS/home/root/scripts/unbind-usb-device.sh"
-echo "  -> unbind-usb-device.sh patched (virtio2 support added, lsof grep for ${APP_NAME})"
+echo "  -> unbind-usb-device.sh patched: virtio support added, and the lsof check matches ${APP_NAME}"

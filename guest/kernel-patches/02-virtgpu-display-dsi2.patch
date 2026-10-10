@@ -7,10 +7,10 @@ index ad924a850..34dd2edbd 100644
  	int count, width, height;
  
 +	/*
-+	 * cdj3k-emu: jog LCD (index 1) is a synthetic output.  Return a
-+	 * single 1280x240@71Hz preferred mode.  EP122 searches for this mode
-+	 * by name via DRM_IOCTL_MODE_GETCONNECTOR directly (not through libdrm),
-+	 * so it must be present in the kernel mode list.
++	 * cdj3k-emu: the jog LCD (index 1) is a synthetic output. Return a
++	 * single preferred 1280x240 71 Hz mode. EP122 looks the mode up by name
++	 * through DRM_IOCTL_MODE_GETCONNECTOR directly, without libdrm, so it
++	 * must be in the kernel's mode list.
 +	 */
 +	if (output->index == 1) {
 +		mode = drm_cvt_mode(connector->dev, 1280, 240, 71,
@@ -29,8 +29,8 @@ index ad924a850..34dd2edbd 100644
  		drm_connector_to_virtio_gpu_output(connector);
  	int width, height;
  
-+	/* cdj3k-emu: Jog LCD
-+	 *  accept everything — only one mode (1280x240) is ever probed.
++	/* cdj3k-emu: accept every mode on the jog LCD output, because only
++	 * one mode (1280x240) is ever probed.
 +	 */
 +	if (output->index == 1)
 +		return MODE_OK;
@@ -44,11 +44,11 @@ index ad924a850..34dd2edbd 100644
  		output->info.r.height = cpu_to_le32(YRES_DEF);
 +	} else if (index == 1) {
 +		/*
-+		 * cdj3k-emu: synthetic jog LCD output.  QEMU only has one
-+		 * real scanout; this second output is driven entirely by
-+		 * deck_shim via memfd — no QEMU scanout command is sent for it.
-+		 * info.enabled=true makes conn_detect return connected so the
-+		 * DRM core registers the connector and EP122 can find it.
++		 * cdj3k-emu: the synthetic jog LCD output. QEMU has only one
++		 * real scanout; deck_shim reads this second output's buffers
++		 * itself, and no QEMU scanout command is sent for it.
++		 * info.enabled=true makes conn_detect report it as connected, so
++		 * the DRM core registers the connector and EP122 can find it.
 +		 */
 +		output->info.enabled = cpu_to_le32(true);
  	}
@@ -59,9 +59,9 @@ index ad924a850..34dd2edbd 100644
  		drm_connector_attach_edid_property(connector);
  
 +	/*
-+	 * cdj3k-emu: EP122's JogLcdDRM searches for a connector with
++	 * cdj3k-emu: EP122's JogLcdDRM looks for a connector with
 +	 * connector_type=DRM_MODE_CONNECTOR_DSI (16) and connector_type_id=2.
-+	 * Override the defaults set by drm_connector_init above.
++	 * Override the defaults that drm_connector_init set above.
 +	 */
 +	if (index == 1) {
 +		connector->connector_type    = DRM_MODE_CONNECTOR_DSI;
@@ -85,10 +85,10 @@ index ad924a850..34dd2edbd 100644
  
 -	for (i = 0 ; i < vgdev->num_scanouts; ++i)
 +	/*
-+	 * cdj3k-emu: always init at least 2 outputs. QEMU is configured
-+	 * with max_outputs=1 but EP122 requires a second synthetic output
-+	 * (index 1, DSI-2) for the jog LCD.  outputs[] has VIRTIO_GPU_MAX_SCANOUTS
-+	 * (16) slots so index 1 is always safe to use.
++	 * cdj3k-emu: always initialise at least 2 outputs. QEMU is configured
++	 * with max_outputs=1, but EP122 needs a second synthetic output
++	 * (index 1, DSI-2) for the jog LCD. outputs[] has VIRTIO_GPU_MAX_SCANOUTS
++	 * (16) slots, so index 1 is always valid.
 +	 */
 +	num_outputs = (int)vgdev->num_scanouts;
 +	if (num_outputs < 2)

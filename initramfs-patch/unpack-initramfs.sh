@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # initramfs-patch/unpack-initramfs.sh
 #
-# Extracts the initramfs CPIO archive embedded inside the CDJ-3000 kernel Image,
-# applies patches, then repacks it ready for QEMU.
+# Extracts the initramfs cpio archive embedded in the CDJ-3000 kernel Image,
+# applies the patches, then repacks it for QEMU.
 #
 # Dependencies:
 #   brew install binwalk cpio
@@ -12,9 +12,9 @@
 #   ./unpack-initramfs.sh [--extract-only] <Image> [workdir]
 #
 # Outputs:
-#   <workdir>/initramfs.cpio.gz   - original extracted archive
-#   <workdir>/rootfs/             - extracted filesystem tree
-#   <workdir>/initramfs-patched.cpio.gz - repacked with patches applied
+#   <workdir>/initramfs.cpio.gz         - the original archive
+#   <workdir>/rootfs/                   - the extracted file tree
+#   <workdir>/initramfs-patched.cpio.gz - the patched archive
 
 set -euo pipefail
 
@@ -44,13 +44,13 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$WORKDIR"
 
 echo "=== Step 1: locate initramfs offset in Image ==="
-# binwalk finds the gzip/lzma/cpio headers
+# binwalk finds the gzip, lzma and cpio headers.
 binwalk "$IMAGE" | tee "$WORKDIR/binwalk.txt"
 
-# Extract the gzip-compressed initramfs (largest gz block after the kernel)
+# The initramfs is the last gzip or cpio block that binwalk lists.
 OFFSET=$(grep -E 'gzip|cpio' "$WORKDIR/binwalk.txt" | tail -1 | awk '{print $1}')
 if [[ -z "$OFFSET" ]]; then
-    echo "ERROR: could not find initramfs offset in Image via binwalk" >&2
+    echo "ERROR: binwalk found no initramfs offset in the Image" >&2
     echo "Try: binwalk -e $IMAGE" >&2
     exit 1
 fi
@@ -58,7 +58,8 @@ echo "Initramfs at offset: $OFFSET"
 
 echo "=== Step 2: extract initramfs ==="
 dd if="$IMAGE" bs=1 skip="$OFFSET" of="$WORKDIR/initramfs.cpio.gz" 2>/dev/null
-# Trim any trailing garbage (cpio is self-delimiting, gzip will stop at EOF marker)
+# Trailing data needs no trimming: cpio is self-delimiting and gzip stops at
+# its end-of-stream marker.
 echo "Extracted: $(ls -lh $WORKDIR/initramfs.cpio.gz)"
 
 echo "=== Step 3: unpack CPIO ==="

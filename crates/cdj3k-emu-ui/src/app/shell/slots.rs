@@ -40,9 +40,10 @@ impl CdjShell {
         }
     }
 
-    /// Where the wizard's finished run went. This window's slot takes it now
-    /// unless its emulation runs; another slot takes it now unless another
-    /// window has it open, which then picks it up itself.
+    /// Apply the wizard's finished install and report where it went. This
+    /// window's slot applies it now unless its emulation runs. Another slot
+    /// applies it now unless another window has the slot open, in which case
+    /// that window applies it.
     pub(super) fn settle_install(&mut self, slot: u32) -> Installed {
         if slot == self.instance {
             if self.apply_staged().is_some() {
@@ -69,7 +70,7 @@ impl CdjShell {
                 Installed::Staged
             }
             Err(e) => {
-                eprintln!("cdj3k-emu: slot {slot}: claiming it failed: {e}");
+                eprintln!("cdj3k-emu: slot {slot}: claiming the slot failed: {e}");
                 Installed::Staged
             }
         }
@@ -104,9 +105,9 @@ impl CdjShell {
         self.wizard.target_instance() == self.instance && self.wizard.is_running()
     }
 
-    /// Empty the slot. The emulation stops first - QEMU holds the eMMC open -
-    /// and nothing is installed in its place, so the window falls back to the
-    /// picker with a slot that now holds nothing.
+    /// Empty the slot. The emulation stops first, because QEMU holds the eMMC
+    /// open. Nothing is installed in its place, so the window falls back to
+    /// the picker with an empty slot.
     pub(super) fn begin_delete(&mut self) {
         if self.viewed_slot != self.instance {
             self.delete_other_slot(self.viewed_slot);
@@ -114,8 +115,8 @@ impl CdjShell {
         }
         if cdj3k_emu_runtime::worker_is_finished() {
             self.empty_own_slot();
-            // The main window behind has a dead panel on it; it becomes the
-            // picker.
+            // The main window behind shows a stopped panel, so it switches to
+            // the picker.
             self.reveal_picker = true;
         } else {
             self.pending_delete = true;
@@ -124,7 +125,7 @@ impl CdjShell {
         }
     }
 
-    /// Empty another window's slot: here when no window has it open, or by
+    /// Empty another slot: directly when no window has it open, or else by
     /// asking its window to.
     fn delete_other_slot(&mut self, slot: u32) {
         if self.slot_is_open(slot) {
@@ -141,8 +142,8 @@ impl CdjShell {
         self.setup = Some(SetupStep::Pick);
     }
 
-    /// The slot this window owns goes back to empty, and the setup window
-    /// closes: the main window falls back to the picker.
+    /// Empty the slot this window owns and close the setup window, so the
+    /// main window falls back to the picker.
     pub(super) fn empty_own_slot(&mut self) {
         self.wipe_slot();
         self.viewed_release = None;
@@ -194,9 +195,8 @@ impl CdjShell {
         (busy, running)
     }
 
-    /// Whether no slot holds an installation. Only then is there nothing to
-    /// choose between and nothing to go back to, so the picker asks for an
-    /// install and offers no way out of it.
+    /// Whether no slot holds an installation. In that case the picker asks
+    /// for an install and offers no way to close it.
     fn every_slot_empty(&self) -> bool {
         self.host.installed_model().is_none()
             && (1..=menu_state::MAX_INSTANCES)

@@ -18,7 +18,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 
 shopt -s nullglob
 dmgs=("$dir"/CDJ3K-Emulator-"$version"-macos-*.dmg)
-[[ ${#dmgs[@]} -eq 1 ]] || { echo "::error::expected one macOS .dmg in $dir, found ${#dmgs[@]}" >&2; exit 1; }
+[[ ${#dmgs[@]} -eq 1 ]] || { echo "::error::$dir holds ${#dmgs[@]} macOS .dmg files; expected one." >&2; exit 1; }
 dmg="${dmgs[0]}"
 name=$(basename "$dmg")
 

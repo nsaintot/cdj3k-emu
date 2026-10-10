@@ -17,7 +17,7 @@ set -euo pipefail
 DEST="${1:?Usage: $0 <dest dir> <search dir>... -- <binary>...}"; shift
 SEARCH=()
 while [[ $# -gt 0 && "$1" != "--" ]]; do SEARCH+=("$1"); shift; done
-[[ "${1:-}" == "--" ]] || { echo "ERROR: missing -- before the binaries" >&2; exit 1; }
+[[ "${1:-}" == "--" ]] || { echo "ERROR: a -- argument must come before the binaries." >&2; exit 1; }
 shift
 [[ ${#SEARCH[@]} -gt 0 && $# -gt 0 ]] || { echo "ERROR: no search dirs or no binaries" >&2; exit 1; }
 
@@ -25,11 +25,12 @@ OBJDUMP=""
 for o in llvm-objdump objdump; do
     if command -v "$o" >/dev/null; then OBJDUMP="$o"; break; fi
 done
-[[ -n "$OBJDUMP" ]] || { echo "ERROR: neither llvm-objdump nor objdump found" >&2; exit 1; }
+[[ -n "$OBJDUMP" ]] || { echo "ERROR: neither llvm-objdump nor objdump was found." >&2; exit 1; }
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# DLLs that ship with Windows (or with the driver/GPU stack); never vendored.
+# These DLLs ship with Windows or with the driver and GPU stack, so they are
+# never vendored.
 is_windows_dll() {
     case "$(lower "$1")" in
         api-ms-win-*|ext-ms-*|kernel32.dll|kernelbase.dll|user32.dll|gdi32.dll|\
@@ -48,7 +49,7 @@ is_windows_dll() {
     return 1
 }
 
-find_dll() { # <name> -> path of the file in a search dir, matched ignoring case
+find_dll() { # <name>: print the path of the DLL in a search dir, ignoring case
     local want dir f
     want="$(lower "$1")"
     for dir in "${SEARCH[@]}"; do
@@ -64,7 +65,7 @@ find_dll() { # <name> -> path of the file in a search dir, matched ignoring case
     return 1
 }
 
-imports() { # <file> -> one DLL name per line
+imports() { # <file>: print the imported DLL names, one per line
     "$OBJDUMP" -p "$1" | sed -n 's/^[[:space:]]*DLL Name: *//p' | tr -d '\r'
 }
 
@@ -85,7 +86,7 @@ while [[ ${#queue[@]} -gt 0 ]]; do
         key="$(lower "$name")"
         case "$seen" in *" $key "*) continue ;; esac
         seen="$seen$key "
-        # Already beside the binaries (the build put it there).
+        # The build already put this DLL beside the binaries.
         if [[ -f "$DEST/$name" ]]; then
             queue+=("$DEST/$name")
             continue

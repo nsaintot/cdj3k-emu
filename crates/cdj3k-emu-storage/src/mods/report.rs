@@ -25,7 +25,8 @@ pub fn last_boot_report(instance_id: u32) -> Option<String> {
 }
 
 /// Save `text` as the slot's last-boot report, with `ids`, the
-/// [`SlotMods::boot_id`]s of the slot mods that boot ran, in the same file.
+/// [`SlotMods::boot_id`]s of the slot mods that ran in that boot, in the same
+/// file.
 /// The journals of the previous boot are deleted.
 ///
 /// [`SlotMods::boot_id`]: super::SlotMods::boot_id

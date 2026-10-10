@@ -1,54 +1,48 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * deck_shim.c - LD_PRELOAD shim for /dev/dri/card* and peripheral devices
+ * deck_shim.c - the LD_PRELOAD shim for the DRM devices and the deck's
+ * peripheral devices.
  *
- * Intercepts: open, open64, close, ioctl, read, write, mmap, mmap64, poll
- * No dlsym/libdl (GLIBC_2.17): passthroughs use raw syscall(), clock reads
- * the vDSO (clock.c).
- * No pthread - fd tables use lockless atomics (see fd.c).
+ * The syscall interposers live in syscalls.c and syscalls_io.c, the clock
+ * hooks in clock.c, the Pro DJ Link send hooks in link.c, and the libdrm entry
+ * points in jog.c and jog_drm.c. The shim uses neither dlsym nor libdl, to
+ * stay within GLIBC_2.17: passthroughs call syscall() directly, and clock.c
+ * reads the clock through the vDSO. The fd tables use lockless atomics (see
+ * fd.c).
  *
- * --- subucom_spi ioctl sequence ---
+ * subucom_virt.ko serves /dev/subucom_spi1.0; the shim does not intercept it.
  *
- *   open("/dev/subucom_spi1.0", O_RDWR)     → real dup'd pipe fd
- *   ioctl(fd, 0x80027003, ...)              → timer_status read (2 bytes)
- *   ioctl(fd, 0x80017001, ...)              → bits_per_word read (1 byte)
- *   ioctl(fd, 0x40017001, ...)              → bits_per_word write / timer start
- *   read(fd, buf, 64)                       → MISO idle frame × N
- *   close(fd)
+ * The jog LCD setup in the app's JogLcdDRM constructor, and what the shim
+ * returns for each call:
  *
- * The app's main loop (~850 Hz):
- *   ioctl(fd, 0x40107000, mosi_16bytes)     → MOSI data transfer (ignored)
- *   read(fd, buf, 64)                       → MISO frame (we return idle)
+ *   | Call                                   | Result                       |
+ *   |----------------------------------------|------------------------------|
+ *   | open("/dev/dri/card0", O_RDWR)         | the real DRM fd, now tracked |
+ *   | ioctl(fd, DRM_IOCTL_VERSION, ...)      | "rockchip" v1.4              |
+ *   | ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, .) | 0                            |
+ *   | ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES) | the kernel's answer          |
  *
- * --- DRM/Jog-LCD ioctl sequence (JogLcdDRM::JogLcdDRM constructor) ---
- *
- *   open("/dev/dri/card0", O_RDWR)          → real dup'd pipe fd
- *   ioctl(fd, DRM_IOCTL_VERSION, ...)       → return "rockchip" v1.4
- *   ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, .) → return 0
- *   ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES) → return 0 connectors
- *   close(fd)
- *
- * MISO idle frame (64 bytes) - confirmed from hardware RE:
- * NOTE: All byte offsets ("bXX") are DECIMAL.  b16 = byte 16, NOT 0x16 (22).
+ * The CDJ-3000 MISO idle frame (64 bytes). Byte offsets ("bXX") are decimal:
+ * b16 is byte 16, not 0x16 (22).
  *   b02-b04: 0x01 0x04 0x03  - header
  *   b05: transport (play/cue/search/track/beatJump)
  *   b06: tempo/sync (reset/masterTempo/range/keySync/beatSync/master)
  *   b07: loop (in/out/reloop/beatloop½/beatloop2x/slip)
  *   b08: memory (mem/del/callPrev/callNext/callDelete)
- *   b09: hot cues A-H (each bit = one cue)
+ *   b09: hot cues A-H (one bit per cue)
  *   b10: menu nav (source/browse/tagList/playlist/search/menu) + jogMode
  *   b11: menu nav (back/tagTrack/filter/shortcut/rotaryPress) + quantize/timeMode
- *   b12: 0x81 = device state bitmask (0x80=power_on | 0x01=sdcard_closed)
+ *   b12: device state bitmask, 0x81 at idle (0x80 power_on, 0x01 sdcard_closed)
  *   b14-b15: rotary encoder counter (16-bit LE)
- *   b16-b17: LCD touch X (16-bit LE, 0x0000=no touch)
- *   b18-b19: LCD touch Y (16-bit LE, 0x0000=no touch)
+ *   b16-b17: LCD touch X (16-bit LE, 0x0000 for no touch)
+ *   b18-b19: LCD touch Y (16-bit LE, 0x0000 for no touch)
  *   b22-b23: tempo slider (16-bit BE, range 0x0000-0xcfff)
  *   b24: vinyl speed rotary (0x00-0xff)
  *   b26-b27: jog position counter (16-bit LE, wrapping)
- *   b28-b29: jog velocity (16-bit BE, inverse: 0xffff=slow, 0x0000=fast)
- *   b30: jog touch state (0x00=none, 0x03=press, 0x04=touch, 0x0c=turning)
+ *   b28-b29: jog velocity (16-bit BE, inverse: 0xffff slow, 0x0000 fast)
+ *   b30: jog touch state (0x00 none, 0x03 press, 0x04 touch, 0x0c turning)
  *   b34-b43: capacitive sensor baseline
- *   All buttons/axes: 0x00
+ *   Every button and axis is 0x00 at idle.
  */
 
 #include "deck_shim.h"
@@ -69,10 +63,10 @@ void  *g_jog_current_dma_ptr = NULL;
 
 uint8_t *g_jog_fb = NULL;
 
-/* HIDG: the open() interposer hands EP122 a real f_hid char-device fd; we
- * only keep the active-fd table so ioctl() can answer 0 instead of f_hid's
- * ENOTTY (see syscalls_io.c; EP122's gadget manager treats ENOTTY as a
- * fatal init failure). */
+/* The open() interposer gives EP122 a real f_hid char-device fd. The shim
+ * keeps this table only so that ioctl() can answer 0 instead of f_hid's
+ * ENOTTY, which EP122's gadget manager treats as a fatal init failure (see
+ * syscalls_io.c). */
 int g_hidg_active[MAX_HIDG_FDS];
 
 int g_gpiodrv_rd = -1;
@@ -86,9 +80,9 @@ int g_drm_wr = -1;
 
 int g_drm_active[MAX_ACTIVE_FDS];
 
-/* Shared by clock.c and link.c. Raw-syscall sysfs reader so we don't
- * pull stdio into the audio hot path. Parses the LAST integer in the
- * line (handles both `42\n` and CSV `g,h,t\n`). */
+/* A sysfs reader for clock.c and link.c that uses raw syscalls, so stdio
+ * stays out of the audio hot path. It returns the last integer in the line,
+ * so it handles both `42\n` and the CSV `g,h,t\n`. */
 long shim_read_sysfs_long(const char *path)
 {
     long fd = syscall(SYS_openat, AT_FDCWD, path,
@@ -118,18 +112,17 @@ long shim_read_sysfs_long(const char *path)
 }
 
 /* ------------------------------------------------------------------ */
-/* Constructor - create pipe pairs for DRM / ALSA / GPIO / HIDG       */
+/* Constructor: set up the fd tables and the DRM and GPIO pipes       */
 /* ------------------------------------------------------------------ */
-/* NOTE: /dev/subucom_spi1.0 is provided by subucom_virt.ko.          */
-/*       The app opens it directly; this stub does not intercept it.  */
+/* subucom_virt.ko provides /dev/subucom_spi1.0. The app opens it     */
+/* directly, and the shim does not intercept it.                      */
 
 static void fds_init(void) __attribute__((constructor));
 static void fds_init(void) {
-    /* Check SUBUCOM_DEBUG=1 to enable verbose logging */
+    /* SUBUCOM_DEBUG=1 enables verbose logging. */
     const char *dbg_env = getenv("SUBUCOM_DEBUG");
     if (dbg_env && dbg_env[0] == '1') g_debug = 1;
 
-    /* Initialize active fd tables to "empty" (-1) */
     for (int i = 0; i < MAX_ACTIVE_FDS; i++) {
         g_drm_active[i] = -1;
     }
@@ -137,16 +130,15 @@ static void fds_init(void) {
 
     int pfds[2];
 
-    /* DRM pipe - NOT pre-filled.  The app should not poll this after
-     * receiving 0 connectors from DRM_IOCTL_MODE_GETRESOURCES. */
+    /* The DRM pipe starts empty. */
     if (syscall(SYS_pipe2, pfds, O_NONBLOCK | O_CLOEXEC) == 0) {
         g_drm_rd = pfds[0];
         g_drm_wr = pfds[1];
         DBG("DRM pipe: rd=%d wr=%d\n", g_drm_rd, g_drm_wr);
     }
 
-    /* GPIODRV stub - the pipe only backs the fds open("/dev/gpiodrv") hands
-     * out; read() answers from the pin state, so it stays empty. */
+    /* The GPIODRV pipe only backs the fds that open("/dev/gpiodrv") returns.
+     * read() answers from the pin state, so the pipe stays empty. */
     for (int i = 0; i < MAX_GPIODRV_FDS; i++) g_gpiodrv_active[i] = -1;
     if (syscall(SYS_pipe2, pfds, O_CLOEXEC) == 0) {
         g_gpiodrv_rd = pfds[0];
@@ -154,7 +146,8 @@ static void fds_init(void) {
         DBG("gpiodrv pipe: rd=%d wr=%d\n", g_gpiodrv_rd, g_gpiodrv_wr);
     }
 
-    /* ---- Jog LCD framebuffer - tagged anon mmap visible in shared RAM ---- */
+    /* Map the jog LCD framebuffer anonymously behind a magic header, so the
+     * host can find it in guest RAM. */
     {
         size_t total = (size_t)JOG_FB_HDR_SIZE + (size_t)JOG_FB_PX_SIZE;
         void *p = sys_mmap(NULL, total, PROT_READ | PROT_WRITE,

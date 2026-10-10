@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * subucom_forwarder - bidirectional bridge between /dev/subucom_ctrl and the
- * cdj3k.ctrl virtio-serial port.
+ * subucom_forwarder copies frames in both directions between /dev/subucom_ctrl
+ * and the cdj3k.ctrl virtio-serial port.
  *
- *   LED  (guest→host): subucom_virt.ko writes MOSI frames to /dev/subucom_ctrl
- *                      → this process reads them → writes to vport → ctrl.sock
- *   CTRL (host→guest): ctrl.sock → vport → this process reads → /dev/subucom_ctrl
- *                      → subucom_virt.ko delivers MISO frames to EP122
+ *   LED frames, guest to host: subucom_virt.ko writes MOSI frames to
+ *     /dev/subucom_ctrl, and this process copies them to the virtio-serial
+ *     port, which QEMU exposes as ctrl.sock.
+ *   Control frames, host to guest: this process copies frames from the
+ *     virtio-serial port to /dev/subucom_ctrl, and subucom_virt.ko delivers
+ *     them to EP122 as MISO frames.
  *
- * Build (aarch64 static):
- *   aarch64-linux-gnu-gcc -O2 -static -o subucom_forwarder_aarch64 subucom_forwarder.c -lpthread
+ * guest/Makefile builds it as the static binary subucom_forwarder_aarch64.
  */
 
 #include <stdio.h>
@@ -26,17 +27,17 @@
 #define PORT_NAME   "cdj3k.ctrl"
 #define FRAME_SIZE  64
 
-/* The host's power flag: bit 7 of byte 12.  A model whose frame uses byte 12
- * for panel data carries it in the unchecked tail past the CRC and touch
- * words. */
+/* The host's power flag is bit 7 of byte 12. A model whose frame uses byte 12
+ * for panel data, the CDJ-1500X, carries the flag at byte 30, in the tail
+ * after the CRC and the touch words, which the CRC does not cover. */
 #define POWER_BYTE        12
 #define POWER_BYTE_1500X  30
 #define POWER_BIT         0x80U
 #define MODEL_PARAM       "/sys/module/subucom_virt/parameters/model"
 
-static int ctrl_rfd = -1;  /* O_RDONLY - read MOSI/LED frames */
-static int ctrl_wfd = -1;  /* O_WRONLY - write MISO/CTRL frames */
-static int vport_fd = -1;  /* O_RDWR  - virtio-serial port     */
+static int ctrl_rfd = -1;  /* O_RDONLY: reads MOSI (LED) frames */
+static int ctrl_wfd = -1;  /* O_WRONLY: writes MISO (control) frames */
+static int vport_fd = -1;  /* O_RDWR: the virtio-serial port */
 
 /* Find the /dev/vportNpM path for a virtio-serial port by name. */
 static int find_vport(char *out, size_t out_sz)
@@ -80,7 +81,7 @@ static int open_ctrl_r(void)
 {
     int fd;
     while ((fd = open(CTRL_PATH, O_RDONLY)) < 0) {
-        fprintf(stderr, "[subucom_forwarder] waiting for %s (r): %s\n",
+        fprintf(stderr, "[subucom_forwarder] Waiting for %s (read end): %s\n",
                 CTRL_PATH, strerror(errno));
         usleep(100000);
     }
@@ -91,7 +92,7 @@ static int open_ctrl_w(void)
 {
     int fd;
     while ((fd = open(CTRL_PATH, O_WRONLY)) < 0) {
-        fprintf(stderr, "[subucom_forwarder] waiting for %s (w): %s\n",
+        fprintf(stderr, "[subucom_forwarder] Waiting for %s (write end): %s\n",
                 CTRL_PATH, strerror(errno));
         usleep(100000);
     }
@@ -102,7 +103,7 @@ static int open_vport(const char *path)
 {
     int fd;
     while ((fd = open(path, O_RDWR)) < 0) {
-        fprintf(stderr, "[subucom_forwarder] waiting for %s: %s\n",
+        fprintf(stderr, "[subucom_forwarder] Waiting for %s: %s\n",
                 path, strerror(errno));
         usleep(200000);
     }
@@ -125,7 +126,7 @@ static ssize_t read_exact(int fd, uint8_t *buf, size_t n)
     return (ssize_t)got;
 }
 
-/* LED thread: /dev/subucom_ctrl → vport (guest→host) */
+/* Copy LED frames from /dev/subucom_ctrl to the virtio-serial port (guest to host). */
 static void *led_thread(void *arg)
 {
     (void)arg;
@@ -133,7 +134,7 @@ static void *led_thread(void *arg)
     for (;;) {
         ssize_t r = read_exact(ctrl_rfd, frame, FRAME_SIZE);
         if (r <= 0) {
-            fprintf(stderr, "[subucom_forwarder] ctrl read: %s\n",
+            fprintf(stderr, "[subucom_forwarder] Reading /dev/subucom_ctrl failed: %s\n",
                     r < 0 ? strerror(errno) : "EOF");
             exit(1);
         }
@@ -149,14 +150,14 @@ static void *poweroff_thread(void *arg)
 {
     (void)arg;
     sleep(2);
-    /* argv[0] must be "systemctl" - some versions special-case basenames like
-     * "reboot" / "poweroff" only when invoked through those paths, never when
-     * the binary is launched directly as /bin/systemctl. */
+    /* argv[0] must be "systemctl": systemctl acts as reboot or poweroff when
+     * argv[0] has one of those names. */
     execl("/bin/systemctl", "systemctl", "reboot", (char *)NULL);
     return NULL;
 }
 
-/* Where the loaded model's host frames carry the power flag. */
+/* Return the byte that carries the power flag in the loaded model's host
+ * frames. */
 static int power_byte(void)
 {
     char model[16] = {0};
@@ -176,40 +177,40 @@ int main(void)
 
     char vport_path[512];
     while (find_vport(vport_path, sizeof(vport_path)) != 0) {
-        fprintf(stderr, "[subucom_forwarder] waiting for virtio-serial port '%s'\n",
+        fprintf(stderr, "[subucom_forwarder] Waiting for the virtio-serial port '%s'.\n",
                 PORT_NAME);
         sleep(1);
     }
     vport_fd = open_vport(vport_path);
 
     const int pb = power_byte();
-    fprintf(stderr, "[subucom_forwarder] ready - %s ↔ %s (power flag at byte %d)\n",
+    fprintf(stderr, "[subucom_forwarder] Ready; forwarding between %s and %s (power flag at byte %d).\n",
             vport_path, CTRL_PATH, pb);
 
     pthread_t t;
     if (pthread_create(&t, NULL, led_thread, NULL) != 0) {
-        fprintf(stderr, "[subucom_forwarder] pthread_create: %s\n", strerror(errno));
+        fprintf(stderr, "[subucom_forwarder] pthread_create failed: %s\n", strerror(errno));
         return 1;
     }
     pthread_detach(t);
 
-/* CTRL direction: vport → /dev/subucom_ctrl (host→guest) */
+/* Copy control frames from the virtio-serial port to /dev/subucom_ctrl (host to guest). */
     uint8_t frame[FRAME_SIZE];
     for (;;) {
         ssize_t r = read_exact(vport_fd, frame, FRAME_SIZE);
         if (r == 0) {
-            /* host_connected=false: QEMU returns 0 immediately when no client
-             * is connected to ctrl.sock.  Keep the vport open - closing and
-             * reopening just re-triggers the same path and burns the guest_connected
-             * slot unnecessarily.  Sleep and retry; the kernel will unblock once
-             * cdj-ui connects and host_connected flips to true. */
+            /* While no client is connected to ctrl.sock, host_connected is
+             * false and a read returns 0 at once. Keep the port open, because
+             * reopening it takes the same path again and uses up the
+             * guest_connected slot. Sleep and retry; reads block again once
+             * the UI connects and host_connected becomes true. */
             usleep(50000);
             continue;
         }
         if (r < 0) {
-            /* Real I/O error - vport was unplugged or an interrupt caused a
-             * permanent failure.  Reopen to recover. */
-            fprintf(stderr, "[subucom_forwarder] vport read: %s - reopening\n",
+            /* An I/O error means the port was unplugged or failed
+             * permanently; reopen it. */
+            fprintf(stderr, "[subucom_forwarder] Reading the virtio-serial port failed: %s; reopening it.\n",
                     strerror(errno));
             close(vport_fd);
             usleep(50000);
@@ -217,12 +218,12 @@ int main(void)
             continue;
         }
 
-        /* Simulate sub-CPU power-off timer: the power flag clear → power off.
-         * Latch the first detection - EP122 keeps sending power-off frames until
-         * actual shutdown, and we don't need a fresh thread for each one. */
+        /* Emulate the sub-CPU power-off timer: a cleared power flag powers the
+         * deck off. Act on the first such frame only, because the host keeps
+         * sending them until the guest shuts down. */
         static int poweroff_armed;
         if (!poweroff_armed && (frame[pb] & POWER_BIT) == 0) {
-            fprintf(stderr, "[subucom_forwarder] power-off detected (b%d=0x%02x) - rebooting in 2s\n",
+            fprintf(stderr, "[subucom_forwarder] The power flag is clear (b%d=0x%02x); rebooting in 2 s.\n",
                     pb, frame[pb]);
             poweroff_armed = 1;
             pthread_t pt;
@@ -231,7 +232,7 @@ int main(void)
         }
 
         if (write(ctrl_wfd, frame, FRAME_SIZE) < 0) {
-            fprintf(stderr, "[subucom_forwarder] ctrl write: %s - reopening\n",
+            fprintf(stderr, "[subucom_forwarder] Writing /dev/subucom_ctrl failed: %s; reopening it.\n",
                     strerror(errno));
             close(ctrl_wfd);
             ctrl_wfd = open_ctrl_w();

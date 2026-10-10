@@ -1,7 +1,7 @@
-//! Runtime bring-up for one model: resolve its firmware, build the QEMU
-//! config from the slot's settings, pre-build the network backend, spawn QEMU
-//! and hand everything to the runtime worker. Implements the shell's
-//! [`RuntimeHost`] so the picker can boot whichever model was chosen.
+//! Starts the runtime for one model. It resolves the model's firmware, builds
+//! the QEMU config from the slot's settings, prepares the network backend,
+//! starts QEMU and hands everything to the runtime worker. It implements the
+//! shell's [`RuntimeHost`], so the picker can boot the chosen model.
 
 use std::path::PathBuf;
 
@@ -14,12 +14,14 @@ use cdj3k_emu_ui::{LaunchOutcome, RuntimeHost};
 
 use crate::runtime_worker::{self, PrebuiltNet};
 
-/// Boot options fixed for the process (CLI flags), applied to every launch.
+/// Boot options that the command line fixes for the process. Every launch uses them.
 pub struct Host {
     pub instance: u32,
-    /// `--kernel` override (dev), else the provisioned kernel of the model.
+    /// The kernel given with `--kernel`. When it is unset, the model's
+    /// provisioned kernel is used.
     pub kernel: Option<PathBuf>,
-    /// `--initramfs` override (dev), else the provisioned initramfs.
+    /// The initramfs given with `--initramfs`. When it is unset, the
+    /// provisioned initramfs is used.
     pub initramfs: Option<PathBuf>,
     pub no_emmc: bool,
     pub serial_log: bool,
@@ -29,13 +31,13 @@ pub struct Host {
     pub no_mods: bool,
     /// `--no-spawn`: never boot anything.
     pub ui_only: bool,
-    /// This process's claim on the slot, without which it may not swap an
-    /// install in: another process owns the slot.
+    /// This process's claim on the slot. It is `None` when another process
+    /// owns the slot, and then this process may not swap a staged install in.
     pub claim: Option<&'static cdj3k_emu_storage::SlotClaim>,
 }
 
 /// Record `model` as the slot's model so the next launch of this slot opens
-/// on it directly. Best-effort: a failed write only costs the shortcut.
+/// on it directly. A failed write is only logged.
 fn persist_model(instance: u32, model: Model) {
     let r = cdj3k_emu_storage::InstanceSettings::update(instance, |s| s.model = Some(model));
     if let Err(e) = r {
@@ -92,8 +94,8 @@ impl RuntimeHost for Host {
         if self.installed_model() != Some(model) {
             return LaunchOutcome::NotProvisioned;
         }
-        // Recorded before the worker exists; it reads the slot settings as
-        // soon as it starts.
+        // Record the model before the worker starts, because the worker reads
+        // the slot settings as soon as it starts.
         persist_model(self.instance, model);
         self.spawn(model);
         LaunchOutcome::Started
@@ -101,8 +103,8 @@ impl RuntimeHost for Host {
 }
 
 impl Host {
-    /// Build the QEMU config, pre-build the network backend, spawn QEMU and
-    /// the runtime worker. Requires no live worker.
+    /// Build the QEMU config, prepare the network backend, and start QEMU and
+    /// the runtime worker. No worker may be running.
     fn spawn(&self, model: Model) {
         let r = self.resolve();
         let inst_settings = cdj3k_emu_storage::InstanceSettings::load_or_init(self.instance);
@@ -156,7 +158,7 @@ impl Host {
 
 /// If a network interface is selected, select the vmnet mode or set up the
 /// TAP bridge before the very first QEMU spawn, so the initial process already
-/// has the right `-netdev` and needs no immediate restart.  The worker seeds
+/// has the right `-netdev` and needs no immediate restart. The worker seeds
 /// `prev_net_idx` from the result, so its first poll iteration leaves the
 /// network alone.
 fn prebuild_net(config: &mut QemuConfig, mac: &str, instance: u32) -> PrebuiltNet {
@@ -243,13 +245,17 @@ impl ModsLaunch {
                 }
                 for (name, compat) in &boot.incompatible {
                     if !matches!(compat, cdj3k_emu_storage::mods::Compat::Invalid(_)) {
-                        eprintln!("cdj3k-emu: mod {name} is incompatible with this slot, skipped");
+                        eprintln!(
+                            "cdj3k-emu: mod {name} is incompatible with this slot and was skipped"
+                        );
                     }
                 }
                 boot
             }
             Err(e) => {
-                eprintln!("cdj3k-emu: preparing the mods failed, booting without them: {e}");
+                eprintln!(
+                    "cdj3k-emu: preparing the mods failed, so the deck boots without them: {e}"
+                );
                 BootMods {
                     initramfs: self.base.clone(),
                     run: Vec::new(),

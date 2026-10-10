@@ -1,6 +1,6 @@
-//! The text side of Windows bridging: the request the app hands its elevated
-//! copies, the files they leave, the parsing of `netsh bridge`, and what to
-//! take down when a slot lets its link go.
+//! Text handling for Windows bridging: the request the app passes to its
+//! elevated copies, the files those copies write, the parsing of `netsh
+//! bridge` output, and what to remove when a slot releases its link.
 //!
 //! Nothing here touches the host, so it is checked on every platform.
 
@@ -23,7 +23,8 @@ pub fn tap_name(instance_id: u32) -> String {
     format!("cdj3k-emu-{instance_id}")
 }
 
-/// `{8-4-4-4-12}` with hex digits, the form `netsh bridge` prints.
+/// Whether `s` is a GUID in the `{8-4-4-4-12}` hex form that `netsh bridge`
+/// prints.
 pub fn is_guid(s: &str) -> bool {
     let Some(inner) = s.strip_prefix('{').and_then(|s| s.strip_suffix('}')) else {
         return false;
@@ -42,7 +43,7 @@ pub fn guids(text: &str) -> Vec<String> {
     let mut rest = text;
     while let Some(start) = rest.find('{') {
         let tail = &rest[start..];
-        // 38 bytes: braces plus 36.
+        // A braced GUID is 38 bytes: 36 characters and two braces.
         match tail.get(..38).filter(|c| is_guid(c)) {
             Some(g) => {
                 out.push(g.to_ascii_uppercase());
@@ -97,7 +98,7 @@ pub fn is_tap_name(name: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// What letting a slot's link go takes down.
+/// What to remove when a slot releases its link.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Teardown {
     /// The bridge to take `tap` out of, when it is in one.
@@ -167,7 +168,7 @@ impl Request {
         format!("\"{}\"", self.command(exe, HELPER_FLAG))
     }
 
-    /// `exe` with `flag` and the request.
+    /// The command line that runs `exe` with `flag` and the request's arguments.
     pub fn command(&self, exe: &Path, flag: &str) -> String {
         format!(
             "\"{}\" {flag} {}",

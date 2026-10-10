@@ -94,9 +94,8 @@ pub(super) fn draw_search(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale)
     }
 }
 
-/// CUE and PLAY/PAUSE. Both are RGB lamps on the CDJ-3000X, not the
-/// CDJ-3000's single bit: the rim takes its colour from the deck and falls
-/// back to the unlit face.
+/// CUE and PLAY/PAUSE. On the CDJ-3000X both are RGB lamps: the rim takes its
+/// colour from the deck and falls back to COL_BTN when the lamp is off.
 pub(super) fn draw_cue_play(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let cue_c = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, PERF_U_CUE, PERF_V_CUE);
     let cue_lamp = app

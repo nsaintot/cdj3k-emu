@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Patch 28: usb_gadget.sh - PC-link USB gadget setup for QEMU.
+# Patch 28: usb_gadget.sh, the PC Link USB gadget setup for QEMU.
 #
 # Keeps the firmware's own /home/root/scripts/usb_gadget.sh for everything
 # that identifies the deck (idVendor, idProduct, bcdDevice, strings, the HID
 # report length and descriptor), so each model presents the gadget its
 # firmware defines.  fw_printenv reads the U-Boot env the eMMC image carries.
 # Only the plumbing around it changes:
-#   - drops uac1/uac2.usb0: CONFIG_USB_CONFIGFS_F_UAC2 is off, and the sysfs
-#     knobs Pioneer's uac-monitor.sh drives (usb_f_uac2 'enable'/'uac2_srate')
-#     are patches on their 4.4 BSP that mainline 6.6 does not have.  Host
-#     audio goes over virtio-snd.  Patch 22 masks usb-f-uac.service to match.
-#     docs/pc-link.md has the full picture.
-#   - mounts configfs if needed and tears down a prior g1, so a re-run
-#     rebuilds the gadget instead of failing on existing directories
-#   - waits for dummy_hcd's UDC and binds to it explicitly
+#   - It drops uac1/uac2.usb0: CONFIG_USB_CONFIGFS_F_UAC2 is off, and the
+#     sysfs knobs that Pioneer's uac-monitor.sh drives (usb_f_uac2 'enable'
+#     and 'uac2_srate') are patches on Pioneer's 4.4 BSP that mainline 6.6
+#     does not have. Host audio goes over virtio-snd, and patch 22 masks
+#     usb-f-uac.service to match. See docs/pc-link.md.
+#   - It mounts configfs if needed and tears down an existing g1, so a second
+#     run rebuilds the gadget instead of failing on existing directories.
+#   - It waits for dummy_hcd's UDC and binds to it explicitly.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 
@@ -28,10 +28,10 @@ if grep -qF 'Rewritten by patch 28' "$SCRIPT"; then
     exit 0
 fi
 
-# The firmware script's own lines, minus the ones this patch replaces: the
-# shebang, the cd/mkdir into g1, the UAC functions and the UDC bind.  PC Link
-# is optional, so a script without every anchor is left untouched and
-# provisioning continues without it.
+# BODY holds the firmware script's own lines, minus the ones this patch
+# replaces: the shebang, the cd/mkdir into g1, the UAC functions and the UDC
+# bind. PC Link is optional, so a script that lacks an anchor is left
+# unchanged and provisioning continues without PC Link.
 missing=()
 for anchor in 'mkdir -p g1 && cd g1' 'functions/hid.usb0/report_desc' 'ls /sys/class/udc/ > UDC'; do
     grep -qF "$anchor" "$SCRIPT" || missing+=("$anchor")
@@ -47,7 +47,7 @@ BODY=$(grep -vE '^#!|^cd /sys/kernel/config/usb_gadget/?$|^mkdir -p g1 && cd g1$
 
 cat > "$SCRIPT" << SCRIPTEOF
 #!/bin/bash
-# PC-link gadget: the firmware's HID + MIDI functions, bound to dummy_udc.
+# PC Link gadget: the firmware's HID and MIDI functions, bound to dummy_udc.
 # Rewritten by patch 28; the identity lines below are the firmware's own.
 
 CONFIGFS=/sys/kernel/config
@@ -58,7 +58,7 @@ if ! mountpoint -q "\$CONFIGFS"; then
 fi
 
 # dummy_hcd is built in, so its UDC ("dummy_udc.0") should be present at
-# boot; wait up to 3 s in case the udc class registers slightly late.
+# boot; wait up to 3 s in case the udc class registers late.
 i=0
 while [ \$i -lt 30 ] && [ -z "\$(ls -1 /sys/class/udc/ 2>/dev/null | head -1)" ]; do
     sleep 0.1
@@ -66,11 +66,11 @@ while [ \$i -lt 30 ] && [ -z "\$(ls -1 /sys/class/udc/ 2>/dev/null | head -1)" ]
 done
 UDC_NAME=\$(ls -1 /sys/class/udc/ 2>/dev/null | head -1)
 if [ -z "\$UDC_NAME" ]; then
-    echo "usb_gadget: no UDC in /sys/class/udc - aborting" >&2
+    echo "usb_gadget: no UDC in /sys/class/udc; aborting" >&2
     exit 1
 fi
 
-# Tear down a prior gadget so a re-run starts clean.  configfs attributes
+# Tear down an existing gadget so a second run starts clean. configfs attributes
 # report a non-zero size whatever they hold, so the bound check reads the
 # value; writing "" to an unbound gadget returns -ENODEV.
 if [ -d "\$GADGET" ]; then

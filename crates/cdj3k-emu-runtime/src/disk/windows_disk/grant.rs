@@ -1,5 +1,5 @@
-//! The elevated PowerShell steps: granting this user a disk and its volumes,
-//! and whatever else needs administrator rights.
+//! The elevated PowerShell steps, which grant this user access to a disk and
+//! its volumes and run anything else that needs administrator rights.
 
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -51,7 +51,7 @@ pub(super) fn path_str(p: &Path) -> io::Result<String> {
     })
 }
 
-/// The user this process runs as, as a SID string.
+/// Return the user that this process runs as, as a SID string.
 fn current_user_sid() -> io::Result<String> {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
@@ -66,7 +66,8 @@ fn current_user_sid() -> io::Result<String> {
     // SAFETY: `token` is a valid handle this function now owns.
     let token = unsafe { OwnedHandle::from_raw_handle(token) };
 
-    // 8-byte aligned, as TOKEN_USER is.
+    // The buffer holds u64 values so that it is 8-byte aligned, as TOKEN_USER
+    // requires.
     let mut buf = vec![0u64; 64];
     let mut needed = 0u32;
     // SAFETY: the buffer's byte length is passed.

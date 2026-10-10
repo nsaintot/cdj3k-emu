@@ -15,8 +15,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
-/* musl declares ioctl(int, int, ...) but we need unsigned long for request.
- * Suppress the prototype so our definition below does not conflict. */
+/* musl declares ioctl(int, int, ...), but the shim's ioctl takes an unsigned
+ * long request. Hide musl's prototype so the shim's definition does not
+ * conflict with it. */
 #define ioctl __musl_ioctl_hidden
 #include <sys/ioctl.h>
 #undef ioctl
@@ -25,7 +26,7 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 #ifndef SYS_pipe2
-#define SYS_pipe2 59   /* aarch64 Linux - not in macOS headers */
+#define SYS_pipe2 59   /* aarch64 Linux; missing from the macOS headers */
 #endif
 #ifndef SYS_memfd_create
 #define SYS_memfd_create 279  /* aarch64 Linux */
@@ -46,7 +47,7 @@
 
 #define DRM_DEV_PREFIX    "/dev/dri/"
 
-/* Maximum simultaneous opens we track */
+/* The maximum number of simultaneous opens that the shim tracks. */
 #define MAX_ACTIVE_FDS    8
 
 /* ------------------------------------------------------------------ */
@@ -149,15 +150,15 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 /* USB HID Gadget interposer (/dev/hidg0)                              */
 /* ------------------------------------------------------------------ */
-/* Reads/writes pass through to the real f_hid char device; only      */
-/* ioctl is intercepted so unknown HID-class requests return 0 rather */
-/* than f_hid's ENOTTY (which EP122 treats as a gadget init failure). */
+/* Reads and writes pass through to the real f_hid char device. Only  */
+/* ioctl is intercepted, so that unknown HID-class requests return 0  */
+/* instead of f_hid's ENOTTY, which EP122 treats as a gadget failure. */
 
 #define HIDG_PATH    "/dev/hidg0"
 #define MAX_HIDG_FDS 8
 
-/* EP122's USB-B connect detector opens /proc/udev_usbg1 (absent from our
- * kernel); the shim redirects it to the FIFO cdj3k-pc-link-bridge serves. */
+/* EP122's USB-B connect detector opens /proc/udev_usbg1; the shim redirects
+ * it to the FIFO that cdj3k-pc-link-bridge serves. */
 #define USBG_PROBE_PATH   "/proc/udev_usbg1"
 #define USBG_FIFO_PATH    "/tmp/usbg1"
 
@@ -168,7 +169,8 @@ typedef struct {
 #define GPIODRV_PATH    "/dev/gpiodrv"
 #define MAX_GPIODRV_FDS 4
 
-/* Pin state every read reports: no pins active (no USB device). */
+/* The pin state that every read reports: no pin is active, so no USB device
+ * is present. */
 #define GPIODRV_STATE_BYTE  0xFF
 /* Shortest spacing between consecutive pin-state reads. */
 #define GPIODRV_MIN_READ_NS 1000000L
@@ -385,18 +387,19 @@ extern int            g_gpiodrv_rd;
 extern int            g_gpiodrv_wr;
 extern int            g_gpiodrv_active[MAX_GPIODRV_FDS];
 
-/* The sub-CPU fd, remembered at open() so read() can see the frames the
- * touch events are built from. subucom_virt.ko serves it; not intercepted. */
+/* The sub-CPU fd, remembered at open() so that read() can see the frames the
+ * touch events are built from. subucom_virt.ko serves it, and the shim does
+ * not intercept it. */
 extern int            g_subucom_fd;
 
 /* ------------------------------------------------------------------ */
 /* Which deck the shim is loaded into                                 */
 /* ------------------------------------------------------------------ */
 /*
- * One shim serves both players. Everything they share stays common; the
- * parts that differ - the touch source, the sub-CPU frame layout - sit
- * behind this. subucom_virt.ko is loaded with the model and exports it,
- * so the answer is available before any frame arrives.
+ * One shim serves every player. Shared code stays in the core; the parts that
+ * differ, such as the touch source and the sub-CPU frame layout, branch on
+ * deck_model(). subucom_virt.ko is loaded with the model name and exports it
+ * as a parameter, so the shim knows the model before any frame arrives.
  */
 #define DECK_MODEL_PARAM "/sys/module/subucom_virt/parameters/model"
 
@@ -406,7 +409,8 @@ typedef enum {
     DECK_MODEL_CDJ1500X = 3, /* CDJ-1500X */
 } deck_model_t;
 
-/* Cached after the first call; EP122 when the parameter cannot be read. */
+/* The result is cached after the first call. It is DECK_MODEL_CDJ3K when the
+ * parameter cannot be read. */
 deck_model_t deck_model(void);
 
 extern int            g_drm_rd;
@@ -415,35 +419,36 @@ extern int            g_drm_wr;
 extern int            g_drm_active[MAX_ACTIVE_FDS];
 
 /* ------------------------------------------------------------------ */
-/* Shared sysfs paths and helper (clock.c + link.c)                   */
+/* Shared sysfs paths and helper (clock.c and link.c)                 */
 /* ------------------------------------------------------------------ */
 
-/* Live host-side pipeline depth in ms, exposed by virtio_snd.ko as the
- * CSV `guest,host,total`. Both the slave-mode clock shim and the master-
- * mode delay-send shim use it as the auto offset. */
+/* The live audio pipeline depth in ms, which virtio_snd.ko exposes as the
+ * CSV `guest,host,total`. The slave-mode clock shift and the master-mode
+ * delayed send both use it as the automatic offset. */
 #define VSND_LATENCY_AUTO_PATH    "/sys/module/virtio_snd/parameters/audio_latency_ms"
-/* Manual override - non-zero forces a fixed compensation value. */
+/* The manual override; a non-zero value forces a fixed compensation. */
 #define VSND_LATENCY_MANUAL_PATH  "/sys/module/virtio_snd/parameters/link_pos_offset_ms"
-/* Master switch for clock.c and link.c; 0 = full passthrough. */
+/* The master switch for clock.c and link.c. When it is 0, both pass
+ * everything through unchanged. */
 #define VSND_LATENCY_ENABLED_PATH "/sys/module/virtio_snd/parameters/audio_sync_enabled"
-/* Re-read the above paths at most once per wall-clock second on the hot path. */
+/* On the hot path, the paths above are read at most once per wall-clock second. */
 #define VSND_LATENCY_REFRESH_S    1
 
-/* Parse the LAST integer in a CSV/space-separated line. For single-value
- * sysfs files (link_pos_offset_ms, audio_sync_enabled) this is just that
- * number; for the CSV `audio_latency_ms` output (guest,host,total) it
- * returns total. Returns -1 on parse error or empty file. */
+/* Parse the last integer in a comma- or space-separated line. For a
+ * single-value sysfs file (link_pos_offset_ms, audio_sync_enabled) this is
+ * that number; for the CSV `audio_latency_ms` output (guest,host,total) it is
+ * the total. Returns -1 on a parse error or an empty file. */
 long shim_read_sysfs_long(const char *path);
 
 /* ------------------------------------------------------------------ */
 /* Model-specific touch source                                        */
 /* ------------------------------------------------------------------ */
 /*
- * A model whose app reads touch from an input device implements these; one
- * that carries touch inside the sub-CPU frame implements none, and the weak
- * symbols stay NULL so the core skips the path entirely.  Every device
- * detail - node name, event codes, frame offsets - belongs to the model
- * directory, not here.
+ * A model whose app reads touch from an input device implements these. A
+ * model that carries touch inside the sub-CPU frame implements none of them;
+ * the weak symbols stay NULL and the core skips the touch path. Every device
+ * detail, such as the node name, the event codes and the frame offsets,
+ * belongs to the model directory.
  */
 __attribute__((weak)) int  deck_touch_owns_path(const char *path);
 __attribute__((weak)) int  deck_touch_open(int flags);
@@ -455,8 +460,9 @@ __attribute__((weak)) void deck_touch_publish(const unsigned char *frame, size_t
 /* Function prototypes - fd helpers (fd.c)                            */
 /* ------------------------------------------------------------------ */
 
-/* Lockless fd sets. Model code builds its own with these; the stubs below
- * are the core's. See fd.c for the ordering and race tolerance. */
+/* Lockless fd sets. Model code builds its own sets with these functions; the
+ * stub sets below belong to the core. See fd.c for the memory ordering and
+ * the races it tolerates. */
 int  fdset_has(int *set, int n, int fd);
 int  fdset_add(int *set, int n, int fd);
 void fdset_remove(int *set, int n, int fd);
@@ -482,15 +488,16 @@ jog_flip_slot_t *flip_slot_for(int fd);
 void             flip_slot_free(int fd);
 int              handle_drm_ioctl(int fd, unsigned long request, void *arg);
 
-/* jog_shm.c - IVSHMEM publish path. Called from jog.c on each flip. */
+/* jog_shm.c publishes jog frames to IVSHMEM; jog.c calls it on each flip. */
 void publish_frame(const void *src_1280);
 void export_jog_prime(int drm_fd, uint32_t gem_handle, uint32_t fb_id);
 
-/* jog.c - synthesised 1280x240@71 mode reused by the connector synthesis path. */
+/* jog.c defines the synthesised 1280x240 71 Hz mode; jog_drm.c reuses it when
+ * it builds the connector's mode list. */
 extern const fake_modeinfo_t g_fake_mode;
 
-/* jog.c - find the DMA-mapped host pointer for a given DRM fb_id, or NULL if
- * The app hasn't mmap'd that buffer yet. Shared by all flip-path ioctls. */
+/* jog.c: return the DMA-mapped pointer for a DRM fb_id, or NULL if the app
+ * has not mmap'd that buffer yet. The flip-path ioctls use it. */
 void *jog_dma_for_fb(uint32_t fb_id);
 
 #endif /* DECK_SHIM_H */

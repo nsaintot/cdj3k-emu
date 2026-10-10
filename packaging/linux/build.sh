@@ -4,8 +4,9 @@
 #
 #   build.sh [--version V] [--stage DIR] [--out DIR] [--only deb|rpm|appimage]
 #
-# One stage, three packagings, one architecture per run: the package
-# description differs per arch (the x86_64 build runs under TCG).
+# Each run packages the staged tree in three formats for one architecture.
+# The package description differs per architecture, because the x86_64 build
+# runs the guest under TCG.
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
@@ -23,7 +24,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 [[ -d "$STAGE/opt/cdj3k-emu" ]] || {
-    echo "ERROR: $STAGE is not a staged tree - run packaging/linux/stage.sh" >&2
+    echo "ERROR: $STAGE is not a staged tree. Run packaging/linux/stage.sh." >&2
     exit 1
 }
 mkdir -p "$OUT"
@@ -37,7 +38,7 @@ case "$(uname -m)" in
     aarch64|arm64)
         ARCH=arm64; APPIMAGE_ARCH=aarch64
         BLURB="This aarch64 build uses KVM where the kernel offers it." ;;
-    *) echo "ERROR: unsupported host architecture $(uname -m)" >&2; exit 1 ;;
+    *) echo "ERROR: the host architecture $(uname -m) is not supported." >&2; exit 1 ;;
 esac
 export VERSION ARCH STAGE BLURB
 
@@ -45,8 +46,8 @@ want() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
 
 # ── deb and rpm ───────────────────────────────────────────────────────────────
 if want deb || want rpm; then
-    command -v nfpm >/dev/null || { echo "ERROR: nfpm not installed" >&2; exit 1; }
-    command -v envsubst >/dev/null || { echo "ERROR: envsubst not installed" >&2; exit 1; }
+    command -v nfpm >/dev/null || { echo "ERROR: nfpm is not installed." >&2; exit 1; }
+    command -v envsubst >/dev/null || { echo "ERROR: envsubst is not installed." >&2; exit 1; }
     # nfpm does not expand environment variables, so the recipe is a template.
     RECIPE="$(mktemp -t nfpm.XXXXXX.yaml)"
     trap 'rm -f "$RECIPE"' EXIT
@@ -57,8 +58,8 @@ if want deb || want rpm; then
         echo "==> $format"
         mkdir -p "$STAGE/.package-kind"
         echo "$format" > "$STAGE/.package-kind/$format"
-        # From inside the tree: the recipe names its sources relatively, so it
-        # carries no path from the machine that built it.
+        # Run nfpm from inside the tree. The recipe uses relative source paths,
+        # so the package carries no path from the build machine.
         (cd "$STAGE" && nfpm package --config "$RECIPE" \
             --packager "$format" \
             --target "$OUT/CDJ3K-Emulator-${VERSION}-linux-${APPIMAGE_ARCH}.$format")
@@ -66,11 +67,11 @@ if want deb || want rpm; then
 fi
 
 # ── AppImage ──────────────────────────────────────────────────────────────────
-# Built from the same tree, with AppRun naming the payload because the mount
-# point differs every launch.
+# The AppImage is built from the same tree. AppRun sets the resource path at
+# launch, because the mount point changes on every launch.
 if want appimage; then
     command -v appimagetool >/dev/null || {
-        echo "ERROR: appimagetool not installed" >&2; exit 1; }
+        echo "ERROR: appimagetool is not installed." >&2; exit 1; }
     echo "==> AppImage"
     APPDIR="$OUT/CDJ3K-Emulator.AppDir"
     rm -rf "$APPDIR"

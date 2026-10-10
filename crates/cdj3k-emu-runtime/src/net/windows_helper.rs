@@ -101,7 +101,8 @@ fn set_up(req: &Request) -> Result<(), Outcome> {
 /// The interface GUID of the slot's tap adapter, made when there is none.
 fn slot_tap(req: &Request) -> Result<String, Outcome> {
     let mut named = taps_named(&req.tap);
-    // Copies an earlier failed setup left under the slot's name.
+    // Remove the disconnected copies that an earlier failed setup left under
+    // the slot's name.
     for extra in named.iter().skip(1) {
         if !is_connected(extra) {
             let _ = remove_tap(extra);
@@ -122,7 +123,10 @@ fn slot_tap(req: &Request) -> Result<String, Outcome> {
 /// Give the tap its parameters and the slot's name.
 fn prepare_tap(req: &Request, guid: &str) -> Result<(), Outcome> {
     let Some(mac) = winbridge::tap_mac(&req.mac) else {
-        return Err(Outcome::TapFailed(format!("no tap MAC for {}", req.mac)));
+        return Err(Outcome::TapFailed(format!(
+            "cannot derive a tap MAC from {}",
+            req.mac
+        )));
     };
     configure_tap(guid, &mac)
         .map_err(|e| Outcome::TapFailed(format!("could not configure {}: {e}", req.tap)))?;

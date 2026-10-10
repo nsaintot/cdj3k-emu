@@ -1,10 +1,10 @@
 //! Everything the rest of the emulator needs to know about one player.
 //!
-//! A model is a [`ModelSpec`] constant - see [`cdj3k::SPEC`](crate::cdj3k::SPEC),
-//! [`cdj3kx::SPEC`](crate::cdj3kx::SPEC) and
-//! [`cdj1500x::SPEC`](crate::cdj1500x::SPEC). Adding a player is writing one
-//! more of them, with its MISO encoder, and one more [`Model`](crate::Model)
-//! variant; no consumer matches on the model.
+//! A model is a [`ModelSpec`] constant, such as
+//! [`cdj3k::SPEC`](crate::cdj3k::SPEC), [`cdj3kx::SPEC`](crate::cdj3kx::SPEC)
+//! or [`cdj1500x::SPEC`](crate::cdj1500x::SPEC). To add a player, write one
+//! more spec with its MISO encoder and add a [`Model`](crate::Model) variant;
+//! no consumer matches on the model.
 
 use crate::miso_frame::MisoCodec;
 use crate::mosi_frame::{LedProfiles, MosiCodec};
@@ -22,17 +22,18 @@ pub const TOUCH_DOWN: u16 = 0x8000;
 pub enum JogBrake {
     /// By the JOG ADJUST knob.
     Adjustable,
-    /// Fixed: the seconds the platter takes to stop from one turn a second.
+    /// A fixed brake: the seconds the platter takes to stop from one turn a
+    /// second.
     Fixed { stop_secs: f32 },
 }
 
 /// The coordinates a model's app expects touch in.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TouchSpace {
-    /// Sub-CPU frame units, `0..range`, with the origin at the right edge:
-    /// the app reads touch straight out of the MISO frame.
+    /// Sub-CPU frame units, `0..range`, with the origin at the right edge.
+    /// The app reads touch straight from the MISO frame.
     SubCpu { range: u16 },
-    /// Screen pixels: the app reads a Goodix input device, so the guest shim
+    /// Screen pixels. The app reads a Goodix input device, so the guest shim
     /// copies these into the evdev records it synthesises and the app hands
     /// them to `XWarpPointer` unscaled. The X word carries [`TOUCH_DOWN`].
     ScreenPixels,
@@ -43,32 +44,33 @@ pub enum TouchSpace {
 pub struct ModelSpec {
     /// Product name as printed on the chassis.
     pub title: &'static str,
-    /// Stable (slug) identifier for directory names and settings.
+    /// The stable identifier (slug) for directory names and settings.
     pub slug: &'static str,
     /// User spellings [`Model::parse`](crate::Model::parse) accepts besides
     /// the number and the slug, lowercase and without an `ep`/`cdj` prefix.
     pub aliases: &'static [&'static str],
-    /// Main LCD framebuffer `(width, height)` in pixels: the mode the guest's
-    /// X server runs at, so the virtio-gpu scanout and the host's LCD texture.
+    /// Main LCD framebuffer `(width, height)` in pixels. The guest's X server
+    /// runs at this mode, so it is also the size of the virtio-gpu scanout and
+    /// of the host's LCD texture.
     pub main_lcd: (u32, u32),
     pub touch: TouchSpace,
     /// The `model` U-Boot variable. `genkey_pr` hashes it with the
     /// `/proc/cpuinfo` serial to derive the cabinet.img passphrase, so it has
     /// to match the deck it claims to be.
     pub model_env: &'static str,
-    /// The `N` of the `/dev/mmcblkN` the deck's eMMC is: its scripts,
-    /// `fw_env.config` and udev rules name it. `1` on the RK3399 decks,
-    /// `0` where the udev rules take `mmcblk1` for the SD card (e.g. the
-    /// CDJ-1500X).
+    /// The `N` in `/dev/mmcblkN` for the deck's eMMC, which its scripts,
+    /// `fw_env.config` and udev rules use. It is `1` on the RK3399 decks and
+    /// `0` where the udev rules give `mmcblk1` to the SD card, as on the
+    /// CDJ-1500X.
     pub emmc_index: u32,
     /// The U-Boot variable the deck's updater records `images/system.rev`
     /// under: `rev_kernel` on the CDJ-3000, `rev_system` on the CDJ-3000X.
     /// `None` where the environment carries no revision.
     pub system_rev_env: Option<&'static str>,
-    /// What Pioneer calls this deck's `.UPD`, version suffix aside:
-    /// `CDJ3Kv322.UPD`, `CDJ3000Xv140.UPD`. The installer has nothing else to
-    /// go on - a `.UPD` is a bare LUKS container and its header names no
-    /// product - so it compares the file's name against these.
+    /// What Pioneer calls this deck's `.UPD`, without the version suffix, as
+    /// in `CDJ3Kv322.UPD` or `CDJ3000Xv140.UPD`. The installer compares the
+    /// file's name against these, because a `.UPD` is a bare LUKS container
+    /// whose header names no product.
     pub firmware_file_names: &'static [&'static str],
     /// How the player's sub-CPU frames the panel's controls.
     pub miso: &'static dyn MisoCodec,

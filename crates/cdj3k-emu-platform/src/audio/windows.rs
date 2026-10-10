@@ -24,7 +24,7 @@ pub fn enumerate_output_devices() -> Vec<AudioOutDevice> {
     let initialised = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
     let mut out = enumerate().unwrap_or_default();
     if initialised {
-        // SAFETY: pairs the successful `CoInitializeEx` above.
+        // SAFETY: this pairs with the successful `CoInitializeEx` above.
         unsafe { CoUninitialize() };
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -70,7 +70,7 @@ unsafe fn friendly_name(device: &IMMDevice) -> Option<String> {
     take_string(PropVariantToStringAlloc(&value).ok()?)
 }
 
-/// A COM-allocated wide string as a `String`, freeing it.
+/// Convert a COM-allocated wide string to a `String` and free it.
 unsafe fn take_string(s: PWSTR) -> Option<String> {
     let text = s.to_string().ok();
     CoTaskMemFree(Some(s.as_ptr().cast()));

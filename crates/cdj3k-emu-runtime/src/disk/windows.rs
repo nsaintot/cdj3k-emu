@@ -1,11 +1,11 @@
-//! Windows adapter: whole-disk passthrough of `\\.\PhysicalDriveN`, and VHDX
-//! images for virtual sticks.
+//! The Windows adapter. It passes whole disks through as
+//! `\\.\PhysicalDriveN`, and uses VHDX images for virtual sticks.
 //!
-//! QEMU opens the drive by path, which needs rights a standard user does not
-//! have on it. A refused open asks once, through the elevation prompt, for a
-//! grant on the disk and its volumes that lasts until the disk is unplugged;
-//! the app then holds every volume of the disk locked and dismounted for as
-//! long as the guest has it.
+//! QEMU opens the drive by path, which needs rights that a standard user does
+//! not have on it. When the open is refused, the app asks once, through the
+//! elevation prompt, for a grant on the disk and its volumes that lasts until
+//! the disk is unplugged. The app then keeps every volume of the disk locked
+//! and dismounted while the guest has it.
 
 use super::windows_disk;
 use super::windows_parse::is_vhdx;
@@ -13,7 +13,7 @@ use super::{DiskProvider, HostDiskProvider, PhysicalDisk, RawMedium, UsbError};
 use std::io::Read;
 use std::path::Path;
 
-/// What a refused raw open means here.
+/// The hint shown when Windows refuses to open the raw device.
 pub const PERMISSION_HINT: &str = "Windows did not grant access to the disk.";
 
 pub const PASSES_FDS: bool = false;
@@ -37,10 +37,10 @@ impl DiskProvider for HostDiskProvider {
 }
 
 /// Check that this process can open the device read-write, as QEMU will, and
-/// name it for QEMU with the driver chain spelled out.
+/// give QEMU the device name with an explicit driver chain.
 ///
-/// The volumes are already locked and dismounted by `unmount_host`, which is
-/// also where administrator approval is asked for.
+/// `unmount_host` has already locked and dismounted the volumes, and asked for
+/// administrator approval if it was needed.
 pub(super) fn open_raw(disk: &PhysicalDisk, _qmp_fd_socket: &Path) -> Result<RawMedium, UsbError> {
     if let Err(e) = std::fs::OpenOptions::new()
         .read(true)
@@ -60,8 +60,8 @@ pub(super) fn open_raw(disk: &PhysicalDisk, _qmp_fd_socket: &Path) -> Result<Raw
     })
 }
 
-/// `vhdx` for a VHDX file, `raw` for anything else, so an image made on
-/// another host still attaches.
+/// Return `vhdx` for a VHDX file and `raw` for anything else, so that an
+/// image made on another host still attaches.
 pub fn virtual_format(img_path: &Path) -> &'static str {
     let mut head = [0u8; 8];
     let signed = std::fs::File::open(img_path)
@@ -75,8 +75,9 @@ pub fn virtual_format(img_path: &Path) -> &'static str {
     }
 }
 
-/// Create a dynamic VHDX of `size_bytes`, partitioned MBR with one exFAT
-/// partition labelled REKORDBOX: the layout the other hosts give a raw image.
+/// Create a dynamic VHDX of `size_bytes` with an MBR partition table and one
+/// exFAT partition labelled REKORDBOX, the layout that the other hosts give a
+/// raw image.
 pub fn create_image(img_path: &Path, size_bytes: u64) -> std::io::Result<()> {
     match std::fs::remove_file(img_path) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),

@@ -5,8 +5,8 @@
 #   setup-helper.ps1 -Action RemoveTap
 #   setup-helper.ps1 -Action EnableHypervisorPlatform
 #
-# Runs elevated, from <install dir>\installer. Exit code 0 is done, 3010 is
-# done and a restart is pending, anything else is a failure.
+# Runs elevated, from <install dir>\installer. Exit code 0 means success, 3010
+# means success with a restart pending, and any other code is a failure.
 #
 # The TAP-Windows6 package is shared with OpenVPN. installer\tap-owned marks
 # that InstallTap added it to a store that held no TAP-Windows package;
@@ -21,8 +21,9 @@ $ErrorActionPreference = 'Stop'
 $Marker = Join-Path $PSScriptRoot 'tap-owned'
 $AdapterPrefix = 'cdj3k-emu-'
 
-# The published name (oemNN.inf) of each TAP-Windows package in the driver
-# store. pnputil's text output is localised.
+# Return the published name (oemNN.inf) of each TAP-Windows package in the
+# driver store. This uses Get-WindowsDriver because pnputil's text output is
+# localised.
 function Get-TapPackages {
     Get-WindowsDriver -Online -All |
         Where-Object { $_.ProviderName -like 'TAP-Windows*' -and $_.OriginalFileName -match 'oemvista\.inf$' } |
@@ -45,7 +46,7 @@ function Get-StoredTapVersions {
         Where-Object { $_ }
 }
 
-# Devices bound to tap0901, present or not.
+# Return the devices bound to tap0901, whether present or not.
 function Get-TapDevices {
     Get-PnpDevice -Class Net -ErrorAction SilentlyContinue |
         Where-Object { $_.HardwareID -contains 'tap0901' }
@@ -59,7 +60,7 @@ function Invoke-Pnputil([string[]]$Arguments) {
 switch ($Action) {
     'InstallTap' {
         $inf = Join-Path $DriverDir 'OemVista.inf'
-        if (-not (Test-Path $inf)) { throw "$inf not found" }
+        if (-not (Test-Path $inf)) { throw "$inf was not found." }
         $ours = Get-InfVersion $inf
         $stored = @(Get-StoredTapVersions)
         $current = $stored | Where-Object { $ours -and $_ -ge $ours } | Select-Object -First 1
@@ -69,7 +70,8 @@ switch ($Action) {
         }
         $preexisting = $stored.Count -gt 0
         $code = Invoke-Pnputil @('/add-driver', $inf, '/install')
-        # 259: added to the store, no matching device (none before the first adapter).
+        # Exit code 259 means that the driver was added to the store but no device
+        # matched it, which is normal before the first adapter exists.
         if ($code -eq 259) { $code = 0 }
         if ($code -ne 0 -and $code -ne 3010) { exit $code }
         if (-not $preexisting) { Set-Content -Path $Marker -Value 'cdj3k-emu installed the TAP-Windows6 package' }
@@ -77,7 +79,8 @@ switch ($Action) {
     }
 
     'RemoveTap' {
-        # The Network Bridge the app made (net/windows_helper.rs records its GUID).
+        # Destroy the Network Bridge that the app created; net/windows_helper.rs
+        # records its GUID.
         $owned = Join-Path $env:ProgramData 'cdj3k-emu\bridge-owned'
         if (Test-Path $owned) {
             $guid = (Get-Content -Raw $owned).Trim()

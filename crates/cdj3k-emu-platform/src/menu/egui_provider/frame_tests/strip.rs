@@ -274,7 +274,8 @@ fn the_shortcuts_give_way_to_the_pills() {
 }
 
 /// Every glyph the strip types has to exist in the font, or it draws as a
-/// box. The marks that do not are painted; these are the ones that are not.
+/// box. Marks missing from the font are painted instead; this test checks the
+/// marks that are typed.
 #[test]
 fn the_typed_glyphs_all_exist() {
     let ctx = test_ctx();

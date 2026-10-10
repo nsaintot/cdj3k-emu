@@ -90,15 +90,16 @@ carry it.
 per architecture: `.deb`, `.rpm` (nfpm, `packaging/linux/nfpm.yaml.in`) and an
 AppImage.
 
-- Prefix `/opt/cdj3k-emu`, so the patched QEMU never lands in `/usr/bin`. The
+- The prefix is `/opt/cdj3k-emu`, so the patched QEMU never lands in `/usr/bin`. The
   only files outside it are a `/usr/bin/cdj3k-emu` symlink, the `.desktop`
   entry and the icons.
 - Everything that is ours or QEMU's is vendored with `$ORIGIN` rpaths
-  (`scripts/bundle-sos.sh`). Nothing that talks to a driver, display server or
-  sound daemon is, and those are the declared dependencies: GL/EGL, Wayland,
-  xkbcommon, X11, PipeWire. `udisks2` and `exfatprogs` are recommended.
-- One build per architecture; the x86_64 package describes itself as software
-  emulation. There is no Flatpak or Snap: QEMU needs `/dev/kvm`, and bridging
+  (`scripts/bundle-sos.sh`). Libraries that talk to a driver, display server or
+  sound daemon are not vendored; they are the declared dependencies: GL/EGL,
+  Wayland, xkbcommon, X11 and PipeWire. `udisks2` and `exfatprogs` are
+  recommended.
+- There is one build per architecture; the x86_64 package describes itself as
+  software emulation. There is no Flatpak or Snap: QEMU needs `/dev/kvm`, and bridging
   needs host privileges a sandbox would take away.
 
 **Windows:** one Inno Setup 6.6+ installer per architecture,
@@ -108,10 +109,10 @@ AppImage.
 the DLLs it loads; `packaging/windows/build.ps1` on Windows runs `stage.ps1`,
 then ISCC.
 
-- Display name "CDJ3K Emulator"; per-machine under `%ProgramFiles%\cdj3k-emu`,
-  administrator required, Windows 10 2004 (19041) or later. The
-  tree is the Linux prefix with `bin\` holding the executables beside QEMU's
-  DLLs and `share\cdj3k-emu\` the payload, so `bundled::resources()` needs no
+- The display name is "CDJ3K Emulator". The installer is per-machine, installs
+  under `%ProgramFiles%\cdj3k-emu`, needs an administrator and requires
+  Windows 10 2004 (19041) or later. The tree is the Linux prefix: `bin\` holds
+  the executables beside QEMU's DLLs and `share\cdj3k-emu\` holds the payload, so `bundled::resources()` needs no
   Windows entry. The x64 installer refuses arm64 Windows and the reverse.
 - TAP-Windows6 9.27.0 (`OemVista.inf`, `tap0901.{sys,cat}`) comes from the
   pinned OpenVPN release, sha256-checked by `stage.ps1`, and goes in through
@@ -120,12 +121,12 @@ then ISCC.
   no other tap0901 device remains and OpenVPN is absent.
 - arm64 only: `HypervisorPlatform` is enabled through DISM when off; a pending
   restart (exit 3010) makes Setup ask for one.
-- Inbound firewall rules (UDP, TCP, all profiles) for `qemu-system-aarch64.exe`,
-  removed on uninstall. Signing is on when `CDJ3K_SIGN_CERT_SHA1` is set.
+- The installer adds inbound firewall rules (UDP and TCP, all profiles) for
+  `qemu-system-aarch64.exe` and removes them on uninstall. Signing is on when `CDJ3K_SIGN_CERT_SHA1` is set.
 - The app holds the `Global\cdj3k-emu` mutex while it runs; it is the
   installer's `AppMutex`. Apps & features runs the uninstaller with
-  `/SILENT /ASK`: its own confirmation, with an option to delete
-  `%LOCALAPPDATA%\com.cdj3k.emu`.
+  `/SILENT /ASK`, so the uninstaller shows its own confirmation, with an option
+  to delete `%LOCALAPPDATA%\com.cdj3k.emu`.
 - `stage.ps1` needs Git for Windows: its bash builds the patch dispatcher, so
   `.sh` files must be checked out with LF (`.gitattributes`).
 
@@ -160,15 +161,16 @@ cross-builds in the `docker/Dockerfile.windows-qemu` image (llvm-mingw, UCRT,
 both architectures); in an MSYS2 UCRT64 or CLANGARM64 shell it builds natively.
 Patches 15-17 give Windows `memory-backend-file`, the shm display's file
 mapping, and `ivshmem-plain`; `ivshmem-doorbell` and its server are POSIX-only.
-Patch 18 adds the `wasapi` audiodev (`out.dev` = the endpoint ID, absent =
-default render endpoint): a shared-mode, event-driven render client, low-latency
-through `IAudioClient3` where the endpoint has it, draining the same bypass ring
-from its MMCSS render thread, and reopening the endpoint when it is invalidated.
+Patch 18 adds the `wasapi` audiodev. `out.dev` names the endpoint ID; without
+it, the default render endpoint is used. The audiodev is a shared-mode,
+event-driven render client that uses `IAudioClient3` for low latency where the
+endpoint supports it, drains the same bypass ring from its MMCSS render thread,
+and reopens the endpoint when it is invalidated.
 Patch 19 gives a Windows host disk a fixed length, so a read does not query
 the device size. Patch 20 has a halted TCG vCPU poll before it sleeps and a
 mutex spin before it blocks: each Windows wait and wake is a kernel round trip.
-Patch 21 (every host) releases a TX buffer that reaches the bypass writer
-before the stream's START at once, and has RELEASE flush the deferred-return
+Patch 21 (every host) immediately releases a TX buffer that reaches the bypass
+writer before the stream's START, and makes RELEASE flush the deferred-return
 list.
 
 winit comes the same way: `winit/fetch.sh` downloads the pinned crates.io
@@ -197,8 +199,8 @@ mod imp;
 ```
 
 The `cfg` lives in the `mod.rs` alone. Leaf files are plain code for their
-host, and `unsupported.rs` answers "not here" rather than borrowing another
-host's behaviour.
+host, and `unsupported.rs` reports that the feature is unavailable on that
+host.
 
 | Module | Crate | What it selects |
 |---|---|---|

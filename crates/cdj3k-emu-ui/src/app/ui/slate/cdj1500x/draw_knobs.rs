@@ -1,8 +1,8 @@
 //! The two push encoders, BEAT LOOP on the left and BROWSE on the right, and
 //! the printed RELOOP legend under BEAT LOOP.
 //!
-//! Both knobs are one part: a silver ring, toothed round its edge, around a
-//! dark cap. BROWSE turns the browse rotary and presses ROTARY_PRESS; BEAT
+//! Both knobs use the same part: a silver ring with teeth around its edge,
+//! surrounding a dark cap. BROWSE turns the browse rotary and presses ROTARY_PRESS; BEAT
 //! LOOP turns its own encoder counter and presses RELOOP.
 
 use std::f32::consts::TAU;
@@ -23,12 +23,13 @@ use super::layout::px;
 const BEAT_LOOP_CENTER: (f32, f32) = (124.84, 1211.48);
 const BROWSE_CENTER: (f32, f32) = (1304.05, 1211.35);
 
-/// Radii from the centre out, drawing pixels: the cap's edge, the root of
-/// the silver ring's teeth, and their tips.
+/// Radii from the centre outward, in drawing pixels: the cap's edge, the
+/// root of the silver ring's teeth, and their tips.
 const CAP_R: f32 = 37.6;
 const TEETH_ROOT_R: f32 = 49.0;
 const TEETH_TIP_R: f32 = 54.0;
-/// Teeth round the ring, and the share of each pitch a tooth's tip covers.
+/// Number of teeth around the ring, and the share of each pitch that a
+/// tooth's tip covers.
 const TEETH: usize = 60;
 const TOOTH_TIP_FRAC: f32 = 0.45;
 
@@ -46,7 +47,8 @@ fn screen_box(layout: &UiScale, (l, t, r, b): (f32, f32, f32, f32)) -> Rect {
     Rect::from_min_max(layout.sp(px(l), px(t)), layout.sp(px(r), px(b)))
 }
 
-/// Captions and the RELOOP legend (cached; rebuilt on resize).
+/// Collects the captions and the RELOOP legend into the static cache, which
+/// is rebuilt on a resize.
 pub(super) fn collect_knob_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let bold = FontFamily::Name(cdj3k_emu_platform::fonts::NIMBUS_SANS_BOLD.into());
     let regular = FontFamily::Name(cdj3k_emu_platform::fonts::NIMBUS_SANS.into());
@@ -85,7 +87,8 @@ pub(super) fn draw_knobs(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter,
         Btn::Reloop,
         |app| &mut app.beat_loop_scroll_accum,
     ) {
-        // Absolute counter like BROWSE; the deck differentiates it.
+        // BEAT LOOP sends an absolute counter like BROWSE, and the deck
+        // computes the change.
         for _ in 0..ticks.unsigned_abs() {
             app.beat_loop = if ticks > 0 {
                 app.beat_loop.wrapping_sub(1)
@@ -141,8 +144,8 @@ fn centre(layout: &UiScale, (x, y): (f32, f32)) -> Pos2 {
     layout.sp(px(x), px(y))
 }
 
-/// Hit-test a knob: a press drives `btn`, a scroll over it turns it. Returns
-/// the detents turned this frame, positive for a scroll down.
+/// Hit-tests a knob: a press drives `btn`, and a scroll over it turns it.
+/// Returns the detents turned this frame, positive for a scroll down.
 fn turned(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -165,7 +168,7 @@ fn turned(
     if !resp.hovered() {
         return None;
     }
-    // Raw, so ctrl+scroll still reaches the knob.
+    // Read the raw delta so that a Ctrl-scroll still reaches the knob.
     let scroll_y = crate::app::scroll::raw_delta(ui).y;
     if scroll_y == 0.0 {
         return None;
@@ -177,7 +180,7 @@ fn turned(
     (ticks != 0.0).then_some(ticks as i32)
 }
 
-/// One knob at `center`, its ring turned by `angle`.
+/// Draws one knob at `center`, with its ring turned by `angle`.
 fn collect_knob(list: &mut ShapeList, layout: &UiScale, center: Pos2, angle: f32, pressed: bool) {
     let s = |r: f32| layout.sc(px(r));
     let pitch = TAU / TEETH as f32;
@@ -208,20 +211,22 @@ fn collect_knob(list: &mut ShapeList, layout: &UiScale, center: Pos2, angle: f32
 /// How far a knob stands above the panel.
 pub(super) const HEIGHT: f32 = 105.0;
 
-/// The knobs' sides: a silver cylinder, its teeth running up it. Each tooth
-/// shows a land at the tips' radius and a flank down either side to the
-/// root, where it meets the next; each patch is lit by how it faces
-/// [`LIGHT`].
+/// The colour of the knobs' sides, a silver cylinder with teeth running up
+/// it. Each tooth shows a land at the tip radius and a flank on either side
+/// down to the root, where it meets the next tooth. Each patch is lit
+/// according to how it faces [`LIGHT`].
 const COL_WALL: Color32 = Color32::from_rgb(92, 92, 100);
-/// Where the light comes from, in the plan: the front, from the left.
+/// The direction of the light in the plan view: from the front left.
 const LIGHT: Vec2 = Vec2::new(-0.4, 1.0);
-/// A patch's shade, facing away from [`LIGHT`] to facing it.
+/// A patch's shade is AMBIENT when it faces away from [`LIGHT`] and rises to
+/// AMBIENT plus DIFFUSE when it faces the light.
 const AMBIENT: f32 = 0.45;
 const DIFFUSE: f32 = 0.85;
 /// The flanks sit in the dent between two teeth, and take less light.
 const FLANK_SHADE: f32 = 0.75;
 
-/// Both knobs, standing off the panel, their teeth turned with them.
+/// Describes both knobs as raised parts standing off the panel, with their
+/// teeth turned to the knobs' angles.
 pub(super) fn raised(app: &CdjApp) -> Raised {
     let light = LIGHT.normalized();
     let shade = |normal: Vec2, k: f32| {
@@ -241,7 +246,8 @@ pub(super) fn raised(app: &CdjApp) -> Raised {
         let (tip, root) = (px(TEETH_TIP_R), px(TEETH_ROOT_R));
         walls.push(Footprint::upright(super::key::circle(c, tip), HEIGHT));
 
-        // A patch standing up from the panel along the plan edge `p`-`q`.
+        // Add a patch that stands up from the panel along the plan edge from
+        // `p` to `q`.
         let mut patch = |p: Pos2, q: Pos2, k: f32| {
             let mut normal = (q - p).rot90().normalized();
             if normal.dot(p + (q - p) * 0.5 - c) < 0.0 {

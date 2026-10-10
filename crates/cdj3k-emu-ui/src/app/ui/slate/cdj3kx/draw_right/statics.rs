@@ -27,7 +27,7 @@ pub(super) fn collect_right_statics(list: &mut ShapeList, ctx: &egui::Context, l
     collect_bottom_label(list, ctx, layout);
 }
 
-/// JOG MODE combo bordered background.
+/// Collects the bordered background of the JOG MODE combo.
 fn collect_jog_mode_chrome(list: &mut ShapeList, layout: &UiScale) {
     let combo_ref = jog_mode_boxes().0;
     let combo_screen = layout.sr(
@@ -77,7 +77,7 @@ fn collect_inst_doubles(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSc
     );
 }
 
-/// Sync section bordered background.
+/// Collects the bordered background of the sync section.
 fn collect_sync_chrome(list: &mut ShapeList, layout: &UiScale) {
     let section_ref = sync_boxes().0;
     let section_screen = layout.sr(
@@ -157,7 +157,7 @@ fn collect_tempo_slider(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSc
             layout.sc(TEMPO_BACKDROP_GAP),
         ),
     );
-    // Double track bars
+    // The two track bars.
     let track_cx = slider.center().x;
     let bar_half_gap = layout.sc(TEMPO_TRACK_BAR_GAP) * 0.5;
     let bar_inset = layout.sc(TEMPO_TRACK_BAR_INSET);
@@ -172,7 +172,6 @@ fn collect_tempo_slider(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSc
         );
     }
     collect_tempo_scale(list, ctx, layout, slider);
-    // TEMPO RESET label (static - always the same text)
     let reset_cx = layout
         .sp(col.left() + col_w * TEMPO_RESET_BTN_X_U, col.top())
         .x;
@@ -199,8 +198,8 @@ fn collect_tempo_scale(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSca
     for i in 0..TEMPO_TICK_COUNT {
         let t = i as f32 / (TEMPO_TICK_COUNT - 1) as f32;
         let y = slider.top() + slider.height() * t;
-        // The CDJ-3000X has no ruled scale across the fader; only the side column
-        // of detents with its - / 0 / + marks.
+        // The CDJ-3000X has no ruled scale across the fader, only the side
+        // column of detents with its −, 0 and + marks.
         let is_gap = i == 1 || i == 24 || i == 26 || i == 49;
         if !is_gap {
             collect_tempo_detent(list, ctx, layout, Pos2::new(tick_x, y), i);
@@ -226,7 +225,8 @@ fn collect_vinyl_speed_legend(list: &mut ShapeList, ctx: &egui::Context, layout:
     );
 }
 
-/// The CDJ-3000X carries the model name alone - no "MULTI PLAYER" line.
+/// Collects the bottom label. The CDJ-3000X prints only the model name,
+/// without a "MULTI PLAYER" line.
 fn collect_bottom_label(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let col = MODES_COL_REF;
     list.text(
@@ -242,8 +242,8 @@ fn collect_bottom_label(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSc
     );
 }
 
-/// Detent `i` of the side column: − / 0 / + at the ends and the centre, a
-/// dot elsewhere.
+/// Collects detent `i` of the side column: the − and + signs at the ends, the
+/// 0 at the centre, and a dot everywhere else.
 fn collect_tempo_detent(
     list: &mut ShapeList,
     ctx: &egui::Context,

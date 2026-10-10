@@ -1,10 +1,10 @@
 //! The tempo fader: its slot, the track, the cap, and the dotted scale with
-//! − / 0 / + down its left.
+//! the −, 0 and + marks down its left side.
 //!
-//! The cap is the CDJ-3000s' - a flange, a ridge across it, the white index
-//! line along the ridge - and drawn in their skin; the slot around it and the
-//! single track are this deck's own. Tilted, the ridge rises off the flange
-//! on coved sides.
+//! The cap has the CDJ-3000's shape and skin: a flange, a ridge across it and
+//! a white index line along the ridge. The slot around it and the single
+//! track belong to this deck only. When the deck is tilted, the ridge rises
+//! off the flange on coved sides.
 
 use std::f32::consts::FRAC_PI_2;
 
@@ -24,26 +24,26 @@ const SLOT_R: f32 = 14.0;
 /// The track the cap rides on.
 const TRACK: (f32, f32, f32, f32) = (1297.5, 1387.0, 1310.5, 1993.0);
 
-/// The cap at rest: its flange, and the ridge across it, the CDJ-3000s'
-/// share of the flange's depth.
+/// The cap at rest: the flange's size and x centre, and the ridge's depth as
+/// a share of the flange's depth, as on the CDJ-3000.
 const CAP_W: f32 = 102.5;
 const CAP_H: f32 = 113.5;
 const CAP_X: f32 = 1304.25;
 const RIDGE_H_FRAC: f32 = 0.4;
-/// The CDJ-3000s' cap skin, reference units: corner round, index line
-/// weight, and its length as a share of the cap's width.
+/// The CDJ-3000's cap skin in reference units: the corner radius, the index
+/// line's weight, and the index line's length as a share of the cap's width.
 const CAP_ROUND: f32 = 2.0;
 const INDEX_STROKE: f32 = 10.0;
 const INDEX_W_FRAC: f32 = 0.9;
 
-/// Where the cap's centre sits at either end of its travel; the middle is
-/// the drawing's rest position, level with the scale's 0.
+/// The y of the cap's centre at either end of its travel. The middle is the
+/// rest position, level with the scale's 0.
 const TRAVEL_TOP: f32 = 1403.5;
 const TRAVEL_BOT: f32 = 1978.0;
 /// Within this fraction of the middle, the cap snaps to it.
 const CENTER_SNAP_ZONE: f32 = 0.02;
 
-/// The scale: its dots, spaced evenly either side of the 0, and its marks.
+/// The scale: its dots, spaced evenly on either side of the 0, and its marks.
 const SCALE_X: f32 = 1221.5;
 const DOT_R: f32 = 1.75;
 const DOTS_ABOVE: (f32, f32, usize) = (1429.0, 1667.0, 16);
@@ -60,7 +60,8 @@ fn sbox(layout: &UiScale, (l, t, r, b): (f32, f32, f32, f32)) -> Rect {
     Rect::from_min_max(layout.sp(px(l), px(t)), layout.sp(px(r), px(b)))
 }
 
-/// Slot, track and scale (cached; rebuilt on resize).
+/// Collects the slot, the track and the scale into the static cache, which is
+/// rebuilt on a resize.
 pub(super) fn collect_tempo_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let slot = sbox(layout, SLOT);
     let r = layout.sc(px(SLOT_R));
@@ -81,7 +82,8 @@ pub(super) fn collect_tempo_statics(list: &mut ShapeList, ctx: &egui::Context, l
             );
         }
     }
-    // − and + are drawn bars, so they read at the drawing's weight.
+    // The − and + marks are drawn as bars so that they match the drawing's
+    // line weight.
     let mark = Stroke::new(layout.sc(MARK_STROKE), COL_BTN_TEXT);
     for b in [MINUS, PLUS] {
         let r = sbox(layout, b);
@@ -105,8 +107,8 @@ pub(super) fn collect_tempo_statics(list: &mut ShapeList, ctx: &egui::Context, l
     );
 }
 
-/// The cap and its drag. The flange is the CDJ-3000s' silver flat, turning to
-/// the cap's own black as the deck tilts by `t`.
+/// Draws the cap's flange and handles its drag. The flange is flat silver, as
+/// on the CDJ-3000, and turns to the cap's own black as the deck tilts by `t`.
 pub(super) fn draw_tempo(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -150,8 +152,8 @@ pub(super) fn draw_tempo(
     );
 }
 
-/// The cap's ridge and its index line, drawn after the flange so a tilt can
-/// stand them on it.
+/// Draws the cap's ridge and its index line after the flange, so that the
+/// tilt can stand them on it.
 pub(super) fn draw_tempo_ridge(app: &CdjApp, p: &egui::Painter, layout: &UiScale) {
     let cap = cap_rect(app.tempo, layout);
     let ridge = Rect::from_center_size(
@@ -159,7 +161,7 @@ pub(super) fn draw_tempo_ridge(app: &CdjApp, p: &egui::Painter, layout: &UiScale
         egui::vec2(cap.width(), cap.height() * RIDGE_H_FRAC),
     );
     p.rect_filled(ridge, layout.sc(CAP_ROUND) * 0.5, COL_BTN);
-    // The ridge top's front edge, where the cove begins.
+    // Draw the front edge of the ridge's top, where the cove begins.
     p.line_segment(
         [ridge.left_bottom(), ridge.right_bottom()],
         Stroke::new(layout.sc(LINE_STROKE), COL_SILVER),
@@ -174,12 +176,12 @@ pub(super) fn draw_tempo_ridge(app: &CdjApp, p: &egui::Painter, layout: &UiScale
     );
 }
 
-/// The cap's centre down the canvas where `tempo` puts it, drawing pixels.
+/// Returns the y of the cap's centre for `tempo`, in drawing pixels.
 fn cap_y(tempo: f32) -> f32 {
     TRAVEL_TOP + (TRAVEL_BOT - TRAVEL_TOP) * tempo
 }
 
-/// The cap's flange on screen.
+/// Returns the cap's flange on screen.
 fn cap_rect(tempo: f32, layout: &UiScale) -> Rect {
     Rect::from_center_size(
         layout.sp(px(CAP_X), px(cap_y(tempo))),
@@ -187,18 +189,16 @@ fn cap_rect(tempo: f32, layout: &UiScale) -> Rect {
     )
 }
 
-/// How far the cap's flange stands off the panel, and its ridge.
+/// The heights of the cap's flange and of its ridge above the panel.
 const FLANGE_HEIGHT: f32 = 10.0;
 pub(super) const HEIGHT: f32 = 95.0;
-/// The ridge's front: a quarter-round cove from its top's front edge out to
-/// the knob's front extremity, as stacked walls, then an upright skirt
-/// [`SKIRT_HEIGHT`] tall down to the panel. Its back drops upright to the
-/// flange, which shows behind it.
+/// The ridge's front is a quarter-round cove, built from stacked walls, that
+/// runs from its top's front edge out to the knob's front extremity. Below
+/// it, an upright skirt [`SKIRT_HEIGHT`] tall reaches the panel. The ridge's
+/// back drops straight to the flange, which shows behind it.
 const COVE_STEPS: usize = 12;
 const SKIRT_HEIGHT: f32 = 14.0;
-/// The sides take the faces' colours: the flange's silver, shaded, and the
-/// ridge's grey - the cove dark where it turns away at either end and
-/// lightest across its middle, the skirt dark.
+/// The colour of the flange's sides, a shade darker than the tilted cap.
 const COL_FLANGE_WALL: Color32 = Color32::from_rgb(22, 22, 26);
 /// The cove is darkest where it leaves the top, lightest through its lower
 /// middle, and darkens again toward the skirt.
@@ -208,7 +208,7 @@ const COVE_SHADE_MIDDLE: f32 = 1.6;
 const SKIRT_SHADE: f32 = 0.55;
 const COL_EDGE: Color32 = Color32::from_rgb(78, 78, 86);
 
-/// The cap's black, as the tilted deck shows it.
+/// The cap's black, shown when the deck is tilted.
 const COL_CAP_TILTED: Color32 = Color32::from_rgb(30, 30, 35);
 
 fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -225,7 +225,7 @@ fn corners(r: Rect) -> Vec<Pos2> {
     ]
 }
 
-/// The flange where `tempo` puts it, reference units.
+/// Returns the flange's rect for `tempo`, in reference units.
 fn flange(tempo: f32) -> Rect {
     Rect::from_center_size(
         Pos2::new(px(CAP_X), px(cap_y(tempo))),
@@ -233,8 +233,8 @@ fn flange(tempo: f32) -> Rect {
     )
 }
 
-/// The cap's flange, standing off the panel: the ledge behind the ridge; in
-/// front, the ridge's cove runs down over it to the panel.
+/// Describes the cap's flange as a raised part: the ledge behind the ridge.
+/// In front of the ridge, the cove runs down over the flange to the panel.
 pub(super) fn raised_flange(tempo: f32) -> Raised {
     let full = flange(tempo);
     let ridge_back = full.center().y - full.height() * RIDGE_H_FRAC * 0.5;
@@ -254,9 +254,9 @@ pub(super) fn raised_flange(tempo: f32) -> Raised {
     }
 }
 
-/// The ridge, rising off the flange: upright at the back, and at the front a
-/// quarter-round cove sweeping from the top's front edge down to the knob's
-/// front extremity on the panel.
+/// Describes the ridge as a raised part rising off the flange. It is upright
+/// at the back, and at the front a quarter-round cove sweeps from the top's
+/// front edge down to the knob's front extremity.
 pub(super) fn raised_ridge(tempo: f32) -> Raised {
     let flange = flange(tempo);
     let ridge_half = flange.height() * RIDGE_H_FRAC * 0.5;
@@ -265,7 +265,7 @@ pub(super) fn raised_ridge(tempo: f32) -> Raised {
         flange.center().y + ridge_half,
         flange.bottom(),
     );
-    // `a` runs from the foot (a quarter turn) to the top (none).
+    // `a` is π/2 at the foot and 0 at the top.
     let level = |a: f32| {
         let front = foot_front - (foot_front - top_front) * a.cos();
         let z = HEIGHT - (HEIGHT - SKIRT_HEIGHT) * a.sin();
@@ -285,7 +285,7 @@ pub(super) fn raised_ridge(tempo: f32) -> Raised {
         let a = |t: f32| FRAC_PI_2 * (1.0 - t);
         let (base, base_z) = level(a(t0));
         let (top, top_z) = level(a(t1));
-        // `u` runs down the cove from the top.
+        // `u` is 0 at the top of the cove and 1 at its foot.
         let u = 1.0 - (t0 + t1) * 0.5;
         let edge = COVE_SHADE_TOP + (COVE_SHADE_FOOT - COVE_SHADE_TOP) * u;
         let middle = (std::f32::consts::PI * u).sin();
@@ -315,8 +315,8 @@ pub(super) fn raised_ridge(tempo: f32) -> Raised {
         Pos2::new(flange.right(), top_front),
     );
     let walls = std::iter::once(skirt).chain(cove).collect();
-    // The lines where the top turns into the cove and the cove into the
-    // skirt.
+    // Ribs mark where the top turns into the cove and where the cove turns
+    // into the skirt.
     let across = |y: f32, z: f32| Rib {
         a: [flange.left(), y, z],
         b: [flange.right(), y, z],

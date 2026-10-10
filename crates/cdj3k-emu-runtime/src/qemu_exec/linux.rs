@@ -1,16 +1,16 @@
-//! QEMU as an executable shipped beside us.
+//! Runs QEMU as an executable that ships beside this binary.
 
 use std::io;
 use std::process::Command;
 
 use super::QemuCommand;
 
-/// How to start QEMU on this host: the executable shipped beside us.
-/// `keep_fd` is inherited by the child.
+/// Build the command that starts QEMU on this host: the executable that ships
+/// beside this binary. The child inherits `keep_fd`.
 pub fn qemu_command(keep_fd: Option<i32>) -> io::Result<QemuCommand> {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new(cdj3k_emu_platform::bundled::tool("qemu-system-aarch64"));
-    // SAFETY: only async-signal-safe calls between fork and exec.
+    // SAFETY: the closure makes only async-signal-safe calls between fork and exec.
     unsafe {
         command.pre_exec(move || {
             if let Some(fd) = keep_fd {

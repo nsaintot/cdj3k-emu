@@ -17,8 +17,8 @@ use crate::disk::windows_parse as parse;
 
 /// Create an empty dynamic VHDX of `size_bytes`, rounded down to a whole MiB.
 ///
-/// Made by this process so the file belongs to the user; attaching it for
-/// partitioning is what needs administrator rights.
+/// This process creates the file so that it belongs to the user. Only
+/// attaching it for partitioning needs administrator rights.
 pub fn create_vhdx(path: &Path, size_bytes: u64) -> io::Result<()> {
     const MIB: u64 = 1 << 20;
     let size = size_bytes / MIB * MIB;

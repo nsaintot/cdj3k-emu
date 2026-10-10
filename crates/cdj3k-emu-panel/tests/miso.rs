@@ -154,8 +154,8 @@ fn buttons_resolve_in_the_players_own_frame() {
     assert_eq!(Model::Cdj3k.button_by_name("NOT_A_BUTTON"), None);
 }
 
-/// The CDJ-3000X turned the CDJ-3000's SD-cover state bit into USB 2 STOP: a
-/// button the CDJ-3000 does not have, at the shifted offset.
+/// The CDJ-3000X uses the CDJ-3000's SD cover state bit, at the shifted
+/// offset, for USB 2 STOP, a button the CDJ-3000 does not have.
 #[test]
 fn a_player_can_add_a_button() {
     let (byte, mask) = Btn::Usb2Stop.bit().unwrap();

@@ -1,10 +1,11 @@
 //! The update window for Windows and Linux, in the setup window's style.
 //!
-//! Flow: offer, download, prepare (while the emulation runs), offer the
-//! restart. The restart closes the other windows, stops the emulation and
-//! installs the prepared build: a rename for an AppImage, the installer on
-//! Windows. "Later" installs it at quit. A deb or an rpm is downloaded to the
-//! downloads folder instead, with the command that installs it.
+//! The window offers the update, downloads it, prepares it while the
+//! emulation runs, and then offers the restart. The restart closes the other
+//! windows, stops the emulation and installs the prepared build: a rename for
+//! an AppImage, the installer on Windows. "Later" installs it at quit. A deb
+//! or an rpm is downloaded to the downloads folder instead, with the command
+//! that installs it.
 //!
 //! Automatic checks run when the first window opens, then every 6 hours in
 //! the lowest-numbered open slot. A skipped release and older ones are not
@@ -35,21 +36,22 @@ use egui::{Pos2, Vec2};
 use super::theme;
 use work::Shared;
 
-/// Same width as the setup window.
+/// The window has the same width as the setup window.
 const WINDOW_SIZE: [f32; 2] = [760.0, 560.0];
 /// How long "Remind Me Later" pauses automatic offers.
 const REMIND_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
-/// Interval between automatic checks.
+/// The interval between automatic checks.
 const RECHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
-/// Retry schedule for a failed automatic check (no network, or a slot's
-/// network bridge coming up): every [`RETRY_FIRST`] for [`RETRY_STEADY`],
-/// then doubling up to [`RETRY_MAX`]. Reset on success.
+/// The retry schedule for a failed automatic check, such as one made with no
+/// network or while a slot's network bridge comes up: every [`RETRY_FIRST`]
+/// for [`RETRY_STEADY`], then doubling up to [`RETRY_MAX`]. A successful
+/// check resets it.
 const RETRY_FIRST: Duration = Duration::from_secs(10);
 const RETRY_STEADY: Duration = Duration::from_secs(2 * 60);
 const RETRY_MAX: Duration = Duration::from_secs(30 * 60);
 /// How long the window keeps itself in front after the emulation restarts.
 const RAISE_FOR: Duration = Duration::from_secs(3);
-/// Maximum wait for the emulation to stop during a restart.
+/// The longest wait for the emulation to stop during a restart.
 const STOP_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Default)]
@@ -73,7 +75,7 @@ enum Phase {
     },
     /// The new build is being prepared next to this one.
     Preparing(Offer),
-    /// Prepared; waiting for the restart.
+    /// The update is prepared and waits for the restart.
     Ready(Offer),
     /// A deb or an rpm in the downloads folder, for the package manager.
     Downloaded {
@@ -81,7 +83,8 @@ enum Phase {
         path: PathBuf,
     },
     Restarting(Step),
-    /// Installed, or the installer is waiting; this window closes.
+    /// The update is installed, or the installer is waiting; this window
+    /// closes.
     Exiting,
     Failed {
         message: String,
@@ -157,7 +160,8 @@ pub(in crate::app) struct Updater {
 impl Updater {
     pub(in crate::app) fn new(instance: u32) -> Self {
         let settings = AppSettings::load();
-        // Release bundles only; a developer build has no feed.
+        // Only release bundles check for updates; a developer build has no
+        // feed.
         let native = cdj3k_emu_update::installed_kind() == Some(Kind::Dmg)
             && cdj3k_emu_update::native::start(instance);
         Self {
@@ -215,9 +219,10 @@ impl Updater {
         self.open_when_done(&phase);
     }
 
-    /// One window per check: the startup check runs in the first window (no
-    /// other slot open), the periodic check in the lowest open slot, a retry
-    /// in the window whose check failed. Other windows skip the round.
+    /// Only one window runs each check. The startup check runs in the first
+    /// window, when no other slot is open; the periodic check runs in the
+    /// lowest open slot, and a retry runs in the window whose check failed.
+    /// Other windows skip the round.
     fn auto_check_round(&mut self, ctx: &egui::Context) {
         self.next_auto = Instant::now() + RECHECK_EVERY;
         let ours = if std::mem::take(&mut self.retrying) {
@@ -232,8 +237,8 @@ impl Updater {
         }
     }
 
-    /// After an automatic check: a failure retries on the backoff schedule,
-    /// anything else resets it.
+    /// Handles the end of an automatic check: a failure retries on the
+    /// backoff schedule, and any other result resets the schedule.
     fn schedule_retry(&mut self, phase: &Phase) {
         if matches!(phase, Phase::Failed { .. }) {
             let since = *self.failing_since.get_or_insert_with(Instant::now);
@@ -255,7 +260,8 @@ impl Updater {
             return;
         }
         if self.auto_install && offer.kind.installs_itself() {
-            // Silent too: a failure retries as a failed check does.
+            // The download is silent as well, so a failure retries like a
+            // failed check.
             self.update(ctx, offer.clone());
             self.silent = true;
         } else {
@@ -276,7 +282,8 @@ impl Updater {
         menu_state::lock().update_ready = ready;
     }
 
-    /// The menu and Sparkle's requests, where Sparkle runs the updates.
+    /// Handles the requests from the menu and from Sparkle on hosts where
+    /// Sparkle runs the updates.
     fn poll_native(&mut self, ctx: &egui::Context) {
         if std::mem::take(&mut menu_state::lock().update_check_requested) {
             let waiting = lock(&self.shared.native_waiting).take();
@@ -363,7 +370,8 @@ impl Updater {
         }
     }
 
-    /// Progress to draw, or the next automatic check to start.
+    /// Requests a repaint while there is progress to draw or an automatic
+    /// check is pending.
     fn schedule_repaint(&self, ctx: &egui::Context, phase: &Phase) {
         if matches!(
             phase,
@@ -406,7 +414,7 @@ impl Updater {
                     root.send_viewport_cmd(egui::ViewportCommand::Focus);
                     root.request_repaint_after(Duration::from_millis(100));
                 }
-                // Pinned size, as in the setup window.
+                // Pin the size, as the setup window does.
                 let size = Vec2::from(WINDOW_SIZE);
                 if first_frame || (root.content_rect().size() - size).length() > 1.0 {
                     root.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(size));
@@ -422,9 +430,10 @@ impl Updater {
             },
         );
         if closed {
-            // Ignored during the restart. A closed offer returns at the next
-            // start or from the menu; a download continues and the window
-            // reopens when it ends; a ready update installs at quit.
+            // A close is ignored during the restart. Otherwise a closed offer
+            // returns at the next start or from the menu, a download continues
+            // and the window reopens when it ends, and a ready update installs
+            // at quit.
             action = Some(match phase {
                 Phase::Restarting(_) => Action::Keep,
                 _ => Action::Dismiss,
@@ -458,8 +467,9 @@ impl Updater {
         }
     }
 
-    /// "Try Again": the Sparkle install that could not proceed, the restart
-    /// onto a prepared update, the download, or the check - whichever failed.
+    /// "Try Again" retries whichever step failed: the Sparkle install that
+    /// could not proceed, the restart onto a prepared update, the download, or
+    /// the check.
     fn retry(&mut self, ctx: &egui::Context, offer: Option<Offer>) {
         let waiting = lock(&self.shared.native_waiting).take();
         match (waiting, offer) {
@@ -481,7 +491,8 @@ impl Updater {
     }
 }
 
-/// Sparkle runs on this thread: a restart that reached it hands over here.
+/// Sparkle runs on this thread, so a restart that has reached the Sparkle
+/// step hands over to it here.
 fn hand_over_to_native(shared: &Shared) {
     let go = lock(&shared.native_go).take();
     if let Some(go) = go {
@@ -521,14 +532,14 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// The periodic check runs in one window only: the lowest-numbered slot that
-/// is open.
+/// Whether this window runs the periodic check. Only the lowest-numbered open
+/// slot runs it.
 fn lowest_open_slot(own: u32) -> bool {
     (1..own).all(|n| cdj3k_emu_storage::slot_holder(n).is_none())
 }
 
-/// Whether an automatic check offers `offer`: outside a "Remind Me Later"
-/// pause and newer than a skipped release.
+/// Whether an automatic check offers `offer`: only outside a "Remind Me
+/// Later" pause, and only when it is newer than a skipped release.
 fn worth_offering(offer: &Offer) -> bool {
     let s = AppSettings::load();
     offers(

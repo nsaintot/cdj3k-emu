@@ -28,7 +28,7 @@ if (-not $Out) { $Out = Join-Path $RepoRoot 'dist' }
 if (-not $Stage) { $Stage = Join-Path $RepoRoot "dist\windows-$Arch" }
 if (-not $Version) {
     $line = Select-String -Path (Join-Path $RepoRoot 'Cargo.toml') -Pattern '^version\s*=\s*"(.*)"' | Select-Object -First 1
-    if (-not $line) { throw 'ERROR: no version in Cargo.toml' }
+    if (-not $line) { throw 'ERROR: Cargo.toml has no version line.' }
     $Version = $line.Matches[0].Groups[1].Value
 }
 
@@ -40,7 +40,7 @@ function Find-Iscc {
         $candidate = Join-Path $dir 'Inno Setup 6\ISCC.exe'
         if (Test-Path $candidate) { return $candidate }
     }
-    throw 'ERROR: ISCC.exe not found; install Inno Setup 6.6 or newer'
+    throw 'ERROR: ISCC.exe was not found. Install Inno Setup 6.6 or newer.'
 }
 
 function Find-SignTool {
@@ -49,7 +49,7 @@ function Find-SignTool {
     $found = Get-ChildItem $kits -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -match "\\$Arch\\" } |
         Sort-Object FullName -Descending | Select-Object -First 1
-    if (-not $found) { throw 'ERROR: signtool.exe not found; set CDJ3K_SIGNTOOL' }
+    if (-not $found) { throw 'ERROR: signtool.exe was not found. Set CDJ3K_SIGNTOOL.' }
     return $found.FullName
 }
 
@@ -59,7 +59,7 @@ if (-not $SkipStage) {
     & (Join-Path $PSScriptRoot 'stage.ps1') @stageArgs
 }
 if (-not (Test-Path (Join-Path $Stage 'bin\cdj3k-emu.exe'))) {
-    throw "ERROR: $Stage is not a staged tree - run packaging\windows\stage.ps1"
+    throw "ERROR: $Stage is not a staged tree. Run packaging\windows\stage.ps1."
 }
 
 $iscc = Find-Iscc
@@ -72,17 +72,17 @@ if ($env:CDJ3K_SIGN_CERT_SHA1) {
     # $q is ISCC's escape for a quote, $f the file to sign.
     $isccArgs += '/DSign'
     $isccArgs += "/Scdj3k=`$q$signtool`$q sign /fd sha256 /td sha256 /tr $timestamp /sha1 $($env:CDJ3K_SIGN_CERT_SHA1) `$q`$f`$q"
-    Write-Host '==> Signing on'
+    Write-Host '==> Signing is on'
 } else {
-    Write-Host '==> No CDJ3K_SIGN_CERT_SHA1; the installer is unsigned'
+    Write-Host '==> CDJ3K_SIGN_CERT_SHA1 is not set; the installer is unsigned'
 }
 $isccArgs += (Join-Path $PSScriptRoot 'cdj3k-emu.iss')
 
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 Write-Host "==> ISCC ($Arch, $Version)"
 & $iscc @isccArgs
-if ($LASTEXITCODE -ne 0) { throw "ERROR: ISCC exited with $LASTEXITCODE" }
+if ($LASTEXITCODE -ne 0) { throw "ERROR: ISCC exited with code $LASTEXITCODE." }
 
 $artefact = Join-Path $Out "CDJ3K-Emulator-$Version-windows-$Arch.exe"
-if (-not (Test-Path $artefact)) { throw "ERROR: $artefact was not produced" }
+if (-not (Test-Path $artefact)) { throw "ERROR: $artefact was not produced." }
 Write-Host "==> $artefact"

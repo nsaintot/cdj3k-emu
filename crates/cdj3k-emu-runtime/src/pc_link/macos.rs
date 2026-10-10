@@ -1,18 +1,19 @@
-//! The macOS endpoints: `IOHIDUserDevice` for HID, a CoreMIDI driver plugin
-//! for MIDI.
+//! The macOS endpoints: an `IOHIDUserDevice` for HID and a CoreMIDI driver
+//! plugin for MIDI.
 //!
-//! Both HID and MIDI carry data.  MIDI is published by the CoreMIDI driver
-//! plugin alone: apps that walk endpoint → entity → device ignore endpoints
-//! made with `MIDISourceCreate`.
+//! Only the CoreMIDI driver plugin publishes MIDI, because apps that walk
+//! from an endpoint to its entity and then its device ignore endpoints made
+//! with `MIDISourceCreate`.
 //!
-//! The HID backend needs `com.apple.developer.hid.virtual.device` backed by a
-//! provisioning profile; without it `HidBackend::new` fails and the bridge
-//! runs MIDI-only, dropping HID frames.  MIDI never depends on HID.
+//! The HID back end needs `com.apple.developer.hid.virtual.device` backed by a
+//! provisioning profile. Without it, `HidBackend::new` fails, and the bridge
+//! carries only MIDI and drops HID frames. MIDI never depends on HID.
 //!
 //! rekordbox names a HID device `"<Product>,<LocationID>,<n>"`, where `n` is
-//! a counter drawn when the device arrives in IOKit; it polls that name and
-//! resolves it later from a deferred alarm.  Re-creating the `IOHIDUserDevice`
-//! between those moments invalidates the name and rekordbox never converges.
+//! a counter taken when the device arrives in IOKit. It polls that name and
+//! resolves it later from a deferred alarm. If the `IOHIDUserDevice` is
+//! re-created in between, the name becomes invalid and rekordbox never finds
+//! the device.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -23,22 +24,23 @@ use super::hid::HidBackend;
 use super::midi_driver::MidiDriverLink;
 use super::transport::{usb_link_sock_path, FrameSink, OutFrame, Transport};
 
-/// Marker traits: HidBackend holds an IOHIDUserDeviceRef and a serial
-/// dispatch queue, both refcounted IOKit/libdispatch handles that are
-/// safe to use from any thread.
+/// HidBackend holds an IOHIDUserDeviceRef and a serial dispatch queue. Both
+/// are refcounted IOKit and libdispatch handles that are safe to use from any
+/// thread.
 unsafe impl Send for HidBackend {}
 unsafe impl Sync for HidBackend {}
 
-/// Sink invoked by the reader thread on each demuxed guest→host frame;
-/// owns the OS-visible endpoints.  `hid` is `None` when the virtual-HID
-/// device could not be registered; HID frames drop, MIDI carries on.
+/// The sink that the reader thread calls for each demultiplexed frame from
+/// the guest. It owns the endpoints that macOS shows. `hid` is `None` when the
+/// virtual HID device could not be registered; HID frames are then dropped
+/// and MIDI keeps working.
 ///
-/// Shared via `Arc` with every transport the bridge dials, so `reconnect`
-/// cannot destroy an endpoint.
+/// Every transport that the bridge dials shares it through an `Arc`, so
+/// `reconnect` cannot destroy an endpoint.
 struct PcLinkSink {
     hid: Option<Arc<HidBackend>>,
-    /// The CoreMIDI driver plugin, when the socket could be bound.  It is
-    /// what apps matching on endpoint -> entity -> device can see.
+    /// The CoreMIDI driver plugin, when the socket could be bound. Apps that
+    /// match from an endpoint to its entity and device see only this.
     driver: Option<Arc<MidiDriverLink>>,
 }
 
@@ -55,12 +57,12 @@ impl FrameSink for PcLinkSink {
     }
 }
 
-/// Errors starting or re-dialing the PC-link bridge.
+/// An error from starting or re-dialing the PC Link bridge.
 #[derive(Debug)]
 pub enum PcLinkError {
     Io(std::io::Error),
-    /// The outbound channel's `Receiver` is gone; every backend `send`
-    /// now fails.  Only a full rebuild recovers (fresh IOKit device).
+    /// The outbound channel's `Receiver` is gone, so every back end's `send`
+    /// fails. Only a full rebuild, with a new IOKit device, recovers from it.
     ReceiverLost,
 }
 
@@ -68,7 +70,7 @@ impl std::fmt::Display for PcLinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "pc-link I/O: {e}"),
-            Self::ReceiverLost => write!(f, "pc-link outbound channel lost"),
+            Self::ReceiverLost => write!(f, "the pc-link outbound channel was lost"),
         }
     }
 }
@@ -89,12 +91,13 @@ impl PcLinkError {
     }
 }
 
-/// Upper bound on frames discarded per re-dial, so a flooding client
-/// cannot wedge the caller's thread.
+/// The most frames discarded per re-dial, so that a flooding client cannot
+/// block the caller's thread.
 const DRAIN_CAP: usize = 4096;
 
-/// Discard host→guest frames queued while the link was down.  A reconnect
-/// follows a QEMU exit, so these target a guest that no longer exists.
+/// Discard the frames for the guest that were queued while the link was
+/// down. A reconnect follows a QEMU exit, so they target a guest that no
+/// longer exists.
 fn drain_stale(rx: &Receiver<OutFrame>) -> usize {
     let mut n = 0;
     while n < DRAIN_CAP && rx.try_recv().is_ok() {
@@ -105,42 +108,44 @@ fn drain_stale(rx: &Receiver<OutFrame>) -> usize {
 
 /// The transport half of a `PcLink`, which the endpoints outlive.
 enum Link {
-    /// Connected; the `Receiver` lives inside the writer thread.
+    /// The transport is connected, and the writer thread holds the `Receiver`.
     Connected(Transport),
-    /// Reclaimed and waiting for a re-dial.
+    /// The `Receiver` was reclaimed and waits for a re-dial.
     Dormant(Receiver<OutFrame>),
     /// The `Receiver` was lost with a panicking writer thread.
     Broken,
 }
 
-/// True: this build has endpoints to publish, so the menu offers the switch.
+/// This build has endpoints to publish, so the menu offers the switch.
 pub const SUPPORTED: bool = true;
 
-/// Running PC-link bridge.  Owns the OS-visible endpoints for as long as
-/// the user has PC-link enabled, and swaps its transport underneath them.
+/// A running PC Link bridge. It owns the endpoints that macOS shows for as
+/// long as the user has PC Link on, and swaps its transport underneath them.
 pub struct PcLink {
-    /// `runtime_paths::instance_dir(id)`; carries no PID and is not
-    /// rewritten on respawn, so it stays correct across a re-dial.
+    /// The directory from `runtime_paths::instance_dir(id)`. Its path has no
+    /// PID in it and does not change on respawn, so it stays correct across a
+    /// re-dial.
     sock_dir: PathBuf,
-    /// What the endpoints were built from; a re-dial checks it again.
+    /// The identity that the endpoints were built from; a re-dial compares
+    /// the new identity with it.
     identity: GadgetIdentity,
     sink: Arc<PcLinkSink>,
     link: Link,
 }
 
 impl PcLink {
-    /// Connect to the QEMU-exposed unix socket under `sock_dir` and
-    /// register macOS-side virtual endpoints.
+    /// Connect to QEMU's Unix socket under `sock_dir` and register the
+    /// virtual endpoints on macOS.
     pub fn start(sock_dir: &Path, instance_id: u32) -> Result<Self, PcLinkError> {
         let sock_path = usb_link_sock_path(sock_dir);
 
-        // Dial before building anything: the caller retries start() at the
-        // worker poll cadence while the guest boots, and every backend
-        // built here is an endpoint macOS shows to other processes.
+        // Dial before building anything. The caller retries start() at the
+        // worker's poll interval while the guest boots, and every back end
+        // built here is an endpoint that other processes on macOS see.
         let stream = Transport::dial(&sock_path)?;
         let identity = Transport::handshake(&stream)?;
         eprintln!(
-            "cdj3k-emu: pc-link gadget {} {:04x}:{:04x} ({} B report descriptor)",
+            "cdj3k-emu: the pc-link gadget is {} {:04x}:{:04x}, with a {}-byte report descriptor.",
             identity.product,
             identity.vendor_id,
             identity.product_id,
@@ -149,26 +154,26 @@ impl PcLink {
 
         let (tx, rx) = mpsc::channel::<OutFrame>();
 
-        // HID is optional: without the Apple-granted entitlement the
-        // device cannot be registered, and the bridge is still useful as
-        // a MIDI cable.  Report once and carry on.
+        // HID is optional. Without the entitlement from Apple, the device
+        // cannot be registered, but the bridge still works as a MIDI cable,
+        // so report the error once and continue.
         let hid = match HidBackend::new(tx.clone(), instance_id, &identity) {
             Ok(h) => Some(Arc::new(h)),
             Err(e) => {
-                eprintln!("cdj3k-emu: pc-link HID unavailable — {e}");
+                eprintln!("cdj3k-emu: the pc-link HID device is unavailable: {e}");
                 None
             }
         };
 
-        // Install the driver plugin (first toggle, or after an update)
-        // before opening the link MIDIServer will connect back over.
+        // Install the driver plugin, on the first toggle or after an update,
+        // before opening the link that MIDIServer connects back over.
         super::midi_driver::ensure_driver_installed();
 
-        // The driver link is optional: without it HID still carries.
+        // The driver link is optional; without it, HID still works.
         let driver = match MidiDriverLink::start(sock_dir, tx.clone(), instance_id, &identity) {
             Ok(d) => Some(Arc::new(d)),
             Err(e) => {
-                eprintln!("cdj3k-emu: pc-link MIDI driver link unavailable - {e}");
+                eprintln!("cdj3k-emu: the pc-link MIDI driver link is unavailable: {e}");
                 None
             }
         };
@@ -181,7 +186,7 @@ impl PcLink {
             )));
         }
 
-        // Drop the local tx clone; the backends' clones are the producers.
+        // Drop the local sender; the back ends hold the remaining senders.
         drop(tx);
 
         let sink = Arc::new(PcLinkSink { hid, driver });
@@ -215,8 +220,8 @@ impl PcLink {
     }
 
     /// Whether the current transport's I/O threads are both running.
-    /// False after QEMU exits and the reader takes EOF; the caller's
-    /// signal to [`PcLink::reconnect`].
+    /// It turns false after QEMU exits and the reader reaches EOF, which tells
+    /// the caller to call [`PcLink::reconnect`].
     pub fn is_alive(&self) -> bool {
         matches!(&self.link, Link::Connected(t) if t.is_transport_alive())
     }
@@ -234,7 +239,7 @@ impl PcLink {
 
         let dropped = drain_stale(&rx);
         if dropped > 0 {
-            eprintln!("cdj3k-emu: pc-link re-dial dropped {dropped} stale host->guest frames");
+            eprintln!("cdj3k-emu: the pc-link re-dial dropped {dropped} stale frames queued for the guest.");
         }
 
         let dialed = Transport::dial(&usb_link_sock_path(&self.sock_dir))
@@ -245,8 +250,8 @@ impl PcLink {
                 // what rekordbox cannot follow (see the module doc).
                 if id != self.identity {
                     eprintln!(
-                        "cdj3k-emu: pc-link gadget identity changed on re-dial \
-                         ({} -> {}); endpoints keep the first one",
+                        "cdj3k-emu: the pc-link gadget identity changed on re-dial \
+                         (from {} to {}); the endpoints keep the first identity.",
                         self.identity.product, id.product
                     );
                 }
@@ -267,7 +272,7 @@ impl PcLink {
             }
             // spawn took `rx` by value and could not hand it back.
             Err(e) => {
-                eprintln!("cdj3k-emu: pc-link transport spawn failed: {e}");
+                eprintln!("cdj3k-emu: could not start the pc-link transport: {e}");
                 Err(PcLinkError::ReceiverLost)
             }
         }
@@ -276,9 +281,10 @@ impl PcLink {
 
 impl Drop for PcLink {
     fn drop(&mut self) {
-        // Join the I/O threads before any IOKit/CoreMIDI handle is
-        // released: a reader inside sink.on_hid() ->
-        // IOHIDUserDeviceHandleReport during CFRelease is UB.
+        // Join the I/O threads before any IOKit or CoreMIDI handle is
+        // released. A reader still inside sink.on_hid(), calling
+        // IOHIDUserDeviceHandleReport, during CFRelease is undefined
+        // behaviour.
         self.link = Link::Broken;
     }
 }

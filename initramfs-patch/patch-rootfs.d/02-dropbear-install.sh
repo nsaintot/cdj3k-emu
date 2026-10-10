@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Patch 02: install dropbear where the firmware lacks it, and fix the host key.
 #
-# Most rootfs images ship /usr/sbin/dropbear with its unit, disabled. A rootfs
-# with no SSH server (OpenSSH binaries removed, only /etc/ssh left; the
-# CDJ-1500X) gets the bundled dropbear_aarch64 (dropbear/build.sh) and a unit,
-# so every rootfs carries the same disabled daemon that 03-dropbear-enable.sh
-# turns on.
+# Most rootfs images ship /usr/sbin/dropbear with its unit, disabled. The
+# CDJ-1500X rootfs has no SSH server: its OpenSSH binaries are removed and
+# only /etc/ssh is left. It gets the bundled dropbear_aarch64 (built by
+# dropbear/build.sh) and a unit, so every rootfs carries the same disabled
+# daemon, which 03-dropbear-enable.sh turns on.
 #
-# With ENABLE_SSH=1 the host key is made usable: a firmware ECDSA key is
-# mode 644, which dropbear refuses, so every key is tightened to 600; a
-# rootfs without one gets an ed25519 key, generated here so it stays the
-# same across boots.
+# With ENABLE_SSH=1 the patch makes the host key usable. dropbear refuses the
+# firmware's ECDSA key at mode 644, so every key is set to 600. A rootfs
+# without a key gets an ed25519 key, generated here so that it stays the same
+# across boots.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 : "${PATCH_ASSETS_DIR:?PATCH_ASSETS_DIR must be set by dispatcher}"
@@ -30,7 +30,8 @@ if [[ "$APP_SLUG" == cdj1500x ]]; then
         exit 1
     fi
     install -m 0755 "$BIN" "$ROOTFS/usr/sbin/dropbear"
-    # One multi-call binary; the name it is run by picks the program.
+    # dropbear is a multi-call binary; the name it runs under selects the
+    # program.
     for prog in dropbearkey dbclient scp; do
         ln -sf ../sbin/dropbear "$ROOTFS/usr/bin/$prog"
     done
@@ -53,7 +54,7 @@ EOF
 fi
 
 if [[ "${ENABLE_SSH:-0}" != "1" ]]; then
-    echo "  -> SSH disabled (ENABLE_SSH != 1) - leaving the host key alone"
+    echo "  -> SSH disabled (ENABLE_SSH != 1); the host key is left as it is"
     exit 0
 fi
 

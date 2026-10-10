@@ -1,5 +1,5 @@
-//! Where this app keeps what outlives a run: settings, firmware images, the
-//! eMMC.
+//! The directory for the state that outlives a run: settings, firmware images
+//! and the eMMC files.
 //!
 //! [`crate::runtime_paths`] holds per-run scratch (sockets, shm, marker
 //! files); this root holds per-install state that must survive a reboot.
@@ -35,7 +35,8 @@ pub(crate) fn env_dir(name: &str) -> Option<PathBuf> {
 /// This host's app-data directory, ending in
 /// [`BUNDLE_ID`](crate::app_meta::BUNDLE_ID).
 ///
-/// Not created here; callers that write [`create_dir_all`] first.
+/// This function does not create the directory; a caller that writes into it
+/// calls [`create_dir_all`] first.
 ///
 /// [`create_dir_all`]: std::fs::create_dir_all
 pub fn app_data_dir() -> PathBuf {

@@ -60,14 +60,15 @@ pub(in crate::app) enum RowStatus {
     NotRun,
     /// Its loader.sh exited 0.
     Loaded,
-    /// No loader.sh: what its `mod.toml` passed to the app, e.g. `env loaded`.
+    /// The mod has no loader.sh. The text is what its `mod.toml` passed to
+    /// the app, such as `env loaded`.
     Declared(String),
-    /// How its loader.sh ended: `exited 1`, `stopped at 60 s`.
+    /// How its loader.sh ended, such as `exited 1` or `stopped at 60 s`.
     Failed(String),
-    /// The slot's firmware, then the firmware the mod declares, e.g.
+    /// The slot's firmware, then the firmware the mod declares, such as
     /// `3.22/CDJ-3000 → ≤3.20/CDJ-3000`.
     Incompatible(String),
-    /// No usable `mod.toml`, and why.
+    /// The mod has no usable `mod.toml`; the text gives the reason.
     Invalid(String),
     /// The last boot reported it in a format this app cannot read.
     Unreadable,
@@ -121,7 +122,8 @@ pub(in crate::app) struct ModRow {
     pub description: Option<String>,
     /// The project's web page, from the `url` key of mod.toml.
     pub url: Option<String>,
-    /// A folder used in place: ejected, never deleted.
+    /// The mod is a folder used in place, so removing it ejects it and
+    /// never deletes it.
     pub dev: bool,
     pub enabled: bool,
     pub status: RowStatus,
@@ -157,7 +159,7 @@ pub(in crate::app) struct ModsPage {
     pub slot: u32,
     pub model: Option<Model>,
     pub release: Option<String>,
-    /// The slot's "Enable Mods".
+    /// The slot's "Enable Mods" setting.
     pub gate: bool,
     pub rows: Vec<ModRow>,
     /// The footer's emulation button.

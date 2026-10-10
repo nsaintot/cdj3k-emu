@@ -1,46 +1,45 @@
-//! Jog wheel physics, angular-state encoding, and input integration.
+//! Jog wheel physics, the encoding of its angular state, and its input.
 //!
-//! Owns the linear brake model, velocity decay, MISO encoding of
-//! `jog_pos` / `jog_vel` / `jog_touch`, and the entry points fed by
-//! drag and scroll input samples.
+//! This module holds the linear brake model, the velocity decay, the MISO
+//! encoding of `jog_pos`, `jog_vel` and `jog_touch`, and the entry points that
+//! drag and scroll samples feed.
 
 use cdj3k_emu_panel::JogBrake;
 
 use super::CdjApp;
 
-/// Reference angular speed (rad/s) for the brake stop-time table.
-/// TAU = 1 rev/s; the EP122 jog-load-check reference speed is ≈1 rev/s.
+/// Reference angular speed, in rad/s, for the brake stop-time table. TAU is one
+/// turn per second, the reference speed of the EP122 jog load check.
 pub(super) const JOG_BRAKE_REF_OMEGA: f32 = std::f32::consts::TAU;
 
-/// Stop-time (seconds from 1 rev/s to rest) for each of the 13 `jog_adjust`
-/// detent positions, indexed 0 (LIGHT) → 12 (HEAVY).
+/// Stop time, in seconds from 1 rev/s to rest, for each of the 13 `jog_adjust`
+/// detent positions, from 0 (LIGHT) to 12 (HEAVY).
 ///
-/// Source: EP122TestMode jog-load-check, measured at ≈1 rev/s reference
-/// speed. Linear brake model confirmed (R² > 0.97 across all positions).
-/// Measured values; 0.318 is not 1/π.
+/// The brake is linear at every position. The values are measured; 0.318 is
+/// not 1/π.
 #[allow(clippy::approx_constant)]
 pub(super) const JOG_BRAKE_STOP_TIMES_SEC: [f32; 13] = [
     0.817, 0.717, 0.415, 0.318, 0.274, 0.224, 0.204, 0.154, 0.108, 0.096, 0.089, 0.082, 0.081,
 ];
 
-/// Absolute angular-velocity threshold used only to classify `jog_touch`
-/// (`0x0c` turning vs `0x03` held-still) while the user is dragging.
-/// Does not affect the brake; the linear model reaches zero on its own.
+/// The angular speed, in rad/s, above which `jog_touch` reports the platter as
+/// moving (such as `0x07` or `0x0c`) and not still (`0x03`). It does not
+/// affect the brake.
 pub(super) const JOG_OMEGA_MOVING_THRESHOLD: f32 = 0.01;
 
-/// Power-law velocity encoding: `vel = JOG_VEL_COEFF / speed_rps^JOG_VEL_EXP`
-/// At 1 rps → ~315, at rest → `JOG_VEL_STOPPED`.
+/// Power-law velocity encoding: `vel = JOG_VEL_COEFF / speed_rps^JOG_VEL_EXP`.
+/// At 1 rps the value is about 315; at rest it is `JOG_VEL_STOPPED`.
 pub(super) const JOG_VEL_COEFF: f32 = 315.0;
 pub(super) const JOG_VEL_EXP: f32 = 0.906;
 
-/// Ticks per revolution for the device `jog_pos` u16 encoding.
+/// Ticks per turn in the device's u16 `jog_pos`.
 pub(super) const JOG_TICKS_PER_REV: f32 = 3240.0;
 
 // ── Haptic tunables ──────────────────────────────────────────────────────────
-// Tweak these to taste; they only affect Force Touch trackpads / Magic Mouse 2.
-// Devices without haptic hardware silently ignore the trigger.
+// These are matters of taste. They affect only Force Touch trackpads and the
+// Magic Mouse 2; a device without haptic hardware ignores the trigger.
 
-/// Number of haptic clicks felt per full platter rotation.
+/// Number of haptic clicks per full turn of the platter.
 pub(super) const HAPTIC_CLICKS_PER_REV: f32 = 24.0;
 
 /// Number of `MTActuatorActuate` calls per logical click.
@@ -50,42 +49,47 @@ pub(super) const HAPTIC_WAVEFORM_SLOW: i32 = 1;
 pub(super) const HAPTIC_WAVEFORM_MEDIUM: i32 = 4;
 pub(super) const HAPTIC_WAVEFORM_FAST: i32 = 6;
 
-/// Angular-speed thresholds (rev/s) for picking the waveform tier above.
-/// `speed_rps < SLOW_MAX` → slow waveform, `< MED_MAX` → medium, else fast.
-/// CDJ play speed is ~0.55 rev/s (33 RPM), so default play sits in medium;
-/// scratch nudges bump up to fast.
+/// Angular-speed thresholds, in rev/s, that pick the waveform tier. Below
+/// `HAPTIC_SPEED_SLOW_MAX_RPS` the waveform is slow, below
+/// `HAPTIC_SPEED_MEDIUM_MAX_RPS` it is medium, and above that it is fast. CDJ
+/// play speed is about 0.55 rev/s (33 RPM), so normal play uses the slow
+/// tier.
 pub(super) const HAPTIC_SPEED_SLOW_MAX_RPS: f32 = 2.0;
 pub(super) const HAPTIC_SPEED_MEDIUM_MAX_RPS: f32 = 8.0;
 
-/// Device-encoder ticks between haptic clicks, derived from
-/// [`HAPTIC_CLICKS_PER_REV`].  E.g. at 4 clicks/rev with 3240 ticks/rev,
-/// this is 810 ticks ≈ 90° of platter rotation between clicks.
+/// Device encoder ticks between haptic clicks, derived from
+/// [`HAPTIC_CLICKS_PER_REV`]. At 24 clicks and 3240 ticks per turn, this is
+/// 135 ticks, or 15° of platter rotation.
 const HAPTIC_TICKS_PER_CLICK: f32 = JOG_TICKS_PER_REV / HAPTIC_CLICKS_PER_REV;
 
-/// Time constant (s) for blending observed input velocity into `jog_omega`.
-/// Smaller values track pointer/scroll samples more tightly.
+/// Time constant, in seconds, for blending the observed input velocity into
+/// `jog_omega`. A smaller value follows pointer and scroll samples more
+/// closely.
 pub(super) const JOG_INPUT_RESPONSE_TIME_SEC: f32 = 0.03;
 
-/// Debounce/hold for scroll jog semantics (touch or grip) to avoid mode flicker.
+/// How long a scroll keeps its jog mode (touch or grip), so the mode does not
+/// flicker.
 pub(super) const JOG_SCROLL_HOLD_SEC: f32 = 0.08;
 
-/// Duration of the scratch-zone slingshot release touch pulse (seconds).
+/// Duration, in seconds, of the touch pulse after a slingshot released from
+/// the scratch zone.
 pub(super) const JOG_RELEASE_TOUCH_PULSE_SEC: f32 = 0.5;
 
 // ── MISO encoding constants ────────────────────────────────────────────────
 
-/// `jog_vel` value emitted when the platter is fully at rest (inverse encoding).
+/// The `jog_vel` sent when the platter is at rest. The encoding is inverted.
 const JOG_VEL_STOPPED: u16 = 0xffff;
-/// Speed-RPS floor below which the platter is treated as stopped.
+/// The speed, in rev/s, below which the platter counts as stopped.
 const JOG_VEL_REST_RPS: f32 = 1.0e-3;
-/// Maximum encodable `jog_vel` (`0xffff` reserved as "stopped").
+/// The largest moving `jog_vel`; `0xffff` is reserved for a stopped platter.
 const JOG_VEL_MAX: f32 = 65534.0;
-/// Minimum dt clamp (s) used when integrating physics - guards against frame stalls.
+/// The smallest dt, in seconds, used to integrate the physics.
 const DT_FLOOR: f32 = 1.0e-4;
-/// Minimum brake denominator clamp - guards against `JOG_BRAKE_STOP_TIMES_SEC[i] = 0`.
+/// The smallest stop time used as the brake's denominator, so a zero entry in
+/// `JOG_BRAKE_STOP_TIMES_SEC` cannot divide by zero.
 const BRAKE_STOP_TIME_FLOOR_SEC: f32 = 1.0e-3;
 
-// `jog_touch` byte encoding (matches what the device's input stack expects).
+// The `jog_touch` byte values that the device's input stack expects.
 const TOUCH_NONE: u8 = 0x00;
 const TOUCH_HELD_STATIONARY: u8 = 0x03;
 const TOUCH_REST_BASELINE: u8 = 0x04;
@@ -94,7 +98,7 @@ const TOUCH_FREE_BACKWARD: u8 = 0x08;
 const TOUCH_HELD_BACKWARD: u8 = 0x0b;
 const TOUCH_FREE_FORWARD: u8 = 0x0c;
 
-/// Width (chars) of the centred debug-line strings rendered above the MISO dump.
+/// Width, in characters, of the centred debug lines drawn above the MISO dump.
 const DBG_LINE_WIDTH: usize = 56;
 
 #[inline]
@@ -105,13 +109,12 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 impl CdjApp {
     /// Integrates the jog platter one frame.
     ///
-    /// The platter always applies **linear** (constant) angular deceleration,
-    /// matching the jog behavior: `ω -= brake · sign(ω) · dt`.
-    /// `ω` hits zero in finite time `|ω₀| / brake`. `brake` (rad/s²) is
-    /// derived from the player's fixed stop time, or from the JOG ADJUST
-    /// knob's in [`JOG_BRAKE_STOP_TIMES_SEC`].
+    /// The platter always decelerates at a constant rate, as the real jog
+    /// does: `ω -= brake · sign(ω) · dt`. `ω` reaches zero after `|ω₀| / brake`.
+    /// `brake`, in rad/s², comes from the player's fixed stop time or from the
+    /// JOG ADJUST knob's stop time in [`JOG_BRAKE_STOP_TIMES_SEC`].
     ///
-    /// Updates `jog_pos` / `jog_vel` / `jog_touch` and calls
+    /// Updates `jog_pos`, `jog_vel` and `jog_touch`, and calls
     /// [`Self::inject_jog`] when any of them changed this frame.
     pub(super) fn tick_jog(&mut self, dt: f32) {
         puffin::profile_function!();
@@ -119,13 +122,14 @@ impl CdjApp {
         self.jog_scroll_hold_sec = (self.jog_scroll_hold_sec - dt).max(0.0);
         let scroll_active = self.jog_scroll_hold_sec > 0.0;
         if !dragging && !scroll_active {
-            // Clear transient mode once the scroll/drag session is fully over.
+            // Clear the grip mode once the scroll or drag has ended.
             self.jog_grip_drag = false;
         }
         let grip = self.jog_grip_drag;
-        // Release-pulse: latch touch=true for JOG_RELEASE_TOUCH_PULSE_SEC after
-        // a scratch-zone slingshot so firmware sees the flick over several
-        // MISO polls. Short enough to stay below the held-platter brake.
+        // After a scratch-zone slingshot, keep the touch flag set for
+        // JOG_RELEASE_TOUCH_PULSE_SEC so the firmware sees the flick over
+        // several MISO polls. The pulse is short enough to stay below the
+        // held-platter brake.
         let release_pulse = self.jog_release_touch_pulse_remaining_sec > 0.0;
         self.jog_release_touch_pulse_remaining_sec =
             (self.jog_release_touch_pulse_remaining_sec - dt).max(0.0);
@@ -150,9 +154,9 @@ impl CdjApp {
 
         if self.jog_omega != 0.0 {
             if !dragging && !scroll_active {
-                // Free coast only: integrate omega into position. During
-                // active drag/scroll, jog_apply_delta already moves jog_angle
-                // directly; integrating omega here too would double-count.
+                // Integrate omega into the angle only while coasting. During
+                // a drag or scroll, jog_apply_delta already moves jog_angle,
+                // so integrating here as well would count the motion twice.
                 self.jog_angle += self.jog_omega * dt;
             }
             self.jog_apply_friction(dt, brake);
@@ -199,7 +203,7 @@ impl CdjApp {
         );
     }
 
-    /// Encodes `jog_pos` / `jog_vel` / `jog_touch` from current kinematics.
+    /// Encodes `jog_pos`, `jog_vel` and `jog_touch` from the current motion.
     fn jog_update_encoded_state(&mut self, touch_active: bool, dt: f32) {
         puffin::profile_function!();
 
@@ -221,10 +225,10 @@ impl CdjApp {
         }
     }
 
-    /// Position: free-running wrapping u16. Use the actual angle delta (not
-    /// omega · dt) so slow drags still register single ticks. Returns the new
-    /// `jog_pos`, the platter's turns per second this tick - coast while
-    /// free, the hand's motion while held - and the ticks it moved.
+    /// Advances the position, a free-running wrapping u16. It uses the actual
+    /// angle delta so that slow drags still register single ticks. Returns the
+    /// new `jog_pos`, the platter's turns per second this tick (its coast while
+    /// free, the hand's motion while held) and the ticks it moved.
     fn jog_advance_position(&mut self, dt: f32) -> (u16, f32, f32) {
         let angle_delta = self.jog_angle - self.jog_angle_last_encoded;
         self.jog_angle_last_encoded = self.jog_angle;
@@ -237,16 +241,14 @@ impl CdjApp {
         (self.jog_pos.wrapping_add(ticks as u16), new_rps, tick_delta)
     }
 
-    /// Haptic detents - one Taptic Engine pulse per HAPTIC_TICKS_PER_CLICK
-    /// ticks of motion.  Pure distance-driven: every detent crossing fires
-    /// regardless of speed.  Slow drag → individual clicks; fast spin → the
-    /// dispatcher thread paces real IOKit calls at MIN_ACTUATE_INTERVAL and
-    /// drops excess queue entries.
+    /// Fires one Taptic Engine pulse per HAPTIC_TICKS_PER_CLICK ticks of
+    /// motion, at any speed. A slow drag gives individual clicks; on a fast
+    /// spin, the dispatcher thread paces the IOKit calls at
+    /// MIN_ACTUATE_INTERVAL and drops the excess.
     ///
-    /// `actuate()` is a non-blocking try_send that returns ~immediately and
-    /// no-ops when the actuator isn't available, so no upstream arming/gating
-    /// is needed - if we crossed a detent, we ask for the click; the platform
-    /// layer decides what to do with it.
+    /// `actuate()` is a non-blocking `try_send` that does nothing without an
+    /// actuator, so this function requests a click at every detent crossing
+    /// and the platform layer decides what to do with it.
     fn jog_haptic_detents(&mut self, tick_delta: f32) {
         self.jog_haptic_accum += tick_delta.abs();
         if self.jog_haptic_accum < HAPTIC_TICKS_PER_CLICK {
@@ -254,10 +256,8 @@ impl CdjApp {
         }
         let waveform = haptic_waveform(self.jog_omega.abs() / std::f32::consts::TAU);
 
-        // Drain the accumulator regardless of the toggle - otherwise
-        // turning haptics back on after a long spin would fire a backlog
-        // of stored clicks at once.  When disabled, we still drain but
-        // skip the actuator call.
+        // Drain the accumulator even when haptics are off; otherwise turning
+        // them back on after a long spin would fire the stored clicks at once.
         let enabled = cdj3k_emu_platform::menu_state::lock().haptic_enabled;
         while self.jog_haptic_accum >= HAPTIC_TICKS_PER_CLICK {
             self.jog_haptic_accum -= HAPTIC_TICKS_PER_CLICK;
@@ -269,25 +269,23 @@ impl CdjApp {
         }
     }
 
-    /// Linear brake derived from `jog_adjust`, shared by all input methods.
+    /// Applies the linear brake to `jog_omega` for every input method.
     fn jog_apply_friction(&mut self, dt: f32, brake: f32) {
         let dec = brake * dt;
         if self.jog_omega.abs() <= dec {
             self.jog_omega = 0.0;
-            // Intentionally NOT resetting `jog_haptic_accum` here.  At very
-            // slow scroll inputs the brake decays `jog_omega` to zero
-            // between every event, so resetting the accumulator on omega→0
-            // would wipe the slow-motion progress and starve the haptic
-            // feedback.  A stale partial accumulator carried across a long
-            // pause is at most one detent-stride of "early" click on
-            // resumption, which is imperceptible.
+            // Do not reset `jog_haptic_accum` here. At very slow scroll input,
+            // the brake brings `jog_omega` to zero between events, so a reset
+            // at zero would discard the slow progress and no click would fire.
+            // A partial accumulator kept across a long pause makes the next
+            // click at most one detent early.
         } else {
             self.jog_omega -= dec * self.jog_omega.signum();
         }
     }
 
-    /// Visual rotation of the platter, modulo TAU (radians, clockwise).
-    /// Applies a -π/2 phase so zero is rendered at 12 o'clock.
+    /// The platter's drawn rotation, in radians clockwise, modulo TAU. A -π/2
+    /// phase puts zero at 12 o'clock.
     pub(super) fn jog_display_angle(&self) -> f32 {
         (self.jog_angle - std::f32::consts::FRAC_PI_2).rem_euclid(std::f32::consts::TAU)
     }
@@ -297,7 +295,7 @@ impl CdjApp {
         self.jog_adjust.clamp(0.0, 1.0)
     }
 
-    /// Current physical jog angular velocity in rad/s.
+    /// The platter's angular velocity, in rad/s.
     pub(super) fn jog_angular_velocity(&self) -> f32 {
         self.jog_omega
     }
@@ -306,13 +304,14 @@ impl CdjApp {
         self.jog_adjust = v.clamp(0.0, 1.0);
     }
 
-    /// Feeds an observed pointer-angle sample (atan2 convention, radians) for
-    /// rotational drag on the platter. The first call after a press registers
-    /// the baseline; subsequent calls compute the signed angular delta and
-    /// update `jog_angle` + `jog_omega`.
+    /// Feeds a pointer angle, in radians with the atan2 convention, for a
+    /// rotational drag on the platter. The first call after a press sets the
+    /// baseline; later calls compute the signed angular delta and update
+    /// `jog_angle` and `jog_omega`.
     pub(super) fn jog_drag_sample(&mut self, pointer_angle: f32, dt: f32) {
         if let Some(prev) = self.jog_drag_prev_angle {
-            // Wrap delta to shortest-path in [-π, π] so crossing the ±π seam works.
+            // Wrap the delta into [-π, π], so crossing the ±π seam takes the
+            // short way.
             let mut d = pointer_angle - prev;
             let pi = std::f32::consts::PI;
             if d > pi {
@@ -325,11 +324,11 @@ impl CdjApp {
         self.jog_drag_prev_angle = Some(pointer_angle);
     }
 
-    /// Applies an angular increment to the jog and updates angular velocity.
-    /// Shared by drag and wheel-scroll control paths.
+    /// Applies an angular increment to the jog and updates its angular
+    /// velocity, for both drag and wheel-scroll input.
     fn jog_apply_delta(&mut self, delta_rad: f32, dt: f32, source: &'static str) {
         let dt = dt.max(DT_FLOOR);
-        // Frame-rate-independent response.
+        // The response does not depend on the frame rate.
         let alpha = 1.0 - (-dt / JOG_INPUT_RESPONSE_TIME_SEC).exp();
         let omega_sample = delta_rad / dt;
         self.jog_angle += delta_rad;
@@ -338,24 +337,23 @@ impl CdjApp {
         self.debug.jog_delta_rad = delta_rad;
         self.debug.jog_dt = dt;
         self.debug.jog_omega_sample = omega_sample;
-        // Haptic is purely distance-driven (in `jog_update_encoded_state`).
-        // We intentionally do NOT fire one click per input event here -
-        // doing so makes haptic track the trackpad's event rate (~60-90 Hz)
-        // rather than the angular speed of the platter, which feels like
-        // "ceiling hit instantly" for any active scroll.
+        // Haptics depend only on distance (see `jog_update_encoded_state`).
+        // Do not fire a click per input event: the clicks would follow the
+        // trackpad's event rate of about 60-90 Hz and not the platter's
+        // speed, and every scroll would feel saturated at once.
     }
 
-    /// Feeds a wheel-scroll jog sample (already converted to radians).
-    /// `grip=true` emits non-touch jog bytes, `grip=false` emits touch-mode bytes.
+    /// Feeds a wheel-scroll jog sample, already converted to radians. With
+    /// `grip` set the jog bytes carry no touch; without it they carry a touch.
     pub(super) fn jog_scroll_sample(&mut self, delta_rad: f32, dt: f32, grip: bool) {
         self.jog_grip_drag = grip;
         self.jog_scroll_hold_sec = JOG_SCROLL_HOLD_SEC;
         self.jog_apply_delta(delta_rad, dt, "scroll");
     }
 
-    /// Ends rotational drag: clears the pointer-angle baseline so free-spin
-    /// takes over. Leaves `jog_omega` at its last dragged value as the
-    /// release impulse.
+    /// Ends a rotational drag. It clears the pointer-angle baseline so the
+    /// platter spins freely, and leaves `jog_omega` at its last dragged value
+    /// as the release impulse.
     pub(super) fn jog_drag_release(&mut self) {
         self.jog_drag_prev_angle = None;
     }
@@ -364,12 +362,13 @@ impl CdjApp {
         self.jog_drag_prev_angle.is_some()
     }
 
-    /// Replaces the current angular velocity with `omega` (rad/s) and ends any
-    /// active rotational drag so free-spin/coast takes over immediately.
-    /// `scratch_mode = true` (slingshot anchored on the center platter)
-    /// arms a one-tick touch pulse so the firmware sees a flick event;
-    /// `false` (anchored in the grip ring) is a pure bend impulse with no
-    /// touch byte change. Used by the Ctrl-slingshot release path.
+    /// Replaces the angular velocity with `omega`, in rad/s, and ends any
+    /// rotational drag so the platter coasts at once. Used when a Ctrl
+    /// slingshot is released. With `scratch_mode` set (the slingshot was
+    /// anchored on the center platter), it starts a touch pulse of
+    /// JOG_RELEASE_TOUCH_PULSE_SEC so the firmware sees a flick. Without it
+    /// (anchored in the grip ring), it is a bend with no change to the touch
+    /// byte.
     pub(super) fn jog_apply_impulse(&mut self, omega: f32, scratch_mode: bool) {
         self.jog_drag_prev_angle = None;
         self.jog_omega = omega;
@@ -394,7 +393,7 @@ fn haptic_waveform(speed_rps: f32) -> i32 {
     }
 }
 
-/// Velocity: power-law inverse encoding.
+/// Encodes the velocity with the inverted power law.
 fn encode_jog_vel(omega: f32) -> u16 {
     let speed_rps = omega.abs() / std::f32::consts::TAU;
     if speed_rps < JOG_VEL_REST_RPS {
@@ -404,13 +403,13 @@ fn encode_jog_vel(omega: f32) -> u16 {
     }
 }
 
-/// Touch byte: combine touch flag with movement direction. `prev` is the
-/// byte last sent.
+/// Encodes the touch byte from the touch flag and the direction of motion.
+/// `prev` is the byte last sent.
 fn encode_jog_touch(touch_active: bool, omega: f32, prev: u8) -> u8 {
     let moving_fwd = omega > JOG_OMEGA_MOVING_THRESHOLD;
     let moving_back = omega < -JOG_OMEGA_MOVING_THRESHOLD;
     if touch_active {
-        // Center platter drag: scratch/vinyl mode - touch flag set.
+        // The touch flag is set, as in scratch mode.
         if moving_fwd {
             TOUCH_HELD_FORWARD
         } else if moving_back {
@@ -423,8 +422,8 @@ fn encode_jog_touch(touch_active: bool, omega: f32, prev: u8) -> u8 {
     } else if moving_back {
         TOUCH_FREE_BACKWARD
     } else if prev == TOUCH_FREE_BACKWARD || prev == TOUCH_FREE_FORWARD {
-        // Natural coast stop: emit `TOUCH_NONE` exactly on the frame we
-        // settle to rest, then hold `TOUCH_REST_BASELINE`.
+        // When a coast ends, send `TOUCH_NONE` on the frame the platter comes
+        // to rest, then hold `TOUCH_REST_BASELINE`.
         TOUCH_NONE
     } else {
         TOUCH_REST_BASELINE

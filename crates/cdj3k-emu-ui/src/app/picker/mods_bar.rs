@@ -15,7 +15,7 @@ const MODS_BAR_FONT: f32 = 12.5;
 const MODS_BAR_DOT: f32 = 7.0;
 const MODS_BAR_DOT_GAP: f32 = 6.0;
 
-/// Where the Mods bar goes: along the foot of `space`, inside the gutters.
+/// The Mods bar's rect: along the foot of `space`, inside the gutters.
 pub(super) fn mods_bar_rect(space: Rect, k: f32) -> Rect {
     Rect::from_min_max(
         Pos2::new(
@@ -29,8 +29,9 @@ pub(super) fn mods_bar_rect(space: Rect, k: f32) -> Rect {
     )
 }
 
-/// The Mods bar: how many mods are on, with a note when they are disabled or
-/// some are incompatible, or an invitation to add one when there are none.
+/// Draws the Mods bar: how many mods are enabled, with a note when they are
+/// disabled or some are incompatible, or an invitation to add one when there
+/// are none.
 /// Clicking it opens the Mods view.
 pub(super) fn draw_mods_bar(
     ui: &egui::Ui,
@@ -93,8 +94,8 @@ pub(super) fn draw_mods_bar(
     resp
 }
 
-/// The bar's ground: a dashed outline while there are no mods, a plate
-/// otherwise. Both darken under the pointer.
+/// Draws the bar's ground: a dashed outline while there are no mods, or a
+/// plate otherwise. Both darken on hover.
 fn bar_ground(p: &egui::Painter, rect: Rect, empty: bool, hot: bool, pal: &Palette, k: f32) {
     if empty {
         mods_view::dashed_rect(p, rect, if hot { pal.ink } else { pal.line_strong }, k);
@@ -110,8 +111,8 @@ fn bar_ground(p: &egui::Painter, rect: Rect, empty: bool, hot: bool, pal: &Palet
     );
 }
 
-/// The cube and the MODS label, from `at`. Returns where the text after
-/// them starts.
+/// Draws the cube and the MODS label from `at`. Returns the x where the text
+/// after them starts.
 fn bar_lead(p: &egui::Painter, at: Pos2, empty: bool, pal: &Palette, k: f32) -> f32 {
     let (mut x, cy) = (at.x, at.y);
     mods_view::cube_glyph(

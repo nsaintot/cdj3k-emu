@@ -37,7 +37,7 @@ cat > "$ROOTFS/usr/sbin/cabinet-install.sh" << 'EOFS'
 # there is kept when its size matches the staged image and it starts with the
 # LUKS magic; otherwise it is replaced.
 set -eu
-# Byte-wise tr and string comparison for the binary magic.
+# Make tr and string comparison work byte by byte on the binary magic.
 export LC_ALL=C
 
 DEST=/home/root/settings/cabinet.img
@@ -65,7 +65,8 @@ esac
 size=$(printf '%s\n' "$hdr" | sed -n 's/^size=//p')
 [ -n "$size" ] || exit 0
 
-# dd copies whole sectors, so the installed file is the image padded to 512.
+# dd copies whole sectors, so the installed file is the image padded to a
+# multiple of 512 bytes.
 blocks=$(( (size + 511) / 512 ))
 expected=$(( blocks * 512 ))
 
@@ -74,25 +75,25 @@ if [ -e "$DEST" ]; then
     if [ "$(file_size "$DEST")" = "$expected" ] && has_luks_magic "$DEST"; then
         exit 0
     fi
-    echo "cabinet-install: ${DEST} is truncated or invalid, reinstalling" >&2
+    echo "cabinet-install: ${DEST} is truncated or invalid; reinstalling it" >&2
     rm -f "$DEST"
 fi
 
 if ! dd if="$STAGE" bs=512 skip=1 count="$blocks" of="$TMP" 2>/dev/null; then
     rm -f "$TMP"
-    echo "cabinet-install: copy to ${TMP} failed, retrying next boot" >&2
+    echo "cabinet-install: the copy to ${TMP} failed; retrying on the next boot" >&2
     exit 1
 fi
 got=$(file_size "$TMP")
 if [ "$got" != "$expected" ] || ! has_luks_magic "$TMP"; then
     rm -f "$TMP"
-    echo "cabinet-install: ${TMP} is ${got:-?} of ${expected} bytes or lacks the LUKS magic, retrying next boot" >&2
+    echo "cabinet-install: ${TMP} is ${got:-?} of ${expected} bytes or lacks the LUKS magic; retrying on the next boot" >&2
     exit 1
 fi
 sync
 mv "$TMP" "$DEST"
 sync
-echo "cabinet-install: ${size} bytes -> ${DEST}"
+echo "cabinet-install: installed ${DEST} (${size} bytes)"
 EOFS
 sed -i "s|@STAGE_DEV@|$STAGE_DEV|" "$ROOTFS/usr/sbin/cabinet-install.sh"
 chmod 755 "$ROOTFS/usr/sbin/cabinet-install.sh"

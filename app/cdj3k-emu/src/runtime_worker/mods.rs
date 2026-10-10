@@ -1,5 +1,5 @@
-//! Deck mods: the restart a change to the slot's mods asks for, and the
-//! guest's report and journals for each boot.
+//! Deck mods: the QEMU restart that a change to the slot's mods requests, and
+//! the guest's mods report and journals for each boot.
 
 use cdj3k_emu_platform::menu_state;
 use cdj3k_emu_runtime::mods_report::ModsReport;

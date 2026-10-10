@@ -12,7 +12,8 @@ use crate::app::ui::{DoubleBorderSpec, StrokeSpec};
 
 // ── USB 1 slot - top of transport column ─────────────────────────────────────
 // The CDJ-3000X stacks the slot: name, rating, casing, light band, then a notch tab
-// with "STOP" and a slim STOP button. No PC-link glyph, no trident logo.
+// with "STOP" and a slim STOP button. The slot has no PC-link glyph and no
+// trident logo.
 /// Centre line the whole group shares.
 pub(super) const PERF_U_USB_STOP_BTN: f32 = 0.331;
 /// The button sits left of that centre line.
@@ -33,7 +34,8 @@ pub(super) const PERF_USB_DC_STROKE: f32 = 2.5;
 pub(super) const PERF_USB_DC_SPLIT: f32 = 4.0;
 pub(super) const PERF_USB_STOP_LABEL_FONT_SIZE: f32 = 30.0;
 
-/// Placement of the [`LEGEND_TAB_W`]-wide dash drawn to the left of "STOP".
+/// Placement of the dash drawn to the left of "STOP", which is
+/// [`LEGEND_TAB_W`](super::super::LEGEND_TAB_W) wide.
 pub(super) const PERF_USB_STOP_TAB_OFF_X: f32 = 54.0;
 pub(super) const PERF_USB_STOP_LABEL_OFF_X: f32 = -34.0;
 
@@ -54,25 +56,26 @@ pub(super) const PERF_USB_STOP_BTN_OUTER_STROKE: f32 = 2.0;
 pub(super) const PERF_U_USB_MOUNT: f32 = 0.331;
 pub(super) const PERF_V_USB_MOUNT: f32 = 0.055;
 
-/// USB MOUNT: outer glow + [`mount_rect`] = **casing** (bezel). Inside that, a nested
-/// double-bordered rect = **receptacle opening**; inside that, the **tongue** bar.
+/// The USB MOUNT casing (bezel) is `mount_rect`. Inside the casing, a
+/// double-bordered rectangle forms the receptacle opening, and the tongue bar
+/// sits inside that.
 pub(super) const PERF_USB_MOUNT_W: f32 = 200.0;
 pub(super) const PERF_USB_MOUNT_H: f32 = 200.0;
 /// Only the casing's bottom corners are radiused; the top two stay square.
 pub(super) const PERF_USB_MOUNT_BOTTOM_R: f32 = 12.0;
-/// Light strip along the bottom of the casing: height, width as a fraction of
-/// the casing, and how far above the casing's bottom edge it sits.
-/// Light band: sits flush on the cavity floor, spanning its full width.
+/// Height of the light band, which sits flush on the cavity floor and spans its
+/// full width.
 pub(super) const PERF_USB_STRIP_H: f32 = 13.0;
 /// Casing, outside in: the panel's black, a thicker grey, then black.
 pub(super) const PERF_USB_MOUNT_BORDER_INNER_STROKE: f32 = 3.0;
 pub(super) const PERF_USB_MOUNT_BORDER_OUTER_STROKE: f32 = 6.0;
 pub(super) const PERF_USB_MOUNT_BORDER_GAP: f32 = 2.0;
-/// Receptacle frame inside casing (ref units), centered in the mount cavity.
-/// The receptacle sits high in the casing, leaving room for the band below.
+/// Vertical offset of the receptacle frame from the center of the mount cavity
+/// (ref units). The receptacle sits high in the casing, which leaves room for
+/// the band below.
 pub(super) const PERF_USB_CONNECTOR_V_OFF: f32 = -26.0;
 /// Port housing: the opened trap around the receptacle. Its sides and its
-/// top edge - the trap's handle - run to the casing's inner border; the bottom
+/// top edge, which is the trap's handle, run to the casing's inner border; the bottom
 /// edge sits the same distance below the port glyph as the handle sits above it.
 pub(super) const PERF_USB_PORT_HOUSING_STROKE: f32 = 3.0;
 pub(super) const PERF_USB_PORT_HOUSING_TOP_STROKE: f32 = 9.0;
@@ -82,13 +85,14 @@ pub(super) const PERF_USB_CONNECTOR_ROUNDING: f32 = 2.0;
 pub(super) const PERF_USB_CONNECTOR_INNER_STROKE: f32 = 2.5;
 pub(super) const PERF_USB_CONNECTOR_OUTER_STROKE: f32 = 5.0;
 pub(super) const PERF_USB_CONNECTOR_BORDER_GAP: f32 = 3.0;
-/// Tongue inside receptacle opening (ref units); width cap, height, top inset from cavity.
+/// The tongue inside the receptacle opening: its width cap, its height and its
+/// inset from the top of the cavity (ref units).
 pub(super) const PERF_USB_MOUNT_TONGUE_W_FRAC: f32 = 0.88;
 pub(super) const PERF_USB_MOUNT_TONGUE_H: f32 = 10.0;
 pub(super) const PERF_USB_MOUNT_TONGUE_TOP_PAD: f32 = 6.0;
 pub(super) const PERF_USB_MOUNT_TONGUE_ROUNDING: f32 = 2.0;
-/// USB 1's open tray: offsets from the casing centre, width, handle dome,
-/// stroke.
+/// USB 1's open tray: its offsets from the casing centre, its width, its
+/// handle dome and its stroke.
 pub(super) const PERF_USB_TRAY_TOP_DY: f32 = -79.0;
 pub(super) const PERF_USB_TRAY_BOT_DY: f32 = -67.0;
 pub(super) const PERF_USB_TRAY_W: f32 = 182.0;
@@ -139,8 +143,8 @@ pub(super) const USB_2: UsbSlot = UsbSlot {
     id: "usb2_stop",
 };
 
-/// Casing, light band, port housing, receptacle and STOP bar of one USB slot.
-/// The legends are statics.
+/// Draws the casing, light band, port housing, receptacle and STOP bar of one
+/// USB slot. The legends are drawn in statics.rs.
 pub(super) fn draw_usb_slot(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -160,7 +164,8 @@ pub(super) fn draw_usb_slot(
 
     paint_usb_casing(p, layout, mount_rect, lit, usb_drive);
 
-    // Receptacle opening: its own double border (not the casing border above).
+    // The receptacle opening has its own double border, separate from the
+    // casing border.
     let connector_size = Vec2::new(
         layout.sc(PERF_USB_CONNECTOR_W),
         layout.sc(PERF_USB_CONNECTOR_H),
@@ -190,7 +195,7 @@ pub(super) fn draw_usb_slot(
         paint_usb_c(p, layout, connector_rect);
     } else {
         paint_usb_a(p, layout, connector_rect);
-        // Reserve interactive area for future open-mount click handler.
+        // Reserve the mount's hit area; no click handler uses it yet.
         let _resp = ui.interact(
             mount_rect,
             ui.id().with("usb_mount_open"),
@@ -200,10 +205,10 @@ pub(super) fn draw_usb_slot(
     draw_usb_stop(app, ui, layout, slot, shift);
 }
 
-/// Port housing: three of its edges run to the casing's inner border, so
-/// the trap and the casing read as one piece. Drawn under the
-/// receptacle. Strokes are centred on their edge, so each edge is placed
-/// half its own width outside the face it is meant to present.
+/// Paints the port housing under the receptacle. Three of its edges run to
+/// the casing's inner border, so the trap and the casing read as one piece.
+/// Strokes are centred on their edge, so each edge is placed half its own
+/// width outside the face it presents.
 fn paint_port_housing(p: &egui::Painter, layout: &UiScale, mount_rect: Rect, connector_rect: Rect) {
     let inset = layout.sc(PERF_USB_MOUNT_BORDER_INNER_STROKE);
     let side_w = layout.sc(PERF_USB_PORT_HOUSING_STROKE);
@@ -279,7 +284,7 @@ fn paint_usb_casing(
         egui::StrokeKind::Middle,
     );
 
-    // Light band: flush on the cavity floor, full width, no gap to the border.
+    // The light band sits flush on the cavity floor, across its full width.
     {
         let inset = layout.sc(PERF_USB_MOUNT_BORDER_INNER_STROKE);
         let band_h = layout.sc(PERF_USB_STRIP_H);
@@ -290,7 +295,7 @@ fn paint_usb_casing(
             ),
             Pos2::new(mount_rect.right() - inset, mount_rect.bottom() - inset),
         );
-        // A diffuser: dim while the slot is idle, the lamp colour when driven.
+        // The band is dim while the slot is idle and lit while the lamp is on.
         let strip_col = lit
             .map(|c| c.gamma_multiply(usb_drive))
             .unwrap_or(COL_SILVER.gamma_multiply(0.30));
@@ -348,7 +353,7 @@ fn paint_usb_a(p: &egui::Painter, layout: &UiScale, connector_rect: Rect) {
         connector_border,
     );
 
-    // Tongue: inside receptacle cavity, top-centered.
+    // Draw the tongue inside the receptacle cavity, centered at the top.
     let cavity_inset = layout.sc(PERF_USB_CONNECTOR_INNER_STROKE) * 0.5 + layout.sc(3.0);
     let cavity = connector_rect.shrink(cavity_inset);
     let tongue_top = cavity.top() + layout.sc(PERF_USB_MOUNT_TONGUE_TOP_PAD);

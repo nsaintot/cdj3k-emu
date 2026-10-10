@@ -1,5 +1,6 @@
 ---
-# Repo-wide clang-format config - Google base, project-wide overrides.
+# clang-format settings for the whole repository: the Google style with a few
+# overrides.
 BasedOnStyle: Google
 Language: Cpp
 ColumnLimit: 100

@@ -18,10 +18,12 @@ const GPT_ENTRY_SIZE: u32 = 128;
 const GPT_MAX_ENTRIES: u32 = 128;
 /// Sectors consumed by the entry table: 128 entries * 128 bytes / 512 bytes-per-sector.
 const GPT_ENTRY_TABLE_SECTORS: u64 = (GPT_MAX_ENTRIES as u64 * GPT_ENTRY_SIZE as u64) / SECTOR;
-/// Backup-GPT footprint at the end of the disk: 1 header sector + the entry table.
+/// The sectors the backup GPT takes at the end of the disk: one header sector
+/// and the entry table.
 pub const GPT_BACKUP_RESERVED_SECTORS: u64 = 1 + GPT_ENTRY_TABLE_SECTORS;
-/// First LBA usable for partition data: protective MBR (LBA 0) + primary header
-/// (LBA 1) + primary entry table = LBA 2 + entry-table sectors.
+/// The first LBA usable for partition data. It follows the protective MBR
+/// (LBA 0), the primary header (LBA 1) and the primary entry table, which
+/// starts at LBA 2.
 const GPT_FIRST_USABLE_LBA: u64 = GPT_ENTRIES_LBA + GPT_ENTRY_TABLE_SECTORS;
 
 // Well-known partition type GUIDs (mixed-endian as per UEFI spec).
@@ -78,7 +80,8 @@ pub fn linux_reserved_type() -> [u8; 16] {
     TYPE_LINUX_RESERVED
 }
 
-/// Write a complete GPT (protective MBR + primary header + entries + backup) into `w`.
+/// Write a complete GPT into `w`: the protective MBR, the primary header, the
+/// entries and the backup.
 /// `disk_sectors` is the total number of 512-byte sectors on the disk.
 pub fn write_gpt<W: Write + Seek>(
     w: &mut W,
@@ -92,7 +95,7 @@ pub fn write_gpt<W: Write + Seek>(
     // MBR signature.
     pmbr[510] = 0x55;
     pmbr[511] = 0xAA;
-    // Single protective partition (type 0xEE, covers whole disk).
+    // One protective partition of type 0xEE covers the whole disk.
     let entry = &mut pmbr[446..462];
     entry[4] = 0xEE; // type: GPT protective
     entry[8..12].copy_from_slice(&1u32.to_le_bytes()); // first LBA
@@ -128,7 +131,8 @@ pub fn write_gpt<W: Write + Seek>(
     w.seek(SeekFrom::Start(GPT_ENTRIES_LBA * SECTOR))?;
     w.write_all(&entry_buf)?;
 
-    // Backup entry table sits just before the backup header (last sector).
+    // The backup entry table sits just before the backup header, which is the
+    // last sector.
     let backup_entries_lba = disk_sectors - GPT_BACKUP_RESERVED_SECTORS;
     w.seek(SeekFrom::Start(backup_entries_lba * SECTOR))?;
     w.write_all(&entry_buf)?;
@@ -177,7 +181,8 @@ fn build_header(
     h[40..48].copy_from_slice(&GPT_FIRST_USABLE_LBA.to_le_bytes());
     let last_usable_lba = disk_sectors - GPT_BACKUP_RESERVED_SECTORS - 1;
     h[48..56].copy_from_slice(&last_usable_lba.to_le_bytes());
-    // Disk GUID at h[56..72]: generate once per call (not ideal but fine for our use).
+    // Disk GUID at h[56..72]. Each call generates a new one, so the primary and
+    // backup headers carry different disk GUIDs.
     let disk_guid = *Uuid::new_v4().as_bytes();
     h[56..72].copy_from_slice(&disk_guid);
     h[72..80].copy_from_slice(&entries_start_lba.to_le_bytes());

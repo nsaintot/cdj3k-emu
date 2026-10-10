@@ -1,4 +1,5 @@
-//! CDJ-1500X slate: reference canvas, section zones and the section renderers.
+//! The CDJ-1500X slate: its reference canvas, section zones and section
+//! renderers.
 //!
 //! The canvas is the cabinet's published footprint, 252.1 x 374.7 mm, at the
 //! CDJ-3000X slate's 9.68 units per millimetre, so a part measures the same on
@@ -35,16 +36,16 @@ pub(in crate::app) const SLATE: Slate = Slate {
     draw_panel,
 };
 
-/// Reference canvas (unscaled layout units) every zone in [`layout`] is
-/// expressed in; the window is aspect-locked to `REF_W : REF_H`.
+/// The reference canvas, in the unscaled layout units of every zone in
+/// [`layout`]. The window keeps the `REF_W : REF_H` aspect ratio.
 pub(in crate::app) const REF_W: f32 = 2440.0;
 
 pub(in crate::app) const REF_H: f32 = layout::px(layout::DRAWING_H);
 
-/// Draw the whole panel: chassis, the LCD, then each section; then, while
-/// the deck is tilted, turn all of it and draw the front face below.
+/// Draws the whole panel: the chassis, the LCD and each section. While the
+/// deck is tilted, it then turns all of it and draws the front face below.
 fn draw_panel(app: &mut CdjApp, ui: &mut egui::Ui) {
-    // Fits `max_rect`, as the CDJ-3000X slate does.
+    // The layout fits `max_rect`, as on the CDJ-3000X slate.
     let layout = UiScale::fit(ui.max_rect().shrink(2.0), REF_W, REF_H);
     let p = ui.painter().clone();
     let ppp = ui.ctx().pixels_per_point();
@@ -79,19 +80,21 @@ fn draw_panel(app: &mut CdjApp, ui: &mut egui::Ui) {
 /// What each raised part painted on the slate's layer, and how it stands.
 struct Parts {
     layer: egui::LayerId,
-    /// The tilt, eased; flat, no part is recorded.
+    /// The eased tilt. While it is 0 and the deck is flat, no part is recorded.
     t: f32,
     raised: Vec<tilt::Raised>,
 }
 
 impl Parts {
-    /// How many shapes the layer holds: a part's shapes are the ones it adds.
+    /// Returns the number of shapes on the layer. A part's shapes are the ones
+    /// added between two marks.
     fn mark(&self, ui: &egui::Ui) -> usize {
         ui.ctx()
             .graphics(|g| g.get(self.layer).map_or(0, |l| l.next_idx().0))
     }
 
-    /// The part painted since `from`, standing as `r` gives.
+    /// Records the shapes painted since `from` as one raised part, standing
+    /// as `r` describes.
     fn add(&mut self, ui: &egui::Ui, from: usize, r: impl FnOnce() -> tilt::Raised) {
         let shapes = from..self.mark(ui);
         if self.t > 0.0 {
@@ -100,7 +103,7 @@ impl Parts {
     }
 }
 
-/// The LCD, then each section, recording the raised parts.
+/// Draws the LCD, then each section, and records the raised parts.
 fn draw_sections(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -165,9 +168,10 @@ fn draw_sections(
     }
 }
 
-/// While the deck is tilted, replace what the slate painted from `start` on
-/// with its projection, draw the front face below and map the pointer back;
-/// returns the tilt. Flat, EJECT is released.
+/// While the deck is tilted, replaces what the slate painted from `start`
+/// onward with its projection, draws the front face below and maps the
+/// pointer back, then returns the tilt. When the deck is flat, EJECT is
+/// released.
 fn turn(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -179,7 +183,7 @@ fn turn(
     app.tilt_input = None;
     if parts.t <= 0.0 {
         if let Some(bit) = app.button(Btn::UsbStop) {
-            // EJECT is on the front face: with the face hidden, it is released.
+            // EJECT is on the front face, so it is released while the face is hidden.
             app.handle_btn_interaction(false, false, bit);
         }
         return None;
@@ -206,7 +210,7 @@ fn turn(
         &mut app.tilt_cache,
     );
     draw_front::draw_front(app, ui, p, layout, &tilt);
-    // Hit-test the raised parts' tops first, the last drawn on top.
+    // Hit-test the tops of the raised parts first, the last drawn first.
     let tops = parts
         .raised
         .iter()

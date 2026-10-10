@@ -1,9 +1,9 @@
 //! The USB slot: what medium is in it, and how each host gets one there.
 //!
 //! The virtual drive is always present in QEMU's argv, backed by a 1-sector
-//! placeholder at boot. Attach/detach hot-swap the medium through QMP and tell
-//! the guest over `cdj3k.cfg`; what a host can offer as a medium, and what it
-//! takes to make one, is the adapter module's business.
+//! placeholder at boot. Attaching and detaching hot-swap the medium through QMP
+//! and tell the guest over `cdj3k.cfg`. Each host's adapter module decides
+//! which media it offers and how it creates them.
 
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]
@@ -32,16 +32,16 @@ use crate::qmp::{QmpClient, QmpError};
 
 const USB_DRIVE_ID: &str = "usb0";
 
-/// What asking the host again for a refused raw disk involves, for the
-/// prompt that offers it.
+/// The text of the prompt that offers to ask the host again for a raw disk it
+/// refused. It says what the retry involves on this host.
 pub use imp::RETRY_PROMPT;
 
 /// Whether a raw disk reaches QEMU as a descriptor, which needs the second
 /// monitor ([`crate::QemuConfig::qmp_fd_socket`]).
 pub use imp::PASSES_FDS;
 
-/// Each host's adapter implements [`DiskProvider`]; a host that does not fails
-/// the build here rather than at the first caller.
+/// Each host's adapter implements [`DiskProvider`]. If a host's adapter does
+/// not, the build fails here.
 const _: fn() = || {
     fn assert_provider<T: DiskProvider>() {}
     assert_provider::<HostDiskProvider>();
@@ -77,7 +77,6 @@ pub trait DiskProvider: Send + Sync {
 /// The disk provider for this host; exactly one adapter is compiled per build.
 pub struct HostDiskProvider;
 
-/// The provider for this host.
 pub fn host_disk_provider() -> HostDiskProvider {
     HostDiskProvider
 }
@@ -101,8 +100,8 @@ pub(crate) fn create_raw_image(img_path: &Path, size_bytes: u64) -> std::io::Res
     }
 }
 
-/// Sizes as a disk vendor writes them — powers of ten, matching every other
-/// tool a user will compare this against.
+/// Format a size the way disk vendors do, in powers of ten, so that it matches
+/// the other tools a user compares it with.
 fn human_size(bytes: u64) -> String {
     const GB: f64 = 1_000_000_000.0;
     const MB: f64 = 1_000_000.0;
@@ -137,7 +136,8 @@ impl From<std::io::Error> for UsbError {
 }
 
 impl UsbError {
-    /// `e` from opening the device at `path`; a refusal names the device.
+    /// Convert the error `e` from opening the device at `path`. A permission
+    /// refusal keeps the device path, so the message can name it.
     fn opening(path: &str, e: std::io::Error) -> Self {
         if e.kind() == std::io::ErrorKind::PermissionDenied {
             UsbError::PermissionDenied(path.to_string())
@@ -155,7 +155,7 @@ impl std::fmt::Display for UsbError {
             UsbError::PermissionDenied(dev) => {
                 write!(
                     f,
-                    "Permission denied opening {dev}. {}",
+                    "Permission was denied when opening {dev}. {}",
                     imp::PERMISSION_HINT
                 )
             }
@@ -187,12 +187,12 @@ struct ActiveUsb {
 
 /// Manages USB hot-plug for one QEMU instance.
 ///
-/// The USB virtio-blk slot (id=usb0 → /dev/sdb in guest) is always present in
-/// QEMU's argv, backed by a 1-sector placeholder at boot.  Attach/detach hot-swap
-/// the medium via QMP blockdev-change-medium, then send a command line to the
-/// guest over the `cdj3k.cfg` virtio-serial port (via `CfgClient`) so the
-/// in-guest `cdj3k-cfgd` runs the attach script - no SSH / network forwarding
-/// required.
+/// The USB virtio-blk slot (id `usb0`, which the guest sees as /dev/sdb) is
+/// always present in QEMU's argv, backed by a 1-sector placeholder at boot.
+/// Attaching and detaching hot-swap the medium with QMP
+/// `blockdev-change-medium`, then `CfgClient` sends a command line to the guest
+/// over the `cdj3k.cfg` virtio-serial port, and the in-guest `cdj3k-cfgd` runs
+/// the attach script. This needs no SSH and no network forwarding.
 pub struct UsbManager {
     placeholder_path: PathBuf,
     qmp_fd_socket: PathBuf,
@@ -210,7 +210,8 @@ impl UsbManager {
         }
     }
 
-    /// Create an exFAT-formatted image at `img_path` then attach it as a virtual USB drive.
+    /// Create an exFAT-formatted image at `img_path`, then attach it as a
+    /// virtual USB drive.
     pub fn create_and_attach_virtual(
         &mut self,
         qmp: &mut QmpClient,
@@ -223,7 +224,7 @@ impl UsbManager {
     }
 
     /// Hot-swap the USB slot to a virtual image file and notify the guest.
-    /// Auto-ejects whatever was previously attached.
+    /// Whatever was attached before is ejected first.
     pub fn attach_virtual(
         &mut self,
         qmp: &mut QmpClient,
@@ -241,8 +242,8 @@ impl UsbManager {
     }
 
     /// Unmount the host's volumes on `disk`, hot-swap the USB slot to the raw
-    /// device, and notify the guest.  Auto-ejects whatever was previously
-    /// attached.
+    /// device, and notify the guest. Whatever was attached before is ejected
+    /// first.
     pub fn attach_physical(
         &mut self,
         qmp: &mut QmpClient,
@@ -285,17 +286,17 @@ impl UsbManager {
         Ok(())
     }
 
-    /// Host-initiated eject: tell the guest to release FDs + umount, then
-    /// swap the USB slot back to placeholder and remount the host disk if
-    /// we had attached a physical one.  No-op when nothing is attached, so
-    /// this doubles as the "auto-eject" hook at the top of every attach
-    /// path.
+    /// Eject from the host side: tell the guest to release its file
+    /// descriptors and unmount, then swap the USB slot back to the placeholder
+    /// and remount the host disk if a physical one was attached. When nothing
+    /// is attached this does nothing, so every attach path calls it first to
+    /// eject the previous medium.
     ///
     /// The guest-side hook (cfgd's `usb detach`) writes `umount /dev/sdb` to
-    /// `/proc/udev_usb1` so EP122 closes its filesystem handles, then lazy-
-    /// unmounts `/media/usb/sd*`.  We sleep briefly to let that complete
-    /// before yanking the medium - swapping while EP122 still holds an open
-    /// FD on the FS would produce I/O errors on the host disk.
+    /// `/proc/udev_usb1` so that EP122 closes its filesystem handles, then
+    /// lazily unmounts `/media/usb/sd*`. The host waits briefly for that to
+    /// finish before it removes the medium: swapping while EP122 still holds a
+    /// file open would cause I/O errors on the host disk.
     pub fn detach(
         &mut self,
         qmp: &mut QmpClient,
@@ -305,17 +306,17 @@ impl UsbManager {
             return Ok(());
         }
         let _ = self.cfg.usb_detach();
-        // cfgd's detach handler does 150 ms sleep + umount -l; 400 ms covers
-        // that plus a comfortable margin for the EP122 FD-close latency.
+        // cfgd's detach handler sleeps 150 ms and then runs `umount -l`.
+        // 400 ms covers that, with a margin for EP122 to close its files.
         std::thread::sleep(Duration::from_millis(400));
         self.host_side_eject(qmp, provider)
     }
 
-    /// Guest-initiated eject: EP122's `unbind-usb-device.sh` already ran,
-    /// the guest has unmounted everything, and `usb_state 0` arrived on
-    /// cdj3k.cfg.  We just mirror the state on the host side - swap the
-    /// medium back to placeholder, remount any physical disk - skipping
-    /// the cfg round-trip so we don't trigger a feedback loop.
+    /// Handle an eject that the guest started. EP122's `unbind-usb-device.sh`
+    /// has already run, the guest has unmounted everything, and `usb_state 0`
+    /// arrived on cdj3k.cfg. The host only mirrors that state: it swaps the
+    /// medium back to the placeholder and remounts any physical disk. It sends
+    /// nothing over cdj3k.cfg, which would start a feedback loop.
     pub fn acknowledge_guest_eject(
         &mut self,
         qmp: &mut QmpClient,
@@ -328,8 +329,8 @@ impl UsbManager {
         Ok(true)
     }
 
-    /// Common host-side cleanup shared by `detach` and `acknowledge_guest_eject`.
-    /// Assumes `self.current` is Some; consumes it.
+    /// Run the host-side cleanup that `detach` and `acknowledge_guest_eject`
+    /// share. `self.current` must be `Some`; this takes it.
     fn host_side_eject(
         &mut self,
         qmp: &mut QmpClient,
@@ -350,12 +351,13 @@ impl UsbManager {
     }
 
     /// Wait for virtblk_config_changed to settle, then ask the guest agent to
-    /// run usb-external-attach.sh (which mounts the device and writes to
-    /// /proc/udev_usb1 - the interface EP122 actually watches for USB state).
+    /// run usb-external-attach.sh. The script mounts the device and writes to
+    /// /proc/udev_usb1, which EP122 watches for the USB state.
     fn guest_usb_attach(&self) -> std::io::Result<()> {
         // Give the guest driver time to run virtblk_config_changed_work.
-        // virtio-blk revalidates the partition table automatically on config change;
-        // no manual blockdev --rereadpt needed (and it corrupts the FAT32 device state).
+        // virtio-blk rereads the partition table by itself when the config
+        // changes. Do not run `blockdev --rereadpt`: it corrupts the FAT32
+        // device state.
         std::thread::sleep(Duration::from_millis(600));
         self.cfg.usb_attach()
     }
@@ -365,8 +367,8 @@ impl UsbManager {
 mod tests {
     use super::*;
 
-    /// Decimal, as printed on the packaging — a "32 GB" stick must not read
-    /// as 29.8.
+    /// Sizes are decimal, as printed on the packaging: a 32 GB stick shows
+    /// 32.0 GB, not 29.8 GB.
     #[test]
     fn sizes_read_the_way_the_vendor_writes_them() {
         assert_eq!(human_size(32_000_000_000), "32.0 GB");

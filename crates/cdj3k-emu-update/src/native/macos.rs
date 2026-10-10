@@ -130,7 +130,7 @@ pub(super) fn start(own: u32) -> bool {
         return false;
     };
     let path = NSString::from_str(&framework.to_string_lossy());
-    // SAFETY: a bundle path and its load, on the main thread.
+    // SAFETY: the bundle is created and loaded on the main thread.
     let loaded = unsafe { NSBundle::bundleWithPath(&path).is_some_and(|b| b.load()) };
     let Some(class) = loaded
         .then(|| AnyClass::get("SPUStandardUpdaterController"))
@@ -139,7 +139,8 @@ pub(super) fn start(own: u32) -> bool {
         eprintln!("cdj3k-emu-update: Sparkle.framework would not load");
         return false;
     };
-    // Before the controller starts: the delegate's first answer needs it.
+    // Store the slot before the controller starts, because the delegate's
+    // first answer reads it.
     with(|s| s.own = own);
     let delegate = Delegate::new();
     // SAFETY: SPUStandardUpdaterController's designated initialiser; the
@@ -168,7 +169,8 @@ pub(super) fn take_events() -> Vec<Event> {
 }
 
 pub(super) fn check_now() {
-    // Out of the borrow: Sparkle may call the delegate before returning.
+    // Clone the controller out of the borrow, because Sparkle may call the
+    // delegate before `checkForUpdates:` returns.
     if let Some(controller) = with(|s| s.controller.clone()) {
         // SAFETY: an IBAction that takes a nil sender.
         unsafe {

@@ -1,16 +1,16 @@
 //! The application menu.
 //!
-//! Split in two so the same menu can be presented by toolkits that have
-//! nothing in common:
+//! The menu is split in two so that toolkits with nothing in common can
+//! present it:
 //!
-//! * [`service::MenuService`] owns the content — which rows exist, what they
-//!   say, which are ticked — and [`action::apply`] owns what a click does.
+//! * [`service::MenuService`] owns the content: which rows exist, what they
+//!   say and which are ticked. [`action::apply`] owns what a click does.
 //!   Both are portable and know nothing about how the menu is drawn.
 //! * A [`provider::MenuProvider`] draws a [`model::MenuModel`] and reports the
 //!   [`id::MenuId`]s that were clicked: the native bar through `muda` on
 //!   macOS, the in-window strip ([`egui_provider`]) elsewhere.
 //!
-//! Adding a menu entry therefore means touching the service and nothing else.
+//! Adding a menu entry therefore changes only the service.
 
 use std::cell::RefCell;
 
@@ -60,12 +60,12 @@ thread_local! {
     static MENU: RefCell<Option<Menu>> = const { RefCell::new(None) };
 }
 
-/// Height the in-window menu takes out of the window, or 0 where the menu is
-/// the host's own.
+/// The height the in-window menu takes from the window, or 0 where the host
+/// draws its own menu.
 ///
-/// The chassis has a fixed aspect, so whatever the strip occupies has to come
-/// off the height the aspect lock works with — otherwise the window is right
-/// and the deck inside it is letterboxed.
+/// The chassis has a fixed aspect, so the aspect lock works with the window
+/// height minus the strip. Otherwise the deck inside the window is
+/// letterboxed.
 pub fn in_window_bar_height() -> f32 {
     if draws_in_window() {
         egui_provider::BAR_HEIGHT
@@ -74,17 +74,17 @@ pub fn in_window_bar_height() -> f32 {
     }
 }
 
-/// Draw the in-window menu. Call once per frame, before the chassis; a no-op
-/// where the host draws the menu itself.
+/// Draw the in-window menu. Call it once per frame, before the chassis. It
+/// does nothing where the host draws the menu itself.
 pub fn draw_in_window(ui: &mut egui::Ui) {
     with_egui_provider(|p| p.draw(ui));
 }
 
 /// Run the menu's keyboard shortcuts without drawing it.
 ///
-/// For a screen that carries its own chrome — the startup picker has a slot
-/// switcher of its own, so a strip above it would say the same thing twice —
-/// while keeping `Ctrl Q` and the rest live.
+/// A screen with its own chrome uses this. The startup picker has its own slot
+/// switcher, so a strip above it would repeat it, and `Ctrl Q` and the other
+/// shortcuts still work.
 pub fn shortcuts_only(ctx: &egui::Context) {
     with_egui_provider(|p| p.shortcuts_only(ctx));
 }
@@ -92,8 +92,8 @@ pub fn shortcuts_only(ctx: &egui::Context) {
 /// Where the in-window menu drew this frame: the strip, its open panels and
 /// any tooltip, in points. Empty where the host draws the menu itself.
 ///
-/// For a pass painted over the whole window — the deck's bloom runs at
-/// `Order::Debug`, above every menu — to leave the chrome alone.
+/// A pass painted over the whole window, such as the deck's bloom at
+/// `Order::Debug` above every menu, uses this to leave the chrome alone.
 pub fn chrome_rects(ctx: &egui::Context) -> Vec<egui::Rect> {
     let mut rects = Vec::new();
     with_egui_provider(|p| rects.extend_from_slice(p.chrome()));
@@ -122,13 +122,14 @@ fn with_egui_provider(f: impl FnOnce(&mut egui_provider::EguiProvider)) {
     });
 }
 
-/// Bring up another slot's window — what the Instances menu does, exposed for
-/// the slot switcher in the setup window's identity strip.
+/// Open another slot's window, as the Instances menu does. The slot switcher
+/// in the setup window's identity strip uses it.
 pub fn open_instance(target: u32) {
     launch_instance(target);
 }
 
-/// Build the menu and install it. Call once on the first frame, main thread.
+/// Build the menu and install it. Call it once, on the first frame, on the
+/// main thread.
 pub fn setup_menu() {
     let mut menu = Menu {
         service: service::MenuService::new(),
@@ -140,7 +141,8 @@ pub fn setup_menu() {
     MENU.with(|cell| *cell.borrow_mut() = Some(menu));
 }
 
-/// Deliver clicks and refresh the menu. Call every frame, main thread.
+/// Deliver clicks and refresh the menu. Call it every frame, on the main
+/// thread.
 pub fn sync_menu() {
     drain_alerts();
 
@@ -172,8 +174,8 @@ pub fn sync_menu() {
         effects
     });
 
-    // Outside the borrow: a file dialog spins its own event loop, and
-    // launching a slot re-reads the state lock.
+    // Perform the effects outside the borrow: a file dialog runs its own event
+    // loop, and launching a slot takes the state lock again.
     for effect in effects {
         perform(effect);
     }
@@ -189,15 +191,15 @@ fn perform(effect: ActionEffect) {
     }
 }
 
-/// True while a file dialog of ours is up, so a second click cannot open a
-/// second one behind the first.
+/// True while one of the app's file dialogs is open, so that a second click
+/// cannot open another one behind it.
 static PICKER_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Ask for an image, off the UI thread.
 ///
-/// A file dialog blocks until answered; run on the frame loop it would stop
-/// the app answering the compositor, which then reports it as not
-/// responding. The answer lands in `menu_state` for the worker's next poll.
+/// A file dialog blocks until it is answered. On the frame loop it would stop
+/// the app from answering the compositor, which then reports the app as not
+/// responding. The answer goes into `menu_state` for the worker's next poll.
 fn pick_image(create: bool) {
     use std::sync::atomic::Ordering;
     if PICKER_OPEN.swap(true, Ordering::AcqRel) {
@@ -227,8 +229,8 @@ fn pick_image(create: bool) {
         .inspect_err(|_| PICKER_OPEN.store(false, Ordering::Release));
 }
 
-/// Modal conditions other threads raise by setting a flag. Each is taken
-/// before the dialog goes up, so a blocked frame cannot re-raise it.
+/// Show the alerts that other threads raise by setting a flag. Each flag is
+/// taken before its dialog opens, so a blocked frame cannot raise it again.
 fn drain_alerts() {
     let perm_denied = menu_state::lock().usb_phys_perm_denied.take();
     if let Some(prompt) = perm_denied {
@@ -237,8 +239,8 @@ fn drain_alerts() {
     if std::mem::take(&mut menu_state::lock().midi_driver_replaced) {
         show_midi_driver_alert();
     }
-    // Drop the guard before the modal so other threads aren't blocked while
-    // it is up.
+    // Drop the guard before the dialog opens, so other threads are not blocked
+    // while it is up.
     let net_err = menu_state::lock().net_error_message.take();
     if let Some(msg) = net_err {
         show_net_error_alert(&msg);

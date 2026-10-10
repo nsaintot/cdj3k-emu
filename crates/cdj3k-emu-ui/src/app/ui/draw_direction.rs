@@ -1,9 +1,9 @@
-//! FWD / SLIP_REV / REV direction flip-switch widget for the left column.
-//! Owns its housing, paddle lever, and the tilted-state perspective faces.
+//! The FWD, SLIP REV and REV direction switch in the left column. This module
+//! draws its housing, its paddle lever and the lever's tilted faces.
 //!
-//! One switch, drawn for every player: the shape constants below are the
-//! control itself, and a slate supplies only where on its panel it sits and
-//! how far apart its three legends print.
+//! Every player draws the same switch from the shape constants below; a slate
+//! supplies only its position on the panel and the spacing of its three
+//! legends.
 
 use cdj3k_emu_panel::Direction;
 use egui::{FontFamily, FontId, Pos2, Rect, Vec2};
@@ -51,36 +51,42 @@ pub(in crate::app) const DIRECTION_BORDER_ROUNDING: f32 = 24.0;
 pub(in crate::app) const DIRECTION_SWITCH_LEFT_FRAC: f32 = 0.55;
 pub(in crate::app) const DIRECTION_SWITCH_RIGHT_FRAC: f32 = 0.45;
 
-/// Switch housing - outer shell of the physical switch slot.
+/// The switch housing, which is the outer shell of the switch slot.
 pub(in crate::app) const DIRECTION_HOUSING_W: f32 = 110.0;
 pub(in crate::app) const DIRECTION_HOUSING_H: f32 = 200.0;
 pub(in crate::app) const DIRECTION_HOUSING_ROUNDING: f32 = 12.0;
-/// Paddle lever - fills the housing slot like an american rocker switch.
-pub(in crate::app) const DIRECTION_LEVER_W_INSET: f32 = 10.0; // gap from housing sides to lever edges
-pub(in crate::app) const DIRECTION_LEVER_H_INSET: f32 = 8.0; // gap from housing top/bottom to lever when in position
+/// The gap between the housing's sides and the paddle lever, which fills the
+/// housing slot like an American rocker switch.
+pub(in crate::app) const DIRECTION_LEVER_W_INSET: f32 = 10.0;
+/// The gap between the housing's top or bottom and the lever.
+pub(in crate::app) const DIRECTION_LEVER_H_INSET: f32 = 8.0;
 pub(in crate::app) const DIRECTION_LEVER_ROUNDING: f32 = 6.0;
 pub(in crate::app) const DIRECTION_LEVER_INNER_W_FRAC: f32 = 0.70;
 pub(in crate::app) const DIRECTION_LEVER_INNER_H: f32 = 10.0;
 pub(in crate::app) const DIRECTION_LEVER_INNER_ROUNDING: f32 = 4.0;
 pub(in crate::app) const DIRECTION_MODE_FONT_SIZE: f32 = 28.0;
 pub(in crate::app) const DIRECTION_FACE_W_FRAC: f32 = 0.85;
-/// Tilted-state face height as fraction of full_face_h (slim).
+/// The tilted face's height as a fraction of full_face_h.
 pub(in crate::app) const DIRECTION_FACE_H_FRAC: f32 = 0.25;
-/// Outer base frame height (depth axis) as fraction of full_face_h.
+/// The outer base frame's height along the depth axis, as a fraction of full_face_h.
 pub(in crate::app) const DIRECTION_BASE_H_FRAC: f32 = 0.20;
-/// Outer base near-end width as fraction of lever_w (slightly narrower than far end).
+/// The width of the outer base's near end as a fraction of lever_w; it is
+/// slightly narrower than the far end.
 pub(in crate::app) const DIRECTION_BASE_NEAR_W_FRAC: f32 = 0.98;
-/// FWD (middle) face half-height as fraction of full_face_h.
+/// The half-height of the FWD (middle) face as a fraction of full_face_h.
 pub(in crate::app) const DIRECTION_FWD_FACE_H_FRAC: f32 = 0.15;
-/// FWD (middle) face width as fraction of lever_w (1.0 = full slot width).
+/// The width of the FWD (middle) face as a fraction of lever_w; 1.0 is the full
+/// slot width.
 pub(in crate::app) const DIRECTION_FWD_FACE_W_FRAC: f32 = 0.95;
-/// How far the tilted face can protrude past the housing edge, as fraction of housing height.
-/// 0.0 = flush with inset edge; positive values push it outside the housing bounds.
+/// How far the tilted face protrudes past the housing edge, as a fraction of
+/// the housing height. At 0.0 the face is flush with the inset edge; a positive
+/// value pushes it outside the housing.
 pub(in crate::app) const DIRECTION_TILT_FACE_OVERSHOOT_FRAC: f32 = 0.10;
-/// Tilted groove height as fraction of the tilted face height.
+/// The tilted groove's height as a fraction of the tilted face's height.
 pub(in crate::app) const DIRECTION_TILT_GROOVE_H_FRAC: f32 = 0.2;
-/// Vertical offset of the groove center from the face center, as fraction of half-face-height.
-/// Positive = toward the protruding/near side (bottom for dir=1, top for dir=2).
+/// The vertical offset of the groove's center from the face's center, as a
+/// fraction of half the face height. A positive value moves it toward the
+/// protruding side: the bottom for REV, the top for SLIP REV.
 pub(in crate::app) const DIRECTION_TILT_GROOVE_V_OFF_FRAC: f32 = 0.25;
 
 pub(in crate::app) fn draw_direction_switch(
@@ -97,9 +103,10 @@ pub(in crate::app) fn draw_direction_switch(
         layout.sp(combo_ref.right(), combo_ref.bottom()),
     );
 
-    // Static label + combo bordered container live in statics.rs.
+    // Each slate draws the static label and the bordered container in its
+    // draw_left/statics.rs.
 
-    // --- Housing + rail channels ---
+    // --- Housing ---
     let switch_div_x_ref = combo_ref.left() + combo_ref.width() * DIRECTION_SWITCH_LEFT_FRAC;
     let switch_cx_ref = (combo_ref.left() + switch_div_x_ref) * 0.5;
     let switch_center = layout.sp(switch_cx_ref, cy_ref);
@@ -111,7 +118,8 @@ pub(in crate::app) fn draw_direction_switch(
             layout.sc(DIRECTION_HOUSING_H),
         ),
     );
-    // Housing: dark fill + silver outer border + dark inner trim (inset frame look).
+    // A dark fill, a silver outer border and a dark inner trim make the
+    // housing look like an inset frame.
     draw_bordered_rect_section(
         p,
         housing_rect,
@@ -139,7 +147,7 @@ pub(in crate::app) fn draw_direction_switch(
         dir => paint_tilted_face(p, layout, &lever, dir == Direction::Reverse),
     }
 
-    // --- Right side: mode labels, colored by current direction ---
+    // --- Right side: the mode labels, colored by the current direction ---
     let right_cx_ref =
         switch_div_x_ref + (combo_ref.right() - switch_div_x_ref) * DIRECTION_SWITCH_RIGHT_FRAC;
     paint_mode_labels(
@@ -152,9 +160,10 @@ pub(in crate::app) fn draw_direction_switch(
     );
 }
 
-/// Drag on the switch column: a simple 3-zone split of the housing, top
-/// third SLIP REV, bottom third REV, middle FWD. SLIP REV springs back to FWD
-/// on release. Injects a MISO frame when the direction changes.
+/// Handles a drag on the switch column. The housing is split into three
+/// zones: the top third is SLIP REV, the middle is FWD and the bottom third is
+/// REV. SLIP REV springs back to FWD on release. A MISO frame is injected when
+/// the direction changes.
 fn direction_interact(app: &mut CdjApp, ui: &mut egui::Ui, combo_screen: Rect, housing_rect: Rect) {
     let switch_col_screen = Rect::from_min_max(
         combo_screen.min,
@@ -188,17 +197,17 @@ fn direction_interact(app: &mut CdjApp, ui: &mut egui::Ui, combo_screen: Rect, h
             };
         }
     } else if was_dragging && app.direction == Direction::SlipReverse {
-        // Released while in SLIP REV zone → snap back to FWD.
+        // Releasing the lever in the SLIP REV zone snaps it back to FWD.
         app.direction = Direction::Forward;
     }
 
-    // Inject MISO frame on direction change.
     if app.direction != prev_direction {
         app.inject(app.build_current_frame());
     }
 }
 
-/// Paddle/rocker lever - fills the housing slot like an american light switch.
+/// The paddle lever, which fills the housing slot like an American rocker
+/// switch.
 struct Lever {
     left: f32,
     right: f32,
@@ -230,10 +239,11 @@ impl Lever {
     }
 }
 
-/// Paddle face fill.
+/// The fill color of the paddle face.
 const FACE_COLOR: egui::Color32 = egui::Color32::from_rgb(64, 64, 72);
 
-/// FWD - flat rectangle, no perspective, but only half the height.
+/// Draws the FWD face as a flat rectangle without perspective, at half the
+/// height.
 fn paint_fwd_face(p: &egui::Painter, layout: &UiScale, lever: &Lever) {
     let border_stroke = egui::Stroke::new(layout.sc(2.0), COL_SILVER);
     let face_top = lever.h_top + lever.h_inset;
@@ -252,7 +262,7 @@ fn paint_fwd_face(p: &egui::Painter, layout: &UiScale, lever: &Lever) {
         border_stroke,
         egui::StrokeKind::Middle,
     );
-    // Inner groove mark - only on FWD.
+    // The groove mark on the FWD face.
     let inner_h = layout.sc(DIRECTION_LEVER_INNER_H);
     p.rect_filled(
         Rect::from_center_size(
@@ -264,17 +274,18 @@ fn paint_fwd_face(p: &egui::Painter, layout: &UiScale, lever: &Lever) {
     );
 }
 
-/// Tilted - 3D perspective: outer 3-sided base frame + inner slim face rect +
-/// 4 connecting perspective lines (converging from wide base to narrow face).
-/// `is_rev` tilts it down (REV), else up (SLIP REV).
+/// Draws a tilted lever in perspective: a three-sided base frame, a slim face,
+/// and four lines that converge from the wide base to the narrow face.
+/// `is_rev` tilts it down for REV; otherwise it tilts up for SLIP REV.
 fn paint_tilted_face(p: &egui::Painter, layout: &UiScale, lever: &Lever, is_rev: bool) {
     let tilted = TiltedLever::new(lever, is_rev);
     paint_tilted_frame(p, layout, &tilted, is_rev);
     paint_slim_face(p, layout, lever, tilted.face, is_rev);
 }
 
-/// Where a tilted lever's lines go. The base frame spans the housing's
-/// middle and the protruding half; the slim face sits at the protruding end.
+/// The corner points of a tilted lever. The base frame starts at the housing's
+/// middle and extends into the protruding half; the slim face sits at the
+/// protruding end.
 struct TiltedLever {
     /// The base frame's full-width edge, at the housing's middle.
     far_l: Pos2,
@@ -293,9 +304,10 @@ impl TiltedLever {
         let base_h_abs = lever.full_face_h * DIRECTION_BASE_H_FRAC;
         let base_near_hw = lever.w * 0.5 * DIRECTION_BASE_NEAR_W_FRAC;
 
-        // The entire assembly lives in the protruding half of the housing.
-        // REV       (bottom): assembly in bottom half - base far edge at h_mid, face at h_bot.
-        // SLIP REV  (top):    assembly in top half    - base far edge at h_mid, face at h_top.
+        // The assembly sits in the protruding half of the housing, with the
+        // base's far edge at h_mid. For REV it is in the bottom half with the
+        // face at h_bot; for SLIP REV it is in the top half with the face at
+        // h_top.
         let h_mid = (h_top + h_bot) * 0.5;
         let overshoot = (h_bot - h_top) * DIRECTION_TILT_FACE_OVERSHOOT_FRAC;
         let (base_far_y, base_near_y, face_top, face_bot) = if is_rev {
@@ -320,8 +332,8 @@ impl TiltedLever {
     }
 }
 
-/// The 3-sided base frame (far edge and two sides, no near edge) and the 4
-/// perspective lines from its corners to the slim face's corners.
+/// Draws the three-sided base frame (the far edge and the two sides) and the
+/// four perspective lines from its corners to the slim face's corners.
 fn paint_tilted_frame(p: &egui::Painter, layout: &UiScale, tilted: &TiltedLever, is_rev: bool) {
     let frame_stroke = egui::Stroke::new(layout.sc(1.5), egui::Color32::from_rgb(100, 100, 110));
     let edge_stroke = egui::Stroke::new(layout.sc(1.5), egui::Color32::from_rgb(55, 55, 62));
@@ -350,9 +362,9 @@ fn paint_tilted_frame(p: &egui::Painter, layout: &UiScale, tilted: &TiltedLever,
     p.line_segment([near_r, near_dst[1]], edge_stroke);
 }
 
-/// The tilted lever's slim face, with a thinner border than FWD, and its
-/// groove mark offset towards the protruding side (bottom for REV, top for
-/// SLIP REV).
+/// Draws the tilted lever's slim face with a thinner border than FWD, and its
+/// groove mark offset towards the protruding side: the bottom for REV, the
+/// top for SLIP REV.
 fn paint_slim_face(p: &egui::Painter, layout: &UiScale, lever: &Lever, face: Rect, is_rev: bool) {
     let tilt_face_stroke = egui::Stroke::new(layout.sc(1.0), COL_SILVER);
     p.rect_filled(face, lever.rounding * 0.5, FACE_COLOR);
@@ -381,7 +393,8 @@ fn paint_slim_face(p: &egui::Painter, layout: &UiScale, lever: &Lever, face: Rec
     );
 }
 
-/// REV / SLIP REV / FWD, beside the switch, the current one lit.
+/// Draws the REV, SLIP REV and FWD legends beside the switch, with the current
+/// one lit.
 fn paint_mode_labels(
     direction: Direction,
     p: &egui::Painter,

@@ -1,26 +1,24 @@
 # cdj3k-emu - ALC (Audio Latency Compensation)
 
-> Reference for the user-facing wiring that aligns Pro DJ Link
-> master/slave audible playback across cdj3k-emu instances. Extends
-> `docs/audio-stack.md` - the deep audio-pipeline mechanics live there,
-> this doc only covers the sync surface.
+> This page describes how ALC aligns the audible playback of Pro DJ Link
+> masters and slaves across cdj3k-emu instances. It extends
+> `docs/audio-stack.md`, which covers the audio pipeline; this page covers
+> only the sync settings.
 
 ---
 
 ## What ALC is
 
-Pro DJ Link slaves time their playback against the master's broadcast
-beat timeline. Naively, an emulated CDJ's audio is delayed by the
-QEMU + virtio_snd + bypass-ring + CoreAudio pipeline (roughly 50 ms in
-steady state, see `docs/audio-stack.md` for the breakdown) relative to
-where the firmware "thinks" the beat is. Without compensation, two
-emulator instances syncing to each other have a steady ~50 ms phase
-offset between their audible beats - phase locks at the firmware-tick
-level, drifts at the audible level.
+Pro DJ Link slaves time their playback against the beat timeline that the
+master broadcasts. An emulated CDJ's audio reaches the speakers about 50 ms
+(in steady state; see `docs/audio-stack.md`) after the firmware's beat
+position, because it passes through QEMU, virtio_snd, the bypass ring and
+CoreAudio. Without compensation, two emulator instances synced to each other
+keep a steady offset of about 50 ms between their audible beats: the phase
+locks at the firmware level but not at the audible level.
 
-ALC removes this. It shifts either the local clock (slave) or the
-outbound packet stream (master) by the live measured pipeline depth,
-so audible-event timing matches firmware-event timing.
+ALC shifts either the local clock (slave) or the outgoing packets (master) by
+the live pipeline depth, so the audible beat matches the firmware's beat.
 
 ## Demo
 
@@ -30,69 +28,64 @@ so audible-event timing matches firmware-event timing.
 
 ## The two shims
 
-Both ship in `deck_shim.so` and share `audio_sync_enabled` as
-their single master switch (see "Master switch" below).
+Both shims are part of `deck_shim.so` and share `audio_sync_enabled` as
+their master switch (see [Master switch](#master-switch)).
 
 ### Slave mode - `guest/deck_shim/core/clock.c`
 
-LD_PRELOAD on `clock_gettime` / `gettimeofday`. Targets the
-`OptFstUdpServer` thread only - empirically the thread whose libc
-clock-shift moves slave playback. Every other thread (JUCE ALSA,
-render, HID, …) hits an early return and pays a single thread-name
-classify lookup once.
+The slave shim hooks `clock_gettime` and `gettimeofday` through LD_PRELOAD
+and shifts only the `OptFstUdpServer` thread, the thread whose clock moves
+slave playback. Every other thread (JUCE ALSA, render, HID, …) returns early
+after one lookup that classifies it by name.
 
-Subtracts `audio_latency_ms` from the target thread's view of
-`CLOCK_MONOTONIC` / `CLOCK_MONOTONIC_RAW` / `CLOCK_REALTIME`. That
-thread projects master's broadcast position further along, the deck
-plays earlier internally, and the audio pipeline consumes exactly that
-compensation. Net effect: audible play aligns with master's audible.
+- The shim subtracts the latency from that thread's view of
+  `CLOCK_MONOTONIC`, `CLOCK_MONOTONIC_RAW` and `CLOCK_REALTIME`.
+- The thread then projects the master's broadcast position further ahead, the
+  deck plays earlier internally, and the audio pipeline absorbs exactly that
+  offset. The deck's audible playback therefore aligns with the master's.
+- The shim refreshes the offset at most once per wall-clock second, using the
+  timestamp the hooked call returns, so the hot path makes no extra clock
+  call.
 
-Refresh cadence: at most once per wall-clock second using the
-syscall's own returned timestamp (no extra clock call on the hot
-path).
-
-| Surface | Source |
+| sysfs parameter | Role |
 |---|---|
-| `audio_sync_enabled` | Master switch - 0 makes the shim fully inert |
-| `audio_latency_ms` | Auto live tracking (default source) |
-| `link_pos_offset_ms` | Manual override - non-zero forces a fixed value |
+| `audio_sync_enabled` | Master switch; `0` turns the shim off |
+| `audio_latency_ms` | Live pipeline depth, the default offset |
+| `link_pos_offset_ms` | Manual override; a positive value forces a fixed offset |
 
 ### Master mode - `guest/deck_shim/core/link.c`
 
-LD_PRELOAD on `sendto` / `sendmsg`. Delays every outbound Pro DJ Link
-broadcast (UDP ports 50001 / 50002, magic header `Qspt1WmJOL`) by
-`audio_latency_ms`.
+The master shim hooks `sendto` and `sendmsg` through LD_PRELOAD and delays
+every outgoing Pro DJ Link broadcast (UDP ports 50001 and 50002, magic header
+`Qspt1WmJOL`) by the latency.
 
-Architecture: a 512-slot ring buffer + dedicated worker thread.
-`sendto` / `sendmsg` enqueue (sockfd, dest, flags, payload, deadline);
-the worker pops the head, `clock_nanosleep`s `TIMER_ABSTIME` to the
-deadline, then forwards via raw `SYS_sendto`. The queue is sized at
-512 slots - ABS_POS at 3 ms cadence × ~100 ms delay = ~33 in flight in
-the common case, with headroom.
+- The shim uses a 512-slot ring buffer and a dedicated worker thread.
+  `sendto` and `sendmsg` enqueue the socket, destination, flags, payload and
+  deadline. The worker takes the oldest entry, sleeps until its deadline
+  (`clock_nanosleep` with `TIMER_ABSTIME`) and sends it with a raw
+  `SYS_sendto`.
+- 512 slots leave headroom: with ABS_POS sent every 3 ms and a delay of about
+  100 ms, about 33 packets are in flight in the common case.
+- The shim delays whole packets because Pioneer slaves use the packet arrival
+  time as the beat-phase reference. Delaying the whole stream keeps ABS_POS
+  (waveform), BEAT (beat sync) and PLAYER_STATUS (phase, BPM) consistent.
 
-**Why delay-send (not packet rewrite):** Pioneer slaves use packet
-*arrival time* as the implicit beat-phase reference. ABS_POS bytes
-alone wouldn't be enough - the receipt event itself must coincide
-with the master's audible beat. Delaying the entire packet stream
-aligns ABS_POS (waveform), BEAT (beat-sync), and PLAYER_STATUS
-(phase / BPM) consistently with one mechanism.
+### Deferred close - `guest/deck_shim/core/link.c` and `syscalls.c`
 
-### Defer-close - `guest/deck_shim/core/link.c` + `syscalls.c`
+EP122 opens a socket, calls `sendto()` and closes the socket for each
+broadcast. Without a deferred close, EP122 would close the descriptor before
+the worker sends the delayed packet.
 
-EP122 does `socket() → sendto() → close()` for each broadcast - a
-socket-per-packet pattern that breaks any naive delay-send: by the
-time the worker fires, EP122 has already closed the FD.
-
-`shim_link_intercept_close(fd)` (declared in `link.c`, called from
-the `close()` hook in `guest/deck_shim/core/syscalls.c`) scans the
-pending queue under `g_q_mutex` for any entry holding `fd`. If found,
-it marks `p->app_wants_close = 1` and returns `1`. The `close()`
-hook reports success to EP122 *without* invoking `sys_close`. The
-worker performs the real close after `sendto` completes, in the same
-critical section that advances the queue tail (`link.c`), so a
-late-arriving `close()` either wins (flag set in time) or loses
-harmlessly (scan misses, real close happens, our late close gets
-EBADF).
+- `shim_link_intercept_close(fd)`, defined in `link.c` and called from the
+  `close()` hook in `syscalls.c`, scans the pending queue under `g_q_mutex`
+  for an entry that holds `fd`.
+- If it finds one, it sets `p->app_wants_close = 1` and returns `1`. The
+  `close()` hook then reports success to EP122 without closing the
+  descriptor.
+- The worker closes the descriptor after its `sendto`, in the same critical
+  section that advances the queue tail.
+- If `close()` arrives after the send, the scan finds nothing and the real
+  close runs.
 
 ---
 
@@ -102,56 +95,39 @@ EBADF).
 /sys/module/virtio_snd/parameters/audio_sync_enabled
 ```
 
-`0` = both shims fully inert (`sendto`/`sendmsg` pass through, clock
-shim early-returns, no queue activity).  
-`1` = both shims active.
+| Value | Effect |
+|---|---|
+| `0` | Both shims are off: `sendto` and `sendmsg` pass through, the clock shim returns early, and nothing is queued. |
+| `1` | Both shims are on. |
 
-**The kernel module defaults to 0 on every load.** This is the trap
-the runtime worker exists to plaster over.
+**The kernel module sets it to 0 at every load**, so the runtime worker sets
+it after every boot.
 
-### Per-boot push from the host
+### Push from the host at each boot
 
-`app/cdj3k-emu/src/runtime_worker.rs` declares
-`alc_pushed_for_boot = false`. On every QEMU boot path
+`app/cdj3k-emu/src/runtime_worker.rs`:
 
-```rust
-if !alc_pushed_for_boot && cfg_client.latency().is_some() {
-    let v = if req.alc_enabled { "1" } else { "0" };
-    cfg_client.set_param("audio_sync_enabled", v) // ...
-    alc_pushed_for_boot = true;
-}
-```
+- `push_alc_once` sends `set audio_sync_enabled <0|1>` with the saved setting
+  once per QEMU lifetime. It waits for the first `latency` push (see
+  [Live latency source](#live-latency-source)), which shows that cfgd is
+  responsive: cfgd sends it only after its handshake on the virtio-serial
+  port. `alc_pushed_for_boot` records that the push was made.
+- `set_alc` handles the menu toggle: it pushes the new value at once and
+  saves it.
 
-We use the first incoming `latency` push (see "Live latency source"
-below) as the "cfgd is responsive" signal - that line only arrives
-after the daemon has handshook the virtio-serial port. The push then
-fires exactly once per QEMU lifetime.
-
-Interactive toggles re-push immediately. `runtime_worker.rs`:
-
-```rust
-if req.alc_toggle {
-    let v = if req.alc_enabled { "1" } else { "0" };
-    cfg_client.set_param("audio_sync_enabled", v) // ...
-    persist_inst(config.instance_id, |s| s.alc_enabled = req.alc_enabled);
-}
-```
-
-No QEMU restart is needed - sysfs takes effect immediately, both
-shims pick up the change on their next 1 s sysfs refresh tick.
+No QEMU restart is needed: the sysfs write takes effect immediately, and both
+shims pick up the change at their next sysfs refresh, at most 1 s later.
 
 ### cfgd whitelist - `guest/cfgd/cfgd.c`
 
-```c
-static const struct param_def PARAMS[] = {
-    { "audio_sync_enabled",  1 },   // writable
-    { "link_pos_offset_ms",  1 },   // writable
-    { "audio_latency_ms",    0 },   // read-only - also pushed every 3 s
-};
-```
+| Parameter | Access |
+|---|---|
+| `audio_sync_enabled` | read and write |
+| `link_pos_offset_ms` | read and write |
+| `audio_latency_ms` | read only; also pushed every 3 s |
 
-Anything outside this whitelist gets `param <name> ?` back. A host
-bug can't poke arbitrary kernel knobs through the cfg channel.
+cfgd answers `param <name> ?` for any other name, so the cfg channel cannot
+reach other kernel parameters.
 
 ---
 
@@ -161,21 +137,21 @@ bug can't poke arbitrary kernel knobs through the cfg channel.
 /sys/module/virtio_snd/parameters/audio_latency_ms        (read-only)
 ```
 
-Format: `T (guest=G host=H rate=R)` - headline `T` capped at 200 ms,
-breakdown shows raw guest + host components.
+The file reads `guest_ms,host_ms,total_ms`, for example `21,30,51`. The total
+is capped at 200 ms; the guest and host values are not.
 
 | Component | Source |
 |---|---|
-| `guest` = `frames_in_flight` | `submit++` / `tx_done--` in `guest/modules/virtio_snd/virtio_snd.c` |
-| `host` = `pipeline_extra_frames` | HAL `mHostTime` + static device latency, exported by the QEMU bypass patch |
+| guest, from `frames_in_flight` | incremented on submit and decremented in `tx_done` in `guest/modules/virtio_snd/virtio_snd.c` |
+| host, from `pipeline_extra_frames` | HAL `mHostTime` and the static device latency, exported by the QEMU bypass patch |
 
-cfgd pushes `latency <g>,<h>,<t>` on `cfg.sock` every 3 s
-(`push_latency` in `guest/cfgd/cfgd.c`), so the host UI's
-"Current Latency" label updates without polling.
+cfgd pushes `latency <guest>,<host>,<total>` on `cfg.sock` every 3 s
+(`push_latency` in `guest/cfgd/cfgd.c`), and the app shows it as the
+**Audio > Pipeline latency** readout without polling.
 
-Both shims read `audio_latency_ms` directly from sysfs (not via the
-cfg push) at most once per wall-clock second. The cfg push is purely
-for the UI label.
+Both shims read `audio_latency_ms` from sysfs themselves, at most once per
+wall-clock second, and use its last field, the total. The cfg push only feeds
+the menu.
 
 ---
 
@@ -185,16 +161,15 @@ for the UI label.
 /sys/module/virtio_snd/parameters/link_pos_offset_ms
 ```
 
-Writable, defaults to 0. When non-zero, **both shims** use the fixed
-override instead of auto-tracking `audio_latency_ms`. Useful for:
+The parameter is writable and defaults to 0. When it is positive, **both
+shims** use it in place of `audio_latency_ms`. Uses:
 
-- A/B testing the compensation curve.
-- Targeting a known-fixed external setup (real CDJ master with a
-  known DAC chain).
-- Pinning the offset during latency measurement experiments.
+- A/B tests of the compensation.
+- A fixed external setup, such as a real CDJ master with a known DAC chain.
+- A fixed offset while measuring latency.
 
-Set to 0 to return to auto-tracking. Same cfgd whitelist as the master
-switch - writes go through `cfg.sock`.
+Set it to 0 to follow `audio_latency_ms` again. Writes from the host go
+through `cfg.sock` and the cfgd whitelist.
 
 ---
 
@@ -203,33 +178,31 @@ switch - writes go through `cfg.sock`.
 | Layer | File | Notes |
 |---|---|---|
 | Row | `crates/cdj3k-emu-platform/src/menu/service.rs` | `MenuNode::check(MenuId::Alc, "Enable ALC (Experimental)", snap.alc_enabled)`, rebuilt from state on every sync |
-| Container | `crates/cdj3k-emu-platform/src/menu/service.rs` | Audio submenu: Current Latency → Enable Audio → Enable ALC → Output Device |
-| Click handler | `crates/cdj3k-emu-platform/src/menu/action.rs` | Toggles `alc_enabled`, sets `alc_toggle_requested = true` |
-| State mirror | `crates/cdj3k-emu-platform/src/menu_state.rs` | `pub alc_enabled: bool` + `alc_toggle_requested: bool` |
-| Persistence | `crates/cdj3k-emu-storage/src/settings/instance.rs` | `InstanceSettings::alc_enabled`, key `alc_enabled` in per-instance `settings.txt` |
-| Default | `crates/cdj3k-emu-storage/src/settings/instance.rs` | `.unwrap_or(true)` - new instances get ALC on |
-| Worker dispatch | `app/cdj3k-emu/src/runtime_worker.rs` | `req.alc_toggle` → `cfg_client.set_param("audio_sync_enabled", …)` + persist |
+| Container | `crates/cdj3k-emu-platform/src/menu/service.rs` | Audio submenu, in order: Pipeline latency, Enable Audio, Enable ALC (Experimental), Output Device |
+| Click handler | `crates/cdj3k-emu-platform/src/menu/action.rs` | Toggles `alc_enabled` and sets `alc_toggle_requested` |
+| State mirror | `crates/cdj3k-emu-platform/src/menu_state.rs` | `alc_enabled` and `alc_toggle_requested` |
+| Persistence | `crates/cdj3k-emu-storage/src/settings/instance.rs` | `InstanceSettings::alc_enabled`, key `alc_enabled` in the per-instance `settings.txt` |
+| Default | `crates/cdj3k-emu-storage/src/settings/instance.rs` | `flag(&map, "alc_enabled", true)`: new instances have ALC on |
+| Worker dispatch | `app/cdj3k-emu/src/runtime_worker.rs` | `set_alc` pushes `audio_sync_enabled` and saves the setting when `req.alc_toggle` is set |
 
-**Default is ON.** Sync compensation is the better experience for the
-vast majority of users; opting out is a power-user choice that the
-toggle persists per instance.
+ALC is on by default. Turning it off is saved per instance.
 
 ---
 
 ## Cap and watchdog
 
-The shims clamp at 5000 ms client-side (`clock.c`, `link.c`).
-The kernel module caps `audio_latency_ms` at 200 ms before exposure.
-The 200 ms cap exists to break runaway feedback in slave mode - a
-clock-shift that grows without bound feeds back into the very metric
-it's compensating against.
-
-When raw guest+host pipeline depth exceeds 200 ms for ≥ 8 s, the
-pipeline-depth watchdog in `guest/modules/virtio_snd/virtio_snd.c`
-fires a forced xrun. JUCE re-prepares, the host pipeline returns a
-`VIRTIO_SND_R_PCM_RELEASE`, the deep backlog drains. See
-`docs/audio-stack.md` § "Pipeline-depth watchdog → forced xrun" for
-the full recovery dance.
+- The shims clamp the offset at 5000 ms (`clock.c`, `link.c`).
+- The kernel module caps the `audio_latency_ms` total at 200 ms. The cap
+  breaks a feedback loop in slave mode: a larger shift makes the deck play
+  sooner, which puts more buffers in flight and raises the latency, which
+  grows the shift again.
+- When the guest's `frames_in_flight` stays above 10240 (about 107 ms at
+  96 kHz) for 8 s, the pipeline-depth watchdog in
+  `guest/modules/virtio_snd/virtio_snd.c` forces an xrun. JUCE prepares the
+  stream again, the prepare path sends `VIRTIO_SND_R_PCM_RELEASE` to the host,
+  and the backlog drains. See
+  [Pipeline-depth watchdog](audio-stack.md#pipeline-depth-watchdog-and-forced-xrun)
+  for the full recovery sequence.
 
 ---
 
@@ -237,15 +210,14 @@ the full recovery dance.
 
 | Scenario | Recommendation |
 |---|---|
-| Solo instance, no syncing | ALC has no audible effect - leave it on (default). |
-| Two emulator instances syncing to each other | ALC ON for both - phase-aligned audible. |
-| Emulator slaving to a real CDJ over a bridged network | ALC ON on the emulator. Real CDJ master's audible is the reference, emulator's slave needs to land there. |
-| Real CDJ slaving to an emulator master | ALC ON on the emulator master. The delayed packet stream lines its broadcasts up with its own audible; real CDJ's pipeline latency is ≈ 0 and predictable, so the slave plays correctly. |
-| Two emulator instances **not** synced over Pro DJ Link | ALC inactive on the wire (no broadcasts to delay) - fine either way. |
+| Single instance, no sync | ALC has no audible effect; leave it on (the default). |
+| Two emulator instances synced to each other | Turn ALC on for both; their audible beats then align. |
+| Emulator slaved to a real CDJ over a bridged network | Turn ALC on in the emulator. The real CDJ master's audio is the reference, and the emulated slave has to land on it. |
+| Real CDJ slaved to an emulator master | Turn ALC on in the emulator master. The delayed packets line its broadcasts up with its own audio; the real CDJ's pipeline latency is close to 0 and predictable, so the slave plays in time. |
+| Two emulator instances **not** synced over Pro DJ Link | ALC has nothing to delay on the network; either setting works. |
 
-Requires bridged networking to actually receive/send Pro DJ Link
-broadcasts. See `docs/network.md` for the iface selection and tap /
-vmnet wiring.
+ALC needs bridged networking to send and receive Pro DJ Link broadcasts. See
+`docs/network.md` for the interface choice and the tap and vmnet setup.
 
 ---
 
@@ -254,16 +226,16 @@ vmnet wiring.
 | Path | Role |
 |---|---|
 | `guest/deck_shim/core/clock.c` | LD_PRELOAD slave-mode clock shift on `OptFstUdpServer` |
-| `guest/deck_shim/core/link.c` | LD_PRELOAD master-mode delay-send (`sendto`/`sendmsg` + defer-close handler) |
-| `guest/deck_shim/core/syscalls.c` | `close()` hook - calls `shim_link_intercept_close` |
-| `guest/cfgd/cfgd.c` | Guest config daemon: param whitelist, 3 s latency push, `set`/`get` dispatch |
+| `guest/deck_shim/core/link.c` | LD_PRELOAD master-mode delayed send (`sendto`, `sendmsg`) and the deferred-close handler |
+| `guest/deck_shim/core/syscalls.c` | `close()` hook; calls `shim_link_intercept_close` |
+| `guest/cfgd/cfgd.c` | Guest config daemon: parameter whitelist, 3 s latency push, `set` and `get` dispatch |
 | `guest/modules/virtio_snd/virtio_snd.c` | Kernel driver: exposes `audio_sync_enabled`, `audio_latency_ms`, `link_pos_offset_ms` |
-| `crates/cdj3k-emu-runtime/src/cfg.rs` | `CfgClient` - host side of `cfg.sock` (line protocol, latency mirror) |
+| `crates/cdj3k-emu-runtime/src/cfg.rs` | `CfgClient`, the host side of `cfg.sock` (line protocol, latency mirror) |
 | `crates/cdj3k-emu-storage/src/settings/instance.rs` | `InstanceSettings::alc_enabled` (default true) |
 | `crates/cdj3k-emu-platform/src/menu/{service,action}.rs` | "Enable ALC (Experimental)" row, click dispatch |
-| `crates/cdj3k-emu-platform/src/menu_state.rs` | `alc_enabled` / `alc_toggle_requested` state mirror |
-| `app/cdj3k-emu/src/runtime_worker.rs` | Per-boot ALC push (`alc_pushed_for_boot` latch), toggle handler |
-| `docs/audio-stack.md` | Pipeline mechanics, watchdog, telemetry - the deep audio reference |
+| `crates/cdj3k-emu-platform/src/menu_state.rs` | `alc_enabled` and `alc_toggle_requested` |
+| `app/cdj3k-emu/src/runtime_worker.rs` | ALC push at each boot (`push_alc_once`), toggle handler (`set_alc`) |
+| `docs/audio-stack.md` | Audio pipeline, watchdog, telemetry |
 
 ---
 
@@ -273,16 +245,16 @@ vmnet wiring.
 # Master switch
 ssh root@<guest> 'cat /sys/module/virtio_snd/parameters/audio_sync_enabled'
 
-# Current compensation amount
+# Current compensation: guest_ms,host_ms,total_ms
 ssh root@<guest> 'cat /sys/module/virtio_snd/parameters/audio_latency_ms'
 
-# Force a manual override (e.g. pin to 50 ms)
+# Pin the offset to 50 ms
 ssh root@<guest> 'echo 50 > /sys/module/virtio_snd/parameters/link_pos_offset_ms'
 
-# Watch the cfg push live (host)
-nc -U /tmp/cdj3k-emu/instance-1/cfg.sock   # one of: `latency 21,30,51`
+# Watch the cfg push on the host
+nc -U /tmp/cdj3k-emu-$(id -u)/instance-1/cfg.sock   # prints lines such as `latency 21,30,51`
 
-# Shim debug (verbose, set before the app starts)
+# Shim debug logging (set in EP122's environment before it starts)
 DECK_TIME_SHIFT_DEBUG=1   # slave clock shim
 DECK_LINK_DEBUG=1         # master delay-send shim
 ```

@@ -15,8 +15,8 @@ use std::path::PathBuf;
 
 use cdj3k_emu_panel::Model;
 
-/// [`cdj3k_emu_platform::app_dirs::app_data_dir`], re-exported because this is
-/// where the slot directories under it are addressed from.
+/// [`cdj3k_emu_platform::app_dirs::app_data_dir`], re-exported because the
+/// slot directories are paths under it.
 pub use cdj3k_emu_platform::app_dirs::app_data_dir;
 
 /// `app_data_dir()/instance-N`: the slot's settings and its firmware.
@@ -126,8 +126,9 @@ impl SlotClaim {
         }
     }
 
-    /// [`SlotClaim::take`], tried again until `wait` has passed: for a process
-    /// started while the one holding the slot is on its way out.
+    /// Call [`SlotClaim::take`] until it succeeds or `wait` has passed. A
+    /// process uses this when it starts while the previous holder of the slot
+    /// is still exiting.
     pub fn take_within(
         instance_id: u32,
         wait: std::time::Duration,
@@ -168,9 +169,9 @@ pub fn slot_in_use(instance_id: u32) -> bool {
         || lock_exclusive(&FirmwarePaths::new(instance_id).emmc).is_err()
 }
 
-/// [`lock_exclusive`], tried again for up to a quarter of a second while
-/// another process holds the lock. For taking a lock to keep it: every probe
-/// holds one for an instant, and a single try could land on that instant.
+/// Call [`lock_exclusive`] again for up to a quarter of a second while another
+/// process holds the lock. Use it to take a lock that is kept: every probe
+/// holds the lock for an instant, and a single try could land on that instant.
 fn lock_exclusive_retry(path: &std::path::Path) -> std::io::Result<Option<std::fs::File>> {
     let mut tries = 0;
     loop {
@@ -228,13 +229,13 @@ pub fn slot_summary(instance_id: u32) -> Option<(Model, Option<String>)> {
     Some((model, slot_release(instance_id)))
 }
 
-/// Remembers the releases read out of eMMC images, so a slot whose settings
-/// predate the key costs one read per process rather than one per ask.
+/// Caches the releases read out of eMMC images, so a slot whose settings lack
+/// the key costs one read per process instead of one per call.
 static ENV_RELEASE: std::sync::Mutex<std::collections::BTreeMap<u32, Option<String>>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// Drop what [`slot_release`] remembers of the slot `paths` belong to, its
-/// eMMC having been replaced or removed.
+/// Forget the release that [`slot_release`] cached for the slot that `paths`
+/// belongs to, after its eMMC is replaced or removed.
 fn forget_release(paths: &FirmwarePaths) {
     let mut cache = ENV_RELEASE.lock().expect("release cache");
     cache.retain(|&slot, _| FirmwarePaths::new(slot).emmc != paths.emmc);
@@ -242,8 +243,8 @@ fn forget_release(paths: &FirmwarePaths) {
 
 /// The firmware release installed in `instance_id`.
 ///
-/// The slot's own record when it has one; otherwise the `release` its eMMC's
-/// U-Boot environment carries, which is where the installer has always put it.
+/// Returns the release recorded in the slot's settings, or else the `release`
+/// variable of its eMMC's U-Boot environment, where the installer writes it.
 /// That copy is not written back to the settings: another slot's file belongs
 /// to that slot's process, which holds a lock this one cannot see.
 pub fn slot_release(instance_id: u32) -> Option<String> {
@@ -260,8 +261,8 @@ pub fn slot_release(instance_id: u32) -> Option<String> {
     release
 }
 
-/// Record a slot that holds firmware but no `model` as a CDJ-3000: the
-/// only deck a slot held before the setting existed.
+/// Record a slot that holds firmware but no `model` as a CDJ-3000. Installing
+/// any other model records `model`, so an unrecorded slot holds a CDJ-3000.
 pub fn adopt_unrecorded_slot(instance_id: u32) {
     if settings::InstanceSettings::saved_model(instance_id).is_none()
         && FirmwarePaths::new(instance_id).provisioned()

@@ -35,18 +35,18 @@ fn tapbridge_base(instance_id: u32) -> String {
 /// The fixed macOS bridge interface shared with djx-emu so both emulators' TAPs
 /// land on the same L2 (DJ-Link). macOS bridges must be named `bridge<N>`;
 /// override with `DJPL_BRIDGE` (set identically in both apps). Both apps
-/// create-or-reuse this one bridge instead of an ephemeral `ifconfig bridge
-/// create`.
+/// create this bridge by name, or reuse it when it exists.
 fn djpl_bridge() -> String {
     std::env::var("DJPL_BRIDGE").unwrap_or_else(|_| "bridge99".to_string())
 }
 
-/// A live macOS bridge + QEMU TAP pair managed by an elevated watcher process,
+/// A macOS bridge and a QEMU TAP, managed by an elevated watcher process and
 /// torn down once this is dropped.
 pub struct TapBridge {
-    /// The macOS bridge interface created for this session (e.g. "bridge3").
+    /// The shared macOS bridge interface, such as "bridge99".
     pub bridge_iface: String,
-    /// The TAP interface name (e.g. "tap1") - informational; QEMU uses `qemu_tap_fd`.
+    /// The TAP interface name, such as "tap1". QEMU uses `qemu_tap_fd`, not
+    /// this name.
     pub qemu_tap: String,
     /// Open fd for `/dev/<qemu_tap>`.  Passed to QEMU as `tap,fd=N` so the
     /// interface is never DOWN between bridge setup and QEMU's first packet.
@@ -112,10 +112,11 @@ impl TapBridge {
         run_elevated(&cmd)?;
         lease.set_watched();
 
-        // Poll for the names file (watcher writes it after releasing the tap fd).
+        // Poll for the names file, which the watcher writes after it releases
+        // the tap fd.
         let (bridge_iface, qemu_tap) = wait_for_names(&names_file, Duration::from_secs(8))?;
 
-        // Open the tap device ourselves (watcher chmod'd it to 0666).
+        // Open the tap device here; the watcher has set its mode to 0666.
         // Holding this fd keeps the interface RUNNING in the bridge so there is
         // no DOWN/UP gap when QEMU starts; QEMU receives this fd directly via
         // `tap,fd=N` and never calls open() on /dev/tapN itself.
@@ -126,7 +127,7 @@ impl TapBridge {
             .open(&tap_dev)
             .map_err(|e| io::Error::new(e.kind(), format!("cannot open {tap_dev}: {e}")))?;
         let qemu_tap_fd = tap_file.as_raw_fd();
-        // Clear FD_CLOEXEC so the fd survives the fork+exec into --qemu-worker.
+        // Clear FD_CLOEXEC so the fd survives the fork and exec into --qemu-worker.
         unsafe { libc::fcntl(qemu_tap_fd, libc::F_SETFD, 0) };
 
         eprintln!(
@@ -164,7 +165,7 @@ struct Watch<'a> {
     app_pid: u32,
 }
 
-/// The watcher: this run's names, then [`WATCHER_BODY`].
+/// Builds the watcher script: this run's variables, followed by [`WATCHER_BODY`].
 fn build_watcher_script(
     watch: &Watch,
     host_tap: &str,
@@ -198,7 +199,7 @@ fn build_watcher_script(
 /// What the watcher does, given the variables [`build_watcher_script`] sets.
 const WATCHER_BODY: &str = r#"held() { [ "$(cat "$CLAIM_FILE" 2>/dev/null)" = "$CLAIM" ] && kill -0 "$APP_PID" 2>/dev/null; }
 
-# tuntap kext: tap devices only appear in ifconfig after /dev/tapN is opened.
+# With the tuntap kext, a tap device appears in ifconfig only after /dev/tapN is opened.
 # Claim the first free one by opening its device file on fd 3.
 TAP_QEMU=""
 for n in $(seq 0 15); do
@@ -216,8 +217,8 @@ for n in $(seq 0 15); do
 done
 [ -z "$TAP_QEMU" ] && { echo "tapbridge: no free tap device found" >&2; exit 1; }
 
-# Create-or-reuse the SHARED fixed bridge (shared with djx-emu). If it already
-# exists (another emulator made it), reuse it; otherwise create it by name.
+# Create the fixed bridge shared with djx-emu, or reuse it if another emulator
+# already made it.
 ifconfig "$BRIDGE" >/dev/null 2>&1 || ifconfig "$BRIDGE" create >/dev/null 2>&1 \
     || { echo "tapbridge: cannot create $BRIDGE" >&2; exit 1; }
 
@@ -228,18 +229,17 @@ if ! ifconfig "$BRIDGE" 2>/dev/null | grep -q "member: $HOST_TAP"; then
 fi
 ifconfig "$BRIDGE" up               2>/dev/null || true
 
-# Open tap1 briefly: creates the interface, brings it up, sets permissions.
-# Then release so Rust can take exclusive hold and pass fd=N to QEMU.
-# (tuntap kext is exclusive - only one process can hold the fd at a time.)
+# Bring the claimed tap up, then close fd 3 so the app can open the device and
+# pass fd=N to QEMU. The tuntap kext lets only one process hold the device at a time.
 ifconfig "$TAP_QEMU" up             2>/dev/null || true
 exec 3>&-
 
 printf '%s:%s\n' "$BRIDGE" "$TAP_QEMU" > "$NAMES_FILE"
 
-# Phase 1: Poll until Rust/QEMU has opened the tap (it will become RUNNING),
-# then add it to the bridge with STP off.  The interface disappears when the
-# watcher releases it above and reappears when Rust opens it - we must add
-# the new instance, not the old one.
+# Phase 1: poll until the app has opened the tap and it shows RUNNING, then add
+# it to the bridge with STP off. The interface disappears when the watcher
+# closes fd 3 and reappears when the app opens it, so it is added only after
+# it reappears.
 DEADLINE=$(( $(date +%s) + 10 ))
 while held; do
     if ifconfig "$TAP_QEMU" 2>/dev/null | grep -q RUNNING; then
@@ -256,8 +256,8 @@ while held; do
     sleep 0.5
 done
 
-# Tear down. The bridge is SHARED, so only remove OUR qemu tap; destroy the
-# bridge itself only when no other emulator's tap remains on it (last one out).
+# Tear down. The bridge is shared, so remove only this slot's QEMU tap, and
+# destroy the bridge only when no other emulator's tap remains on it.
 chmod 0600 "/dev/$TAP_QEMU" 2>/dev/null || true
 ifconfig "$BRIDGE"   deletem "$TAP_QEMU" 2>/dev/null || true
 ifconfig "$TAP_QEMU" down    2>/dev/null || true
@@ -307,7 +307,7 @@ fn cleanup_stale(instance_id: u32) {
     };
 
     eprintln!(
-        "cdj3k-emu: cleaning up stale tapbridge  bridge={}  tap={}",
+        "cdj3k-emu: removing a stale tapbridge (bridge={}, tap={})",
         bridge, tap
     );
 
@@ -317,7 +317,7 @@ fn cleanup_stale(instance_id: u32) {
         tap = sh_quote(&tap),
         nf = sh_quote(&names_file.to_string_lossy()),
     );
-    // Best-effort - ignore elevation cancellation.
+    // This is best-effort: a cancelled elevation prompt is ignored.
     let _ = run_elevated(&cmd);
 }
 

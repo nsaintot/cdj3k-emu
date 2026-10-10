@@ -7,9 +7,9 @@ index 4317677ba..a3f94e8db 100644
  /* defaults */
  #define MAX_BUFFER_SIZE		(64*1024)
 -#define MIN_PERIOD_SIZE		64
-+/* cdj3k-emu: bumped from 64 B to 4096 B so JUCE's audio loop wakes at ~47 Hz
-+ * instead of ~1500 Hz when the host audio path is disabled — keeps the host
-+ * QEMU vCPU exits low. */
++/* cdj3k-emu: the upstream minimum period is 64 B. With 4096 B, JUCE's audio
++ * loop wakes at about 47 Hz instead of about 1500 Hz when the host audio path
++ * is disabled, which keeps the QEMU vCPU exits on the host low. */
 +#define MIN_PERIOD_SIZE		4096
  #define MAX_PERIOD_SIZE		MAX_BUFFER_SIZE
  #define USE_FORMATS 		(SNDRV_PCM_FMTBIT_U8 | SNDRV_PCM_FMTBIT_S16_LE)

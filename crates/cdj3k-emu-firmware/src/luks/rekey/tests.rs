@@ -1,7 +1,7 @@
 use super::*;
 
-/// The deck derivation: serial `…05` = 5, so the unit string repeats
-/// 6 times.
+/// Checks the deck derivation: a serial ending in `05` gives N = 5, so the
+/// unit string repeats 6 times.
 #[test]
 fn the_passphrase_is_genkey_prs() {
     let pw = cabinet_passphrase("CDJ3000X", "0123456789abcd05").unwrap();
@@ -17,7 +17,7 @@ fn the_passphrase_is_genkey_prs() {
         cabinet_passphrase("CDJ3000X", "short"),
         Err(RekeyError::BadSerial)
     ));
-    // A zero last byte would repeat the unit string once, not never.
+    // A last byte of zero repeats the unit string once.
     assert_eq!(
         cabinet_passphrase("CDJ3000X", "0123456789abcd00")
             .unwrap()
@@ -26,8 +26,8 @@ fn the_passphrase_is_genkey_prs() {
     );
 }
 
-/// The factory derivation: `sha512hex(model + sha512hex(images.tar.gz))`,
-/// 128 hex digits with no newline.
+/// Checks the factory derivation, `sha512hex(model + sha512hex(images.tar.gz))`,
+/// which gives 128 hex digits with no newline.
 #[test]
 fn vendor_passphrase_is_genkey_pbs() {
     let tgz = b"pretend this is images.tar.gz";
@@ -39,8 +39,8 @@ fn vendor_passphrase_is_genkey_pbs() {
     assert_eq!(pw, outer.into_bytes());
 }
 
-/// A container no factory slot opens is refused untouched - a foreign
-/// cabinet, or the wrong firmware's `images.tar.gz`, must not be corrupted.
+/// A container that no factory slot opens, such as a foreign cabinet or one
+/// paired with another firmware's `images.tar.gz`, is refused and left unchanged.
 #[test]
 fn a_container_no_factory_slot_opens_is_refused() {
     let (mut image, _) = synthetic_container(64, "sha256", b"vendor");
@@ -107,9 +107,8 @@ pub(in crate::luks) fn synthetic_container(
     (image, master_key)
 }
 
-/// Add a unit slot to a synthetic container of each supported key size
-/// and open it again; the vendor slot keeps opening and the payload is
-/// untouched.
+/// Adds a unit slot to a synthetic container of each supported key size and
+/// opens it again. The vendor slot still opens and the payload is unchanged.
 #[test]
 fn a_new_keyslot_round_trips_for_both_key_sizes() {
     for (key_bytes, hash) in [(32, "sha256"), (64, "sha256"), (32, "sha1"), (64, "sha1")] {
@@ -158,8 +157,8 @@ fn put32(image: &mut [u8], at: usize, value: u32) {
     image[at..at + 4].copy_from_slice(&value.to_be_bytes());
 }
 
-/// `mutate` applied to a valid container must make [`add_keyslot`] fail
-/// with an error `check` accepts, leaving the image untouched.
+/// Applies `mutate` to a valid container and checks that [`add_keyslot`]
+/// fails with an error `check` accepts and leaves the image unchanged.
 #[track_caller]
 fn refused(mutate: impl Fn(&mut Vec<u8>), check: impl Fn(&RekeyError) -> bool) {
     let (mut image, _) = synthetic_container(64, "sha256", b"vendor");
@@ -227,7 +226,7 @@ fn malformed_key_size_payload_and_digest_are_refused() {
     refused(|i| put32(i, 164, 0), |e| matches!(e, Malformed(_)));
 }
 
-/// The active vendor slot and an inactive one.
+/// Checks both the active vendor slot and an inactive slot.
 #[test]
 fn malformed_keyslot_entries_are_refused() {
     use RekeyError::*;
@@ -251,8 +250,8 @@ fn malformed_keyslot_entries_are_refused() {
     refused(|i| put32(i, SLOT0 + 4, 0), |e| matches!(e, Malformed(_)));
 }
 
-/// Slot 1 moved onto slot 0's material, and slot 7 four sectors into the
-/// payload.
+/// Moves slot 1 onto slot 0's material, and moves slot 7 so that its material
+/// runs four sectors into the payload.
 #[test]
 fn overlapping_key_material_is_refused() {
     use RekeyError::*;

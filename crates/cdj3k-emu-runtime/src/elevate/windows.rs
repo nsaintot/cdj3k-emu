@@ -1,5 +1,5 @@
-//! UAC, through `ShellExecuteExW` with the `runas` verb. The command runs in
-//! `cmd.exe /C`, hidden, and its exit code is the result.
+//! Elevation through UAC, using `ShellExecuteExW` with the `runas` verb. The
+//! command runs hidden in `cmd.exe /C`, and its exit code is the result.
 
 use std::io;
 
@@ -13,7 +13,7 @@ pub fn run_elevated(cmd: &str) -> io::Result<()> {
     if cmd.contains('\0') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "command contains null byte",
+            "the command contains a null byte",
         ));
     }
     let params = HSTRING::from(format!("/C {cmd}"));
@@ -29,17 +29,20 @@ pub fn run_elevated(cmd: &str) -> io::Result<()> {
     // SAFETY: `info` and the strings it points at outlive the call.
     if let Err(e) = unsafe { ShellExecuteExW(&mut info) } {
         return Err(if e.code() == ERROR_CANCELLED.to_hresult() {
-            io::Error::new(io::ErrorKind::PermissionDenied, "admin elevation refused")
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the request for admin rights was refused",
+            )
         } else {
             io::Error::other(format!("could not start the elevated command: {e}"))
         });
     }
     let process = info.hProcess;
     if process.is_invalid() {
-        return Err(io::Error::other("elevated command returned no process"));
+        return Err(io::Error::other("the elevated command returned no process"));
     }
-    // SAFETY: `process` is the handle `SEE_MASK_NOCLOSEPROCESS` handed us; it
-    // is closed exactly once, below.
+    // SAFETY: `process` is the handle that `SEE_MASK_NOCLOSEPROCESS` returned,
+    // and it is closed exactly once, below.
     let code = unsafe {
         let waited = WaitForSingleObject(process, INFINITE);
         let mut code = 0u32;
@@ -52,7 +55,7 @@ pub fn run_elevated(cmd: &str) -> io::Result<()> {
     match code {
         Some(0) => Ok(()),
         Some(code) => Err(io::Error::other(format!(
-            "elevated command failed with status {code}"
+            "the elevated command failed with status {code}"
         ))),
         None => Err(io::Error::other(
             "could not read the elevated command's exit code",

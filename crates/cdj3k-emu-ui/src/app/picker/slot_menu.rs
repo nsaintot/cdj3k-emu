@@ -16,17 +16,17 @@ const SLOT_MENU_ROW_H: f32 = 30.0;
 const SLOT_MENU_PAD: f32 = 10.0;
 const SLOT_MENU_GAP: f32 = 10.0;
 const SLOT_MENU_FONT: f32 = 12.0;
-/// Where a slot's deck name starts, past its own number.
+/// The offset of a slot's deck name, after the slot number.
 const SLOT_MENU_NAME_W: f32 = 52.0;
-/// Room kept at the right end for the "THIS WINDOW" note.
+/// The room kept at the right end for the "THIS WINDOW" note.
 const SLOT_MENU_HERE_W: f32 = 74.0;
-/// Between a slot's deck name and the firmware release on it.
+/// The gap between a slot's deck name and its firmware release.
 const SLOT_MENU_REL_GAP: f32 = 7.0;
 
-/// The slot chip, its left end and centre line at `at`: which slot this
-/// window is showing, and the way to the others. Picking one points the
-/// window at that slot; running it stays its own window's job. Returns the
-/// chip's width and any slot picked.
+/// Draws the slot chip with its left end and centre line at `at`. It names the
+/// slot this window shows and opens a menu of the other slots. Picking a slot
+/// points this window at it; that slot's emulation still runs in its own
+/// window. Returns the chip's width and any slot picked.
 pub(super) fn draw_slot_switch(
     ui: &egui::Ui,
     at: Pos2,
@@ -47,7 +47,7 @@ pub(super) fn draw_slot_switch(
         Pos2::new(at.x + w * 0.5, at.y),
         Vec2::new(w, SLOT_CHIP_H * k),
     );
-    // The chip's outline in `edge`, and its label.
+    // Draw the chip's outline in `edge`, and its label.
     let face = |edge: egui::Color32| {
         p.rect_stroke(
             chip,
@@ -81,8 +81,8 @@ pub(super) fn draw_slot_switch(
     (w, slot_menu(ui, &resp, id, popup, slot, pal, k))
 }
 
-/// The chevron before the chip's right end at `end`: this opens a menu, so
-/// it points down at one.
+/// Draws a downward chevron before the chip's right end at `end`, to show
+/// that the chip opens a menu.
 fn chevron(p: &egui::Painter, end: Pos2, pal: &Palette, k: f32) {
     let c = Pos2::new(end.x - SLOT_CHIP_PAD * k - SLOT_CHEV_W * k * 0.5, end.y);
     let (hw, hh) = (SLOT_CHEV_W * k * 0.5, SLOT_CHEV_H * k * 0.5);
@@ -97,8 +97,8 @@ fn chevron(p: &egui::Painter, end: Pos2, pal: &Palette, k: f32) {
     );
 }
 
-/// The menu the chip opens: one row per slot. Returns a slot other than
-/// `slot` that was picked.
+/// Draws the menu the chip opens, with one row per slot. Returns a slot
+/// other than `slot` that was picked.
 fn slot_menu(
     ui: &egui::Ui,
     resp: &egui::Response,
@@ -109,8 +109,8 @@ fn slot_menu(
     k: f32,
 ) -> Option<u32> {
     let mut picked = None;
-    // The popup takes its frame from the style it is given; this one carries
-    // the setup's palette over the context's (in-window menu) style.
+    // The popup takes its frame from the style it is given, so this host UI
+    // applies the setup palette over the context's in-window menu style.
     let mut host = egui::Ui::new(
         ui.ctx().clone(),
         id.with("menu_host"),
@@ -140,10 +140,10 @@ fn slot_menu(
     picked
 }
 
-/// One slot in that menu: its deck colour, its name, and what it holds.
+/// Draws one slot in that menu: its deck colour, its name, and what it holds.
 fn slot_menu_row(ui: &mut egui::Ui, n: u32, here: bool, pal: &Palette, k: f32) -> egui::Response {
-    // What the slot holds, not what it last recorded: a slot keeps its model
-    // in settings after its files are deleted.
+    // Read what the slot's files hold, because a slot keeps its model in
+    // settings after its files are deleted.
     let held = cdj3k_emu_storage::slot_summary(n);
     let (rect, resp) = ui.allocate_exact_size(
         Vec2::new(ui.available_width(), SLOT_MENU_ROW_H * k),
@@ -172,8 +172,8 @@ fn slot_menu_row(ui: &mut egui::Ui, n: u32, here: bool, pal: &Palette, k: f32) -
     theme::pointer(resp)
 }
 
-/// The square at a row's left end: filled with the deck's colour, or an
-/// empty outline for an empty slot. Returns where it is.
+/// Draws the square at a row's left end: filled with the deck's colour, or an
+/// empty outline for an empty slot. Returns its rect.
 fn row_swatch(
     p: &egui::Painter,
     rect: Rect,
@@ -206,8 +206,8 @@ fn row_swatch(
     mark
 }
 
-/// The slot's number from `x`, then the deck it holds and the firmware it
-/// was installed from.
+/// Draws the slot's number from `x`, then the deck it holds and the firmware
+/// it was installed from.
 fn row_texts(
     p: &egui::Painter,
     rect: Rect,

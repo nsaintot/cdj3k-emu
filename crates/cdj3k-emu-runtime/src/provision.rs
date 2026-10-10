@@ -1,10 +1,11 @@
 //! Booting the short-lived guest that provisions the initramfs.
 //!
-//! `cdj3k-emu-firmware` describes the provisioning boot but cannot start one —
-//! QEMU lives here. This supplies the [`GuestRunner`] it asks for.
+//! `cdj3k-emu-firmware` describes the provisioning boot but cannot start it,
+//! because QEMU is part of this crate. This module provides the
+//! [`GuestRunner`] that the firmware crate needs.
 //!
-//! The boot is nothing like a player launch: no displays, no sockets, no
-//! audio, no networking. It unpacks an initramfs that carries the patch
+//! The boot differs from a player launch: it has no displays, sockets, audio
+//! or networking. It unpacks an initramfs that carries the patch
 //! scripts, runs them, writes the result to a scratch disk and powers off.
 
 use std::path::Path;
@@ -14,8 +15,8 @@ use cdj3k_emu_platform::host::{self, Accelerator};
 
 /// How long to wait before assuming the guest will never power off.
 ///
-/// Generous because the work is bounded but slow under TCG: unpacking a
-/// ~150 MiB initramfs, running the patch set, and tarring the result back.
+/// The timeout is generous because the work is slow under TCG: the guest
+/// unpacks a 150 MiB initramfs, runs the patch set and tars the result.
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Boots the provisioning guest with the emulator's own QEMU.
@@ -23,11 +24,11 @@ pub struct QemuGuestRunner {
     /// The accelerators to try, fastest first. Software emulation follows
     /// them.
     ///
-    /// Measured on this rootfs: the in-kernel vGIC boots it in 1.1 s against
-    /// 1.8 s for the emulated one, and 29.6 s under TCG.
+    /// The rootfs boots in 1.1 s with the in-kernel vGIC, 1.8 s with the
+    /// emulated one, and 29.6 s under TCG.
     pub accelerators: Vec<Accelerator>,
-    /// Provision passwordless root SSH into the guest: `cdj3k.ssh=1` on the
-    /// provisioning boot, which the patch dispatcher reads as `ENABLE_SSH`.
+    /// Provision passwordless root SSH into the guest. The provisioning boot
+    /// gets `cdj3k.ssh=1`, which the patch dispatcher reads as `ENABLE_SSH`.
     pub ssh: bool,
 }
 
@@ -42,16 +43,18 @@ impl Default for QemuGuestRunner {
 
 impl GuestRunner for QemuGuestRunner {
     fn run(&self, kernel: &Path, initramfs: &Path, scratch: &Path) -> Result<(), String> {
-        // QEMU exits rather than degrading when it cannot get the acceleration
-        // it was asked for, so the ladder is walked here. A shipped build is
-        // entitled and stops on the first rung.
+        // QEMU exits when it cannot get the requested acceleration, so this
+        // loop tries each rung in turn. A shipped build has the entitlement
+        // and stops on the first rung.
         let mut output = String::new();
         for accel in self.ladder() {
             output = spawn_qemu(&provisioning_argv(
                 accel, kernel, initramfs, scratch, self.ssh,
             ))?;
             match refused(&output) {
-                Some(reason) => eprintln!("[provision] {accel:?} unavailable ({reason}), retrying"),
+                Some(reason) => eprintln!(
+                    "[provision] {accel:?} is unavailable ({reason}); trying the next accelerator."
+                ),
                 None => break,
             }
         }
@@ -75,9 +78,9 @@ impl QemuGuestRunner {
 
 /// Why QEMU refused to start, when the reason is the accelerator.
 ///
-/// An unentitled build reports the missing vGIC rather than the missing
-/// entitlement, because upstream QEMU ignores `hv_vm_create`'s HV_DENIED — so
-/// both spellings have to be recognised.
+/// A build without the entitlement reports a missing vGIC instead of the
+/// missing entitlement, because upstream QEMU ignores the HV_DENIED that
+/// `hv_vm_create` returns. Both messages have to be recognised.
 fn refused(output: &str) -> Option<&'static str> {
     if output.contains("error creating platform VGIC") || output.contains("HV_NO_DEVICE") {
         Some("no in-kernel vGIC; the build may not carry com.apple.security.hypervisor")
@@ -87,7 +90,7 @@ fn refused(output: &str) -> Option<&'static str> {
     {
         Some("no hypervisor")
     } else if output.contains("invalid accelerator") {
-        // A rung this QEMU was not built with: degrade to the next rung
+        // This QEMU was built without the accelerator; move to the next rung
         // instead of reporting a missing rootfs.
         Some("this QEMU was not built with that accelerator")
     } else {
@@ -123,9 +126,9 @@ fn provisioning_argv(
         "6".into(),
         "-nographic".into(),
         "-no-reboot".into(),
-        // No network at all. Left to itself the `virt` machine creates a
-        // default virtio-net-pci, which wants a PXE romfile the bundled QEMU
-        // does not carry — and this guest has nothing to talk to.
+        // Turn the network off. By default the `virt` machine creates a
+        // virtio-net-pci, which needs a PXE romfile that the bundled QEMU does
+        // not carry, and this guest has nothing to talk to.
         "-nic".into(),
         "none".into(),
     ];
@@ -138,12 +141,12 @@ fn provisioning_argv(
         kernel.display().to_string(),
         "-initrd".into(),
         initramfs.display().to_string(),
-        // MMIO, not PCI: `if=virtio` builds a virtio-blk-pci that wants a PXE
-        // romfile the bundled QEMU does not carry. The player attaches its
-        // disks the same way.
+        // Attach the disk over MMIO: `if=virtio` would build a virtio-blk-pci,
+        // which needs a PXE romfile that the bundled QEMU does not carry. The
+        // player attaches its disks the same way.
         //
-        // The guest sees this as mmcblk1, not vda: the kernel renames
-        // virtio-blk so the firmware finds its eMMC where it expects one.
+        // The guest sees the disk as mmcblk1, because the kernel renames
+        // virtio-blk devices so that the firmware finds its eMMC.
         "-drive".into(),
         format!("file={},format=raw,if=none,id=handback", scratch.display()),
         "-device".into(),
@@ -294,12 +297,12 @@ mod tests {
 
     #[test]
     fn both_spellings_of_a_missing_entitlement_are_recognised() {
-        // Upstream QEMU ignores hv_vm_create's HV_DENIED, so an unentitled
-        // build reports the vGIC rather than the entitlement.
+        // Upstream QEMU ignores the HV_DENIED from hv_vm_create, so a build
+        // without the entitlement reports the vGIC instead.
         assert!(refused("cdj3k-emu-qemu: -accel hvf: error creating platform VGIC").is_some());
         assert!(refused("Error: ret = HV_NO_DEVICE (0xfae94006)").is_some());
         assert!(refused("-accel hvf: Could not access HVF. Is the executable signed").is_some());
-        // A rung this QEMU was not built with.
+        // This QEMU was built without the accelerator.
         assert!(
             refused("qemu-system-aarch64: -accel hvf: invalid accelerator hvf").is_some(),
             "an accelerator this build lacks must degrade, not fail the install"
@@ -313,7 +316,7 @@ mod tests {
         assert_eq!(argv(HVF)[0], "cdj3k-emu-qemu");
     }
 
-    /// SSH is asked for on the kernel command line, and only when chosen.
+    /// The kernel command line requests SSH only when `ssh` is set.
     #[test]
     fn ssh_rides_the_command_line_only_when_asked() {
         let (k, i, s) = (

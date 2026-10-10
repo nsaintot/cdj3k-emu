@@ -1,5 +1,5 @@
-//! macOS adapter: DiskArbitration, and the admin prompt that opens a device
-//! for writing.
+//! The macOS adapter. It uses DiskArbitration, and an admin prompt that opens
+//! a device for writing.
 
 use super::{DiskProvider, HostDiskProvider, PhysicalDisk, RawMedium, UsbError};
 use std::path::Path;
@@ -55,8 +55,8 @@ pub(super) fn open_raw(disk: &PhysicalDisk, _qmp_fd_socket: &Path) -> Result<Raw
 }
 
 /// Show a macOS admin-password dialog and run `chmod 660 <dev>` as root.
-/// Returns Ok if the device is now group-writable, Err if the user cancelled
-/// or the operation failed.
+/// Return `Ok` if the device is now group-writable, and `Err` if the user
+/// cancelled or the operation failed.
 ///
 /// `dev_path` is interpolated into an AppleScript string, so it must match the
 /// BSD disk shape (`/dev/disk<N>` or `/dev/disk<N>s<M>`) and nothing else.
@@ -64,7 +64,7 @@ fn unlock_device_write(dev_path: &str) -> std::io::Result<()> {
     if !is_valid_bsd_disk_path(dev_path) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("refusing to elevate on suspicious device path: {dev_path}"),
+            format!("refusing to elevate for a suspicious device path: {dev_path}"),
         ));
     }
     let script = format!("do shell script \"chmod 660 {dev_path}\" with administrator privileges");
@@ -79,9 +79,9 @@ fn unlock_device_write(dev_path: &str) -> std::io::Result<()> {
     }
 }
 
-/// `/dev/disk<digits>` optionally followed by `s<digits>`. Matches every BSD
-/// disk path macOS emits and rejects everything else (no spaces, no quotes,
-/// no `;`, no `..`).
+/// Return whether `p` is `/dev/disk<digits>`, optionally followed by
+/// `s<digits>`. This matches every BSD disk path that macOS emits and rejects
+/// anything else, such as a path with a space, a quote, `;` or `..`.
 fn is_valid_bsd_disk_path(p: &str) -> bool {
     let Some(rest) = p.strip_prefix("/dev/disk") else {
         return false;
@@ -112,16 +112,17 @@ pub fn create_image(img_path: &Path, size_bytes: u64) -> std::io::Result<()> {
     format_exfat(img_path)
 }
 
-/// Format a raw image file as MBR + exFAT using macOS hdiutil + diskutil.
+/// Format a raw image file with an MBR partition table and one exFAT
+/// partition, using hdiutil and diskutil.
 ///
-/// Uses `hdiutil attach -nomount` to expose the file as a block device, then
-/// `diskutil eraseDisk` to write an MBR partition table with one exFAT partition
-/// (label REKORDBOX).  The block device is detached before returning.
+/// `hdiutil attach -nomount` exposes the file as a block device, then
+/// `diskutil eraseDisk` writes an MBR partition table with one exFAT partition
+/// labelled REKORDBOX. The block device is detached before this returns.
 ///
-/// MBR partition table: guest sees /dev/sdb1 (exFAT), which blkid correctly
+/// With an MBR partition table, the guest sees an exFAT /dev/sdb1, which blkid
 /// identifies and the attach script mounts.
 pub fn format_exfat(img_path: &Path) -> std::io::Result<()> {
-    // Attach image without mounting - get back a /dev/diskN device.
+    // Attach the image without mounting it; hdiutil prints the /dev/diskN device.
     let out = Command::new("hdiutil")
         .args([
             "attach",
@@ -147,16 +148,16 @@ pub fn format_exfat(img_path: &Path) -> std::io::Result<()> {
 
     if disk.is_empty() {
         return Err(std::io::Error::other(
-            "hdiutil attach: could not parse disk device from output",
+            "could not find the disk device in the output of hdiutil attach",
         ));
     }
 
-    // Format: MBR partition table + single exFAT partition labelled REKORDBOX.
+    // Write an MBR partition table with one exFAT partition labelled REKORDBOX.
     let fmt = Command::new("diskutil")
         .args(["eraseDisk", "ExFAT", "REKORDBOX", "MBR", &disk])
         .status();
 
-    // Always detach, even on format failure.
+    // Detach the device even when formatting fails.
     let _ = Command::new("hdiutil").args(["detach", &disk]).status();
 
     match fmt {

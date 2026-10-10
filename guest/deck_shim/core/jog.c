@@ -34,9 +34,9 @@ typedef struct {
 _Static_assert(sizeof(fake_drm_version_t) == 64,
                "fake_drm_version_t must be 64 bytes on aarch64");
 
-/* The 1280×240 @ 71 Hz mode we hand to the app (DSI-2, jog LCD).
- * Declared `extern` in shim.h - also consumed by jog_drm.c when synthesising
- * the connector mode list. */
+/* The 1280×240 71 Hz mode that the shim gives the app for the jog LCD (DSI-2).
+ * deck_shim.h declares it extern, and jog_drm.c also uses it when it builds
+ * the connector's mode list. */
 const fake_modeinfo_t g_fake_mode = {
     .clock       = FAKE_CLK_KHZ,
     .hdisplay    = FAKE_W,
@@ -90,10 +90,10 @@ void flip_slot_free(int fd) {
 static uint32_t g_setplane_crtc_id = 0;
 static uint32_t g_setplane_fb_id   = 0;
 
-/* Linear scan over the small (≤ JOG_MAX_FBS) registered-jog-fb table. Returns
- * the host-visible dma pointer for `fb_id`, or NULL if the app hasn't mmap'd it
- * yet. Centralises the lookup that PAGE_FLIP, SETCRTC, SETPLANE,
- * ATOMIC_COMMIT, and DIRTY_FB all need on every flip. */
+/* Scan the table of registered jog framebuffers (at most JOG_MAX_FBS) and
+ * return the DMA-mapped pointer for `fb_id`, or NULL if the app has not
+ * mmap'd it yet. PAGE_FLIP, SETCRTC, SETPLANE and ATOMIC_COMMIT use it on
+ * every flip. */
 void *jog_dma_for_fb(uint32_t fb_id)
 {
     for (int i = 0; i < g_jog_fb_count; i++) {
@@ -115,24 +115,24 @@ static void inject_drm_flip_event(int fd, uint64_t user_data)
 int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
     uint8_t cmd = (uint8_t)(request & 0xFFu);
 
-    /* SET_MASTER (0x1e) / DROP_MASTER (0x1f): the app tries to become DRM master after
-     * opening the device.  With Xorg already holding master on virtio_gpu this returns
-     * EPERM, which the app treats as a fatal init error.  The shim handles all KMS calls
-     * itself so the app never needs to be the real master - just pretend to succeed. */
+    /* SET_MASTER (0x1e) and DROP_MASTER (0x1f): the app tries to become DRM master
+     * after it opens the device. Xorg already holds master on virtio_gpu, so the
+     * kernel returns EPERM, which the app treats as a fatal init error. The shim
+     * handles the KMS calls the app needs, so it reports success instead. */
     if (cmd == 0x1eu || cmd == 0x1fu) {
-        DBG("drm ioctl(fd=%d, %s) → 0 (suppressed)\n", fd,
+        DBG("drm ioctl(fd=%d, %s): suppressed, returning 0\n", fd,
             cmd == 0x1eu ? "SET_MASTER" : "DROP_MASTER");
         return 0;
     }
 
-    /* SET_CLIENT_CAP (0x0D): virtio-gpu rejects DRM_CLIENT_CAP_ATOMIC (cap=3) with
-     * EOPNOTSUPP.  The app calls drmSetClientCap(ATOMIC) twice - once during init and
-     * once from a deferred capability-check thread.  The second call crashes the app.
-     * Always return 0 regardless of capability so the app proceeds with atomic mode. */
+    /* SET_CLIENT_CAP (0x0D): virtio-gpu rejects DRM_CLIENT_CAP_ATOMIC (cap 3) with
+     * EOPNOTSUPP. The app calls drmSetClientCap(ATOMIC) twice, once during init and
+     * once from a deferred capability-check thread, and the second failure crashes
+     * the app. Return 0 for every capability so the app proceeds in atomic mode. */
     if (cmd == DRM_CMD_SET_CLIENT_CAP) {
-        /* The app calls SET_CLIENT_CAP again during jog-LCD re-initialization, before
-         * it rebuilds its callback context.  Any flip still pending at that point
-         * would fire into a freed evctx → SIGSEGV.  Clear it now. */
+        /* The app calls SET_CLIENT_CAP again when it re-initialises the jog LCD, before
+         * it rebuilds its callback context. A flip still pending then would call into
+         * the freed evctx and crash with SIGSEGV, so clear it here. */
         {
             jog_flip_slot_t *s = flip_slot_for(fd);
             if (s) __atomic_store_n(&s->pending, 0, __ATOMIC_SEQ_CST);
@@ -141,7 +141,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
     }
 
     if (cmd == DRM_CMD_VERSION) {
-        /* Fake "rockchip" driver name so the app's JogLcdDRM passes its driver check. */
+        /* Report the "rockchip" driver name so the app's JogLcdDRM passes its check. */
         if (arg) {
             fake_drm_version_t *v = (fake_drm_version_t *)arg;
             v->version_major      = 1;
@@ -154,7 +154,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
             if (v->desc && v->desc_len >= 6) memcpy(v->desc, "RK DRM", 6);
             v->desc_len = 6;
         }
-        DBG("drm ioctl(fd=%d, VERSION) → rockchip v1.4.0\n", fd);
+        DBG("drm ioctl(fd=%d, VERSION): reporting rockchip v1.4.0\n", fd);
         return 0;
     }
 
@@ -178,13 +178,13 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
             uint32_t h = p[0], w = p[1], bpp = p[2];
             uint32_t handle = p[4], pitch = p[5];
             uint64_t size; memcpy(&size, p + 6, 8);
-            DBG("CREATE_DUMB: %ux%u bpp=%u → handle=%u pitch=%u size=%llu rc=%d\n",
+            DBG("CREATE_DUMB: %ux%u bpp=%u returned handle=%u pitch=%u size=%llu rc=%d\n",
                 w, h, bpp, handle, pitch, (unsigned long long)size, r);
         }
         return r;
     }
 
-    /* ADDFB2: pass through, log dimensions, map + export if 1280×240. */
+    /* ADDFB2: pass through and log; also map and export a 1280×240 buffer. */
     if (cmd == DRM_CMD_MODE_ADDFB2) {
         int r = sys_ioctl(fd, request, arg);
         if (arg) {
@@ -192,7 +192,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
             uint32_t w = p[1], h = p[2], handle = p[5], fb_id = p[0];
             uint32_t pitch0  = p[9];
             uint32_t offset0 = p[13];
-            DBG("ADDFB2: %ux%u handle=%u pitch=%u offset=%u → fb_id=%u rc=%d\n",
+            DBG("ADDFB2: %ux%u handle=%u pitch=%u offset=%u returned fb_id=%u rc=%d\n",
                 w, h, handle, pitch0, offset0, fb_id, r);
             if (r == 0 && w == 1280 && h == 240 && handle != 0)
                 export_jog_prime(fd, handle, fb_id);
@@ -200,13 +200,13 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
         return r;
     }
 
-    /* Legacy ADDFB */
+    /* Legacy ADDFB: the same handling as ADDFB2. */
     if (cmd == DRM_CMD_MODE_ADDFB) {
         int r = sys_ioctl(fd, request, arg);
         if (arg) {
             const uint32_t *p = (const uint32_t *)arg;
             uint32_t w = p[1], h = p[2], handle = p[6], fb_id = p[0];
-            DBG("ADDFB: %ux%u handle=%u → fb_id=%u rc=%d\n",
+            DBG("ADDFB: %ux%u handle=%u returned fb_id=%u rc=%d\n",
                 w, h, handle, fb_id, r);
             if (r == 0 && w == 1280 && h == 240 && handle != 0)
                 export_jog_prime(fd, handle, fb_id);
@@ -271,7 +271,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
                 if (count_props == 0 || props_ptr == 0) {
                     uint32_t n = 2;
                     memcpy(b + 16, &n, 4);
-                    DBG("OBJ_GETPROPS(1): plane=%u → count=2 (FB_ID,CRTC_ID)\n", obj_id);
+                    DBG("OBJ_GETPROPS(1): plane=%u: reporting 2 properties (FB_ID, CRTC_ID)\n", obj_id);
                 } else {
                     uint32_t ids[2]  = { 100u, 101u };
                     uint64_t vals[2] = { (uint64_t)g_setplane_fb_id,
@@ -281,7 +281,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
                     memcpy((void *)(uintptr_t)props_ptr,       ids,  count_props * 4);
                     memcpy((void *)(uintptr_t)prop_values_ptr, vals, count_props * 8);
                     memcpy(b + 16, &n, 4);
-                    DBG("OBJ_GETPROPS(2): plane=%u → FB_ID=%u CRTC_ID=%u\n",
+                    DBG("OBJ_GETPROPS(2): plane=%u: reporting FB_ID=%u CRTC_ID=%u\n",
                         obj_id, g_setplane_fb_id, g_setplane_crtc_id);
                 }
                 return 0;
@@ -305,7 +305,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
                 memcpy(b + 20, &flags, 4);
                 memcpy(b + 56, &zero,  4);
                 memcpy(b + 60, &zero,  4);
-                DBG("GETPROPERTY: prop_id=%u → name=%s\n", prop_id, name);
+                DBG("GETPROPERTY: prop_id=%u: reporting name=%s\n", prop_id, name);
                 return 0;
             }
         }
@@ -354,9 +354,9 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
         return 0;
     }
 
-    /* GETPLANERESOURCES (0xB5): virtio-gpu only exposes planes for CRTC 0 (main
-     * screen); none have possible_crtcs & 0x2 (jog CRTC bit). Synthesize a
-     * single plane 80 so the app finds a plane capable of driving the jog CRTC.
+    /* GETPLANERESOURCES (0xB5): virtio-gpu exposes planes only for CRTC 0 (the main
+     * screen); none has the jog CRTC bit (0x2) in possible_crtcs. Report a single
+     * synthetic plane 80, so the app finds a plane that can drive the jog CRTC.
      *
      * struct drm_mode_get_plane_res: u64 plane_id_ptr [0..7], u32 count_planes [8..11] */
     if (cmd == 0xB5u) {
@@ -369,20 +369,20 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
         if (count == 0 || ptr == 0) {
             uint32_t one = 1;
             memcpy((uint8_t *)arg + 8, &one, 4);
-            DBG("GETPLANERESOURCES: synthetic count=1 (plane 80)\n");
+            DBG("GETPLANERESOURCES: reporting one synthetic plane (80)\n");
         } else {
             uint32_t pid = 80;
             memcpy((void *)(uintptr_t)ptr, &pid, sizeof(pid));
             uint32_t one = 1;
             memcpy((uint8_t *)arg + 8, &one, 4);
-            DBG("GETPLANERESOURCES: wrote plane_ids=[80] count=1\n");
+            DBG("GETPLANERESOURCES: wrote plane_ids=[80], count 1\n");
         }
         return 0;
     }
 
-    /* GETPLANE (0xB6): virtio-gpu 4.4 returns ENOMEM which the app mishandles
-     * (segfault via bad ptr deref). Return a synthetic valid response for plane 80
-     * with possible_crtcs=0x3 so the app sees it as valid for both CRTCs (main + jog).
+    /* GETPLANE (0xB6): virtio-gpu on kernel 4.4 returns ENOMEM, and the app then
+     * dereferences a bad pointer and crashes. Return a valid synthetic plane 80 with
+     * possible_crtcs=0x3, usable on both CRTCs (the main screen and the jog LCD).
      *
      * struct drm_mode_get_plane: plane_id[0] crtc_id[1] fb_id[2] possible_crtcs[3]
      *   gamma_size[4] count_format_types[5] format_type_ptr[6..7] */
@@ -395,13 +395,13 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
             p[3] = (plane_id == 80) ? 0x3u : 0x1u;
             p[4] = 0;
             p[5] = 0;
-            DBG("GETPLANE: plane=%u → crtc=%u fb=%u possible=0x%x (synthetic)\n",
+            DBG("GETPLANE: plane=%u: reporting crtc=%u fb=%u possible=0x%x (synthetic)\n",
                 plane_id, p[1], p[2], p[3]);
         }
         return 0;
     }
 
-    /* MAP_DUMB: snoop mmap offset for jog buffers. */
+    /* MAP_DUMB: record the mmap offset of each jog buffer. */
     if (cmd == DRM_CMD_MODE_MAP_DUMB) {
         int r = sys_ioctl(fd, request, arg);
         if (r == 0 && arg) {
@@ -409,7 +409,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
             for (int i = 0; i < g_jog_fb_count; i++) {
                 if (g_jog_fbs[i].handle == md->handle) {
                     g_jog_fbs[i].mmap_offset = md->offset;
-                    DBG("MAP_DUMB jog handle=%u → mmap_offset=0x%llx\n",
+                    DBG("MAP_DUMB: jog handle=%u has mmap_offset=0x%llx\n",
                         md->handle, (unsigned long long)md->offset);
                 }
             }
@@ -417,7 +417,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
         return r;
     }
 
-    /* GETENCODER: pass through, log, and patch crtc_id=0 for the jog encoder. */
+    /* GETENCODER: pass through and log; give a jog encoder with crtc_id 0 the second CRTC. */
     if (cmd == DRM_CMD_MODE_GETENCODER) {
         int r = sys_ioctl(fd, request, arg);
         if (r == 0 && arg) {
@@ -440,7 +440,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
                     }
                     free(cids); free(fids); free(nids); free(eids);
                 }
-                DBG("GETENCODER(id=%u) type=%u possible=0x%x → patched crtc_id=%u\n",
+                DBG("GETENCODER(id=%u) type=%u possible=0x%x: crtc_id patched to %u\n",
                     ke->encoder_id, ke->encoder_type, ke->possible_crtcs, ke->crtc_id);
             } else {
                 DBG("GETENCODER(id=%u) type=%u crtc_id=%u possible=0x%x\n",
@@ -492,7 +492,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
         return 0;
     }
 
-    /* Catch-all: pass through and log rc. */
+    /* Pass every other command through, and log the first use of each. */
     {
         int r = sys_ioctl(fd, request, arg);
         static uint8_t seen[256] = {0};
@@ -507,7 +507,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
 }
 
 /* ------------------------------------------------------------------ */
-/* drmOpen / drmClose  - libdrm high-level API hooks                  */
+/* drmOpen and drmClose: hooks for the libdrm high-level API         */
 /* ------------------------------------------------------------------ */
 
 int drmOpen(const char *name, const char *busid) {
@@ -516,7 +516,7 @@ int drmOpen(const char *name, const char *busid) {
                       O_RDWR | O_CLOEXEC, (long)0);
     if (fd < 0) { errno = (int)-fd; return -1; }
     if (add_drm_fd((int)fd) < 0) { syscall(SYS_close, fd); errno = EMFILE; return -1; }
-    DBG("drmOpen(\"%s\") → real fd %ld\n", name ? name : "(null)", fd);
+    DBG("drmOpen(\"%s\"): opened the real fd %ld\n", name ? name : "(null)", fd);
     return (int)fd;
 }
 
@@ -555,13 +555,13 @@ int drmHandleEvent(int fd, fake_event_ctx_t *evctx) {
 
 int drmSetMaster(int fd) {
     (void)fd;
-    DBG("drmSetMaster(%d) → 0 (suppressed - Xorg holds real master)\n", fd);
+    DBG("drmSetMaster(%d): suppressed, returning 0; Xorg holds DRM master.\n", fd);
     return 0;
 }
 
 int drmDropMaster(int fd) {
     (void)fd;
-    DBG("drmDropMaster(%d) → 0 (suppressed)\n", fd);
+    DBG("drmDropMaster(%d): suppressed, returning 0\n", fd);
     return 0;
 }
 

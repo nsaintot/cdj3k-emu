@@ -7,10 +7,10 @@
 //! the right bit for whichever player is on screen.
 //!
 //! The macro below declares the variant, its script name and its bit together.
-//! `shared` are the CDJ-3000's buttons, `extra` those the CDJ-3000 lacks,
-//! placed at a CDJ-3000 coordinate it leaves free of a button, and `own` those
-//! with no place in that frame at all: only a codec that lists them gives them
-//! a bit.
+//! `shared` lists the CDJ-3000's buttons. `extra` lists buttons the CDJ-3000
+//! lacks; each one uses a CDJ-3000 frame bit that has no button. `own` lists
+//! buttons with no bit in the CDJ-3000 frame; such a button gets a bit only
+//! from a codec that lists it.
 
 use crate::frame::FrameBit;
 
@@ -37,8 +37,8 @@ macro_rules! buttons {
             /// The buttons with no place in the CDJ-3000's frame.
             pub const OWN: &'static [Btn] = &[$(Btn::$ov),+];
 
-            /// Its place in the CDJ-3000's frame, which a shifted player's map
-            /// moves from; `None` for an [`OWN`](Self::OWN) button.
+            /// The button's bit in the CDJ-3000's frame, which a shifted
+            /// player's map offsets, or `None` for an [`OWN`](Self::OWN) button.
             pub const fn bit(self) -> Option<FrameBit> {
                 match self {
                     $(Btn::$sv => Some($sb),)+
@@ -133,15 +133,15 @@ buttons! {
         TimeMode = "TIME_MODE" => (11, 0x40),
         Quantize = "QUANTIZE" => (11, 0x80),
 
-        /// The USB eject button - USB on the CDJ-3000, USB 1 on the
+        /// The USB eject button: USB on the CDJ-3000 and USB 1 on the
         /// CDJ-3000X.
         UsbStop = "USB_STOP" => (12, 0x02),
         PowerOn = "POWER_ON" => POWER_ON,
     }
     extra {
-        /// The second USB port's eject button - USB 2 on the CDJ-3000X.
-        /// Takes the bit that is the SD-cover state on the CDJ-3000. Not yet
-        /// confirmed against the CDJ-3000X.
+        /// The second USB port's eject button, USB 2 on the CDJ-3000X. It
+        /// uses the bit that holds the SD cover state on the CDJ-3000. The
+        /// CDJ-3000X's use of this bit is not yet confirmed.
         Usb2Stop = "USB2_STOP" => (12, 0x01),
     }
     own {
@@ -153,8 +153,9 @@ buttons! {
 /// [`Btn::PowerOn`]'s bit, for a map that names it in a constant.
 pub const POWER_ON: FrameBit = (12, 0x80);
 
-/// Device state bit: the CDJ-3000's SD slot cover is closed. Set in its idle
-/// frame; a player without an SD slot makes the bit a button ([`Btn::Usb2Stop`]).
+/// The device state bit that is set while the CDJ-3000's SD slot cover is
+/// closed. The CDJ-3000's idle frame sets it; a player without an SD slot uses
+/// the bit for a button ([`Btn::Usb2Stop`]).
 pub const STATE_SD_CLOSED: FrameBit = (12, 0x01);
 
 #[cfg(test)]

@@ -66,10 +66,10 @@ pub(super) fn af_merge(src: &[u8], key_bytes: usize, stripes: usize, hash_spec: 
     d
 }
 
-/// LUKS1 Anti-Forensic split - the inverse of [`af_merge`].
+/// LUKS1 Anti-Forensic split, the inverse of [`af_merge`].
 ///
-/// `stripes - 1` random blocks, then a final block chosen so that merging the
-/// lot reproduces `key`.
+/// Writes `stripes - 1` random blocks, then a final block chosen so that
+/// merging all the blocks reproduces `key`.
 pub(super) fn af_split(key: &[u8], stripes: usize, hash_spec: &str) -> Vec<u8> {
     let bs = key.len();
     let mut out = random_bytes(bs * (stripes - 1));
@@ -94,9 +94,9 @@ pub(super) fn random_bytes(n: usize) -> Vec<u8> {
     out
 }
 
-/// cryptsetup diffuse(): hash each hash_len-byte block independently.
-/// Block counter resets to 0 for every call (per stripe).
-/// IV encoding: be32_to_cpu(i) on LE machine = bytes of BE32(i) = i.to_be_bytes().
+/// Implements cryptsetup's diffuse(): it hashes each hash_len-byte block
+/// separately, prefixed with the block index as a big-endian u32
+/// (`i.to_be_bytes()`). The index restarts at 0 on every call, once per stripe.
 pub(super) fn diffuse(buf: &[u8], hash_spec: &str) -> Vec<u8> {
     if hash_spec.eq_ignore_ascii_case("sha256") {
         diffuse_sha256(buf)
@@ -173,7 +173,9 @@ pub(super) fn decrypt_payload_xts<R: Read>(
     master_key: &[u8],
 ) -> io::Result<()> {
     if master_key.len() != 64 {
-        return Err(io::Error::other("XTS payload requires 64-byte master key"));
+        return Err(io::Error::other(
+            "an XTS payload needs a 64-byte master key",
+        ));
     }
     let c1 =
         Aes256::new_from_slice(&master_key[..32]).map_err(|e| io::Error::other(e.to_string()))?;
@@ -280,8 +282,8 @@ pub(super) fn essiv_iv(essiv_key: &[u8; 32], sector: u64) -> [u8; 16] {
 mod tests {
     use super::{af_merge, af_split};
 
-    /// Splitting and merging are inverses, which is what makes a written
-    /// keyslot's material decrypt back to the master key.
+    /// Splitting and merging are inverses, so the material written to a
+    /// keyslot decrypts back to the master key.
     #[test]
     fn af_split_inverts_af_merge() {
         let key: Vec<u8> = (0..64u32).map(|i| (i * 7 % 251) as u8).collect();

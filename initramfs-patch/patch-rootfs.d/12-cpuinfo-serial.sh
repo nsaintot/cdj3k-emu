@@ -11,7 +11,7 @@
 # The emulator passes cdj3k.serial=<16 hex digits> on the kernel cmdline from
 # the slot's settings file.  This service appends the Serial line to a copy of
 # /proc/cpuinfo under /run and bind-mounts it over the original, so every
-# process - genkey_pr included - reads one value.  It runs before the app and
+# process, genkey_pr included, reads the same value.  It runs before the app and
 # before pre-setting.service, and is a no-op when the cmdline carries no serial.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
@@ -25,7 +25,7 @@ cat > "$ROOTFS/usr/sbin/cpuinfo-serial.sh" << 'EOFS'
 # Publish cdj3k.serial=<hex> from the kernel cmdline as /proc/cpuinfo's Serial.
 set -eu
 
-# A kernel that prints its own Serial line owns the value.
+# Keep the Serial line when the kernel prints one.
 if grep -q '^Serial' /proc/cpuinfo; then
     exit 0
 fi

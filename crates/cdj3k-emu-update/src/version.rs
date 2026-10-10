@@ -73,8 +73,9 @@ impl PartialOrd for Version {
     }
 }
 
-/// Identifier by identifier: numbers numerically and below words, words in
-/// ASCII order, and a shorter list first when one is a prefix of the other.
+/// Compare pre-release lists identifier by identifier. Numbers compare
+/// numerically and sort below words, words compare in ASCII order, and a
+/// shorter list sorts first when it is a prefix of the other.
 fn cmp_pre(a: &[String], b: &[String]) -> Ordering {
     for (x, y) in a.iter().zip(b) {
         let o = match (x.parse::<u64>(), y.parse::<u64>()) {

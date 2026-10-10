@@ -1,8 +1,7 @@
 //! The BSD/macOS/Linux address walk, shared by hosts that have `getifaddrs`.
 //!
-//! The interface's name is all this layer knows, so the decision of whether
-//! it can carry a guest belongs to the caller: see [`super::macos`] and
-//! [`super::linux`].
+//! This layer knows only the interface's name, so the caller decides whether
+//! the interface can carry a guest: see `net/macos.rs` and `net/linux.rs`.
 
 use super::NetIf;
 
@@ -15,8 +14,8 @@ pub fn exists(name: &str) -> bool {
     unsafe { libc::if_nametoindex(name.as_ptr()) != 0 }
 }
 
-/// Non-loopback, up, IPv4 interfaces whose name `keep` accepts, plus its
-/// prefix length from the netmask.
+/// The up, non-loopback IPv4 interfaces whose name `keep` accepts, each with
+/// its prefix length from the netmask.
 pub fn walk(keep: fn(&str) -> bool) -> Vec<NetIf> {
     let mut out = Vec::new();
 

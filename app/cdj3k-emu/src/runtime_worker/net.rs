@@ -43,7 +43,8 @@ impl Worker {
         persist_inst(self.config.instance_id, |s| s.net_iface = final_name);
     }
 
-    /// Attach to the selected interface. `None` for no interface.
+    /// Attach to the selected interface. Returns `None` when no interface is
+    /// selected.
     fn attach_selection(&self, selected: u32) -> Option<(String, std::io::Result<NetAttachment>)> {
         match selected {
             menu_state::NET_SEL_NONE => None,
@@ -56,8 +57,8 @@ impl Worker {
                 .get(idx as usize)
                 .map(|i| i.name.clone())
                 .map(|name| {
-                    // The same call `launch.rs` makes, so a selection made
-                    // while running behaves like one made at boot.
+                    // `launch.rs` makes the same call, so a selection made
+                    // while QEMU runs behaves like one made at boot.
                     let r = cdj3k_emu_runtime::net_attach(
                         &name,
                         &self.config.mac.clone().unwrap_or_default(),
@@ -78,8 +79,8 @@ impl Worker {
         self.prev_net_idx = menu_state::NET_SEL_NONE;
     }
 
-    /// Restart a running QEMU onto the new network backend. `boot` is the
-    /// restart's mods.
+    /// Restart a running QEMU on the new network backend. `boot` holds the
+    /// mods for the restart.
     fn restart_for_network(&mut self, boot: BootMods) {
         let Some(inst) = self.instance.as_mut() else {
             menu_state::lock().shade_forced = false;
@@ -99,7 +100,7 @@ impl Worker {
                 self.alc_pushed_for_boot = false;
                 menu_state::lock().shade_forced = false;
             }
-            Err(e) => eprintln!("cdj3k-emu: restart after net change failed: {e:?}"),
+            Err(e) => eprintln!("cdj3k-emu: restarting after the network change failed: {e:?}"),
         }
     }
 
@@ -111,8 +112,9 @@ impl Worker {
     }
 }
 
-/// The selection as persisted: the iface name, the vmnet-host token for
-/// host-only mode, or `None` for no interface (chosen or auto-reverted).
+/// The selection as it is saved: the interface name, the vmnet host-only
+/// token, or `None` when no interface is selected, by the user or after a
+/// failed attach.
 fn persisted_iface_name() -> Option<String> {
     let s = menu_state::lock();
     match s.selected_interface {

@@ -21,9 +21,10 @@
 /// broadcasts, so several instances (and djx-emu) share one DJ-Link segment
 /// with no daemon between them.
 ///
-/// With no DHCP the guest's `link-monitor.sh` `udhcpc -T 2` times out and falls
-/// through to `avahi-autoipd`, self-assigning a 169.254/16 link-local address -
-/// matching real Pro DJ Link gear on a router-less network.
+/// Without DHCP, the `udhcpc -T 2` call in the guest's `link-monitor.sh` times
+/// out and falls through to `avahi-autoipd`, which assigns a 169.254/16
+/// link-local address. Real Pro DJ Link gear does the same on a network
+/// without a router.
 ///
 /// `DJPL_VMNET_UUID` overrides it; djx-emu must be given the same value to land
 /// on the same segment (the counterpart to `DJPL_BRIDGE` for TAP mode).
@@ -43,8 +44,8 @@ pub enum VmnetMode {
 }
 
 impl VmnetMode {
-    /// Bridged onto `iface`, or `None` when the name is not one to put on a
-    /// command line.
+    /// Bridged onto `iface`, or `None` when the name is not valid on a command
+    /// line.
     pub fn bridged(iface: &str) -> Option<Self> {
         cdj3k_emu_platform::net::is_valid_iface(iface)
             .then(|| VmnetMode::Bridged(iface.to_string()))

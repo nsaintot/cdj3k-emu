@@ -16,7 +16,8 @@ use crate::app::theme;
 const FIELD_MARGIN: f32 = 11.0;
 const BROWSE_W: f32 = 90.0;
 
-/// ISO 9660: "CD001" at byte 1 of the primary volume descriptor (sector 16).
+/// Whether the file is an ISO 9660 image, which has "CD001" at byte 1 of the
+/// primary volume descriptor in sector 16.
 fn is_iso9660(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(path) else {
@@ -33,7 +34,7 @@ impl FirmwareWizard {
     /// its own column so the fields line up down the step.
     pub(super) fn form(&mut self, ui: &mut egui::Ui, k: f32, pal: &theme::Palette) {
         // A slot holds one installation, so installing over another model
-        // takes its firmware and its eMMC with it.
+        // removes that model's firmware and its eMMC.
         if let Some(prev) = cdj3k_emu_storage::InstanceSettings::saved_model(self.target_instance) {
             if prev != self.model {
                 ui.label(
@@ -52,12 +53,12 @@ impl FirmwareWizard {
             label_column(ui, k, pal.dim, "Firmware");
             ui.vertical(|ui| {
                 self.path_row(ui, "wizard_upd", true, k);
-                // Say so while the form is still up, rather than after Install.
+                // Show the objection while the form is up, before Install is pressed.
                 let (note, col) = match self.upd_objection() {
                     Some(objection) => (objection, pal.warn),
                     None => (
-                        "A .UPD or its decrypted .iso. The name has to be one Pioneer publishes \
-                         this deck under."
+                        "A .UPD or its decrypted .iso. The file name must be one Pioneer publishes \
+                         for this deck."
                             .to_owned(),
                         pal.faint,
                     ),
@@ -66,8 +67,9 @@ impl FirmwareWizard {
             });
         });
 
-        // The key decrypts a .UPD; an .iso has been decrypted already and a
-        // file has yet to be chosen. Only the one case has anything to ask for.
+        // Ask for the key only once a .UPD is chosen: the key decrypts a .UPD,
+        // an .iso is already decrypted, and an empty field has nothing to
+        // decrypt.
         if !self.upd_path.is_empty() && !self.firmware_is_iso() {
             ui.horizontal_top(|ui| {
                 label_column(ui, k, pal.dim, "Decryption key");
@@ -111,8 +113,8 @@ impl FirmwareWizard {
         }
     }
 
-    /// Why the chosen `.UPD` cannot go in this slot, if it cannot. An `.iso`
-    /// is taken on trust, and an empty field has nothing to object to.
+    /// Why the chosen `.UPD` cannot go in this slot, if it cannot. An `.iso` is
+    /// accepted without a check, and an empty field has nothing to check.
     fn upd_objection(&self) -> Option<String> {
         if self.upd_path.is_empty() || self.firmware_is_iso() {
             return None;
@@ -126,9 +128,9 @@ impl FirmwareWizard {
         } else {
             "/path/to/aes256.key"
         };
-        // The field takes what the Browse button beside it leaves. `desired_width`
-        // is the text area, so the field's own margin comes out of the budget too
-        // or the button runs off the edge.
+        // The field gets the width that the Browse button beside it leaves.
+        // `desired_width` is the text area, so the field's own margin is taken
+        // out of the width too, or the button runs off the edge.
         let field_w = ui.available_width()
             - BROWSE_W * k
             - ui.spacing().item_spacing.x

@@ -1,16 +1,18 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# POSIX sh: `set -o pipefail` is bash-only, so this script catches mid-pipeline
-# failures via explicit exit checks on the python3/find/cpio invocations below.
+# POSIX sh has no pipefail, so set -e sees only the exit status of the last
+# command in a pipeline: a find failure in `find | cpio` goes unnoticed.
 set -eu
-# Install cpio if not already present (works with Alpine apk or Debian apt-get).
+# Install cpio and python3 if they are missing (Alpine apk or Debian apt-get).
 #
-# IMPORTANT - DO NOT repack with macOS bsdcpio directly:
-#   macOS bsdcpio stores the macOS user UID (e.g. 502) in cpio headers instead
-#   of root (0).  The Linux kernel unpacks with that UID → dropbear sees wrong
-#   ownership on /etc/shadow and host keys → falls back to password auth.
+# Do not repack with macOS bsdcpio directly:
+#   macOS bsdcpio stores the macOS user's UID (for example 502) in the cpio
+#   headers instead of root (0). The Linux kernel unpacks the files with that
+#   UID, so dropbear sees the wrong owner on /etc/shadow and the host keys and
+#   falls back to password authentication.
 #
-# Always repack via Docker (OrbStack/Rosetta maps macOS user → UID 0):
+# Always repack through Docker, where OrbStack or Rosetta maps the macOS user
+# to UID 0:
 #   docker run --rm -v "$(pwd)/build/initramfs-work":/work arm64v8/alpine:3.19 sh /work/repack.sh
 if command -v apk >/dev/null 2>&1; then
     apk add -q --no-cache cpio python3 2>/dev/null || true
@@ -23,12 +25,13 @@ COUNT=$(find . | wc -l)
 echo "Files to pack: $COUNT"
 find . | cpio -H newc -o > /work/initramfs-patched.cpio
 
-# Patch all UID/GID fields in the NEWC cpio to 0:0.
-# On OrbStack/Docker Desktop the virtiofs mount exposes macOS UID 502 to
-# stat() inside the container; cpio records that literal value.  Neither
-# --owner=0:0 nor chown on the mount fixes it reliably.  We post-process the
-# raw archive: NEWC magic "070701" + 13×8-hex fields; uid is field 3 (offset
-# 6+8+8=22), gid is field 4 (offset 30) - both 8 ASCII hex digits.
+# Set every UID and GID field in the NEWC cpio to 0.
+# On OrbStack and Docker Desktop the virtiofs mount exposes macOS UID 502 to
+# stat() inside the container, and cpio records that value. Neither
+# --owner=0:0 nor chown on the mount fixes it reliably, so the script
+# post-processes the raw archive. A NEWC header is the magic "070701"
+# followed by thirteen fields of 8 ASCII hex digits; uid is field 3 at offset
+# 22 (6+8+8) and gid is field 4 at offset 30.
 python3 - /work/initramfs-patched.cpio << 'PYEOF'
 import sys, re
 
@@ -43,15 +46,15 @@ while pos < len(data) - 110:
     if data[pos:pos+6] != MAGIC:
         pos += 1
         continue
-    # uid at offset +22 (8 bytes), gid at offset +30 (8 bytes)
-    data[pos+22:pos+30] = b'00000000'   # uid = 0
-    data[pos+30:pos+38] = b'00000000'   # gid = 0
+    data[pos+22:pos+30] = b'00000000'
+    data[pos+30:pos+38] = b'00000000'
     patched += 1
-    # advance past this header: read namesize and filesize to skip entry
+    # Skip the rest of the entry, using namesize and filesize.
     try:
         namesize = int(data[pos+94:pos+102], 16)
         filesize = int(data[pos+54:pos+62], 16)
-        # header is 110 bytes, then name padded to 4, then data padded to 4
+        # The 110-byte header and the name are padded together to a multiple
+        # of 4 bytes, and the data is padded to a multiple of 4.
         header_name_size = 110 + namesize
         header_name_pad = (4 - header_name_size % 4) % 4
         data_pad = (4 - filesize % 4) % 4 if filesize else 0

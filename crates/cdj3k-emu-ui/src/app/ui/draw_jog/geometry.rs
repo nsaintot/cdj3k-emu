@@ -1,6 +1,6 @@
-//! Polygon clipping, ring/arc samplers, and the inner-LCD silhouette
-//! polygon used by the jog renderer for mesh-clipping the LCD texture
-//! and laying out arc spans.
+//! Polygon clipping, ring and arc samplers, and the inner LCD silhouette
+//! polygon. The jog renderer uses them to clip the LCD texture mesh and to lay
+//! out arc spans.
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
@@ -65,8 +65,8 @@ fn clip_polygon_half_plane(
     out
 }
 
-/// Sutherland–Hodgman clip of `poly` to axis-aligned `rect`. Drops silhouette caps outside the
-/// jog stream mapping so textured mesh UVs stay in [0, 1].
+/// Clips `poly` to the axis-aligned `rect` with the Sutherland–Hodgman algorithm. It drops the
+/// silhouette caps outside the jog stream's rect, so that the mesh UVs stay in [0, 1].
 pub(super) fn clip_polygon_to_rect(poly: &[Pos2], rect: Rect) -> Vec<Pos2> {
     let xmin = rect.left();
     let xmax = rect.right();
@@ -115,10 +115,12 @@ pub(super) fn clip_polygon_to_rect(poly: &[Pos2], rect: Rect) -> Vec<Pos2> {
     deduped
 }
 
-/// Closed polygon matching the inner-LCD stroke in [`build_jog_inner_lcd_foreground`], for texturing.
+/// Returns the closed polygon that matches the inner LCD stroke in
+/// [`build_jog_inner_lcd_foreground`](super::statics::build_jog_inner_lcd_foreground), for
+/// texturing.
 ///
-/// Top and bottom **middle** follow the **outer** c2 circle (through `(0,-c2)` and `(0,c2)`), not the
-/// horizontal chord at `y = ±h` between the c2/rect junctions.
+/// The middle of the top and bottom edges follows the outer c2 circle, through `(0,-c2)` and
+/// `(0,c2)`.
 pub(super) fn inner_lcd_silhouette_polygon(center: Pos2, layout: &UiScale) -> Vec<Pos2> {
     let c1 = layout.sc(JOG_INNER_LCD_C1_RADIUS);
     let mut w = c1 * JOG_INNER_LCD_RECT_HALF_WIDTH_FRAC;
@@ -133,23 +135,23 @@ pub(super) fn inner_lcd_silhouette_polygon(center: Pos2, layout: &UiScale) -> Ve
     let mut out = Vec::new();
     let seg = JOG_INNER_LCD_MESH_ARC_SEGMENTS;
 
-    // 1 - c2 left bulge (-c2x,-h) → (-c2x,h).
+    // 1. The c2 left bulge, from (-c2x,-h) to (-c2x,h).
     push_c2_left_arc(&mut out, center, c2, c2x, h, seg);
-    // 2 - bottom-left flat.
+    // 2. The bottom-left flat.
     push_line_samples(&mut out, p(-c2x, h), p(-w, h), 3);
-    // 3 - c1 left cap (-w,h) → (-w,-h).
+    // 3. The c1 left cap, from (-w,h) to (-w,-h).
     push_c1_left_cap(&mut out, center, c1, w, h, seg);
-    // 4 - top-left flat (optional).
+    // 4. The top-left flat, if there is one.
     if w > c2x + 1.0e-3 {
         push_line_samples(&mut out, p(-w, -h), p(-c2x, -h), 3);
     }
-    // 5 - c2 top outer arc: junction B → junction C through (0,-c2).
+    // 5. The c2 top outer arc, from (-c2x,-h) to (c2x,-h) through (0,-c2).
     push_c2_top_outer_arc(&mut out, center, c2, c2x, h, seg);
-    // 6 - top-right flat.
+    // 6. The top-right flat, if there is one.
     if w > c2x + 1.0e-3 {
         push_line_samples(&mut out, p(c2x, -h), p(w, -h), 3);
     }
-    // 7 - c1 right cap (w,-h) → (w,h).
+    // 7. The c1 right cap, from (w,-h) to (w,h).
     push_circle_arc_short(
         &mut out,
         center,
@@ -158,9 +160,9 @@ pub(super) fn inner_lcd_silhouette_polygon(center: Pos2, layout: &UiScale) -> Ve
         f32::atan2(h, w),
         seg,
     );
-    // 8 - bottom-right flat.
+    // 8. The bottom-right flat.
     push_line_samples(&mut out, p(w, h), p(c2x, h), 3);
-    // 9 - c2 bottom outer arc: (c2x,h) → (-c2x,h) through (0,c2).
+    // 9. The c2 bottom outer arc, from (c2x,h) to (-c2x,h) through (0,c2).
     push_c2_bottom_outer_arc(&mut out, center, c2, c2x, h, seg);
 
     if out.len() >= 2 {
@@ -191,7 +193,7 @@ fn push_line_samples(out: &mut Vec<Pos2>, a: Pos2, b: Pos2, n: usize) {
     }
 }
 
-/// Shortest circle arc from `a0` to `a1` (radians); x = r cos a, y = r sin a.
+/// Pushes the shorter circle arc from `a0` to `a1`, in radians; x = r cos a, y = r sin a.
 fn push_circle_arc_short(out: &mut Vec<Pos2>, center: Pos2, r: f32, a0: f32, a1: f32, seg: usize) {
     let mut d = a1 - a0;
     while d > TAU {
@@ -213,7 +215,7 @@ fn push_circle_arc_short(out: &mut Vec<Pos2>, center: Pos2, r: f32, a0: f32, a1:
     }
 }
 
-/// c1 left cap (-w, h) → (-w, -h) along the outer c1 circle (x ≤ -w).
+/// Pushes the c1 left cap, from (-w, h) to (-w, -h), along the outer c1 circle where x ≤ -w.
 fn push_c1_left_cap(out: &mut Vec<Pos2>, center: Pos2, r: f32, w: f32, h: f32, seg: usize) {
     let a0 = f32::atan2(h, -w);
     let mut a1 = f32::atan2(-h, -w);
@@ -232,7 +234,8 @@ fn push_c1_left_cap(out: &mut Vec<Pos2>, center: Pos2, r: f32, w: f32, h: f32, s
     }
 }
 
-/// c2 left bulge (-c2x, -h) → (-c2x, h) through (-c2, 0); x = r cos a, y = r sin a.
+/// Pushes the c2 left bulge from (-c2x, -h) to (-c2x, h) through (-c2, 0); x = r cos a,
+/// y = r sin a.
 fn push_c2_left_arc(out: &mut Vec<Pos2>, center: Pos2, r: f32, c2x: f32, h: f32, seg: usize) {
     let seg = seg.max(8);
     let c2x_e = c2x.max(1.0e-4);
@@ -246,7 +249,8 @@ fn push_c2_left_arc(out: &mut Vec<Pos2>, center: Pos2, r: f32, c2x: f32, h: f32,
             push_pt_ring(out, center + Vec2::new(r * a.cos(), r * a.sin()));
         }
     } else {
-        // h > c2: trace outer left semicircle from top (3π/2) down through π to bottom (π/2).
+        // When h > c2, trace the outer left semicircle from the top (3π/2) through π to the
+        // bottom (π/2).
         let a_top = 3.0 * FRAC_PI_2;
         let a_bot = FRAC_PI_2;
         for i in 0..=seg {
@@ -257,21 +261,21 @@ fn push_c2_left_arc(out: &mut Vec<Pos2>, center: Pos2, r: f32, c2x: f32, h: f32,
     }
 }
 
-/// Outer c2 arc along the **top** between junctions `(-c2x,-h)` and `(c2x,-h)` through `(0,-c2)`.
+/// Pushes the outer c2 arc along the top, from `(-c2x,-h)` to `(c2x,-h)` through `(0,-c2)`.
 fn push_c2_top_outer_arc(out: &mut Vec<Pos2>, center: Pos2, c2: f32, c2x: f32, h: f32, seg: usize) {
     let cx = c2x.max(1.0e-5);
     let a_l = f32::atan2(-h, -cx);
     let a_r = f32::atan2(-h, cx);
     let span = a_r - a_l;
     if span.abs() < 0.02 {
-        // Degenerate chord: trace the upper half of c2 through angle -π/2.
+        // When the chord is degenerate, trace the upper half of c2 through angle -π/2.
         push_arc_monotone(out, center, c2, PI, TAU, seg.max(24));
     } else {
         push_circle_arc_short(out, center, c2, a_l, a_r, seg);
     }
 }
 
-/// Outer c2 arc along the **bottom** between `(c2x,h)` and `(-c2x,h)` through `(0,c2)`.
+/// Pushes the outer c2 arc along the bottom, from `(c2x,h)` to `(-c2x,h)` through `(0,c2)`.
 fn push_c2_bottom_outer_arc(
     out: &mut Vec<Pos2>,
     center: Pos2,
@@ -338,11 +342,12 @@ pub(super) fn inner_lcd_add_c3_arc_span(
     out.add(Shape::line(pts, stroke));
 }
 
-/// Curved label on `radius` ring; `angle` is degrees clockwise from top (12 o’clock) for the label center.
+/// Draws a curved label on the ring of `radius`; `angle` is the label center in degrees
+/// clockwise from 12 o'clock.
 ///
-/// `invert_glyph_orientation` (bottom arc): flip along the arc tangent **and** normal so text reads
-/// upright - negate the tangential spread (mirror “X” along the label) and add π to rotation (mirror
-/// “Y” / baseline side), matching a proper 180° flip in the tangent–normal frame.
+/// With `invert_glyph_orientation`, used on the bottom arc, the label is flipped along both the
+/// arc tangent and the normal so that it reads upright: the tangential spread is negated and π is
+/// added to the rotation, which is a 180° turn in the tangent-normal frame.
 pub(super) fn inner_lcd_push_curved_label(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -378,9 +383,9 @@ pub(super) fn inner_lcd_push_curved_label(
     let max_span = 0.9 * FRAC_PI_2;
     let arc_span = (total_width / radius).min(max_span);
 
-    // Stable Y anchor shared by every glyph: the row's line-box center from the
-    // full-word galley. Per-char re-layouts can tighten their own rect to the
-    // glyph ink, which is what made letters "jump" radially.
+    // Every glyph uses the same Y anchor: the center of the row's line box in
+    // the full-word galley. A per-character layout fits its rect to the glyph
+    // ink, so anchoring on it would shift letters radially.
     let row_center_y = galley
         .rows
         .first()
@@ -422,9 +427,9 @@ pub(super) fn inner_lcd_push_curved_label(
     }
 }
 
-/// One glyph's text at `pos`, turned to `orient`. With a `stub` width, four
-/// copies offset by it in the button colour go first: the dark rim behind
-/// LCD-coloured glyphs.
+/// Draws one glyph at `pos`, rotated to `orient`. With a `stub` width, four
+/// copies in the button colour, offset by that width, are drawn first to form a
+/// dark rim behind LCD-coloured glyphs.
 fn push_turned_glyph(
     out: &mut ShapeList,
     pos: Pos2,

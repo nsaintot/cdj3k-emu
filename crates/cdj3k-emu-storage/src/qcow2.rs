@@ -2,8 +2,9 @@
 //!
 //! A slot's eMMC is written raw and converted to qcow2, so anything the
 //! installer put at a fixed disk offset - the U-Boot environment - sits behind
-//! the image's own mapping afterwards. This follows one guest offset to its
-//! host cluster and reads it: two tables, no compression, no backing file.
+//! the image's own mapping afterwards. This module follows one guest offset to
+//! its host cluster and reads it. It handles the two lookup tables only,
+//! without compression or a backing file.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -17,11 +18,10 @@ const OFFSET_MASK: u64 = 0x00ff_ffff_ffff_fe00;
 /// reader does not follow. `qemu-img convert` writes none unless asked.
 const COMPRESSED: u64 = 1 << 62;
 
-/// `len` bytes from guest offset `offset`.
+/// Read `len` bytes from guest offset `offset`.
 ///
-/// `Ok(None)` when the file is not a qcow2 image, or when the range is not
-/// mapped - an unallocated cluster reads as zeros, which is never the data a
-/// caller came for.
+/// Returns `Ok(None)` when the file is not a qcow2 image or the range is not
+/// mapped. An unmapped range would read as zeros, which no caller can use.
 pub fn read_at(path: &Path, offset: u64, len: usize) -> std::io::Result<Option<Vec<u8>>> {
     let mut f = File::open(path)?;
     let mut head = [0u8; 48];

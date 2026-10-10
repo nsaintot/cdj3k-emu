@@ -1,8 +1,8 @@
-//! Players the emulator supports: see [`Model`] for the current set.
+//! The players the emulator supports; see [`Model`] for the current set.
 //!
-//! All per-model data lives in [`ModelSpec`], which [`Model::spec`] resolves.
-//! [`Model`] itself is just an identity; matching on the model happens in only one place
-//! via `Model::spec`.
+//! All per-model data lives in [`ModelSpec`], which [`Model::spec`] returns.
+//! [`Model`] only identifies a player; `Model::spec` is the only place that
+//! matches on it.
 
 use std::fmt;
 
@@ -27,7 +27,7 @@ pub enum Model {
 impl Model {
     pub const ALL: [Model; 3] = [Model::Cdj3k, Model::Cdj3kx, Model::Cdj1500x];
 
-    /// The player this model is.
+    /// The spec of this model.
     pub const fn spec(self) -> &'static ModelSpec {
         match self {
             Model::Cdj3k => &cdj3k::SPEC,
@@ -53,9 +53,9 @@ impl Model {
     }
 
     /// Returns the [`Model`] for an update file given its original name as published by Pioneer,
-    /// e.g., `CDJ3Kv322.UPD` is recognized as a CDJ-3000. Returns `None` for unknown or user-renamed files.
+    /// such as `CDJ3Kv322.UPD` for a CDJ-3000. Returns `None` for an unknown or renamed file.
     pub fn from_firmware_file_name(name: &str) -> Option<Model> {
-        // Either separator: the name can be a path from any host.
+        // Split on either separator, because the name can be a path from any host.
         let stem = name.rsplit(['/', '\\']).next().unwrap_or(name);
         let stem = stem.rsplit_once('.').map_or(stem, |(s, _)| s);
         // Trim the version Pioneer appends: `v322`, `_119`.
@@ -110,7 +110,8 @@ impl Model {
     /// short form (`3k`, `3kx`).
     pub fn parse(s: &str) -> Option<Model> {
         let s = s.trim().to_ascii_lowercase();
-        // The slug first: it starts with `cdj`, which the prefix strip removes.
+        // Match the slug first, because it starts with `cdj` and the prefix
+        // strip below removes that.
         if let Some(m) = Model::ALL.into_iter().find(|m| m.spec().slug == s) {
             return Some(m);
         }
@@ -226,7 +227,6 @@ mod firmware_file_name_tests {
         ] {
             assert_eq!(Model::from_firmware_file_name(name), want, "{name}");
         }
-        // The CDJ-3000X's name resolves to the CDJ-3000X.
         assert_eq!(
             Model::from_firmware_file_name("CDJ3000Xv140.UPD"),
             Some(Model::Cdj3kx)

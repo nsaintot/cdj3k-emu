@@ -38,8 +38,8 @@ use crate::elevate::run_elevated;
 /// The tap driver's INF, relative to the resources directory.
 const TAP_INF: &str = "tap-windows6/OemVista.inf";
 
-/// The guest's link for one instance, taken down when this is dropped
-/// (module doc, Lifetime).
+/// The guest's link for one instance, taken down when this is dropped (see
+/// Lifetime in the module doc).
 pub struct WindowsBridge {
     /// The tap adapter's connection name, which QEMU opens.
     pub iface: String,
@@ -80,7 +80,7 @@ impl WindowsBridge {
         }
         if !winbridge::is_cmd_safe_path(&dir) {
             return Err(invalid(format!(
-                "path not usable on a command line: {dir:?}"
+                "the path cannot be used on a command line: {dir:?}"
             )));
         }
 
@@ -122,7 +122,7 @@ impl WindowsBridge {
                      Connections): {why}"
                 )))
             }
-            // The copy never got as far as a verdict: refused prompt, or a crash.
+            // No result: the prompt was refused, or the elevated copy crashed.
             None => {
                 ran?;
                 return Err(io::Error::other("the elevated helper left no result"));

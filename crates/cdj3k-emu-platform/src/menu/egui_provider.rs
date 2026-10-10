@@ -5,16 +5,15 @@
 //! ([`desktop::CAPTION_IN_STRIP`]): it carries the app's name and the caption
 //! buttons, and its empty stretches drag the window.
 //!
-//! Three ways into the same [`MenuModel`]: a hamburger holding every menu, a
-//! pill per menu that also shows what that menu is set to, and an icon strip
-//! for the ones worth reaching in one click. None of them decides anything —
-//! every click becomes a [`MenuId`] the service applies.
+//! The strip offers three ways into the same [`MenuModel`]: a hamburger that
+//! holds every menu, a pill per menu that also shows what that menu is set to,
+//! and icons for the menus reached in one click. Every click becomes a
+//! [`MenuId`] that the service applies.
 //!
 //! egui's own menu machinery does the opening, nesting and dismissing. Rows
 //! are painted here because a row has a checkmark gutter and a right-aligned
-//! value that a plain button cannot express; a row that opens a submenu goes
-//! through `Ui::menu_button`, which is what makes it open beside its parent
-//! rather than on top of it.
+//! value that a plain button cannot express. A row that opens a submenu goes
+//! through `Ui::menu_button`, so that the submenu opens beside its parent.
 //!
 //! `strip` lays out and draws the strip, `panel` the menus it opens, `icon`
 //! and `paint` the glyphs and marks both use, and `style` holds the metrics
@@ -52,14 +51,15 @@ pub struct EguiProvider {
     /// Where this frame's strip and open panels were drawn, so an effect
     /// painted over the whole window can leave them alone.
     chrome: Vec<Rect>,
-    /// This frame's widgets on the strip: where it does not drag the window.
+    /// This frame's widgets on the strip, where a press does not drag the
+    /// window.
     widgets: Vec<Rect>,
 }
 
 impl MenuProvider for EguiProvider {
     fn apply(&mut self, model: &MenuModel) {
-        // Immediate mode: there is nothing to reconcile, the next frame draws
-        // whatever this holds.
+        // egui is immediate mode, so there is nothing to reconcile: the next
+        // frame draws whatever this holds.
         self.model = model.clone();
     }
 
@@ -206,7 +206,8 @@ impl EguiProvider {
     }
 }
 
-/// The update row: first in the sandwich, so not in a pill.
+/// Whether `node` is the update row, which the sandwich lists first and the
+/// pills leave out.
 fn is_update_row(node: &MenuNode) -> bool {
     matches!(
         node,
@@ -271,8 +272,8 @@ mod tests {
 
     #[test]
     fn every_bound_key_is_one_egui_knows() {
-        // A binding egui cannot name would be silently dead, and the row
-        // would still advertise it.
+        // A binding that egui cannot name would never fire, while the row
+        // still shows it.
         for id in ids_in(&model()) {
             if let Some(accel) = id.accelerator() {
                 assert!(

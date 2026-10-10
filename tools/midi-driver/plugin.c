@@ -3,7 +3,8 @@
  * points it calls. */
 #include "driver.h"
 
-/* Replaced with a subsystem handle in the factory; valid before that. */
+/* The factory replaces this with a subsystem handle; the default handle is
+ * valid until then. */
 os_log_t g_log = OS_LOG_DEFAULT;
 
 MIDIDriverRef g_owner = 0;
@@ -55,9 +56,10 @@ static ULONG ReleaseD(void *self) {
 static OSStatus Start(MIDIDriverRef self, MIDIDeviceListRef devList) {
     (void)devList;
     g_owner = self;
-    /* No device up front: it is created only when the emu link is up (see
-     * create_slot_device / the pump), so it appears together with the host HID and
-     * djay pairs it.  Clear any device we left behind from a prior crash. */
+    /* Create no device here.  The pump creates one in create_slot_device when
+     * an emulator link comes up, so the device appears together with the host
+     * HID device and djay pairs the two.  Remove any device that a previous
+     * crash left behind. */
     remove_stale_devices();
     pthread_mutex_lock(&g_run_lock);
     if (!g_pump_live) {
@@ -66,7 +68,7 @@ static OSStatus Start(MIDIDriverRef self, MIDIDeviceListRef devList) {
             pthread_detach(t);
             g_pump_live = 1;
         } else {
-            os_log_error(g_log, "pump thread create failed");
+            os_log_error(g_log, "could not create the pump thread");
         }
     }
     __atomic_store_n(&g_running, 1, __ATOMIC_RELEASE);

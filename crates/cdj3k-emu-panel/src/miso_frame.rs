@@ -7,8 +7,8 @@
 //! resolved once through [`MisoCodec::button`], because a script can also
 //! name a raw bit.
 //!
-//! [`fields`] and [`ROTARY_IDLE`] are the CDJ-3000's frame, which the
-//! CDJ-3000X's encoder writes again behind its version word.
+//! [`fields`] and [`ROTARY_IDLE`] describe the CDJ-3000's frame. The
+//! CDJ-3000X's encoder writes the same fields after its version word.
 
 use crate::button::Btn;
 use crate::crc::crc16_x25;
@@ -20,15 +20,15 @@ pub const MISO_SIZE: usize = 64;
 /// Rotary encoder counter at rest (b14-b15, LE).
 ///
 /// The deck differentiates this counter, so the host has to send exactly what
-/// the guest's sub-CPU module serves while nothing turns - any mismatch is a
-/// step the deck reads as a detent. The value itself is arbitrary; what matters
-/// is that `subucom_virt.c`, the idle payloads and the app's neutral agree, and
-/// the module is compiled into the initramfs so it is the one they follow.
+/// the guest's sub-CPU module serves while nothing turns; the deck reads any
+/// difference as a detent. The value is arbitrary, but `subucom_virt.c`, the
+/// idle payloads and the app's neutral value must agree, and the module is
+/// compiled into the initramfs so that the guest uses this copy.
 pub const ROTARY_IDLE: u16 = 0xffff;
 
 /// Where the analog fields sit in the CDJ-3000's frame.
 pub mod fields {
-    /// 3-position rocker switch (REV / SLIP_REV / FWD).
+    /// 3-position rocker switch (REV, SLIP_REV or FWD).
     pub const DIRECTION: usize = 4;
     /// Rotary encoder counter, 16-bit LE.
     pub const ROTARY: usize = 14;
@@ -36,12 +36,13 @@ pub mod fields {
     /// model that takes touch in screen pixels flags a contact with
     /// [`TOUCH_DOWN`](crate::TOUCH_DOWN) instead.
     pub const TOUCH: usize = 16;
-    /// Tempo slider, 16-bit LE over the full range, dead zone ~0x7f50-0x7fd0.
+    /// Tempo slider, 16-bit LE over the full range, with a dead zone of about
+    /// 0x7f50-0x7fd0.
     pub const TEMPO: usize = 22;
     /// Vinyl speed rotary, 0x00-0xff.
     pub const VINYL: usize = 24;
-    /// Jog wheel: position (16-bit LE), velocity (16-bit LE, INVERSE -
-    /// 0xffff stopped, 0x0000 full speed), then the touch state byte
+    /// Jog wheel: position (16-bit LE), velocity (16-bit LE and inverted:
+    /// 0xffff is stopped, 0x0000 is full speed), then the touch state byte
     /// (0x00 none, 0x03 press, 0x04 idle/baseline, 0x0c turning).
     pub const JOG: usize = 26;
 }
@@ -57,8 +58,8 @@ pub struct JogState {
     pub touch: u8,
     /// The platter's travel in turns since start, forward positive.
     pub revs: f64,
-    /// Its speed in turns per second, forward positive: how fast it actually
-    /// turns, the hand's motion while held.
+    /// The platter's speed in turns per second, forward positive. While a
+    /// hand holds the platter, this is the hand's motion.
     pub rps: f32,
     /// Whether a hand is on the platter.
     pub touched: bool,
@@ -76,8 +77,8 @@ pub struct PanelState {
     pub jog: JogState,
     /// The browse rotary's counter (see [`ROTARY_IDLE`]).
     pub rotary: u16,
-    /// A second encoder's counter, where the player has one (e.g. BEAT LOOP on
-    /// the CDJ-1500X); ignored by a player that does not.
+    /// A second encoder's counter, such as BEAT LOOP on the CDJ-1500X. A
+    /// player without a second encoder ignores it.
     pub beat_loop: u16,
     pub direction: Direction,
     /// VINYL SPEED ADJUST, `0x00..=0xff`.
@@ -90,7 +91,7 @@ pub struct PanelState {
 }
 
 impl PanelState {
-    /// Nothing pressed, every control at rest, powered.
+    /// A state with nothing pressed, every control at rest and the power on.
     pub fn at_rest() -> Self {
         Self {
             pressed: Vec::new(),
@@ -141,7 +142,7 @@ pub fn raw_bit(name: &str) -> Option<FrameBit> {
 
 // ── Pieces the encoders share ─────────────────────────────────────────────────
 
-/// A frame starting from `idle`, the bytes before the CRC.
+/// A frame whose bytes before the CRC are copied from `idle`.
 pub(crate) fn from_idle(idle: &[u8; 62]) -> [u8; MISO_SIZE] {
     let mut f = [0u8; MISO_SIZE];
     f[..62].copy_from_slice(idle);
@@ -180,7 +181,7 @@ pub(crate) fn put_be(f: &mut [u8; MISO_SIZE], at: usize, v: u16) {
     f[at..at + 2].copy_from_slice(&v.to_be_bytes());
 }
 
-/// The CRC-16/X-25 of the bytes before `at`, stored at `at`.
+/// Stores the CRC-16/X-25 of the bytes before `at` at offset `at`.
 pub(crate) fn stamp_crc(f: &mut [u8; MISO_SIZE], at: usize, big_endian: bool) {
     let crc = crc16_x25(&f[..at]);
     if big_endian {

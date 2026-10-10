@@ -1,5 +1,5 @@
-//! The panel window's frame, kept by us on hosts whose window system keeps
-//! none (AppKit's frame autosave does it on macOS).
+//! The panel window's frame, saved by this module on hosts whose window
+//! system does not save it (on macOS, AppKit's frame autosave does).
 //!
 //! One line per slot and model in the app data directory: the inner size in
 //! points, and the outer position where the window system reports one. A
@@ -61,13 +61,13 @@ pub(super) fn track(ctx: &egui::Context, key: String, saved: Option<Frame>) {
     });
 }
 
-/// Stop watching: the window is no longer a panel.
+/// Stop watching, because the window is no longer a panel.
 pub(super) fn untrack() {
     *TRACKING.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// Note the window's frame this frame, and write it once it has settled.
-/// A maximized or full-screen window is not a frame to come back to.
+/// The frame of a maximized or full-screen window is not saved.
 pub(super) fn observe(ctx: &egui::Context) {
     let mut guard = TRACKING.lock().unwrap_or_else(|e| e.into_inner());
     let Some(t) = guard.as_mut() else {

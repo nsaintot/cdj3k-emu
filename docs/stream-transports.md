@@ -1,9 +1,9 @@
 # cdj3k-emu - Host/Guest Stream Transports
 
-Reference for the four host/guest data streams that move pixels, button/LED
-state, and control-plane messages between the QEMU guest and the cdj3k-emu
-host process. Audio is covered separately in `docs/audio-stack.md`; the
-subucom SPI wire format is documented in `docs/subucom.md`.
+This page describes the four data streams that move pixels, button and LED
+state, and control messages between the QEMU guest and the cdj3k-emu host
+process. Audio is covered in `docs/audio-stack.md`, and the subucom SPI wire
+format in `docs/subucom.md`.
 
 ---
 
@@ -20,8 +20,9 @@ subucom SPI wire format is documented in `docs/subucom.md`.
 `/tmp/cdj3k-emu-{uid}/instance-{id}/` (`%TEMP%\cdj3k-emu\instance-{id}\` on
 Windows). `crates/cdj3k-emu-platform/src/runtime_paths/`
 is the source of truth for the layout and the length limit on it; the copies in
-`boot.sh` and `tools/midi-driver/link.c` must agree with it. Authoritative QEMU
-args are `QemuConfig::build_argv` in `crates/cdj3k-emu-runtime/src/config.rs`.
+`boot.sh` and `tools/midi-driver/link.c` must agree with it. The QEMU
+arguments are built by `QemuConfig::build_argv` in
+`crates/cdj3k-emu-runtime/src/config.rs`.
 
 `{sock_dir}/window.sock` is not a guest stream. The window that holds the slot
 listens on it for commands from other windows, such as `restart-mods` or
@@ -46,29 +47,29 @@ not pass descriptors (`PASSES_FDS = false`); QEMU opens the disk by path.
 
 ### Transport
 
-QEMU's in-tree shm display backend, added by
-`qemu/patches/06-shm-display-source.patch`. Launched with:
+The main LCD uses the shm display backend that
+`qemu/patches/06-shm-display-source.patch` adds to QEMU. QEMU runs with:
 
 ```
 -display shm,path={sock_dir}/main.shm
 ```
 
 QEMU writes the framebuffer plus a small header into a regular file
-(`MAP_SHARED`). The host mmaps it read-only and polls a generation
-counter; pixel data is read in place - no copies through QEMU's UI
-ringbuffer.
+(`MAP_SHARED`). The host maps it read-only and polls a generation counter;
+the pixels are read in place, with no copy through QEMU's UI ring buffer.
 
 ### Defined in
 
 - Producer: `qemu/patches/06-shm-display-source.patch` (new file
   `ui/shm-display.c`).
-- Consumer: `crates/cdj3k-emu-streams/src/main_stream.rs` (see top-of-file
-  doc-comment for the layout).
+- Consumer: `crates/cdj3k-emu-streams/src/main_stream.rs` (its module
+  documentation describes the layout).
 
 ### Wire layout
 
-Little-endian. Reader polls `generation` with Acquire; on bump, the rest
-of the header and the dirty pixels are coherent.
+All fields are little-endian. The reader polls `generation` with an Acquire
+load; once it changes, the rest of the header and the dirty pixels are
+consistent.
 
 | Offset | Size | Field        | Notes                                       |
 |--------|------|--------------|---------------------------------------------|
@@ -84,15 +85,15 @@ of the header and the dirty pixels are coherent.
 | 0x24   | u32  | dirty_h      |                                             |
 | 0x40   | u8[] | pixels       | `stride × height` bytes                     |
 
-Surface dimensions can switch mid-session (e.g. the firmware's 640×480
-console handoff to the 1280×720 Xorg surface); the reader re-reads
+The surface size can change during a session (for example, when the
+firmware's 640×480 console hands over to the 1280×720 Xorg surface); the
+reader re-reads
 `width/height/stride` on every generation bump.
 
 ### Cadence
 
-QEMU publishes on each dirty blit (effectively ~60 Hz under firmware
-activity). Host poll interval is **500 µs**
-(`POLL_INTERVAL` in `main_stream.rs`). The reader publishes a
+QEMU publishes on each dirty blit, about 60 Hz while the firmware draws. The
+host polls every 500 µs (`POLL_INTERVAL` in `main_stream.rs`). The reader publishes a
 `DisplayDirty` rect carrying an `Arc<Mmap>` so the UI thread uploads to
 the GPU texture without a CPU copy.
 
@@ -101,8 +102,8 @@ the GPU texture without a CPU copy.
 The reader checks the magic word every tick. If it disappears (QEMU
 exited or replaced the file), the reader drops the mapping and loops on
 `open_shm` with a 1 s backoff until the file reappears with a valid
-header. A static display keeps the same generation indefinitely - that
-is not an error condition and the reader does not time out on it.
+header. A static display keeps the same generation indefinitely; this is not
+an error, and the reader does not time out on it.
 
 ---
 
@@ -110,12 +111,12 @@ is not an error condition and the reader does not time out on it.
 
 ### Transport
 
-`ivshmem-plain` PCI BAR2, backed by a shared file. The guest's
-`deck_shim.so` writes XRGB pixels straight into the BAR; the host mmaps
-the same file and polls a seqlock counter. Zero copies, zero virtqueue
-traffic.
+The jog LCD uses `ivshmem-plain` PCI BAR2, backed by a shared file. The
+guest's `deck_shim.so` writes XRGB pixels straight into the BAR; the host maps
+the same file and polls a seqlock counter. Nothing is copied and no virtqueue
+traffic is involved.
 
-QEMU args (config.rs lines 326-337):
+QEMU arguments:
 
 ```
 -object memory-backend-file,id=jogshm,mem-path={sock_dir}/jog.shm,size=1M,share=on
@@ -141,18 +142,17 @@ QEMU args (config.rs lines 326-337):
 
 ### Cadence
 
-Host polls `seq` at **~60 Hz** (`POLL_INTERVAL = 16 ms`). Guest publishes
-on every DRM flip (~100 Hz upstream). The seqlock read retries up to 4
-times if it observes an in-progress write or a torn `seq_before /
-seq_after`.
+The host polls `seq` at about 60 Hz (`POLL_INTERVAL = 16 ms`). The guest
+publishes on every DRM flip, about 100 Hz. The seqlock read retries up to 4
+times when it sees a write in progress or a `seq_before`/`seq_after` mismatch.
 
 ### Error recovery
 
-- Seqlock retry as above; if all four attempts tear, the reader sleeps
-  one poll interval and tries again.
+- The seqlock read retries as described above; if all four attempts tear,
+  the reader sleeps one poll interval and tries again.
 - If the magic word disappears (the runtime zeroes it before unlinking
   the file on cleanup), the reader drops the mapping and re-opens.
-- If `seq` hasn't advanced for `ALIVE_TIMEOUT = 2 s`, the stream is
+- If `seq` has not advanced for `ALIVE_TIMEOUT = 2 s`, the stream is
   flagged disconnected so the UI can show a "wait" badge; reads keep
   trying.
 
@@ -162,11 +162,11 @@ seq_after`.
 
 ### Transport
 
-Bidirectional virtio-serial port `cdj3k.ctrl` exposed as a Unix socket on
-the host. Carries the subucom SPI protocol in both directions, 64-byte
-frames each way.
+The stream uses the bidirectional virtio-serial port `cdj3k.ctrl`, which the
+host sees as a Unix socket. It carries the subucom SPI protocol as 64-byte
+frames in each direction.
 
-QEMU args (config.rs lines 300-324):
+QEMU arguments:
 
 ```
 -device virtio-serial-device,max_ports=8
@@ -186,19 +186,18 @@ QEMU args (config.rs lines 300-324):
 
 ### Directions
 
-- **MOSI - guest → host (LEDs).** `subucom_virt.ko` exposes
-  `/dev/subucom_ctrl`. EP122 writes 64-byte LED-state frames there;
-  `forwarder.c` pipes each frame onto the virtio-serial port. The host
-  reader (`ctrl_stream.rs::stream_loop`) decodes them through
-  `MosiFrame` and drives the on-screen LED simulation.
-- **MISO - host → guest (buttons/jog/touch).** The UI describes the panel
+- **MOSI, guest to host (LEDs).** EP122 sends 64-byte LED-state frames with
+  the `MOSI_TRANSFER` ioctl on `/dev/subucom_spi1.0`. `forwarder.c` reads
+  each frame from `/dev/subucom_ctrl` and writes it to the virtio-serial
+  port. The host reader (`ctrl_stream.rs`) decodes the frames through
+  `MosiFrame` and drives the on-screen LEDs.
+- **MISO, host to guest (buttons, jog, touch).** The UI describes the panel
   in a `PanelState` and the player's `MisoCodec` encodes it into a 64-byte
   frame, CRC-stamped where that deck's sub-CPU checks it (CRC-16/X-25 over
   `[0..62]`, little-endian at `[62..64]` on the RK3399 decks; over `[0..24]`,
   big-endian at `[24..26]` on the CDJ-1500X), and pushes it back through the
-  same socket. `forwarder.c` writes them into
-  `/dev/subucom_ctrl`, where the firmware consumes them as if they came
-  from the real subucom MCU.
+  same socket. `forwarder.c` writes each frame into `/dev/subucom_ctrl`, and
+  the firmware reads it as if it came from the real subucom MCU.
 
 ### Cadence
 
@@ -207,11 +206,11 @@ UI sends a frame on every input change plus an idle keep-alive.
 
 ### Error recovery
 
-The reader/writer pair connects lazily; on EOF or connect failure
-(`ECONNREFUSED` while QEMU is still bringing the chardev up) it retries
-after `RECONNECT_DELAY = 2 s`. The write half is shared via
-`Arc<Mutex<Option<UnixStream>>>` and is dropped on any I/O error so the
-next reconnect re-establishes it.
+The reader and writer connect lazily. On EOF or a failed connect
+(`ECONNREFUSED` while QEMU is still bringing the chardev up), the reader
+retries after `RECONNECT_DELAY = 2 s`. The write half is shared through
+`Arc<Mutex<Option<UnixStream>>>` and is dropped on any I/O error, so the next
+reconnect replaces it.
 
 ---
 
@@ -219,52 +218,63 @@ next reconnect re-establishes it.
 
 ### Transport
 
-Second bidirectional virtio-serial port (`cdj3k.cfg`). Line-based ASCII,
-`\n`-terminated. No framing beyond newlines; no binary.
+The config stream uses a second bidirectional virtio-serial port, `cdj3k.cfg`.
+It carries ASCII lines that end in `\n`, with no other framing and no binary
+data.
 
-QEMU args: same `virtio-serial-device` controller as ctrl, second
-chardev/virtserialport pair on it.
+QEMU adds a second chardev and virtserialport pair on the same
+`virtio-serial-device` controller as ctrl.
 
 ### Defined in
 
-- Host: `crates/cdj3k-emu-runtime/src/cfg.rs` (top doc-comment is the
-  canonical protocol reference).
-- Guest: `guest/cfgd/cfgd.c`.
+- Host: `crates/cdj3k-emu-runtime/src/cfg.rs`.
+- Guest: `guest/cfgd/cfgd.c`. Its header comment is the full protocol
+  reference, including the mods report lines.
 
 ### Commands
 
 | Direction     | Line                          | Meaning                                                 |
 |---------------|-------------------------------|---------------------------------------------------------|
-| host → guest  | `usb attach`                  | invoke `/usr/sbin/usb-external-attach.sh` on the guest  |
-| host → guest  | `usb detach`                  | no-op on the guest (EP122 owns unmount)                 |
+| host → guest  | `usb attach`                  | run `/usr/sbin/usb-external-attach.sh` on the guest     |
+| host → guest  | `usb detach`                  | write `umount /dev/sdb` to `/proc/udev_usb1`, lazy-unmount `/media/usb/sd*`, emit `usb_state 0` |
 | host → guest  | `set <name> <value>`          | write a whitelisted virtio_snd sysfs param              |
 | host → guest  | `get <name>`                  | request the current value of a whitelisted param        |
-| guest → host  | `usb_state <0\|1>`            | emitted by the in-guest USB hooks on mount/unmount      |
+| host → guest  | `pc_link on\|off`             | start or stop `cdj3k-pc-link-bridge.service`            |
+| host → guest  | `mods status`, `mods log <name>` | request the mods report or a mod's journal for this boot |
+| host → guest  | `ping`                        | ask cfgd to answer `pong`                               |
+| guest → host  | `usb_state <0\|1>`            | emitted when the in-guest USB hooks mount or unmount    |
 | guest → host  | `param <name> <value>`        | response to `get`, or unsolicited push on change        |
-| guest → host  | `latency <g>,<h>,<t>`         | guest/host/total audio latency, pushed every 3 s        |
+| guest → host  | `latency <g>,<h>,<t>`         | guest, host and total audio latency, pushed every 3 s   |
+| guest → host  | `pc_link on\|off\|on_failed\|off_failed` | the result of a `pc_link` command          |
+| guest → host  | `mods …`, `mod …`, `log_begin` / `log` / `log_end` | the mods report and mod journals |
+| guest → host  | `pong`                        | answer to `ping`                                        |
 
-`name` and `value` must not contain spaces or newlines; the host-side
-setter rejects those at the API boundary.
+`name` and `value` must not contain spaces or newlines; the host-side setter
+rejects them.
 
 ### Cadence
 
-Largely idle. `latency` push every 3 s; everything else is event-driven.
+The stream is mostly idle. cfgd pushes `latency` every 3 s; everything else
+is event-driven.
 
 ### Error recovery
 
-Self-healing on both halves: reader reconnects on EOF after
-`RECONNECT_DELAY = 500 ms`. Writer fast-path uses the long-lived stream
-held by the reader thread; if that's missing (e.g. immediately after
-spawn) the writer opens a one-shot connection with up to 20 × 100 ms
-retries and a 2 s write timeout (`COLD_WRITER_*` in `cfg.rs`).
+- The reader thread connects lazily and reconnects after an EOF or a failed
+  connect, every `RECONNECT_DELAY = 500 ms`.
+- The writer uses a clone of the reader's stream. Commands are queued until
+  cfgd sends its first line on the connection; a ping thread sends `ping`
+  every second (`PING_PERIOD`) until cfgd answers. The queue is then written
+  in order.
+- On each new connection the host queues `mods status`, so a mods report
+  pushed while nothing was connected is not lost.
 
 ---
 
 ## QEMU device-arg reference
 
-Concatenated from `crates/cdj3k-emu-runtime/src/config.rs` for the
-streams documented here (the audio devices live separately - see
-`docs/audio-stack.md`):
+These are the arguments that `crates/cdj3k-emu-runtime/src/config.rs` adds for
+the streams on this page. The audio devices are described in
+`docs/audio-stack.md`.
 
 ```
 # Main LCD - shm display
@@ -286,14 +296,14 @@ streams documented here (the audio devices live separately - see
 -device  virtserialport,chardev=vserial_cfg,name=cdj3k.cfg
 ```
 
-All Unix sockets use `server=on,wait=off` so they exist before the host
-reader connects; readers must tolerate `ECONNREFUSED` / EOF and retry.
+All Unix sockets use `server=on,wait=off`, so they exist before the host reader
+connects; readers must tolerate `ECONNREFUSED` and EOF and retry.
 
 ---
 
 ## Bandwidth budget
 
-Worst-case figures, one instance.
+The figures are for one instance.
 
 | Stream    | Steady-state                              | Worst case                                | Notes                                         |
 |-----------|-------------------------------------------|-------------------------------------------|-----------------------------------------------|
@@ -302,6 +312,6 @@ Worst-case figures, one instance.
 | ctrl.sock | 64 B × ~100 Hz each direction = ~13 KB/s  | Same - bounded by 100 Hz SPI loop         | virtio-serial, negligible                      |
 | cfg.sock  | A handful of ASCII lines per second       | Same                                      | Negligible                                     |
 
-The shm and ivshmem paths don't traverse QEMU's UI/virtqueue plumbing,
-so "bandwidth" here is just memory-bus reads on the host side; nothing
-competes with the audio path.
+The shm and ivshmem paths do not go through QEMU's UI or virtqueues, so their
+bandwidth is memory reads on the host; none of it competes with the audio
+path.

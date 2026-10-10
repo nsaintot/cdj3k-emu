@@ -1,5 +1,5 @@
-//! Handing a whole disk to the guest: its volumes locked and dismounted for
-//! as long as the guest has it, then released to Windows.
+//! Give a whole disk to the guest. Its volumes stay locked and dismounted
+//! while the guest has the disk, and are then released to Windows.
 
 use std::io;
 use std::os::windows::io::OwnedHandle;
@@ -16,16 +16,16 @@ use super::holders::holders_of;
 use super::{ioctl, open, GENERIC_READ, GENERIC_WRITE};
 use crate::disk::windows_parse as parse;
 
-/// `FSCTL_LOCK_VOLUME` fails while anything has a file open; indexers and
-/// scanners let go within moments, so it is tried a few times.
+/// `FSCTL_LOCK_VOLUME` fails while any program has a file open. Indexers and
+/// scanners close their files within moments, so the lock is tried a few times.
 const LOCK_TRIES: u32 = 4;
 const LOCK_RETRY: Duration = Duration::from_millis(400);
 
 /// What keeps a disk's volumes from being mounted again while the guest has it.
 struct Held {
     volumes: Vec<Volume>,
-    /// Locked, dismounted volume handles: while one is open Windows cannot
-    /// mount its volume.
+    /// Handles to the locked, dismounted volumes. While a handle is open,
+    /// Windows cannot mount its volume.
     _handles: Vec<OwnedHandle>,
 }
 
@@ -54,12 +54,13 @@ fn lock_and_dismount(volume: &Volume) -> Result<OwnedHandle, LockError> {
     Err(LockError::Busy)
 }
 
-/// Lock and dismount every volume of a disk, and keep them so until
-/// [`mount_disk`]. Asks once for administrator rights when the disk or a
+/// Lock and dismount every volume of a disk, and keep them that way until
+/// [`mount_disk`] runs. Ask once for administrator rights when the disk or a
 /// volume refuses this user.
 ///
-/// A volume something still has open fails with `ResourceBusy`, naming the
-/// programs holding it so the user knows what to close.
+/// If a program still has a file open on a volume, the unmount fails with
+/// `ResourceBusy` and names the programs that hold it, so the user knows what
+/// to close.
 pub fn unmount_disk(name: &str) -> io::Result<()> {
     let n = parse::drive_number(name).ok_or_else(|| {
         io::Error::new(
@@ -67,7 +68,8 @@ pub fn unmount_disk(name: &str) -> io::Result<()> {
             format!("not a disk name: {name}"),
         )
     })?;
-    // An earlier attach's hold makes the disk's own volumes look busy.
+    // Release any hold left by an earlier attach; otherwise the disk's own
+    // volumes look busy.
     mount_disk(name)?;
 
     let volumes = volumes_of(n);
@@ -100,7 +102,7 @@ pub fn unmount_disk(name: &str) -> io::Result<()> {
 
 /// Release the volumes and let Windows mount them again.
 ///
-/// Best effort: the user may have unplugged the disk.
+/// This is best effort, because the user may have unplugged the disk.
 pub fn mount_disk(name: &str) -> io::Result<()> {
     let taken = {
         let mut held = held();
@@ -126,7 +128,7 @@ pub fn mount_disk(name: &str) -> io::Result<()> {
 }
 
 /// Open the disk and its volumes for I/O, as QEMU and the lock will, and ask
-/// for administrator rights once when this user may not.
+/// once for administrator rights when this user is not allowed to.
 ///
 /// A refusal comes back as `PermissionDenied`.
 fn ensure_access(n: u32, volumes: &[Volume]) -> io::Result<()> {

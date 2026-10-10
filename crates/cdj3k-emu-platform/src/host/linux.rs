@@ -2,9 +2,9 @@
 
 use super::{Accelerator, AudioBackend, SoftwareEmulation};
 
-/// KVM, whose GIC is always in-kernel. Readable, not merely present: a user
-/// outside the `kvm` group has the node but cannot open it, and QEMU exits
-/// rather than degrading.
+/// KVM, whose GIC is always in the kernel. The node must be readable as well
+/// as present: a user outside the `kvm` group has the node but cannot open it,
+/// and QEMU then exits instead of falling back.
 pub(super) fn accelerators() -> Result<Vec<Accelerator>, SoftwareEmulation> {
     match std::fs::OpenOptions::new().read(true).open("/dev/kvm") {
         Ok(_) => Ok(vec![Accelerator {

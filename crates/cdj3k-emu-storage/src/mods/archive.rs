@@ -9,8 +9,8 @@ const UNPACKED_LIMIT: u64 = 1 << 30;
 /// The most files and folders an archive may hold.
 const ENTRY_LIMIT: usize = 10_000;
 
-/// Unpack `archive` into `into`: files and folders only, at most
-/// [`UNPACKED_LIMIT`] in all.
+/// Unpack `archive` into `into`. Only files and folders are accepted, up to
+/// [`ENTRY_LIMIT`] entries and [`UNPACKED_LIMIT`] bytes in total.
 pub(super) fn unpack(archive: &Path, into: &Path) -> io::Result<()> {
     std::fs::create_dir_all(into)?;
     let file = std::fs::File::open(archive)?;
@@ -46,7 +46,8 @@ pub(super) fn unpack(archive: &Path, into: &Path) -> io::Result<()> {
         }
         if !(kind.is_file() || kind.is_dir()) {
             return Err(fail(format!(
-                "{path}: not a file or a folder; a mod archive may contain only those"
+                "{path} is not a file or a folder; a mod archive may contain only \
+                 files and folders"
             )));
         }
         // Unpacking applies the entry's mode. An entry its owner cannot read
@@ -66,7 +67,7 @@ pub(super) fn unpack(archive: &Path, into: &Path) -> io::Result<()> {
             .unpack_in(into)
             .map_err(|e| fail(format!("{path}: {e}")))?
         {
-            return Err(fail(format!("{path}: outside the archive")));
+            return Err(fail(format!("{path} points outside the archive")));
         }
     }
     Ok(())
@@ -214,7 +215,10 @@ mod tests {
         });
         assert_eq!(
             err,
-            format!("{path}: secret: not a file or a folder; a mod archive may contain only those")
+            format!(
+                "{path}: secret is not a file or a folder; a mod archive may contain only \
+                 files and folders"
+            )
         );
 
         let (path, err) = refused("mode.tgz", &|tar| {
@@ -236,7 +240,7 @@ mod tests {
             header.set_cksum();
             tar.append(&header, std::io::empty()).unwrap();
         });
-        assert_eq!(err, format!("{path}: ../escape: outside the archive"));
+        assert_eq!(err, format!("{path}: ../escape points outside the archive"));
 
         let (path, err) = refused("many.tgz", &|tar| {
             for i in 0..ENTRY_LIMIT {

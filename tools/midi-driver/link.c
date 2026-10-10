@@ -25,8 +25,9 @@ static int dial(const char *path, struct pc_link_identity *id) {
     strncpy(a.sun_path, path, sizeof a.sun_path - 1);
     if (connect(fd, (struct sockaddr *)&a, sizeof a) < 0) { close(fd); return -1; }
 
-    /* Scoped to this fd: a write to a closed link must return EPIPE, not
-     * signal the host process.  We run inside MIDIServer. */
+    /* The option applies to this fd only.  A write to a closed link must
+     * return EPIPE without signalling the host process, because the driver
+     * runs inside MIDIServer. */
     int on = 1;
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof on);
     /* Both halves are bounded: a wedged instance must not stall the pump or
@@ -85,7 +86,7 @@ static void scan_and_connect(uint32_t epoch) {
 
         pthread_mutex_lock(&g_slots_lock);
         struct slot *sl = &g_slots[idx];
-        if (sl->fd >= 0 || slot_connected(path)) {  /* raced; drop ours */
+        if (sl->fd >= 0 || slot_connected(path)) {  /* taken while dialling; close ours */
             pthread_mutex_unlock(&g_slots_lock);
             close(fd);
             continue;
@@ -113,10 +114,11 @@ static void scan_and_connect(uint32_t epoch) {
                (unsigned)id.location);
         pthread_mutex_unlock(&g_slots_lock);
 
-        /* A Stop() since the dial: the slot goes with the rest of the run. */
+        /* If Stop() ran during the dial, stop here; drop_all_slots removes this
+         * slot with the rest of the run. */
         if (!driver_live(epoch)) break;
-        /* Published with the lock released; MIDIServer calls into this driver
-         * while holding the setup lock this needs. */
+        /* Publish the device with the lock released: MIDIServer calls into
+         * this driver while it holds the setup lock that publishing needs. */
         if (create_slot_device(sl, idx) < 0) {
             pthread_mutex_lock(&g_slots_lock);
             MIDIDeviceRef d = slot_detach(sl);
@@ -235,7 +237,7 @@ void link_send(int idx, uint32_t gen, const MIDIPacketList *pl) {
             ssize_t w = write(sl->fd, p->data + off, p->length - off);
             if (w > 0) { off += w; continue; }
             if (w < 0 && errno == EINTR) continue;
-            /* A partial write leaves half a message on the wire; the link
+            /* A partial write leaves half a message on the wire, so the link
              * is dropped. */
             failed = 1;
             break;
@@ -245,7 +247,7 @@ void link_send(int idx, uint32_t gen, const MIDIPacketList *pl) {
     MIDIDeviceRef retire = 0;
     uint32_t retire_loc = 0;
     if (failed) {
-        os_log_error(g_log, "slot %d write failed (%{public}s); dropping link",
+        os_log_error(g_log, "slot %d: the write failed (%{public}s); dropping the link",
                      idx, strerror(errno));
         retire_loc = sl->location;
         retire = slot_detach(sl);

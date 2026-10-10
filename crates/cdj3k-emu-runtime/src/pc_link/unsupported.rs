@@ -9,7 +9,7 @@ pub enum PcLinkError {
 
 impl std::fmt::Display for PcLinkError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "pc-link bridge requires macOS")
+        write!(f, "the PC Link bridge requires macOS")
     }
 }
 impl std::error::Error for PcLinkError {}
@@ -20,8 +20,8 @@ impl PcLinkError {
     }
 }
 
-/// False: this build has no virtual-endpoint backend, so the menu offers no
-/// PC-link switch.
+/// This build has no virtual-endpoint back end, so the menu offers no PC Link
+/// switch.
 pub const SUPPORTED: bool = false;
 
 pub struct PcLink;

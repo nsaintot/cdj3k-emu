@@ -26,30 +26,28 @@ pub struct InstanceSettings {
     /// one the staged cabinet was keyed for, and changing it afterwards locks
     /// `cabinet.img` out.
     pub soc_serial: String,
-    /// Whether QEMU is launched with the audio backend.  When true virtio-sound
-    /// is added and routed to CoreAudio; when false no ALSA card is present.
+    /// Whether QEMU is launched with the audio backend. When true, virtio-sound
+    /// is added and routed to the host's audio output; when false, the guest
+    /// has no ALSA card.
     pub audio_enabled: bool,
-    /// Selected CoreAudio device UID, or `None` for "system default output".
-    /// Stable across reboots; the human-readable name is re-resolved at
-    /// enumeration time and never persisted.
+    /// The selected output device's uid, as the host's audio backend names it,
+    /// or `None` for "Default System Output". The uid is stable across reboots;
+    /// the device name is resolved again at enumeration time and never saved.
     pub audio_device_uid: Option<String>,
-    /// "Enable ALC" (audio-latency compensation) toggle. Mirrors the guest's
-    /// `audio_sync_enabled` sysfs param. Defaults to **true** for new
-    /// instances - the sync compensation is the better experience for the
-    /// vast majority of users; opting out is a power-user choice.
-    /// The runtime worker pushes this value to the guest cfg daemon once
-    /// per QEMU boot so the kernel module's default-off doesn't override us.
+    /// The "Enable ALC (Experimental)" toggle for audio-latency compensation,
+    /// which mirrors the guest's `audio_sync_enabled` sysfs parameter. It
+    /// defaults to true. The runtime worker pushes the value to the guest cfg
+    /// daemon on every QEMU boot, because the kernel module defaults to off.
     pub alc_enabled: bool,
-    /// "Trackpad Haptics" toggle.  Gates the Force Touch detent clicks emitted
-    /// by `cdj3k_emu_platform::haptic::actuate` as the jog crosses detents.
-    /// Defaults to **true**; users on hardware without an actuator see no
-    /// change either way (the platform layer no-ops silently).
+    /// The "Jog Haptics" toggle, which gates the Force Touch detent clicks that
+    /// `cdj3k_emu_platform::haptic::actuate` emits as the jog crosses detents.
+    /// It defaults to true and has no effect on hardware without an actuator.
     pub haptic_enabled: bool,
-    /// "PC Link (USB-B cable)" toggle.  When true, the runtime brings up
-    /// the host-side virtual CoreMIDI + HID endpoints and starts the
-    /// in-guest `cdj3k-pc-link-bridge.service`.  Off by default; the
-    /// emulated cable starts unplugged.  Persisted across launches; the
-    /// runtime worker re-applies the state when the guest comes back up.
+    /// The "PC Link (USB-B)" toggle. When true, the runtime brings up the
+    /// host's virtual MIDI and HID endpoints and starts the in-guest
+    /// `cdj3k-pc-link-bridge.service`. It is off by default, so the emulated
+    /// cable starts unplugged. The runtime worker applies the state again
+    /// when the guest comes back up.
     pub pc_link_enabled: bool,
     /// The model this slot emulates - the one its [`FirmwarePaths`] hold.
     /// `None` until something is installed. The app opens the slot on this
@@ -62,7 +60,7 @@ pub struct InstanceSettings {
     /// installer read it from the UPD's `IMAGES/RELEASE.TXT`. The eMMC's
     /// U-Boot env holds the same string, but behind the qcow2 mapping, so the
     /// menus read it from here. `None` for a slot installed before this key
-    /// existed, or from an image that carries no release file.
+    /// existed, or from an image without a release file.
     pub firmware_release: Option<String>,
     /// The guest feature set the slot was installed with
     /// ([`crate::FEATURE_SET`]); 0 for a slot installed before this key
@@ -72,21 +70,24 @@ pub struct InstanceSettings {
     /// ([`crate::mods`]). On by default; the list itself stays editable
     /// either way.
     pub mods_enabled: bool,
-    /// Last user-selected network interface name (e.g. "en0"), or `None` for
-    /// "no network".  Restored on launch if the iface is still present;
-    /// otherwise kept on disk so it can re-bind when the iface returns.
+    /// The network interface the user last selected (for example "en0"), the
+    /// host-only token, or `None` for "Default (NAT)". It is restored on
+    /// launch if the interface is still present; otherwise it stays on disk so
+    /// it can rebind when the interface returns.
     pub net_iface: Option<String>,
-    /// Last user-selected virtual USB image path, or `None`.  Restored on
-    /// launch if the file still exists; kept on disk regardless.
+    /// The virtual USB image path the user last selected, or `None`. It is
+    /// restored on launch if the file still exists, and stays on disk either
+    /// way.
     pub usb_virtual_path: Option<PathBuf>,
-    /// Last user-selected physical USB disk BSD name (e.g. "disk2"), or
-    /// `None`.  Restored on launch if the disk is still present; kept on disk
-    /// regardless.
+    /// The BSD name of the physical USB disk the user last selected (for
+    /// example "disk2"), or `None`. It is restored on launch if the disk is
+    /// still present, and stays on disk either way.
     pub usb_physical_bsd: Option<String>,
 }
 
 impl InstanceSettings {
-    /// Load from disk, or generate + persist a fresh MAC if no file/key exists.
+    /// Load the slot's settings, generating and saving a MAC and a SoC serial
+    /// when either is missing or invalid.
     pub fn load_or_init(instance_id: u32) -> Self {
         let _g = locked();
         Self::load_or_init_unlocked(instance_id)
@@ -113,11 +114,10 @@ impl InstanceSettings {
         );
         if minted_mac || minted_serial {
             if let Err(e) = write_kv(&path, &map, SLOT_KEYS) {
-                // Disk write failed — the minted MAC and SoC serial won't
-                // survive a restart, but we'd rather proceed with one-shot
-                // values than refuse to launch the slot.  Log so the user sees
-                // it in Console.app instead of a silent churn; a churning SoC
-                // serial costs the slot its `cabinet.img` (see `soc_serial`).
+                // The minted MAC and SoC serial will not survive a restart,
+                // but the slot still launches with them. The failure is
+                // logged, because a SoC serial that changes on every launch
+                // costs the slot its `cabinet.img` (see `soc_serial`).
                 eprintln!(
                     "cdj3k-emu-storage: failed to persist identity for instance {}: {}",
                     instance_id, e
@@ -129,12 +129,8 @@ impl InstanceSettings {
             soc_serial,
             audio_enabled: flag(&map, "audio_enabled", false),
             audio_device_uid: text(&map, "audio_device_uid"),
-            // ALC default: ON. New users get the sync compensation by default;
-            // opt-out is a power-user choice that the toggle persists.
             alc_enabled: flag(&map, "alc_enabled", true),
-            // Trackpad haptics default: ON.  See `haptic_enabled` doc-comment.
             haptic_enabled: flag(&map, "haptic_enabled", true),
-            // PC link default: OFF - emulated cable starts unplugged.
             pc_link_enabled: flag(&map, "pc_link_enabled", false),
             model: map.get("model").and_then(|v| Model::parse(v)),
             firmware_release: text(&map, "firmware_release"),
@@ -185,7 +181,8 @@ impl InstanceSettings {
         let serial = serial.trim().to_ascii_lowercase();
         if !is_valid_soc_serial(&serial) {
             return Err(io::Error::other(format!(
-                "not a usable SoC serial: {serial:?} - want 16 hex digits with a non-zero last byte"
+                "{serial:?} is not a usable SoC serial; it needs 16 hex digits with a non-zero \
+                 last byte"
             )));
         }
         Ok(serial)
@@ -252,8 +249,9 @@ impl InstanceSettings {
     }
 }
 
-/// `map[key]` when `valid` accepts it, else a fresh value from `generate`,
-/// stored back into `map`. The value, and whether it was minted.
+/// Return `map[key]` when `valid` accepts it, or else a fresh value from
+/// `generate` that is stored back into `map`, together with whether the value
+/// was minted.
 fn kept_or_minted(
     map: &mut BTreeMap<String, String>,
     key: &str,

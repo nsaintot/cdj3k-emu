@@ -7,7 +7,7 @@
 //!
 //! # Which shape, and why
 //!
-//! The kernel's classification of the interface picked decides:
+//! The kernel's classification of the selected interface decides the shape:
 //!
 //! * **a tap** — attached as it is. Nothing is created, and nothing is
 //!   elevated when the user can open it.
@@ -16,8 +16,9 @@
 //!   guest its own MAC on the LAN without moving the host's address onto a
 //!   bridge.
 //!
-//! A macvtap cannot reach its own parent's host: rekordbox on this machine
-//! does not see the deck. A bridge built by hand and picked does.
+//! A macvtap cannot reach the host of its parent interface, so rekordbox on
+//! this machine does not see the deck. It does see the deck through a bridge
+//! that the user built and selected.
 //!
 //! # Lifetime
 //!
@@ -68,8 +69,8 @@ impl Shape {
     }
 }
 
-/// The guest's link for one instance, deleted once this is dropped (module
-/// doc, Lifetime).
+/// The guest's link for one instance, deleted once this is dropped (see
+/// Lifetime in the module doc).
 pub struct LinuxBridge {
     /// The interface QEMU is attached through — ours, or the user's own tap.
     pub iface: String,
@@ -159,7 +160,7 @@ impl LinuxBridge {
         if shape == Shape::TapOnBridge {
             attach_tun(fd, ours)?;
         }
-        // Cleared so the fd survives the fork+exec into QEMU.
+        // Clear FD_CLOEXEC so the fd survives the fork and exec into QEMU.
         unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
         Ok(Self {
             iface: ours.to_string(),

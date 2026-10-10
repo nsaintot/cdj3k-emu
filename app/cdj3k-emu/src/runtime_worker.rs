@@ -1,4 +1,5 @@
-//! Background thread that polls `menu_state` and drives QemuInstance / UsbManager.
+//! The background thread that polls `menu_state` and drives the QEMU instance
+//! and the USB manager.
 
 mod mods;
 mod net;
@@ -26,14 +27,14 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const NET_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
-/// Pre-built network backend, set up before the very first QEMU spawn so the
-/// initial process already has the right `-netdev`. The worker holds it for
-/// its lifetime - Drop tears the bridge down.  vmnet needs nothing here: QEMU
-/// opens the interface itself and releases it when it exits.
+/// The network backend, set up before the first QEMU start so that the first
+/// process already has the right `-netdev`. The worker holds it for its
+/// lifetime, and dropping it tears the bridge down. vmnet needs nothing here,
+/// because QEMU opens the interface itself and releases it when it exits.
 pub struct PrebuiltNet {
     pub keep: cdj3k_emu_runtime::NetKeepAlive,
-    /// Initial value to seed `prev_net_idx` with so the worker doesn't
-    /// trigger a restart on the first poll iteration.
+    /// The initial value of `prev_net_idx`, so that the worker does not
+    /// restart QEMU on its first poll iteration.
     pub initial_net_idx: u32,
 }
 
@@ -67,21 +68,22 @@ fn run(
 /// then the network keep-alive, then the USB manager and the cfg client.
 struct Worker {
     pc_link: PcLinkState,
-    /// Storage to re-mount after the next QEMU boot (deferred until cfg.sock is ready).
+    /// The storage to mount again after the next QEMU boot, once cfg.sock is ready.
     pending_remount: Option<PendingRemount>,
     /// Mods whose journal was requested and has not arrived yet.
     mod_logs_due: Vec<String>,
     /// The last mods report recorded, so each new report is saved only once.
     last_mods_report: ModsReport,
-    /// Latched per QEMU lifetime - cleared on restart so a fresh kernel module
-    /// load gets the user's persisted ALC value pushed once cfg.sock is up.
+    /// Set once per QEMU lifetime and cleared on restart, so that the newly
+    /// loaded kernel module receives the user's saved ALC value once cfg.sock
+    /// is up.
     alc_pushed_for_boot: bool,
     last_net_refresh: Instant,
     last_phys_toggle: i32,
     prev_net_idx: u32,
-    /// TAP bridge: dropped on app exit and on iface change, tearing down the
-    /// host TAP.  Sockets and directories are removed in one place only:
-    /// `cleanup_runtime_files` on process exit.
+    /// The TAP bridge. Dropping it on app exit or on an interface change tears
+    /// down the host TAP. Sockets and directories are removed only by
+    /// `cleanup_runtime_files` when the process exits.
     _active_net: NetKeepAlive,
     last_disk_refresh: Instant,
     phys_disks: Vec<PhysicalDisk>,
@@ -106,8 +108,8 @@ impl Worker {
         {
             let mut s = menu_state::lock();
             s.qemu_running = instance.is_some();
-            // A restart that went through a relaunch forced the shade; the new
-            // QEMU is up, and the boot shade holds until its first frames.
+            // A restart through a relaunch forced the shade on. The new QEMU is
+            // up, so clear it; the boot shade stays until the first frames arrive.
             if instance.is_some() {
                 s.shade_forced = false;
             }
@@ -116,11 +118,11 @@ impl Worker {
         let cfg_client = CfgClient::new(&config.sock_dir());
         let usb = UsbManager::new(&config, cfg_client.clone());
         let pc_link = PcLinkState::new();
-        // Populate the interface cache immediately so the menu has data on first open.
+        // Fill the interface cache now, so that the menu has data when it first opens.
         menu_state::refresh_net_interfaces();
 
-        // Virtual USB: main.rs seeded usb_virtual_img if the file existed; queue a
-        // deferred mount that runs once QEMU is up.
+        // main.rs set usb_virtual_img if the saved image file existed. Queue a
+        // mount of it that runs once QEMU is up.
         let pending_remount = menu_state::lock()
             .usb_virtual_img
             .clone()
@@ -152,7 +154,7 @@ impl Worker {
         }
     }
 
-    /// One poll iteration. Returns false once the worker is to exit.
+    /// Run one poll iteration. Returns false when the worker should exit.
     fn tick(&mut self) -> bool {
         if self.exit_requested() {
             self.shut_down();
@@ -196,10 +198,10 @@ impl Worker {
         true
     }
 
-    /// App shutdown, or the setup window retiring this worker. A restart with
-    /// a finished install waiting is the shell's to do: it launches again, and
-    /// a launch swaps the install in. The guest rebooting counts, as does the
-    /// menu's restart.
+    /// Return true on app shutdown or when the setup window retires this
+    /// worker. The worker also retires when a restart is due and a finished
+    /// install is waiting; a guest reboot and the menu's Restart both count.
+    /// The shell then launches again, and the launch swaps the install in.
     fn exit_requested(&self) -> bool {
         let mut retire = std::mem::take(&mut menu_state::lock().worker_exit_requested);
         let restarting = menu_state::lock().restart_requested
@@ -227,19 +229,21 @@ impl Worker {
         if let Some(on) = toggled {
             persist_inst(self.config.instance_id, |s| s.mods_enabled = on);
         }
-        // Drop PcLink first so its threads exit while the socket is still
-        // valid; otherwise the reader thread blocks on a half-closed fd.
+        // Close the PC-link bridge first, so its threads exit while the socket
+        // is still valid. Otherwise the reader thread blocks on a half-closed fd.
         self.pc_link.close_bridge();
         self.stop_instance();
-        // A restart asked for now would restart the next worker's new QEMU.
+        // Clear any restart request, because it would restart the next
+        // worker's new QEMU.
         let mut s = menu_state::lock();
         s.qemu_running = false;
         s.restart_requested = false;
     }
 
-    /// Persist the toggled settings and apply the ones that act at once.
-    /// Returns true when a toggled setting takes a QEMU restart: audio on/off
-    /// and the output device are QEMU's `-audio` / `-audiodev` arguments.
+    /// Save the toggled settings and apply the ones that act at once. Returns
+    /// true when a toggled setting needs a QEMU restart. The audio switch and
+    /// the output device need one, because they are QEMU's `-audio` and
+    /// `-audiodev` arguments.
     fn apply_setting_toggles(&mut self, req: &Requests) -> bool {
         let id = self.config.instance_id;
         if req.audio_toggle {
@@ -253,8 +257,8 @@ impl Worker {
         if req.alc_toggle {
             self.set_alc(req.alc_enabled);
         }
-        // Host-side only - no QEMU restart, no guest push.  The jog physics
-        // layer reads `menu_state.haptic_enabled` at each detent crossing.
+        // The haptic setting acts on the host only. The jog physics layer
+        // reads `menu_state.haptic_enabled` at each detent crossing.
         if req.haptic_toggle {
             persist_inst(id, |s| s.haptic_enabled = req.haptic_enabled);
         }
@@ -266,28 +270,29 @@ impl Worker {
         req.audio_toggle || req.audio_device_toggle
     }
 
-    /// Push `set audio_sync_enabled <0|1>` to the guest cfg daemon and persist
-    /// it. No restart needed - sysfs takes effect immediately and the
-    /// LD_PRELOAD shims pick up the change on their next 1 s sysfs refresh tick.
+    /// Push `set audio_sync_enabled <0|1>` to the guest's cfg daemon and save
+    /// it. No restart is needed: the sysfs value takes effect at once, and the
+    /// LD_PRELOAD shims read it on their next sysfs refresh, which runs every
+    /// second.
     fn set_alc(&self, enabled: bool) {
         let v = if enabled { "1" } else { "0" };
         if let Err(e) = self.cfg_client.set_param("audio_sync_enabled", v) {
-            eprintln!("cdj3k-emu: set audio_sync_enabled failed: {e}");
+            eprintln!("cdj3k-emu: setting audio_sync_enabled failed: {e}");
         }
         persist_inst(self.config.instance_id, |s| s.alc_enabled = enabled);
     }
 
-    /// The kernel module's `audio_sync_enabled` defaults to 0 on every module
-    /// load.  Push the user's persisted value once per QEMU lifetime, as soon
-    /// as cfg.sock is responsive: the first latency push only arrives after
-    /// the cfg daemon has handshook the port.
+    /// The kernel module's `audio_sync_enabled` is 0 after every module load.
+    /// Push the user's saved value once per QEMU lifetime, as soon as cfg.sock
+    /// responds. The first latency report is the sign that it responds: it
+    /// arrives only after the cfg daemon has completed its handshake on the port.
     fn push_alc_once(&mut self, enabled: bool) {
         if self.alc_pushed_for_boot || self.cfg_client.latency().is_none() {
             return;
         }
         let v = if enabled { "1" } else { "0" };
         if let Err(e) = self.cfg_client.set_param("audio_sync_enabled", v) {
-            eprintln!("cdj3k-emu: initial set audio_sync_enabled failed: {e}");
+            eprintln!("cdj3k-emu: setting the initial audio_sync_enabled failed: {e}");
         } else {
             self.alc_pushed_for_boot = true;
         }
@@ -306,7 +311,8 @@ impl Worker {
     }
 }
 
-/// One-acquisition snapshot of every flag/value the worker needs each tick.
+/// A snapshot of every flag and value the worker needs each tick, taken under
+/// one lock acquisition.
 struct Requests {
     boot: bool,
     stop: bool,
@@ -364,9 +370,8 @@ impl Requests {
     }
 }
 
-/// Load, mutate, and re-save InstanceSettings under the settings lock.
-/// Errors are logged and swallowed - persistence is best-effort and should
-/// never break runtime flow.
+/// Load, change and save the InstanceSettings under the settings lock. Errors
+/// are only logged, so that a failed save never stops the worker.
 fn persist_inst<F>(instance_id: u32, mutate: F)
 where
     F: FnOnce(&mut cdj3k_emu_storage::InstanceSettings),

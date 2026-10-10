@@ -1,24 +1,26 @@
 # cdj3k-emu - Network Stack
 
-> Reference for how the emulator exposes a NIC to the guest, with a focus
-> on Pro DJ Link (DJPL) reach. The modes trade ease against L2
-> visibility. Companion to `docs/audio-stack.md` and `docs/alc.md`.
+> This page describes how the emulator exposes a NIC to the guest, with a
+> focus on Pro DJ Link (DJPL) reach. The modes trade ease of setup against L2
+> visibility. See also `docs/audio-stack.md` and `docs/alc.md`.
 
 ---
 
 ## Why this matters
 
-Pro DJ Link is the LAN protocol Pioneer CDJs use to broadcast beat,
-master / slave handoff, BPM, ABS_POS, and PLAYER_STATUS over UDP. To
-sync two emulator instances - or one emulator and a real CDJ - the
-guest's NIC has to sit on the **same L2 segment** as its peers:
-broadcasts and arrival-time semantics don't survive NAT.
+Pro DJ Link is the LAN protocol Pioneer CDJs use to broadcast beats, the
+master and slave handoff, BPM, ABS_POS and PLAYER_STATUS over UDP. To sync two
+emulator instances, or one emulator and a real CDJ, the guest's NIC has to sit
+on the **same L2 segment** as its peers, because broadcasts and their arrival
+times do not survive NAT.
 
-QEMU's default `-netdev user` (SLIRP) is a userspace NAT stack and
-cannot carry DJPL discovery / beat broadcasts between hosts. For real LAN
-visibility, macOS uses `vmnet.framework` - opened by QEMU itself, in-process -
-or a kernel TAP bridge, Linux a macvtap or a tap on a bridge, and Windows a
-TAP-Windows6 adapter in the Network Bridge.
+QEMU's default `-netdev user` (SLIRP) is a userspace NAT stack and cannot
+carry DJPL discovery or beat broadcasts between hosts. For real LAN visibility:
+
+- macOS uses `vmnet.framework`, which QEMU opens in its own process, or a
+  kernel TAP bridge.
+- Linux uses a macvtap or a tap on a bridge.
+- Windows uses a TAP-Windows6 adapter in the Network Bridge.
 
 ---
 
@@ -33,51 +35,54 @@ TAP-Windows6 adapter in the Network Bridge.
 | **Linux link**   | `tap,id=net0,fd=<N>`                                 | full L2 on iface         | once per start | lease watcher      |
 | **Windows link** | `tap,id=net0,ifname=<adapter>`                       | full L2 on iface         | once per start | lease watcher      |
 
-vmnet and the TAP bridge are macOS; the Linux link is Linux; the Windows link
-is Windows. Both vmnet modes are unprivileged: vmnet requires root *or* the
-`com.apple.developer.networking.vmnet` entitlement, and the app carries it,
-authorised by `Contents/embedded.provisionprofile`. Entitlements are
-process-wide, so QEMU reaches vmnet from inside `libcdj3k-emu-qemu.dylib` -
-the same arrangement HVF already uses. TAP is the one mode that still prompts:
-`ifconfig bridge create` is root-only and no entitlement covers it.
+vmnet and the TAP bridge exist only on macOS, the Linux link only on Linux,
+and the Windows link only on Windows. Both vmnet modes are unprivileged: vmnet
+requires root or the `com.apple.developer.networking.vmnet` entitlement, and
+the app carries that entitlement, authorised by
+`Contents/embedded.provisionprofile`. Entitlements apply to the whole process,
+so QEMU reaches vmnet from inside `libcdj3k-emu-qemu.dylib`, as HVF does. The
+TAP bridge is the only macOS mode that asks for the admin password, because
+`ifconfig bridge create` needs root and no entitlement covers it.
 
-**vmnet-host** ("Host-only (link-local)") puts all instances on the same virtual
-`bridgeN`, isolated from physical interfaces, via a fixed network UUID (see
-`vmnet.rs`, `VMNET_HOST_NETWORK_ID`; `DJPL_VMNET_UUID` overrides it, and djx-emu
-must be given the same value). The UUID both joins the segment and suppresses
-vmnet's `bootpd`, so guests fall through `udhcpc -T 2` to `avahi-autoipd` and
-self-assign 169.254/16 - matching real Pro DJ Link gear on a router-less
-network. Measured from a guest on the segment: with the UUID a DHCP DISCOVER
-goes unanswered while other traffic still flows; without it `bootpd` offers a
-192.168.128.x lease. Two interfaces created under one UUID by separate
-processes see each other's broadcasts, which is what lets several instances
-share one DJ-Link segment with no daemon between them.
+**vmnet-host** ("Host-only (link-local)") puts all instances on the same
+virtual `bridgeN`, isolated from physical interfaces, through a fixed network
+UUID (`VMNET_HOST_NETWORK_ID` in `vmnet.rs`). `DJPL_VMNET_UUID` overrides it,
+and djx-emu must be given the same value.
 
-`QemuConfig::build_argv` selects: a tap wins if present (an fd, or on Windows
-an adapter name; `net::tap_netdev` renders it per host), otherwise a vmnet
-mode, otherwise user-mode. Which of those an interface gets is the host's
-`net::attach`.
+- The UUID joins the segment and also turns off vmnet's `bootpd`. Guests fall
+  through `udhcpc -T 2` to `avahi-autoipd` and assign themselves a 169.254/16
+  address, as real Pro DJ Link gear does on a network without a router.
+- With the UUID, a DHCP DISCOVER goes unanswered while other traffic still
+  flows; without it, `bootpd` offers a 192.168.128.x lease.
+- Interfaces created under one UUID by separate processes see each other's
+  broadcasts, so several instances share one DJ-Link segment with no daemon
+  between them.
 
-The device line is identical across modes:
+`QemuConfig::build_argv` picks a tap when there is one (an fd, or an adapter
+name on Windows; `net::tap_netdev` writes it for each host), otherwise a vmnet
+mode, otherwise user mode. The host's `net::attach` decides which of these an
+interface gets.
+
+Every mode uses the same device. The bridged modes also set its MAC:
 
 ```
 -device virtio-net-device,netdev=net0,mac=<MAC>,mrg_rxbuf=off
 ```
 
-`mrg_rxbuf=off` keeps the guest's virtio_net consumer ring layout
-simple - mergeable RX buffers offer no win for the DJPL packet sizes
-we see and complicate the trace.
+`mrg_rxbuf=off` keeps the guest's virtio_net receive ring simple. Mergeable RX
+buffers bring no gain at DJPL packet sizes and make packet traces harder to
+read.
 
 ### Mode 1 - User-mode (SLIRP)
 
-Default when neither vmnet nor TAP is selected. QEMU's built-in
-userspace stack provides DHCP, DNS, and outbound NAT.
+This is the default ("Default (NAT)" in the Network menu). QEMU's built-in
+userspace stack provides DHCP, DNS and outbound NAT.
 
 - SSH: host port `2222 + instance_id` forwards to guest `:22`.
 - **Cannot** receive DJPL broadcasts from other hosts.
 - **Cannot** be discovered by other DJPL endpoints.
-- Fine for solo dev, building, kernel work, anything not involving
-  beat-sync against a peer.
+- It suits solo development, building and kernel work: anything that does
+  not beat-sync against a peer.
 
 ### Mode 2 - vmnet (bridged and host)
 
@@ -88,19 +93,19 @@ QEMU's own vmnet backends open `vmnet.framework` directly:
 -netdev vmnet-host,id=net0,net-uuid=7b3d5e2a-9c14-4f6b-b2e1-0a1c2d3e4f50
 ```
 
-Bridged puts the guest on the host's physical LAN with a real MAC: it can be
-ARP'd from other devices and exchanges DJPL broadcasts natively. Host mode
-joins the isolated UUID segment described above.
+Bridged mode puts the guest on the host's physical LAN with its own MAC:
+other devices can reach it through ARP, and it exchanges DJPL broadcasts
+directly. Host mode joins the isolated UUID segment described above.
 
 `isolated` is left at its default (off) in both modes. Switching it on cuts
 each guest off from the others on the same vmnet network, which is the
 opposite of what DJ-Link discovery needs.
 
-**Sharing is by UUID, not by daemon.** Each QEMU process opens its own vmnet
-interface; interfaces created under one `net-uuid` land on one L2 segment.
-There is no socket, no lease, no watchdog and no shared daemon to reap - the
-interface is released when QEMU exits. Bridged instances need no coordination
-at all: they are each on the real LAN.
+**Instances share a segment through its UUID.** Each QEMU process opens its
+own vmnet interface, and interfaces created under one `net-uuid` land on one L2
+segment. There is no socket, lease, watchdog or shared daemon: the interface is
+released when QEMU exits. Bridged instances need no coordination, since each
+one is on the real LAN.
 
 `VmnetMode` (`crates/cdj3k-emu-runtime/src/net/vmnet.rs`) carries the choice
 and renders the `-netdev` argument; interface names are checked
@@ -108,9 +113,9 @@ and renders the `-netdev` argument; interface names are checked
 
 ### Mode 3 - TAP bridge
 
-For OpenVPN-style scenarios where the L2 segment lives on a `tunN` /
-`tapN` device. `vmnet.framework` cannot attach to TAP, so we drop
-down to a macOS kernel bridge:
+This mode is for OpenVPN-style setups where the L2 segment lives on a `tunN`
+or `tapN` device. `vmnet.framework` cannot attach to a TAP device, so the app
+uses a macOS kernel bridge:
 
 ```
 host_tap (e.g. tap0)  ──┐
@@ -120,28 +125,27 @@ host_tap (e.g. tap0)  ──┐
 
 Flow (`TapBridge::setup`, `net/tapbridge.rs`):
 
-1. `cleanup_stale()` reads `<instance>/tapbridge.names` from a previous
-   run; if present, `ifconfig destroy` the old bridge and tap via one
-   elevated call.
+1. `cleanup_stale()` reads `<instance>/tapbridge.names` from a previous run.
+   If the file exists, it destroys the old bridge and tap (`ifconfig destroy`)
+   in one elevated call.
 2. Take the slot's lease ([Link lifetime](#link-lifetime)) and write the
    watcher script to `<instance>/tapbridge.sh`.
 3. `run_elevated()` launches the script.
-4. Watcher picks a free `tapN`, opens it on fd 3 to materialise the
-   interface, creates a `bridgeN`, adds the host tap with STP off,
-   `chmod 0666 /dev/tapN`, closes fd 3, writes
+4. The watcher picks a free `tapN` and opens it on fd 3 to create the
+   interface. It creates a `bridgeN`, adds the host tap with STP off, makes
+   `/dev/tapN` writable by everyone (`chmod 0666`), closes fd 3 and writes
    `<bridge>:<tap>\n` to the names file.
-5. Host process opens `/dev/<tap>` itself, clears `FD_CLOEXEC`, passes the
-   fd to QEMU as `tap,fd=N`. The
-   interface is **never DOWN** between bridge setup and the first
-   packet - the fd is always held by someone.
-6. Watcher's Phase 1 polls until the tap shows `RUNNING` again (with
-   the new host fd), then `addm` to the bridge with STP off.
-7. Phase 2: the watcher holds the link for the lease.
+5. The host process opens `/dev/<tap>` itself, clears `FD_CLOEXEC` and passes
+   the fd to QEMU as `tap,fd=N`. Some process always holds the fd, so the
+   interface never goes down between the bridge setup and the first packet.
+6. In phase 1 the watcher polls until the tap shows `RUNNING` again with the
+   new host fd, then adds it to the bridge (`addm`) with STP off.
+7. In phase 2 the watcher holds the link for the lease.
 
-Teardown: `chmod 0600 /dev/<tap>`, `ifconfig <bridge> deletem <tap>`,
-`ifconfig <tap> down`, and `ifconfig <bridge> destroy` once no other tap is
-on the shared bridge; then remove the names file and the watcher script, and
-answer the lease.
+Teardown runs `chmod 0600 /dev/<tap>`, `ifconfig <bridge> deletem <tap>` and
+`ifconfig <tap> down`, then `ifconfig <bridge> destroy` once no other tap is on
+the shared bridge. It then removes the names file and the watcher script and
+answers the lease.
 
 ### Mode 4 - Linux link
 
@@ -159,10 +163,12 @@ An elevated script (`pkexec`, `<instance>/linuxnet.sh`) deletes any
 writes the node's path to `<instance>/linuxnet.ready`. It then holds the link
 for the slot's lease in the background and deletes it (`ip link del`) when
 the lease goes. An existing tap is used as it is: nothing is made, elevated or
-deleted. A Wi-Fi station cannot carry either shape, so it is not offered.
+deleted. A Wi-Fi station can carry neither a macvtap nor a tap on a bridge,
+so it is not offered.
 
-A macvtap cannot reach its own parent's host: rekordbox on the same machine
-does not see the deck. A bridge built by hand and picked does.
+A macvtap cannot reach the host of its parent interface, so rekordbox on the
+same machine does not see the deck. Picking a bridge built by hand avoids
+this.
 
 ### Mode 5 - Windows link
 
@@ -193,8 +199,9 @@ Flow (`WindowsBridge::setup`, `net/windows_net.rs`):
    alias (`Rename-NetAdapter`), which the registry write alone leaves at
    "Local Area Connection" until the next boot.
    The adapter gets `AllowNonAdmin` "1", without which only administrators
-   can open it, and a fixed MAC (`NetworkAddress`, `winbridge::tap_mac`: the
-   guest's with the first octet 02), and is restarted when either changed.
+   can open it, and a fixed MAC (`NetworkAddress`, `winbridge::tap_mac`),
+   which is the guest's MAC with the first octet set to 02. The adapter is
+   restarted when either value changes.
 3. It joins the tap and the NIC to the host's Network Bridge: `netsh bridge
    create <tap> <nic>` when `netsh bridge list` shows none (the bridge takes
    the tap's MAC, so the host's address on it keeps its DHCP lease from one
@@ -215,9 +222,9 @@ Flow (`WindowsBridge::setup`, `net/windows_net.rs`):
    while QEMU holds it open.
 
 Setup and teardown hold the `Global\cdj3k-emu-bridge` mutex. A watcher whose
-claim was replaced by a later setup for the same slot leaves the link to it.
-A link survives only a host reboot, which ends the watcher; the next bridged
-start of the slot reuses it. The uninstaller removes adapters named
+claim was replaced by a later setup for the same slot leaves the link to that
+setup. A link outlives its slot only across a host reboot, which ends the
+watcher; the next bridged start of the slot reuses that link. The uninstaller removes adapters named
 `cdj3k-emu-*` and destroys the bridge `bridge-owned` names. `netsh bridge`
 needs Windows 11 22H2 with KB5030310; on older builds the bridge is made by
 hand in Network Connections.
@@ -239,21 +246,20 @@ through `pnputil`.
 
 ## MAC addresses
 
-Two MAC sources, one per mode:
+The bridged modes give the guest a MAC from one of two sources. User mode
+sets none.
 
 | Source                       | When used                          | Form                              |
 | ---------------------------- | ---------------------------------- | --------------------------------- |
-| Persisted random (settings)  | runtime production launch          | `0a:xx:xx:xx:xx:xx` (LAA / unicast) |
-| Deterministic from `id`      | fallback when no persisted MAC     | `0a:00:00:00:00:<id>`             |
+| Persisted random (settings)  | normal launch                      | random, with the locally administered bit set and the multicast bit clear |
+| Deterministic from `id`      | no persisted MAC                   | `0a:00:00:00:00:<id>`             |
 
-The persisted MAC lives in `instance-N/settings.txt` under key `mac`
-and is generated on first launch via `uuid::Uuid::new_v4()` with the
-first byte forced to `02|LAA`:
+The persisted MAC lives in `instance-N/settings.txt` under the key `mac`.
+`generate_mac()` (`crates/cdj3k-emu-storage/src/settings/identity.rs`) makes
+it on first launch from `uuid::Uuid::new_v4()`.
 
-> `crates/cdj3k-emu-storage/src/settings/identity.rs:44` - `generate_mac()`
-
-The runtime substitutes a fallback `0a:00:00:00:00:<id&0xff>` if no
-persisted MAC is set (`QemuConfig::build_argv`).
+When no MAC is persisted, `QemuConfig::build_argv` uses
+`0a:00:00:00:00:<id & 0xff>`.
 
 ---
 
@@ -275,17 +281,17 @@ AuthorizationExecuteWithPrivileges(auth, /bin/sh,
 AuthorizationFree(auth, kAuthorizationFlagDefaults)
 ```
 
-`AuthorizationCopyRights` is what triggers the native admin dialog
-(TouchID / Apple Watch / password). The shell that runs under
-`AuthorizationExecuteWithPrivileges` has no controlling tty - fine
-for our scripts, which only spawn backgrounded daemons + watchdogs.
+`AuthorizationCopyRights` shows the native admin dialog (Touch ID, Apple
+Watch or password). The shell that runs under
+`AuthorizationExecuteWithPrivileges` has no controlling tty. The scripts do
+not need one: they only start background daemons and watchdogs.
 
 On Linux it is `pkexec /bin/sh -c <cmd>`, answered by the desktop's polkit
 agent; it needs a local seat.
 
 On Windows it is UAC: `ShellExecuteExW` with the `runas` verb on
-`cmd.exe /C <cmd>`, hidden, waited on; the exit code is the result, and a
-declined prompt is `PermissionDenied`.
+`cmd.exe /C <cmd>`, run hidden, and waits for it. The exit code is the
+result, and a declined prompt returns `PermissionDenied`.
 
 ### Link lifetime
 
@@ -311,8 +317,8 @@ watcher:
 | Windows | the app, `--windows-net-watch` | the tap from the bridge, the bridge it made once no slot's tap is left, then the adapter |
 
 A host shutdown ends a watcher without its teardown. On macOS and Linux the
-kernel's interfaces go with it; on Windows the adapter and the bridge stay, and
-the next bridged start of the slot uses them.
+kernel's interfaces disappear with it; on Windows the adapter and the bridge
+stay, and the next bridged start of the slot uses them.
 
 vmnet needs none of this: QEMU owns the interface and the kernel releases it
 when QEMU exits.
@@ -328,7 +334,7 @@ ssh -p $((2222 + INSTANCE_ID)) root@localhost
 scp -P $((2222 + INSTANCE_ID)) file root@localhost:/tmp/
 ```
 
-Default port for instance 0 is `2222`. The guest runs dropbear only when the
+The default port for instance 0 is `2222`. The guest runs dropbear only when the
 setup window's **Developer / Root SSH** option was ticked at provisioning: the
 provisioning boot gets `cdj3k.ssh=1`, which the patch dispatcher reads as
 `ENABLE_SSH` for `02`-`05` in `initramfs-patch/patch-rootfs.d/`.
@@ -338,55 +344,56 @@ provisioning boot gets `cdj3k.ssh=1`, which the patch dispatcher reads as
 The guest gets a DHCP lease on the host LAN. Find it by MAC:
 
 ```
-arp -an | grep <mac>          # e.g. 0a:00:00:00:00:01 in dev mode
+arp -an | grep <mac>          # the slot's `mac` from settings.txt
 ssh root@<discovered ip>
 ```
 
-For known-MAC scripted discovery, the runtime sets `mac` deterministically
-when `instance_id` is small or persists it in `settings.txt` so the
-mapping is stable across launches.
+A script can find a deck by the `mac` in its `settings.txt`: the runtime
+persists the MAC, so it stays the same across launches.
 
 ---
 
 ## Pro DJ Link audio-latency compensation
 
-Transport gives DJPL packets a path; **alignment** is what makes the
-audible beat coincide between peers. Slave / master shims (clock-shift
-on `OptFstUdpServer`; delay-send on `sendto`/`sendmsg`) live in the
-audio stack - see:
+The network carries the DJPL packets; **alignment** makes the audible beat
+coincide between peers. The slave shim shifts the clock of `OptFstUdpServer`
+and the master shim delays `sendto` and `sendmsg`. Both belong to the audio
+stack:
 
-- `docs/alc.md` - the audio-latency-compensation design end-to-end.
-- `docs/audio-stack.md` - pipeline, soft-PLL, latency surface.
+- `docs/alc.md` describes audio-latency compensation from end to end.
+- `docs/audio-stack.md` describes the pipeline, the soft PLL and the latency
+  readout.
 
-Two facts that matter for this doc:
+Two facts matter for networking:
 
-- **Bridged mode is required** for cross-instance / emulator-to-real-CDJ
-  sync to be audible-accurate; user-mode NAT not only blocks discovery
-  but also re-orders / re-times broadcasts in ways that the master
-  shim's per-packet sendto-deadline cannot compensate for.
+- **Bridged mode is required** for audibly accurate sync between instances,
+  or between an emulator and a real CDJ. User-mode NAT blocks discovery, and
+  it also reorders and retimes broadcasts, which the master shim's per-packet
+  send deadline cannot correct.
 - The compensation reads `/sys/module/virtio_snd/parameters/audio_latency_ms`,
-  which is independent of transport.
+  which does not depend on the network mode.
 
 ---
 
 ## Security / defence-in-depth
 
-The runtime never feeds an interface name to an elevated shell
-without two layers of filtering:
+The runtime filters every interface name twice before it reaches an
+elevated shell:
 
-- **`platform::net::is_valid_iface`**: 1 to 15 bytes of ASCII
-  alphanumerics, `.`, `_` and `-`, and not `.` or `..`. Checked by
+- **`platform::net::is_valid_iface`** accepts 1 to 15 bytes of ASCII
+  alphanumerics, `.`, `_` and `-`, except `.` and `..`. It is checked by
   `VmnetMode::bridged`, `TapBridge::setup` and `LinuxBridge::setup`;
   `LinuxBridge::setup` also checks the MAC (`is_valid_mac`).
-- **`windows_kind::is_valid_adapter_name`** on Windows, where connection names
-  hold spaces and any script's letters: 1 to 64 characters of alphanumerics,
-  space, `.`, `_` and `-`, no edge spaces. `WindowsBridge::setup` checks it
-  and the MAC, and the helper re-checks every part of its request
-  (`Request::parse`), paths included (`is_cmd_safe_path`: no `"`, `%`, `&`,
-  `|`, `<`, `>`, `^` or line breaks).
-- **`elevate::sh_quote`**: wraps the argument in single quotes and escapes
-  embedded `'` as `'\''`, for everything interpolated into an elevated
-  script.
+- **`windows_kind::is_valid_adapter_name`** applies on Windows, where
+  connection names can hold spaces and letters from any script. It accepts 1
+  to 64 characters of alphanumerics, space, `.`, `_` and `-`, with no leading
+  or trailing space. `WindowsBridge::setup` checks it and the MAC, and the
+  helper checks every part of its request again (`Request::parse`),
+  including paths (`is_cmd_safe_path` rejects `"`, `%`, `&`, `|`, `<`, `>`,
+  `^` and line breaks).
+- **`elevate::sh_quote`** wraps the argument in single quotes and escapes an
+  embedded `'` as `'\''`. Every value written into an elevated script goes
+  through it.
 
 Per-instance state is rooted in `runtime_paths::instance_dir(id)`: the
 lease's claim and answer, the TAP bridge's names file and watcher script, the
@@ -403,9 +410,9 @@ files). The lease relies on that: only the app can change the claim.
 | ---------------------------------------------------------- | ------------------------------------------------- |
 | `crates/cdj3k-emu-runtime/src/config.rs`                   | `-netdev` / `-device` selection                   |
 | `crates/cdj3k-emu-runtime/src/net/`                        | `attach` per host, `NetAttachment`                |
-| `crates/cdj3k-emu-runtime/src/net/vmnet.rs`                | `VmnetMode` -> `-netdev` argument, network UUID    |
+| `crates/cdj3k-emu-runtime/src/net/vmnet.rs`                | `VmnetMode` and its `-netdev` argument, network UUID |
 | `crates/cdj3k-emu-runtime/src/net/lease.rs`                | the slot's lease on its link; every host          |
-| `crates/cdj3k-emu-runtime/src/net/tapbridge.rs`            | bridgeN + tapM watcher, stale cleanup (macOS)     |
+| `crates/cdj3k-emu-runtime/src/net/tapbridge.rs`            | the bridgeN and tapM watcher, stale cleanup (macOS) |
 | `crates/cdj3k-emu-runtime/src/net/linux_net.rs`            | macvtap / tap-on-bridge / existing tap (Linux)    |
 | `crates/cdj3k-emu-runtime/src/net/windows_net.rs`          | `WindowsBridge`: claim, elevation, verdict, release (Windows) |
 | `crates/cdj3k-emu-runtime/src/net/windows_helper.rs`       | the elevated helper and watcher: SetupAPI tap, `netsh bridge` (Windows) |
@@ -415,4 +422,4 @@ files). The lease relies on that: only the app can change the claim.
 | `crates/cdj3k-emu-storage/src/settings/`                   | persisted `mac`, `net_iface`, MAC generator       |
 | `crates/cdj3k-emu-platform/src/runtime_paths/`             | socket / instance-dir layout                      |
 | `qemu/build.sh`                                            | QEMU build (unrelated to runtime networking)      |
-| `initramfs-patch/patch-rootfs.d/03-dropbear-enable.sh`     | enables in-guest SSH for both modes               |
+| `initramfs-patch/patch-rootfs.d/03-dropbear-enable.sh`     | enables SSH in the guest in every mode            |

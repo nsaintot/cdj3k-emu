@@ -40,7 +40,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::aspect_fit::{fit, Edge, Ratio, Rect};
 
-/// The subclass id: one per window, ours alone.
+/// The id of this module's window subclass.
 const SUBCLASS_ID: usize = 0x6364_6a33;
 
 /// The ratio each subclassed window is held to, by `HWND`. `None` is a
@@ -124,8 +124,8 @@ struct Caption {
     widgets: Vec<RECT>,
 }
 
-/// Set while the panel's strip is the title bar. One emulation window per
-/// process.
+/// Set while the panel's strip is the title bar. Each process has one
+/// emulation window, so one value is enough.
 static CAPTION: Mutex<Option<Caption>> = Mutex::new(None);
 
 fn caption_in_client() -> bool {
@@ -402,9 +402,9 @@ pub fn open_url(url: &str) {
 /// keeps it in the one window.
 pub const PLACES_WINDOWS: bool = false;
 
-/// No swap interval: with one, NVIDIA's OpenGL presentation over a DXGI swap
-/// chain drops frames. DWM composes without tearing; frames come as the app
-/// repaints.
+/// The app sets no swap interval, because with one, NVIDIA's OpenGL
+/// presentation over a DXGI swap chain drops frames. DWM composes without
+/// tearing, and frames arrive as the app repaints.
 pub const VSYNC: bool = false;
 
 /// Create the named mutex the installer and uninstaller check (Inno Setup's

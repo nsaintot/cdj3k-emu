@@ -1,27 +1,28 @@
-//! MainLcdStream - reads the main LCD from the QEMU shm display backend.
+//! MainLcdStream reads the main LCD from the QEMU shm display backend.
 //!
-//! Shm file layout (written by qemu/patch/shm-display.c):
+//! QEMU creates the file `{socket_dir}/main.shm` at boot, and
+//! `qemu/patch/shm-display.c` writes it in this layout:
 //!
-//!   [0]   u32  magic       0x514D5348  ("QMS\x00")
-//!   [4]   u32  generation  incremented with RELEASE after every dirty blit
-//!   [8]   u32  width
-//!   [12]  u32  height
-//!   [16]  u32  stride      bytes per row
-//!   [20]  u32  format      1 = RGBA8888  (QEMU converts from XRGB on its side)
-//!   [24]  u32  dirty_x
-//!   [28]  u32  dirty_y
-//!   [32]  u32  dirty_w
-//!   [36]  u32  dirty_h
-//!   [64]  u8[] pixels      stride × height bytes
+//! | offset | type | field |
+//! |---|---|---|
+//! | 0 | u32 | magic, 0x514D5348 ("QMS\x00") |
+//! | 4 | u32 | generation, incremented with Release ordering after every dirty blit |
+//! | 8 | u32 | width |
+//! | 12 | u32 | height |
+//! | 16 | u32 | stride, in bytes per row |
+//! | 20 | u32 | format, 1 for RGBA8888 |
+//! | 24 | u32 | dirty_x |
+//! | 28 | u32 | dirty_y |
+//! | 32 | u32 | dirty_w |
+//! | 36 | u32 | dirty_h |
+//! | 64 | u8[] | pixels, stride × height bytes |
 //!
-//! The reader polls `generation` with Acquire semantics; when it changes,
-//! dirty_x/y/w/h and pixel data are coherent.
+//! The reader polls `generation` with Acquire ordering; when it changes, the
+//! dirty rect and the pixel data are consistent.
 //!
-//! Pixel format: format=1 (RGBA8888, R,G,B,A byte order).
-//! shm_gfx_update converts XRGB8888→RGBA8888 on the QEMU side so the host
-//! can bulk-copy rows without any per-pixel channel swap.
-//!
-//! File path: `{socket_dir}/main.shm`  (created by QEMU at boot).
+//! Pixel format 1 is RGBA8888, in R, G, B, A byte order. `shm_gfx_update`
+//! converts XRGB8888 to RGBA8888 on the QEMU side, so the host can copy whole
+//! rows without swapping channels.
 
 use memmap2::Mmap;
 use std::fs::File;
@@ -31,36 +32,36 @@ use std::thread;
 use std::time::Duration;
 
 const SHM_MAGIC: u32 = 0x514D_5348;
-/// Byte offset where pixel data begins in the shm file (public for the GL upload path).
+/// Byte offset of the pixel data in the shm file. The GL upload path uses it.
 pub const SHM_PIXELS_OFFSET: usize = 64;
 
-/// Poll interval for the shm generation counter. 500 µs comfortably tracks QEMU's
-/// ~60 Hz dirty publishes without burning CPU.
+/// Poll interval for the shm generation counter. 500 µs keeps up with QEMU's
+/// dirty publishes, about 60 a second, at little CPU cost.
 const POLL_INTERVAL: Duration = Duration::from_micros(500);
-/// Backoff between "shm not yet present" / "magic gone" retries.
+/// The wait before retrying when the shm file is missing or its magic is gone.
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
-/// A dirty-region notification - carries the mmap reference so the UI thread can
-/// upload directly to the GPU without any intermediate pixel copy.
+/// A dirty-region notification. It carries the mmap reference, so the UI
+/// thread can upload straight to the GPU without copying the pixels first.
 pub struct DisplayDirty {
     pub x: u32,
     pub y: u32,
     pub w: u32,
     pub h: u32,
-    /// Row stride in bytes (= shm header `stride` field).
+    /// Row stride in bytes, from the shm header's `stride` field.
     pub stride: u32,
-    /// Shared reference to the shm mapping; pixels live at
+    /// Shared reference to the shm mapping. The pixels are at
     /// `mmap[SHM_PIXELS_OFFSET + y*stride + x*4 ..]`.
     pub mmap: Arc<Mmap>,
 }
 
-/// Background-thread shm reader for the main LCD.
+/// Reads the main LCD's shm on a background thread.
 pub struct MainLcdStream {
     slot: Arc<Mutex<Option<DisplayDirty>>>,
     connected: Arc<AtomicBool>,
-    /// Monotonic count of generations observed since process start. Lets the UI
-    /// gate its "still booting" overlay on actual frame production rather than
-    /// just the shm being mapped.
+    /// The number of generations seen since the process started. The UI keeps
+    /// its "still booting" overlay up until frames arrive, even if the shm is
+    /// already mapped.
     frames_seen: Arc<AtomicU32>,
     shm_path: String,
 }
@@ -89,7 +90,8 @@ impl MainLcdStream {
         }
     }
 
-    /// Total generations observed by the background reader since process start.
+    /// The number of generations the background reader has seen since the
+    /// process started.
     pub fn frames_seen(&self) -> u32 {
         self.frames_seen.load(Ordering::Relaxed)
     }
@@ -125,7 +127,7 @@ fn shm_loop(
         let mmap = loop {
             match open_shm(shm_path) {
                 Some(m) => {
-                    eprintln!("[main_stream] opened {shm_path}");
+                    eprintln!("[main_stream] Opened {shm_path}.");
                     wait_logged = false;
                     connected.store(true, Ordering::Relaxed);
                     gate.request();
@@ -133,7 +135,7 @@ fn shm_loop(
                 }
                 None => {
                     if !wait_logged {
-                        eprintln!("[main_stream] waiting for {shm_path}");
+                        eprintln!("[main_stream] Waiting for {shm_path}.");
                         wait_logged = true;
                     }
                     thread::sleep(RECONNECT_DELAY);
@@ -143,17 +145,17 @@ fn shm_loop(
 
         poll_loop(&mmap, &slot, &frames_seen, &gate);
 
-        // QEMU restarted (magic gone).
-        eprintln!("[main_stream] disconnected, reconnecting");
+        // The magic is gone, so QEMU has exited or restarted.
+        eprintln!("[main_stream] The main LCD mapping closed; reconnecting.");
         connected.store(false, Ordering::Relaxed);
         gate.request();
         thread::sleep(RECONNECT_DELAY);
     }
 }
 
-/// Inner loop: poll generation until magic disappears (QEMU gone/restarted).
-/// A static display keeps the same generation indefinitely - that is normal,
-/// not stale - so there is no timeout-based exit.
+/// Polls the generation until the magic disappears, which happens when QEMU
+/// exits or restarts. A static display keeps the same generation
+/// indefinitely, so the loop has no timeout.
 fn poll_loop(
     mmap: &Arc<Mmap>,
     slot: &Arc<Mutex<Option<DisplayDirty>>>,
@@ -166,13 +168,15 @@ fn poll_loop(
     loop {
         thread::sleep(POLL_INTERVAL);
 
-        // Magic check on every tick - disappears when QEMU exits or restarts.
+        // Check the magic on every tick; it disappears when QEMU exits or
+        // restarts.
         if read_u32(mmap, 0) != SHM_MAGIC {
-            eprintln!("[main_stream] magic gone, reconnecting");
+            eprintln!("[main_stream] The shm magic was cleared; reconnecting.");
             return;
         }
 
-        // Acquire load of generation - pairs with QEMU's RELEASE add.
+        // Load the generation with Acquire ordering, which pairs with QEMU's
+        // Release add.
         let gen = read_u32_acquire(mmap, 4);
 
         if gen == last_gen {
@@ -182,9 +186,9 @@ fn poll_loop(
         last_gen = gen;
         frames_seen.fetch_add(1, Ordering::Relaxed);
 
-        // Re-read dimensions on every frame - the surface can switch
-        // mid-session (the initial 640×480 QEMU console → Xorg at the model's
-        // main LCD mode).
+        // Read the dimensions again on every frame, because the surface can
+        // change during a session: from the initial 640×480 QEMU console to
+        // Xorg at the model's main LCD mode.
         let Some(surface) = Surface::read(mmap) else {
             continue;
         };
@@ -194,14 +198,14 @@ fn poll_loop(
         };
         dirty.add(rect);
 
-        // Try to publish the accumulated region.  If the slot is still
-        // occupied the accumulator keeps growing - next tick will cover
+        // Try to publish the accumulated region. If the slot is still
+        // occupied, the union keeps growing and the next tick covers
         // everything that was missed.
         if let Ok(mut g) = slot.try_lock() {
             if g.is_none() {
                 if let Some((x0, y0, x1, y1)) = dirty.take() {
-                    // Zero-copy: share the mmap reference so the UI thread
-                    // uploads directly from the shm file into the GPU texture.
+                    // Share the mmap reference, so the UI thread uploads
+                    // straight from the shm file into the GPU texture.
                     *g = Some(DisplayDirty {
                         x: x0 as u32,
                         y: y0 as u32,
@@ -262,15 +266,15 @@ impl Surface {
 /// The union of the dirty rects received since the last successful publish,
 /// as `(x0, y0, x1, y1)`.
 ///
-/// Prevents cursor-ghost artifacts when the UI thread is busy and cdj3k-emu
-/// misses intermediate dirty rect updates (e.g. "erase old cursor" fires
-/// between two polls - without accumulation the stale cursor pixels would
-/// never be uploaded).
+/// The union prevents cursor ghosts when the UI thread is busy and misses
+/// intermediate dirty rects. For example, if an "erase old cursor" update
+/// lands between two polls, the stale cursor pixels would otherwise never be
+/// uploaded.
 #[derive(Default)]
 struct DirtyUnion {
     rect: Option<(usize, usize, usize, usize)>,
-    /// Surface dimensions, to detect switches (640×480 console → the X
-    /// server's mode).
+    /// Surface dimensions, used to detect a switch such as the one from the
+    /// 640×480 console to the X server's mode.
     size: (usize, usize),
 }
 
@@ -314,20 +318,22 @@ fn open_shm(path: &str) -> Option<Arc<Mmap>> {
     Some(Arc::new(mmap))
 }
 
-/// Plain little-endian read - use for non-generation fields after the acquire.
+/// Read a little-endian u32 with no ordering. Use it for the fields after
+/// the generation, which the Acquire load of the generation already orders.
 fn read_u32(shm: &[u8], offset: usize) -> u32 {
     let bytes: [u8; 4] = shm[offset..offset + 4].try_into().unwrap();
     u32::from_le_bytes(bytes)
 }
 
-/// Acquire load of a u32 - pairs with QEMU's __ATOMIC_RELEASE store.
+/// Load a u32 with Acquire ordering, which pairs with QEMU's
+/// __ATOMIC_RELEASE store.
 fn read_u32_acquire(mmap: &Mmap, offset: usize) -> u32 {
     // SAFETY: `mmap.as_ptr()` is page-aligned (mmap-allocated regions
     // always are), and the header layout fixes the generation counter
     // at offset 4, which is 4-byte aligned and therefore satisfies
     // `AtomicU32`'s alignment.  The offset is well within bounds of the
-    // mapped region (caller-enforced via the `Mmap` size check at
-    // construction time).
+    // mapped region, which the `Mmap` size check at construction
+    // guarantees.
     let ptr = unsafe { mmap.as_ptr().add(offset) as *const AtomicU32 };
     // SAFETY: `ptr` was just derived from a live `Mmap` borrowed for the
     // duration of this call, the dereferenced `AtomicU32` provides its

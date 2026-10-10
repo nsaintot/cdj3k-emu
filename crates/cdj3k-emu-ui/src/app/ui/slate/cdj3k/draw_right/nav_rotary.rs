@@ -1,5 +1,5 @@
-//! NAV rotary - large outer ring + inner press button + scroll detents that
-//! drive the menu cursor on the LCD.
+//! Draws the NAV rotary: its large outer ring, its inner press button, and
+//! the scroll detents that move the menu cursor on the LCD.
 
 use cdj3k_emu_panel::{Btn, Lamp};
 use egui::{Color32, FontFamily, Pos2, Sense, Stroke, Vec2};
@@ -20,14 +20,15 @@ use crate::app::ui::draw_vinyl_speed::{
 // ── Navigation rotary (owned by this module) ─────────────────────────────────
 /// Vertical position of the nav rotary center within MODES_COL_REF (0=top,1=bottom).
 pub(super) const NAV_CENTER_V: f32 = layout::NAV_POD_V;
-/// Single-colour LED: the encoder bit only switches it.
+/// Colour of the single-colour encoder LED; the encoder bit only switches it
+/// on and off.
 const NAV_ENCODER_GLOW_COL: Color32 = Color32::from_rgb(182, 220, 220);
 
 /// Horizontal position of the nav rotary center within MODES_COL_REF.
 pub(super) const NAV_CENTER_U: f32 = layout::NAV_POD_U;
-/// Scale factor relative to VINYL_SPEED_SIZE_SCALE (×1.2 as requested).
+/// Scale factor relative to VINYL_SPEED_SIZE_SCALE.
 pub(super) const NAV_SIZE_SCALE: f32 = 1.00;
-/// Gear radius (ref units) - same as vinyl speed knob.
+/// Gear radius in ref units, the same as the vinyl speed knob's.
 pub(super) const NAV_KNOB_RADIUS_REF: f32 = VINYL_SPEED_KNOB_RADIUS_REF;
 /// Gear tooth count.
 pub(super) const NAV_TOOTH_COUNT: usize = 12;
@@ -42,7 +43,7 @@ pub(in crate::app) const NAV_BEZEL_INNER_GAP_REF: f32 = 12.0;
 pub(in crate::app) const NAV_BEZEL_WIDTH_REF: f32 = 82.0;
 /// Stroke width for the two circle outlines bounding the bezel ring (ref units).
 pub(super) const NAV_BEZEL_STROKE_REF: f32 = 6.0;
-/// Outer radius of the arc buttons (ref units) - same for all 4 buttons.
+/// Outer radius of the arc buttons in ref units, the same for all four.
 pub(super) const NAV_BTN_OUTER_R_REF: f32 = 363.0;
 /// Half-angle (radians) each button spans from 12 o'clock (top) or 6 o'clock (bottom).
 pub(super) const NAV_BTN_OUTER_ANGLE_RAD: f32 = 45.5 * std::f32::consts::PI / 180.0;
@@ -56,11 +57,13 @@ pub(super) const NAV_BTN_BORDER_GAP_REF: f32 = 1.5;
 pub(super) const NAV_BTN_DEC_ARC_R_REF: f32 = 255.0;
 /// Stroke width of the decorative arc (ref units).
 pub(super) const NAV_BTN_DEC_ARC_STROKE_REF: f32 = 6.0;
-/// Notch arc radius (ref units) - sits between the bezel and the decorative arc.
+/// Notch arc radius in ref units; the notch arc sits between the bezel and
+/// the decorative arc.
 pub(super) const NAV_BTN_NOTCH_ARC_R_REF: f32 = 265.0;
 /// Half-angle of the notch arc (degrees).
 pub(super) const NAV_BTN_NOTCH_HALF_ANGLE_DEG: f32 = 12.0;
-/// Stroke width of the notch arc - thicker than the decorative arc (ref units).
+/// Stroke width of the notch arc in ref units; it is thicker than the
+/// decorative arc.
 pub(super) const NAV_BTN_NOTCH_STROKE_REF: f32 = 10.0;
 /// Decorative inner circle inside the nav rotary knob: radius (ref units).
 pub(super) const NAV_INNER_CIRCLE_R_REF: f32 = 85.0;
@@ -188,19 +191,22 @@ pub(super) fn draw_nav_rotary(
     paint_nav_gear(app, p, layout, &resp, center, r_base, tooth_amp);
 }
 
-/// Scroll / press interaction on the gear circle.
+/// Handles scrolling and pressing on the gear circle.
 fn nav_interact(app: &mut CdjApp, ui: &mut egui::Ui, center: Pos2, r_outer: f32) -> egui::Response {
     let interact_r = r_outer * 1.1;
     let interact_rect = egui::Rect::from_center_size(center, Vec2::splat(interact_r * 2.0));
     let resp = ui.interact(
         interact_rect,
         ui.id().with("nav_rotary"),
-        Sense::click_and_drag(), // drag keeps pointer captured while held (no drag-rotate, just ensures clean release)
+        // Sensing drags keeps the pointer captured while the button is held,
+        // so the release is clean; dragging does not rotate the knob.
+        Sense::click_and_drag(),
     );
 
-    // Scroll wheel → rotary ticks (accumulated to avoid sub-tick jitter).
-    // The raw wheel events, so ctrl+scroll still works (egui routes its smoothed
-    // delta to its zoom accumulator when ctrl is held, zeroing it for us).
+    // Turn scroll-wheel movement into rotary ticks, accumulated to avoid
+    // sub-tick jitter. Read the raw wheel events so that Ctrl-scroll still
+    // works: while Ctrl is held, egui sends its smoothed delta to its zoom
+    // accumulator and leaves it at zero.
     if resp.hovered() {
         let scroll_y = crate::app::scroll::raw_delta(ui).y;
         if scroll_y != 0.0 {
@@ -219,7 +225,7 @@ fn nav_interact(app: &mut CdjApp, ui: &mut egui::Ui, center: Pos2, r_outer: f32)
         }
     }
 
-    // Click → BTN_ROTARY_PRESS with ctrl-latch support.
+    // A click sends BTN_ROTARY_PRESS; holding Ctrl latches it.
     let is_down = resp.is_pointer_button_down_on();
     let ctrl = ui.input(|i| i.modifiers.ctrl);
     if let Some(bit) = app.button(Btn::RotaryPress) {
@@ -228,10 +234,10 @@ fn nav_interact(app: &mut CdjApp, ui: &mut egui::Ui, center: Pos2, r_outer: f32)
     resp
 }
 
-/// Arc buttons: TOP pair + BOTTOM pair, nothing on the sides. Each button
-/// spans NAV_BTN_OUTER_ANGLE_RAD from 12 o'clock (top pair) or 6 o'clock
-/// (bottom pair). The left/right sides of the bezel are bare. Angles in screen
-/// math: 0=right, π/2=down, -π/2=up.
+/// Draws the arc buttons: a pair at the top and a pair at the bottom, with
+/// nothing on the sides of the bezel. Each button spans
+/// NAV_BTN_OUTER_ANGLE_RAD from 12 o'clock (top pair) or 6 o'clock (bottom
+/// pair). Angles are screen angles: 0 is right, π/2 is down and -π/2 is up.
 fn draw_nav_buttons(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -299,7 +305,7 @@ fn draw_nav_buttons(
     }
 }
 
-/// Bezel ring between gear and buttons.
+/// Paints the bezel ring between the gear and the buttons.
 fn paint_bezel(
     p: &egui::Painter,
     layout: &UiScale,
@@ -320,7 +326,7 @@ fn paint_bezel(
     p.circle_stroke(center, bezel_inner_r, bezel_outline);
 }
 
-/// Encoder LED glow ring - LED driven (live).
+/// Paints the encoder's glow ring while the deck lights the encoder LED.
 fn paint_encoder_glow(
     app: &CdjApp,
     p: &egui::Painter,
@@ -333,8 +339,9 @@ fn paint_encoder_glow(
         let glow_col = NAV_ENCODER_GLOW_COL;
         let main_w = layout.sc(NAV_ENCODER_MAIN_W_REF);
         let max_expand = layout.sc(NAV_ENCODER_GLOW_SPREAD_REF);
-        // Outward halo layers: fatter stroke + lower alpha, outermost first.
-        // Mirrors the on-air bar's expand-and-fade structure (draw_top.rs:312).
+        // Paint the outward halo layers, outermost first; each layer has a
+        // wider stroke and a lower alpha, like the on-air bar's glow
+        // (`draw_on_air_bar` in draw_top.rs).
         for layer in 0..NAV_ENCODER_GLOW_LAYERS {
             let t = 1.0 - layer as f32 / (NAV_ENCODER_GLOW_LAYERS - 1).max(1) as f32;
             let expand = t * max_expand;
@@ -348,12 +355,13 @@ fn paint_encoder_glow(
                 Stroke::new(main_w + expand * 2.0, glow_col.gamma_multiply(glow_alpha)),
             );
         }
-        // Main fill LAST at full alpha - same as on-air's solid trapezoid.
+        // Paint the main fill last, at full alpha, like the on-air bar's solid
+        // trapezoid.
         p.circle_stroke(center, bezel_inner_r, Stroke::new(main_w, glow_col));
     }
 }
 
-/// The gear, drawn last (on top of bezel and buttons), and the decorative
+/// Paints the gear last, over the bezel and the buttons, and the decorative
 /// inner circle on it.
 fn paint_nav_gear(
     app: &CdjApp,

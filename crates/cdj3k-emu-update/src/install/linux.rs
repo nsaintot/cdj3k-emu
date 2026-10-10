@@ -1,5 +1,5 @@
-//! Linux: the AppImage laid down beside `$APPIMAGE` and renamed over it at
-//! the restart. The running image keeps its open file.
+//! On Linux, the new AppImage is copied beside `$APPIMAGE` and renamed over
+//! it at the restart. The running image keeps its open file.
 //!
 //! A deb or an rpm goes to the downloads folder ([`hand_over`]) for the
 //! package manager.
@@ -17,7 +17,7 @@ pub(super) struct Staged {
     staged: PathBuf,
 }
 
-/// A staged image that is never applied is removed with it.
+/// A staged image that is never applied is deleted when its `Staged` drops.
 impl Drop for Staged {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.staged);
@@ -58,8 +58,8 @@ fn copy_executable(from: &Path, to: &Path) -> std::io::Result<()> {
     out.sync_all()
 }
 
-/// A deb or an rpm, copied into the downloads folder under its own name and
-/// removed from where it was verified.
+/// Copy a deb or an rpm into the downloads folder under its own name, and
+/// delete it from the folder where it was verified.
 pub(super) fn hand_over(package: &Path, kind: Kind) -> Result<PathBuf, Error> {
     if !matches!(kind, Kind::Deb | Kind::Rpm) {
         return Err(wrong_kind(kind));
@@ -99,7 +99,8 @@ fn downloads_dir() -> PathBuf {
         .unwrap_or_else(|| home.join("Downloads"))
 }
 
-/// `key`'s folder in a `user-dirs.dirs` text: `KEY="$HOME/Downloads"`.
+/// Read the folder that `key` names in the text of a `user-dirs.dirs` file,
+/// whose lines look like `KEY="$HOME/Downloads"`.
 fn user_dir(text: &str, key: &str, home: &Path) -> Option<PathBuf> {
     let value = text
         .lines()
@@ -128,8 +129,8 @@ fn denied(dir: &Path, e: std::io::Error) -> Error {
     ))
 }
 
-/// What an AppImage's runtime and launcher leave in the environment, all of
-/// it naming this build's mount, which goes away with this process.
+/// The variables that an AppImage's runtime and launcher set. Each names this
+/// build's mount, which disappears when this process exits.
 const IMAGE_ENV: [&str; 5] = ["APPDIR", "APPIMAGE", "ARGV0", "OWD", "CDJ3K_RESOURCES"];
 
 /// Start `image` once with `--after-update`, as a plain launch would.
@@ -163,8 +164,9 @@ fn close_on_exec_above_stdio() {
         .filter(|&fd| fd > 2)
         .collect();
     for fd in fds {
-        // SAFETY: fcntl on a descriptor number; one closed since the listing
-        // (the listing's own) fails with EBADF and is left alone.
+        // SAFETY: fcntl takes a plain descriptor number. A descriptor closed
+        // after the listing, such as the one `read_dir` used, fails with EBADF
+        // and is skipped.
         unsafe {
             let flags = libc::fcntl(fd, libc::F_GETFD);
             if flags >= 0 {

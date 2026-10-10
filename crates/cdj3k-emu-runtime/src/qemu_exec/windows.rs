@@ -1,11 +1,11 @@
-//! QEMU as `qemu-system-aarch64.exe` shipped beside us.
+//! Runs QEMU as `qemu-system-aarch64.exe`, which ships beside this binary.
 
 use std::io;
 
 use super::QemuCommand;
 
-/// How to start QEMU on this host: the executable shipped beside us. No
-/// descriptor is passed down, so `_keep_fd` is unused.
+/// Build the command that starts QEMU on this host: the executable that ships
+/// beside this binary. No descriptor is passed down, so `_keep_fd` is unused.
 pub fn qemu_command(_keep_fd: Option<i32>) -> io::Result<QemuCommand> {
     let command = cdj3k_emu_platform::child::command(cdj3k_emu_platform::bundled::tool(
         "qemu-system-aarch64",

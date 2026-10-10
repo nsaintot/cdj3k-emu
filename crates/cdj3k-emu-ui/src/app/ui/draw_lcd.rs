@@ -1,7 +1,7 @@
 //! The main LCD: its glass in a thin bezel, the guest's display stream on it,
 //! and touch.
 //!
-//! The same part on every player; a slate supplies only where the bezel sits.
+//! Every player uses this LCD; a slate supplies only the bezel's position.
 
 use egui::{Color32, FontId, Pos2, Rect};
 
@@ -15,10 +15,11 @@ use super::{
 const LCD_BEZEL_REF: f32 = 4.0;
 /// Corner radius of the bezel.
 const LCD_ROUNDING_REF: f32 = 10.0;
-/// Placeholder text while the stream is absent or popped out.
+/// Font size of the placeholder text shown while the stream is absent or popped
+/// out.
 const LCD_PLACEHOLDER_FONT_SIZE: f32 = 44.0;
 
-/// Draw the LCD with its bezel's outer edge at `bezel` (reference units).
+/// Draws the LCD with its bezel's outer edge at `bezel`, in reference units.
 pub(super) fn draw_main_lcd(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -63,7 +64,7 @@ pub(super) fn draw_main_lcd(
     );
 }
 
-/// What the glass shows: the display stream, dimmed while it is not
+/// Draws what the glass shows: the display stream, dimmed while it is not
 /// connected, or a placeholder while it connects or is popped out.
 fn paint_lcd_content(app: &CdjApp, p: &egui::Painter, layout: &UiScale, display_rect: Rect) {
     let uv_full = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
@@ -100,8 +101,8 @@ fn paint_lcd_content(app: &CdjApp, p: &egui::Painter, layout: &UiScale, display_
     }
 }
 
-/// The pointer over the glass at `display_rect`, as the touch encoder takes it;
-/// `id` keys the interaction.
+/// Reads the pointer state over the glass at `display_rect` in the form the
+/// touch encoder expects; `id` keys the interaction.
 pub(in crate::app) fn capture_lcd_touch(
     ui: &mut egui::Ui,
     display_rect: Rect,

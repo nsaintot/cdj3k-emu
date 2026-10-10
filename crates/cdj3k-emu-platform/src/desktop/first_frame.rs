@@ -9,8 +9,9 @@ use egui::{Pos2, Rect, Vec2};
 /// the title bar and a taskbar or dock.
 const MONITOR_SHARE: f32 = 0.85;
 
-/// The inner size for a panel of `panel` (the chassis, aspect to keep) plus
-/// the menu strip `bar`, shrunk to fit `monitor` and never below `min`.
+/// The inner size for the chassis size `panel` plus the menu strip `bar`,
+/// shrunk to fit `monitor` with the chassis aspect kept, and never below
+/// `min`.
 pub fn fit_to_monitor(panel: Vec2, bar: f32, min: Vec2, monitor: Option<Vec2>) -> Vec2 {
     let scale = monitor.map_or(1.0, |m| {
         let room = m * MONITOR_SHARE - Vec2::new(0.0, bar);

@@ -1,33 +1,33 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * clock.c - clock_gettime / gettimeofday hook that shifts
- * the wall-clock view for the OptFstUdpServer thread only.
+ * clock.c - a clock_gettime and gettimeofday hook that shifts the time
+ * seen by the OptFstUdpServer thread only.
  *
- * Effect: in slave mode, OptFstUdpServer reads master's broadcast
- * position and projects "where master is now" using its own clock.
- * Shifting its clock forward by N ms makes it think it's N ms further
- * along, so it adjusts our playback to land N ms earlier - which
- * compensates the host audio pipeline latency (QEMU + CoreAudio +
- * Focusrite, ~50–100 ms typical) so audible playback aligns with
- * master's audible playback.
+ * In slave mode, OptFstUdpServer reads the master's broadcast position and
+ * uses its own clock to project where the master is now. The hook subtracts
+ * N ms from the time this thread reads, which moves this deck's playback by
+ * N ms to compensate for the latency of the host audio pipeline (QEMU, the
+ * host audio API and the output device, typically 50 to 100 ms). The audible
+ * playback then lines up with the master's.
  *
- * Sysfs surfaces (read once per wall-clock second by the shifted thread):
- *   audio_sync_enabled   (master switch; 0 = full no-op for this hook
- *                         and link.c, 1 = both active. Same toggle gates
- *                         the master-mode delay-send in link.c.)
- *   audio_latency_ms     (read-only, live pipeline depth - default source.
- *                         Tracks actual pipeline so slave audible aligns with
- *                         master audible in steady state. Capped at 200ms in
- *                         the kernel; deep-state recovery via the watchdog
- *                         that forces an xrun on sustained backlog.)
- *   link_pos_offset_ms   (manual override; non-zero forces fixed value)
+ * The shifted thread reads these sysfs parameters once per wall-clock second:
+ *   audio_sync_enabled   The master switch. At 0, this hook and the
+ *                        master-mode delayed send in link.c do nothing; at
+ *                        1, both are active.
+ *   audio_latency_ms     The live pipeline depth, read-only, and the default
+ *                        source. It follows the actual pipeline, so the
+ *                        slave's audible output stays aligned with the
+ *                        master's in steady state. The kernel caps it at
+ *                        200 ms; when the backlog persists, a watchdog
+ *                        forces an xrun to recover.
+ *   link_pos_offset_ms   The manual override; a positive value forces a
+ *                        fixed shift.
  *
- * Master mode is unaffected - its broadcast threads don't go through
- * libc clock_gettime in a way the shim can intercept; broadcast
- * position remains aligned to JUCE's pre-pipeline view.
+ * This hook does not change what a master broadcasts; link.c compensates
+ * master mode by delaying the Pro DJ Link broadcasts.
  *
- * Diagnostic mode (env DECK_TIME_SHIFT_DEBUG=1) logs once per thread
- * the first time the shift is applied, plus offset value changes.
+ * Setting DECK_TIME_SHIFT_DEBUG logs the first shift in each thread and
+ * every change of the offset.
  */
 
 #include "deck_shim.h"
@@ -42,7 +42,7 @@
 
 #define TARGET_THREAD    "OptFstUdpServer"
 
-static __thread int          g_thread_shift = -1;   /* -1=unset, 0=passthrough, 1=shift */
+static __thread int          g_thread_shift = -1;   /* -1 unset, 0 passthrough, 1 shift */
 static __thread char         g_thread_name[16] = {0};
 static __thread int          g_thread_did_log_apply = 0;
 static __thread long         g_thread_last_refresh_s = 0;
@@ -59,11 +59,10 @@ static void __attribute__((constructor)) shim_clock_init(void)
 
 static void refresh_shift_ms(void)
 {
-    /* Master switch - when audio_sync_enabled is 0, the shim is fully
-     * inert (no clock shift, regardless of audio_latency_ms or
-     * link_pos_offset_ms values). Same toggle gates the master-mode
-     * delay-send shim, so flipping it produces a coherent on/off for
-     * the entire LD_PRELOAD audio-sync compensation pipeline. */
+    /* When audio_sync_enabled is 0, the clock shift is off, whatever
+     * audio_latency_ms and link_pos_offset_ms say. The same switch controls
+     * the master-mode delayed send in link.c, so it turns all audio-sync
+     * compensation in the shim on or off together. */
     long enabled = shim_read_sysfs_long(VSND_LATENCY_ENABLED_PATH);
     if (enabled <= 0) {
         long prev = __atomic_load_n(&g_shift_ns_atomic, __ATOMIC_RELAXED);
@@ -71,19 +70,19 @@ static void refresh_shift_ms(void)
             __atomic_store_n(&g_shift_ns_atomic, 0, __ATOMIC_RELAXED);
         if (g_shift_debug && g_last_logged_enabled != 0) {
             g_last_logged_enabled = 0;
-            fprintf(stderr, "[deck_clock] disabled (audio_sync_enabled=0)\n");
+            fprintf(stderr, "[deck_clock] The clock shift is off (audio_sync_enabled=0).\n");
             fflush(stderr);
         }
         return;
     }
     if (g_shift_debug && g_last_logged_enabled != 1) {
         g_last_logged_enabled = 1;
-        fprintf(stderr, "[deck_clock] enabled\n");
+        fprintf(stderr, "[deck_clock] The clock shift is on.\n");
         fflush(stderr);
     }
 
-    /* Manual override wins: if link_pos_offset_ms is non-zero, use it.
-     * Otherwise auto-track audio_latency_ms (live pipeline depth). */
+    /* A positive link_pos_offset_ms overrides the automatic value; otherwise
+     * the shift follows audio_latency_ms, the live pipeline depth. */
     long manual = shim_read_sysfs_long(VSND_LATENCY_MANUAL_PATH);
     long ms;
     if (manual > 0) {
@@ -99,14 +98,14 @@ static void refresh_shift_ms(void)
     __atomic_store_n(&g_shift_ns_atomic, next, __ATOMIC_RELAXED);
     if (g_shift_debug && g_last_logged_ms != ms) {
         g_last_logged_ms = ms;
-        fprintf(stderr, "[deck_clock] shift = %ld ms (%s)\n",
+        fprintf(stderr, "[deck_clock] The shift is now %ld ms (%s).\n",
                 ms, manual > 0 ? "manual" : "auto");
         fflush(stderr);
     }
 }
 
-/* Returns 1 if this thread is OptFstUdpServer, else 0. Cached per-thread
- * for life - thread name doesn't change after first prctl. */
+/* Returns 1 if this thread is OptFstUdpServer, else 0. The name is cached for
+ * the life of the thread, because it does not change after the first prctl. */
 static int classify_self_thread(void)
 {
     if (g_thread_name[0] == '\0') {
@@ -120,15 +119,15 @@ static int classify_self_thread(void)
     }
     int match = (strcmp(g_thread_name, TARGET_THREAD) == 0);
     if (g_shift_debug && match) {
-        fprintf(stderr, "[deck_clock] thread '%s' → SHIFT\n", g_thread_name);
+        fprintf(stderr, "[deck_clock] Shifting the clock of thread '%s'.\n", g_thread_name);
         fflush(stderr);
     }
     return match;
 }
 
-/* A function exported by the kernel's vDSO, found through its ELF dynamic
- * symbol table (the arm64 vDSO links with a SysV hash, whose nchain is the
- * symbol count). NULL when the vDSO or the symbol is absent. */
+/* Find a function that the kernel's vDSO exports, through its ELF dynamic
+ * symbol table. The arm64 vDSO links with a SysV hash, whose nchain is the
+ * symbol count. Returns NULL when the vDSO or the symbol is absent. */
 static void *vdso_sym(const char *name)
 {
     unsigned long base = getauxval(AT_SYSINFO_EHDR);
@@ -175,8 +174,9 @@ typedef int (*vdso_gettimeofday_fn)(struct timeval *, void *);
 static vdso_clock_gettime_fn g_vdso_clock_gettime;
 static vdso_gettimeofday_fn  g_vdso_gettimeofday;
 
-/* The vDSO entry points, so a passthrough reads the clock in user space; a
- * raw syscall here would make every clock read of every thread a trap. */
+/* Resolve the vDSO entry points, so that a passthrough reads the clock in
+ * user space; a raw syscall would make every clock read of every thread a
+ * trap. */
 static void __attribute__((constructor)) shim_vdso_init(void)
 {
     g_vdso_clock_gettime =
@@ -198,8 +198,8 @@ static int real_clock_gettime(clockid_t clk_id, struct timespec *tp)
     return 0;
 }
 
-/* Subtract ns from the reported time. (Empirically the direction that
- * makes slave-mode sync align via OptFstUdpServer.) */
+/* Subtract ns from the reported time; this is the direction that aligns
+ * slave-mode sync through OptFstUdpServer. */
 static void apply_shift_ts(struct timespec *tp)
 {
     long ns = __atomic_load_n(&g_shift_ns_atomic, __ATOMIC_RELAXED);
@@ -212,7 +212,7 @@ static void apply_shift_ts(struct timespec *tp)
     if (g_shift_debug && !g_thread_did_log_apply) {
         g_thread_did_log_apply = 1;
         fprintf(stderr,
-                "[deck_clock] '%s' apply_shift: %ld.%09ld -> %ld.%09ld (ns=%ld)\n",
+                "[deck_clock] '%s' apply_shift: shifted %ld.%09ld to %ld.%09ld (ns=%ld)\n",
                 g_thread_name, before_sec, before_ns,
                 (long)tp->tv_sec, (long)tp->tv_nsec, ns);
         fflush(stderr);
@@ -243,10 +243,10 @@ int clock_gettime(clockid_t clk_id, struct timespec *tp)
     if (g_thread_shift < 0)
         g_thread_shift = classify_self_thread();
 
-    /* Only the shifted thread pays for sysfs reads - keeps JUCE ALSA and
-     * other audio-critical threads on a hot path. Refresh at most once
-     * per wall-clock second using the timestamp we just got from the
-     * kernel (no extra syscall). */
+    /* Only the shifted thread reads sysfs, so the JUCE ALSA thread and the
+     * other audio threads stay on the fast path. The refresh runs at most
+     * once per wall-clock second and uses the timestamp just read, so it
+     * costs no extra syscall. */
     if (g_thread_shift == 0) return 0;
 
     if ((long)tp->tv_sec - g_thread_last_refresh_s >= VSND_LATENCY_REFRESH_S) {

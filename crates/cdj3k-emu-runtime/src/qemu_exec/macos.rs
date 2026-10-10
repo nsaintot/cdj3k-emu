@@ -1,12 +1,14 @@
-//! QEMU as a dylib linked into this binary, run by a re-exec of it.
+//! Runs QEMU, which is linked into this binary as a dylib, in a re-exec of
+//! this binary.
 
 use std::io;
 use std::process::Command;
 
 use super::QemuCommand;
 
-// libcdj3k-emu-qemu.dylib. `cdj3k_emu_qemu_run` blocks until QEMU exits; QMP
-// "quit" → qemu_cleanup() → exit() → dylib interpose → longjmp → return.
+// These functions come from libcdj3k-emu-qemu.dylib. `cdj3k_emu_qemu_run`
+// blocks until QEMU exits. On a QMP "quit", QEMU calls qemu_cleanup() and then
+// exit(); the dylib interposes exit() and longjmps back, so the call returns.
 unsafe extern "C" {
     fn cdj3k_emu_qemu_run(argc: libc::c_int, argv: *const *const libc::c_char) -> libc::c_int;
     /// Clears the longjmp flag and calls _exit(0), so QEMU's threads never run
@@ -14,13 +16,13 @@ unsafe extern "C" {
     fn cdj3k_emu_qemu_abort();
 }
 
-/// How to start QEMU on this host: a re-exec of this binary, whose worker
-/// runs the QEMU linked into it. `keep_fd` is inherited by the child.
+/// Build the command that starts QEMU on this host: a re-exec of this binary
+/// whose worker runs the linked-in QEMU. The child inherits `keep_fd`.
 pub fn qemu_command(keep_fd: Option<i32>) -> io::Result<QemuCommand> {
     use std::os::unix::process::CommandExt;
     let mut command = Command::new(std::env::current_exe()?);
     command.arg("--qemu-worker");
-    // SAFETY: only async-signal-safe calls between fork and exec.
+    // SAFETY: the closure makes only async-signal-safe calls between fork and exec.
     unsafe {
         command.pre_exec(move || {
             if let Some(fd) = keep_fd {
@@ -57,8 +59,8 @@ pub fn run_worker_if_asked(args: &[String]) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
         if !crate::process::is_alive(parent) {
-            eprintln!("cdj3k-emu-worker: parent gone, aborting");
-            // SAFETY: ends the process; QEMU's threads go with it.
+            eprintln!("cdj3k-emu-worker: the parent process exited; aborting.");
+            // SAFETY: this ends the process and all of QEMU's threads.
             unsafe {
                 cdj3k_emu_qemu_abort();
                 libc::_exit(0)
@@ -70,7 +72,7 @@ pub fn run_worker_if_asked(args: &[String]) {
     eprintln!("cdj3k-emu-worker: {}", qemu_args.join(" "));
     let c_strings: Vec<CString> = qemu_args
         .iter()
-        .map(|s| CString::new(s.as_str()).expect("argv NUL"))
+        .map(|s| CString::new(s.as_str()).expect("a QEMU argument contains a NUL byte"))
         .collect();
     let c_ptrs: Vec<*const libc::c_char> = c_strings.iter().map(|cs| cs.as_ptr()).collect();
     // SAFETY: `c_ptrs` points into `c_strings`, which outlives the call.

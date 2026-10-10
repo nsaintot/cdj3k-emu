@@ -1,10 +1,10 @@
-//! Top-level app shell: the model picker, then the running panel.
+//! The top-level app shell: the model picker, then the running panel.
 //!
-//! The shell owns the window shape (compact picker vs aspect-locked panel),
-//! the native menu, the install-firmware wizard and the graceful-close
-//! sequence. Booting is delegated to a [`RuntimeHost`] supplied by the binary
-//! (it owns the runtime worker); the panel itself is the persistent
-//! [`CdjApp`], which keeps its LCD streams across model switches.
+//! The shell owns the window shape (compact for the picker, aspect-locked for
+//! the panel), the native menu, the install-firmware wizard and the
+//! graceful-close sequence. Booting is delegated to a [`RuntimeHost`] that the
+//! binary supplies and that owns the runtime worker. The panel itself is the
+//! persistent [`CdjApp`], which keeps its LCD streams across model switches.
 //!
 //! A slot emulates one model. Changing which one, and installing the firmware
 //! it needs, are steps of one setup window ([`SetupStep`]) that opens over the
@@ -13,7 +13,7 @@
 //! An install never touches a running emulation. It is written beside the
 //! slot's live installation, and the process that owns the slot swaps it in
 //! whenever the slot's emulation is not running: at once when nothing runs,
-//! otherwise on its next start - a restart from the menu, the guest
+//! otherwise on its next start: a restart from the menu, the guest
 //! rebooting, or Restart on the finished install. When Restart is pressed in
 //! another window, that window sends `restart-install` on the slot's window
 //! socket ([`cdj3k_emu_platform::window_socket`]), and the owner restarts its
@@ -50,15 +50,16 @@ use super::CdjApp;
 
 /// Result of asking the host to boot a model.
 pub enum LaunchOutcome {
-    /// A runtime worker (and QEMU) is up for the model.
+    /// A runtime worker and its QEMU are up for the model.
     Started,
     /// No firmware is provisioned for the model in this slot.
     NotProvisioned,
-    /// `--no-spawn`: nothing to boot, show the panel anyway.
+    /// `--no-spawn`: there is nothing to boot, so the panel shows anyway.
     UiOnly,
 }
 
-/// The binary's side of a launch: what the slot holds and runtime bring-up.
+/// The binary's side of a launch: it reports what the slot holds and starts
+/// the runtime.
 pub trait RuntimeHost {
     /// The model installed in this slot, if any. A slot holds one
     /// installation; installing another model replaces it.
@@ -67,8 +68,8 @@ pub trait RuntimeHost {
     fn any_model_launchable(&self) -> bool {
         false
     }
-    /// Delete the slot's installation. Called only while no worker is alive -
-    /// QEMU holds the eMMC open.
+    /// Delete the slot's installation. Called only while no worker is alive,
+    /// because QEMU holds the eMMC open.
     fn clear_firmware(&mut self) -> std::io::Result<()>;
     /// Swap in a finished install waiting for the slot, if there is one.
     /// Called only while no worker is alive, for the same reason.
@@ -109,8 +110,8 @@ enum SetupStep {
     ConfirmDelete,
     /// The slot's mods.
     Mods,
-    /// The emulation is being stopped so the slot can be emptied: QEMU holds
-    /// the eMMC open until it is gone.
+    /// The emulation is being stopped so the slot can be emptied, because
+    /// QEMU holds the eMMC open until it exits.
     StoppingToDelete,
 }
 
@@ -118,7 +119,7 @@ pub struct CdjShell {
     screen: Screen,
     app: CdjApp,
     instance: u32,
-    /// The model last launched (or the picker's pending choice).
+    /// The model last launched, or the picker's pending choice.
     model: Model,
     /// The model a panel was opened for in this process, if any.
     last_launched: Option<Model>,
@@ -148,20 +149,21 @@ pub struct CdjShell {
     /// This holds each command sent to another window whose reply has not
     /// arrived yet, with the slot it was sent to.
     sent: Vec<(u32, Command, PendingReply)>,
-    /// The startup picker's Close: this window goes, the others stay.
+    /// Set by the startup picker's Close button: this window closes and the
+    /// other windows stay open.
     close_window: bool,
-    /// The picker's side of the window's aspect lock: none.
+    /// The picker window's resize state; the picker has no aspect lock.
     resize: desktop::ResizeState,
     /// The slot is to be emptied once the worker is gone.
     pending_delete: bool,
-    /// The slot the setup window is showing. Its own by default; the slot
-    /// chip points it at another, which is a view, not a handover - the other
-    /// slot's emulation runs in its own window.
+    /// The slot the setup window shows; its own slot by default. The slot chip
+    /// can point it at another slot to view it; that slot's emulation keeps
+    /// running in its own window.
     viewed_slot: u32,
     /// The firmware release installed in [`viewed_slot`](Self::viewed_slot),
     /// re-read whenever the window is pointed somewhere.
     viewed_release: Option<String>,
-    /// The setup window, and where it is; `None` while it is closed.
+    /// The setup window's current step; `None` while the window is closed.
     setup: Option<SetupStep>,
     /// The Mods view, while the setup window shows it.
     mods: Option<ModsPage>,
@@ -183,18 +185,18 @@ pub struct CdjShell {
     /// the two sit exactly on top of each other. Held for as long as the
     /// window is up, so it stays where the user may have dragged it.
     setup_pos: Option<egui::Pos2>,
-    /// Whether the setup window has had its size restated since it opened.
+    /// Whether the setup window's size has been set again since it opened.
     setup_shaped: bool,
     /// The setup window emptied a slot whose emulation had already stopped,
     /// so the main window has to stop being a panel.
     reveal_picker: bool,
     /// The shell asked the worker to exit; cleared once it has.
     worker_stopping: bool,
-    /// `true` once the user has triggered a close (red button / Cmd-Q / menu).
-    /// While set, the actual window close is cancelled each frame so the
-    /// boot shade can fade in over the going-away UI; the close is re-issued
-    /// once the runtime worker has finished its graceful stop, at which
-    /// point `on_exit` runs without a multi-second freeze.
+    /// `true` once the user has triggered a close with the close button,
+    /// Cmd-Q or the menu. While set, the actual window close is cancelled each
+    /// frame so the boot shade can fade in over the closing UI. The close is
+    /// issued again once the runtime worker has finished its graceful stop,
+    /// so `on_exit` runs without a multi-second freeze.
     shutdown_in_progress: bool,
     shot: ScreenshotDriver,
     script: ScriptDriver,
@@ -268,8 +270,8 @@ impl CdjShell {
     /// the slot is swapped in first, and boots whatever model it holds.
     fn launch(&mut self, ctx: &egui::Context, frame: &eframe::Frame, mut model: Model) {
         self.model = model;
-        // A worker already running this model only wants its panel back; a
-        // second QEMU over the live one is not a thing the runtime allows.
+        // A worker already running this model only needs its panel shown
+        // again; the runtime does not allow a second QEMU for the slot.
         if self.last_launched == Some(model)
             && !self.worker_stopping
             && !cdj3k_emu_runtime::worker_is_finished()
@@ -280,9 +282,9 @@ impl CdjShell {
         if let Some(installed) = self.apply_staged() {
             model = installed;
         } else if let Some(installed) = self.host.installed_model() {
-            // Asked for a model the slot no longer holds - the install that
-            // was to bring it was replaced before it went in: boot what is
-            // there rather than open an install over a stopped deck.
+            // The requested model is no longer in the slot, because its install
+            // was replaced before it was applied. Boot the installed model
+            // instead of opening an install over a stopped deck.
             model = installed;
         }
         self.model = model;
@@ -290,8 +292,8 @@ impl CdjShell {
         match self.host.launch(model) {
             LaunchOutcome::NotProvisioned => {
                 eprintln!(
-                    "cdj3k-emu: no {} firmware in slot {} - opening Install Firmware",
-                    model, self.instance
+                    "cdj3k-emu: Slot {} has no {} firmware; opening Install Firmware.",
+                    self.instance, model
                 );
                 self.open_wizard(model, self.instance);
             }
@@ -305,8 +307,7 @@ impl CdjShell {
     fn enter_panel(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         self.screen = Screen::Panel;
         // The setup window may have closed onto a stopped emulation and asked
-        // for the picker on its way out; this deck is what the window shows
-        // instead.
+        // for the picker; the window shows this deck instead.
         self.reveal_picker = false;
         // The setup window was in front; bring the deck out from behind it.
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -324,7 +325,7 @@ impl CdjShell {
         self.app.on_leave_panel();
     }
 
-    /// Shrink the main window back to the picker, the slot having nothing to
+    /// Shrink the main window back to the picker when the slot has nothing to
     /// show.
     fn show_picker_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         self.app.on_leave_panel();
@@ -336,12 +337,12 @@ impl CdjShell {
 
     /// Act on a card click.
     ///
-    /// A slot holds one installation, so the only thing a card that is not the
-    /// slot's own model can do is take the slot over - which asks first.
+    /// A slot holds one installation, so a card for another model can only
+    /// replace the slot's installation, after a confirmation.
     fn choose_model(&mut self, model: Model) {
         if self.viewed_slot != self.instance {
-            // Another slot: the deck it holds is launched from its own window,
-            // so the only thing a card does here is fill the slot.
+            // For another slot, the card of the deck it holds opens that
+            // slot's window, and any other card installs into the slot.
             let held = cdj3k_emu_storage::slot_summary(self.viewed_slot).map(|(m, _)| m);
             match held {
                 Some(held) if held == model => {
@@ -367,13 +368,13 @@ impl CdjShell {
         }
     }
 
-    /// Open the wizard to take the viewed slot over for `model`. Whatever
-    /// runs there keeps running; the install waits for it.
+    /// Open the wizard to install `model` into the viewed slot. An emulation
+    /// running there keeps running, and the install waits for it to stop.
     fn begin_install(&mut self, model: Model) {
         self.open_wizard(model, self.viewed_slot);
     }
 
-    /// Lay the viewed slot's own model down afresh.
+    /// Reinstall the viewed slot's own model.
     fn begin_reinstall(&mut self, model: Model) {
         self.open_wizard(model, self.viewed_slot);
     }

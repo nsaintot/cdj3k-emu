@@ -1,5 +1,5 @@
 //! Raised parts of a slate: how each stands off the panel, and the walls,
-//! ribs and facets of its side that show once the deck tilts.
+//! ribs and facets of its side that show when the deck tilts.
 
 use egui::epaint::Mesh;
 use egui::{Color32, Pos2, Shape, Stroke, Vec2};
@@ -9,10 +9,10 @@ use super::{Tilt, P3};
 /// How a raised part stands off the panel.
 #[derive(Copy, Clone, Debug)]
 pub(in crate::app) enum Lift {
-    /// Its top is flat at this height.
+    /// The top is flat at this height.
     Flat(f32),
-    /// A round part flat at `height` out to `r_top`, then sloping down to
-    /// `foot` at `r_foot`: a grip whose side is a cone.
+    /// A round part that is flat at `height` out to `r_top`, then slopes down
+    /// to height `foot` at `r_foot`, like a grip whose side is a cone.
     Cone {
         center: Pos2,
         r_top: f32,
@@ -23,7 +23,7 @@ pub(in crate::app) enum Lift {
 }
 
 impl Lift {
-    /// The part's height at a point of its plan.
+    /// Returns the part's height at a point of its plan.
     pub(super) fn z(&self, p: Pos2) -> f32 {
         match *self {
             Lift::Flat(h) => h,
@@ -40,7 +40,7 @@ impl Lift {
         }
     }
 
-    /// Its numbers, for keying a cached projection.
+    /// Returns the lift's parameters as bits, used to key a cached projection.
     pub(super) fn bits(&self) -> [u32; 6] {
         match *self {
             Lift::Flat(h) => [0, h.to_bits(), 0, 0, 0, 0],
@@ -61,8 +61,8 @@ impl Lift {
         }
     }
 
-    /// The radii a triangle must not reach across unsplit, where the height
-    /// stops being one plane.
+    /// Returns the radii at which the height stops being one plane. A triangle
+    /// that reaches across one of them must be split.
     pub(super) fn creases(&self) -> Option<(Pos2, [f32; 2])> {
         match *self {
             Lift::Flat(_) => None,
@@ -77,22 +77,23 @@ impl Lift {
 }
 
 /// One wall of a raised part: its outline at its foot and at its top, and
-/// their heights. A top smaller than the base slopes the wall in; walls
-/// stacked one on another make a curved side.
+/// their heights. A top smaller than the base slopes the wall inward, and
+/// walls stacked on one another make a curved side.
 pub(in crate::app) struct Footprint {
     pub base: Vec<Pos2>,
     pub base_z: f32,
     pub top: Vec<Pos2>,
     pub top_z: f32,
-    /// Its silhouette is outlined; a wall stacked inside a curve is not, so
-    /// the curve reads as one surface.
+    /// Whether the wall's silhouette is outlined. A wall stacked inside a
+    /// curve is not outlined, so the curve reads as one surface.
     pub outlined: bool,
-    /// Its own colour, where a part's walls shade along a curve.
+    /// The wall's own colour, used where a part's walls change shade along a
+    /// curve.
     pub fill: Option<Color32>,
 }
 
 impl Footprint {
-    /// A straight wall: the same outline at the panel and at `z`.
+    /// Returns a straight wall with the same outline at the panel and at `z`.
     pub(in crate::app) fn upright(outline: Vec<Pos2>, z: f32) -> Self {
         Self {
             base: outline.clone(),
@@ -105,17 +106,17 @@ impl Footprint {
     }
 }
 
-/// A line moulded into a part's side, between two points of it; shown only
-/// on the side facing the front, `normal` being the side's outward
-/// direction there.
+/// A line moulded into a part's side, between two points on it. It shows only
+/// where the side faces the front; `normal` is the side's outward direction
+/// at the line.
 pub(in crate::app) struct Rib {
     pub a: P3,
     pub b: P3,
     pub normal: Vec2,
 }
 
-/// A flat patch of a part's side, its corners in order, in its own colour;
-/// shown only where it faces the front, as a [`Rib`] is.
+/// A flat patch of a part's side, with its corners in order and its own
+/// colour. Like a [`Rib`], it shows only where it faces the front.
 pub(in crate::app) struct Facet {
     pub quad: [P3; 4],
     pub normal: Vec2,
@@ -123,8 +124,8 @@ pub(in crate::app) struct Facet {
 }
 
 /// A raised part of a slate: the shapes it painted (indices into the slate's
-/// layer), how it stands off the panel, and its walls (reference units),
-/// which show once the deck tilts.
+/// layer), how it stands off the panel, and its walls in reference units,
+/// which show when the deck tilts.
 pub(in crate::app) struct Raised {
     pub shapes: std::ops::Range<usize>,
     pub lift: Lift,
@@ -132,7 +133,7 @@ pub(in crate::app) struct Raised {
     pub wall: Color32,
     pub ribs: Vec<Rib>,
     pub rib: Stroke,
-    /// Patches over the walls, where a side is not one surface.
+    /// Patches drawn over the walls where a side is not one surface.
     pub facets: Vec<Facet>,
     /// The tops a pointer may land on, with their heights.
     pub tops: Vec<(Vec<Pos2>, f32)>,
@@ -167,7 +168,8 @@ fn hull(mut pts: Vec<Pos2>) -> Vec<Pos2> {
 }
 
 impl Raised {
-    /// The part's walls on screen, and the facets and ribs on their front.
+    /// Returns the part's walls on screen, and the facets and ribs on their
+    /// front-facing side.
     pub(super) fn walls(&self, tilt: &Tilt, edge: Stroke) -> Vec<Shape> {
         let mut out: Vec<Shape> = self
             .walls
@@ -186,8 +188,8 @@ impl Raised {
                 )
             })
             .collect();
-        // One mesh, unfeathered: the facets tile the side edge to edge, and a
-        // feathered sliver seen edge-on spikes far past its own corners.
+        // Draw the facets as one unfeathered mesh. They tile the side edge to
+        // edge, and a feathered sliver seen edge-on spikes far past its corners.
         let mut facets = Mesh::default();
         for f in self.facets.iter().filter(|f| f.normal.y > 0.0) {
             let i = facets.vertices.len() as u32;
@@ -209,7 +211,7 @@ impl Raised {
         out
     }
 
-    /// The part's tops on screen, for hit-testing.
+    /// Returns the part's tops on screen, for hit-testing.
     pub(in crate::app) fn screen_tops(&self, tilt: &Tilt) -> Vec<(Vec<Pos2>, f32)> {
         self.tops
             .iter()

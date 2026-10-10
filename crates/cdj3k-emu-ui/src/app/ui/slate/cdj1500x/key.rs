@@ -1,6 +1,6 @@
 //! The CDJ-1500X's keys, in the CDJ-3000's key style: a silver ring at the
 //! drawing's outline, a clear gap where the panel shows, and the face inside
-//! it with a dark line on its edge. The legends and lamps are their callers'.
+//! it with a dark line on its edge. Callers draw the legends and lamps.
 
 use std::f32::consts::PI;
 
@@ -10,11 +10,13 @@ use crate::app::ui::draw_cache::ShapeList;
 use crate::app::ui::tilt::{Footprint, Lift, Raised};
 use crate::app::ui::{UiScale, COL_BLACK, COL_BTN, COL_BTN_HOT, COL_SILVER};
 
-/// How far a key's cap stands above the panel, and a round transport key's.
+/// The height of a key's cap above the panel, and the height of a round
+/// transport key's cap.
 pub const HEIGHT: f32 = 14.0;
 pub const ROUND_HEIGHT: f32 = 20.0;
 
-/// A circle's outline in reference units, for a round part's footprint.
+/// Returns a circle's outline in reference units, used as a round part's
+/// footprint.
 pub fn circle(c: Pos2, r: f32) -> Vec<Pos2> {
     (0..48)
         .map(|i| c + egui::Vec2::angled(i as f32 * std::f32::consts::TAU / 48.0) * r)
@@ -24,7 +26,8 @@ pub fn circle(c: Pos2, r: f32) -> Vec<Pos2> {
 /// An unlit LED legend.
 pub const COL_LED_OFF: Color32 = Color32::from_rgb(82, 82, 90);
 
-/// An LED legend lit at `level` (0 dark, 255 full) in its one tint.
+/// Returns the colour of an LED legend in `tint`, lit at `level` from 0
+/// (dark) to 255 (full).
 pub fn led(tint: Color32, level: u8) -> Color32 {
     if level == 0 {
         return COL_LED_OFF;
@@ -34,8 +37,8 @@ pub fn led(tint: Color32, level: u8) -> Color32 {
     Color32::from_rgb(f(tint.r()), f(tint.g()), f(tint.b()))
 }
 
-/// The key's edge, reference units: the silver ring's width, the gap inside
-/// it, and the face's edge line - the CDJ-3000's hot cue keys' widths.
+/// Widths of the key's edge in reference units: the silver ring, the gap
+/// inside it and the face's edge line. They match the CDJ-3000's hot cue keys.
 const RING: f32 = 4.0;
 const GAP: f32 = 2.0;
 const EDGE: f32 = 1.0;
@@ -56,8 +59,8 @@ impl Outline {
         Self { rect, radii }
     }
 
-    /// The same shape `d` further in: every edge moves in, every radius
-    /// shrinks by as much.
+    /// Returns the same shape inset by `d`: every edge moves in by `d`, and
+    /// every radius shrinks by `d`.
     pub fn inset(self, d: f32) -> Self {
         Self {
             rect: self.rect.shrink(d),
@@ -88,8 +91,8 @@ impl Outline {
         corner(Pos2::new(r.right() - se, r.bottom() - se), se, 0.0);
         corner(Pos2::new(r.left() + sw, r.bottom() - sw), sw, 0.5 * PI);
         corner(Pos2::new(r.left() + nw, r.top() + nw), nw, PI);
-        // Where a straight run has no length, two corners share a point; a
-        // repeated point has no direction, and the stroke spikes at it.
+        // Where a straight run has no length, two corners share a point. Drop
+        // the repeat, because the stroke spikes at a repeated point.
         pts.dedup_by(|b, a| a.distance(*b) < 0.01);
         if pts.len() > 1 && pts[0].distance(pts[pts.len() - 1]) < 0.01 {
             pts.pop();
@@ -106,13 +109,13 @@ impl Outline {
     }
 }
 
-/// The face inside a key's outline: what stands off the panel once the deck
-/// tilts.
+/// Returns the face inside a key's outline, which stands off the panel when
+/// the deck tilts.
 pub fn face(outline: Outline) -> Outline {
     outline.inset(RING + GAP + EDGE * 0.5)
 }
 
-/// Collect a key: the silver ring, then the face with its edge line.
+/// Collects a key: the silver ring, then the face with its edge line.
 pub fn collect_key(list: &mut ShapeList, layout: &UiScale, outline: Outline, pressed: bool) {
     list.add(Shape::closed_line(
         outline.inset(RING * 0.5).points(layout),
@@ -126,11 +129,11 @@ pub fn collect_key(list: &mut ShapeList, layout: &UiScale, outline: Outline, pre
     ));
 }
 
-/// A key's side, seen once the deck tilts.
+/// The colour of a key's side, which shows when the deck tilts.
 const COL_WALL: Color32 = Color32::from_rgb(14, 14, 18);
 
-/// Keys with these cap outlines (reference units), standing `height` off the
-/// panel on straight sides.
+/// Describes keys with these cap outlines, in reference units, as raised
+/// parts that stand `height` off the panel on straight sides.
 pub fn raised(outlines: Vec<Vec<Pos2>>, height: f32) -> Raised {
     Raised {
         shapes: 0..0,

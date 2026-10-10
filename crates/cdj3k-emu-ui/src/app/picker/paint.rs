@@ -6,9 +6,9 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke};
 use crate::app::theme;
 
 // The bin on the delete button, in fractions of the square the button
-// reserves for it. Lid, handle and a body that tapers to its base - no bundled
-// face carries a bin, and an emoji one would be the only filled shape in the
-// window.
+// reserves for it: a lid, a handle and a body that tapers to its base. It is
+// drawn because no bundled font has a bin glyph, and an emoji bin would be
+// the only filled shape in the window.
 const TRASH_LID_Y: f32 = 0.28;
 const TRASH_LID_X: (f32, f32) = (0.04, 0.96);
 const TRASH_HANDLE_X: (f32, f32) = (0.34, 0.66);
@@ -42,7 +42,7 @@ pub(in crate::app) fn tracked(
     (x - pos.x - track).max(0.0)
 }
 
-/// The same, centred on `pos`.
+/// Draws [`tracked`] text centred on `pos`.
 pub(super) fn tracked_center(
     p: &egui::Painter,
     pos: Pos2,
@@ -62,7 +62,7 @@ pub(super) fn tracked_center(
     );
 }
 
-/// What [`tracked`] takes for `text`.
+/// The width that [`tracked`] takes for `text`.
 pub(in crate::app) fn text_width(p: &egui::Painter, text: &str, font: &FontId, track: f32) -> f32 {
     let n = text.chars().count();
     if n == 0 {
@@ -79,12 +79,13 @@ fn glyph_width(p: &egui::Painter, c: char, font: &FontId) -> f32 {
     })
 }
 
-/// A rule one pixel thick, whatever the window's size factor.
+/// A rule [`theme::HAIRLINE`] thick, scaled by the window's size factor `k`.
 pub(in crate::app) fn hairline(p: &egui::Painter, a: Pos2, b: Pos2, col: Color32, k: f32) {
     p.line_segment([a, b], Stroke::new(theme::HAIRLINE * k, col));
 }
 
-/// The bin beside the delete's label, drawn to the window's hairline.
+/// Draws the bin beside the Delete slot label with the window's hairline
+/// stroke.
 pub(in crate::app) fn trash_glyph(p: &egui::Painter, rect: Rect, col: Color32, k: f32) {
     let x = |t: f32| rect.left() + rect.width() * t;
     let y = |t: f32| rect.top() + rect.height() * t;

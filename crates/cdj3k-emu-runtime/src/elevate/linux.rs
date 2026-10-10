@@ -1,4 +1,4 @@
-//! polkit, through `pkexec`. The desktop's own authentication agent draws
+//! Elevation through polkit's `pkexec`. The desktop's own authentication agent draws
 //! the prompt, so this matches whatever the user already sees for
 //! privileged operations.
 
@@ -9,7 +9,7 @@ pub fn run_elevated(sh_cmd: &str) -> io::Result<()> {
     if sh_cmd.contains('\0') {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "shell command contains null byte",
+            "the shell command contains a null byte",
         ));
     }
     let status = Command::new("pkexec")
@@ -20,7 +20,7 @@ pub fn run_elevated(sh_cmd: &str) -> io::Result<()> {
         .map_err(|e| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("pkexec not available ({e}); install polkit to grant privileges"),
+                format!("pkexec is not available ({e}); install polkit to grant privileges"),
             )
         })?;
 
@@ -31,17 +31,19 @@ pub fn run_elevated(sh_cmd: &str) -> io::Result<()> {
         // session (no authentication agent).
         Some(126) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "admin elevation refused",
+            "the request for admin rights was refused",
         )),
         Some(127) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "no one to ask for admin rights: this app is running outside \
-             the desktop session (started over SSH or detached), where \
-             polkit has no agent to show a prompt",
+            "cannot ask for admin rights: the app runs outside the desktop \
+             session, for example over SSH or detached, where polkit has \
+             no agent to show a prompt",
         )),
         Some(code) => Err(io::Error::other(format!(
-            "elevated command failed with status {code}"
+            "the elevated command failed with status {code}"
         ))),
-        None => Err(io::Error::other("elevated command killed by a signal")),
+        None => Err(io::Error::other(
+            "the elevated command was killed by a signal",
+        )),
     }
 }

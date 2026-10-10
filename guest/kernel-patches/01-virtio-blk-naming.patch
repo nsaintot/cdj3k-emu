@@ -12,7 +12,7 @@ index 65a1f15..de659cc 100644
 + */
 +static unsigned int emmc_index = 1;
 +module_param(emmc_index, uint, 0444);
-+MODULE_PARM_DESC(emmc_index, "N of the mmcblkN the first disk is named (default 1)");
++MODULE_PARM_DESC(emmc_index, "The N in the mmcblkN name of the first disk (default 1)");
 +
  static int major;
  static DEFINE_IDA(vd_index_ida);
@@ -45,11 +45,11 @@ index 65a1f15..de659cc 100644
 -	vblk->disk->first_minor = index_to_minor(index);
 +	/*
 +	 * cdj3k-emu device naming:
-+	 *   index 0 → mmcblkN  (eMMC qcow2, N = emmc_index, major 179
-+	 *                       MMC_BLOCK_MAJOR, base minor 8 * N)
-+	 *   index 1 → sdb      (virtual USB, major 8 SCSI_DISK0_MAJOR, base minor 16)
-+	 *   index N → vdX      (standard virtio-blk fallback)
-+	 *   SDCard is not used here but would be mapped as sda in this context
++	 *   index 0: mmcblkN, the eMMC qcow2 (N is emmc_index; major 179,
++	 *            MMC_BLOCK_MAJOR; base minor 8 * N)
++	 *   index 1: sdb, the virtual USB drive (major 8, SCSI_DISK0_MAJOR; base minor 16)
++	 *   other:   vdX, the standard virtio-blk name
++	 *   The SD card is not a virtio-blk disk here; it would be sda.
 +	 */
 +	if (index == 0) {
 +		snprintf(vblk->disk->disk_name, DISK_NAME_LEN, "mmcblk%u", emmc_index);

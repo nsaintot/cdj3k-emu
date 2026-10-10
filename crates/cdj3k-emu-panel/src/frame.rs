@@ -6,17 +6,17 @@
 //! [`MisoCodec`](crate::miso_frame::MisoCodec)) and reads MOSI itself (its
 //! [`MosiCodec`](crate::mosi_frame::MosiCodec)).
 //!
-//! The CDJ-3000 and the CDJ-3000X lay their lamps out alike, so both read
-//! through a [`MosiMap`]: the CDJ-3000's bitfield bits (its `LED_*`
-//! constants) moved by [`MosiMap::bit_shift`], and RGB lamps - which a model
-//! reassigns - named each at its own offset in [`RgbLamps`].
+//! The CDJ-3000 and the CDJ-3000X lay out their lamps alike, so both are read
+//! through a [`MosiMap`]. It moves the CDJ-3000's bitfield bits (its `LED_*`
+//! constants) by [`MosiMap::bit_shift`] and gives each RGB lamp its own offset
+//! in [`RgbLamps`], because a model can reassign those.
 
-/// Single-bit field: `(byte_offset, bitmask)`.
+/// A single-bit field, given as `(byte_offset, bitmask)`.
 pub type FrameBit = (usize, u8);
 
-/// Two-step LED: byte offset + `medium`/`full` bitmasks.
+/// A two-step LED: a byte offset and its `medium` and `full` bitmasks.
 ///
-/// Setting only `medium` means "dimly lit"; setting both means "fully lit".
+/// Setting only `medium` lights the LED dimly; setting both lights it fully.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct StepLedMask {
     pub byte: usize,
@@ -56,7 +56,8 @@ pub struct RgbLamps {
     /// PLAY, on a model that drives it as a colour; the others use the
     /// `LED_PLAY` bit.
     pub play: Option<usize>,
-    /// CUE, under the [`Self::play`] rule with `LED_CUE` as the bit.
+    /// CUE, on a model that drives it as a colour; the others use the
+    /// `LED_CUE` bit.
     pub cue: Option<usize>,
     /// The rotary selector ring.
     pub rotary: Option<usize>,

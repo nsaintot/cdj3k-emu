@@ -1,34 +1,37 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * subucom_virt.c - Virtual subucom_spi character device for QEMU cdj3k-emu
+ * subucom_virt.c - a virtual subucom_spi character device for cdj3k-emu.
  *
- * Creates /dev/subucom_spi1.0 (major 246, minor 0) under class "subucom_spiclass",
- * /dev/subucom_spi3.0 for model=cdj1500x, the node the CDJ-1500X's app opens.
+ * Creates /dev/subucom_spi1.0, or /dev/subucom_spi3.0 for model=cdj1500x
+ * (the node that the CDJ-1500X's app opens), under class "subucom_virt_class"
+ * with a dynamic major and minor 0.
  *
- * Also creates /dev/subucom_ctrl for host communication:
- *   write(ctrl, 64 bytes) → inject MISO frame delivered on next read() of spi1.0
- *   read(ctrl, 64 bytes)  → consume latest LED frame written by EP122
+ * Also creates /dev/subucom_ctrl (minor 1) for the host. Writing 64 bytes to
+ * it injects a MISO frame, which the next read() of spi1.0 delivers. Reading
+ * 64 bytes from it returns the latest LED frame that EP122 wrote.
  *
- * Ioctl interface (/sys/module/subucom_spi/parameters/):
- *   0x80027003  TIMER_STATUS_READ   → returns u16 DEFtmstat (default 0)
- *   0x40027003  TIMER_STATUS_WRITE  → sets timer_status (starts transfer timer)
- *   0x80017001  BITS_PER_WORD_READ  → returns u8 bits_per_word (default 8)
- *   0x40017001  BITS_PER_WORD_WRITE → sets bits_per_word
- *   0x40107000  MOSI_TRANSFER       → EP122 sends 16-byte MOSI frame
- *   0x80047004  RX_BYTES_READ       → returns u32 rx frame size (64)
- *   0x40047004  RX_BYTES_WRITE      → sets rx frame size
- *   0x80047002  INTERVAL_READ       → returns u32 polling interval in µs (1176)
- *   0x40047002  INTERVAL_WRITE      → sets polling interval
+ * Ioctls on the sub-CPU device:
+ *   | Code       | Name                | Effect                                   |
+ *   |------------|---------------------|------------------------------------------|
+ *   | 0x80027003 | TIMER_STATUS_READ   | returns the u16 timer_status (default 0) |
+ *   | 0x40027003 | TIMER_STATUS_WRITE  | sets timer_status                        |
+ *   | 0x80017001 | BITS_PER_WORD_READ  | returns the u8 bits_per_word (default 8) |
+ *   | 0x40017001 | BITS_PER_WORD_WRITE | sets bits_per_word                       |
+ *   | 0x40107000 | MOSI_TRANSFER       | EP122 sends a 16-byte MOSI command       |
+ *   | 0x80047004 | RX_BYTES_READ       | returns the u32 rx frame size (64)       |
+ *   | 0x40047004 | RX_BYTES_WRITE      | sets the rx frame size                   |
+ *   | 0x80047002 | INTERVAL_READ       | returns the u32 interval in µs (1176)    |
+ *   | 0x40047002 | INTERVAL_WRITE      | sets the interval                        |
  *
- * read() on spi1.0: blocks until MISO frame available (~850 Hz via hrtimer),
- * returns 64 bytes. If host injected a frame via ctrl, that frame is used;
- * otherwise the idle frame is returned.
+ * A read() on spi1.0 waits for the next MISO frame (about 850 Hz) and returns
+ * 64 bytes. If the host injected a frame through ctrl, that frame is
+ * returned; otherwise the idle frame is.
  *
- * Specs:
- *   SPI: ff1d0000.spi, bus1 CS0, 3.2 MHz, Mode 3 (CPOL=1, CPHA=1)
+ * The real device:
+ *   SPI: ff1d0000.spi, bus 1 CS0, 3.2 MHz, mode 3 (CPOL=1, CPHA=1)
  *   Device class: subucom_spiclass
- *   Major: 246, Minor: 0
- *   Module params: DEFtmstat=0, txmulti=1, txpart=1, SZbufsize=1036
+ *   Major: 246, minor: 0
+ *   Module parameters: DEFtmstat=0, txmulti=1, txpart=1, SZbufsize=1036
  */
 
 #include <linux/module.h>
@@ -41,7 +44,7 @@
 #include <linux/string.h>  /* strcmp */
 #include <linux/wait.h>
 #include <linux/spinlock.h>
-#include <linux/delay.h>   /* usleep_range */
+#include <linux/delay.h>
 #include <linux/sched.h>   /* schedule_timeout_interruptible */
 #include <linux/poll.h>    /* poll_table, POLLIN, POLLRDNORM */
 #include <linux/workqueue.h> /* delayed_work */
@@ -50,27 +53,27 @@
 #define DRV_NAME        "subucom_virt"
 #define SPI_DEV_NAME    "subucom_spi1.0"
 #define SPI_DEV_NAME_1500X "subucom_spi3.0"
-/* Where the CDJ-1500X's frame CRC sits: it covers the bytes before it. */
+/* The offset of the CDJ-1500X's frame CRC, which covers the bytes before it. */
 #define MISO_CRC_1500X  24
 #define CTRL_DEV_NAME   "subucom_ctrl"
 #define CLASS_NAME      "subucom_virt_class"
 
-/* Dynamic major - alloc_chrdev_region picks a free slot at runtime */
+/* alloc_chrdev_region picks a free major at load time. */
 static int subucom_major;
 #define MINOR_SPI       0
 #define MINOR_CTRL      1
 #define NDEVS           2
 
-/* MISO frame size and polling interval */
+/* The MISO frame size and polling interval. */
 #define MISO_SIZE       64
 #define MOSI_CMD_SIZE   16  /* ioctl arg: {uint32 magic, uint32 size, uint64 data_ptr} */
-#define LED_FRAME_SIZE  64  /* actual LED payload pointed to by data_ptr */
-#define INTERVAL_US     1176   /* ~850 Hz */
+#define LED_FRAME_SIZE  64  /* the LED payload that data_ptr points to */
+#define INTERVAL_US     1176   /* about 850 Hz */
 
-/* Layout of the 16-byte MOSI ioctl argument */
+/* The layout of the 16-byte MOSI ioctl argument. */
 struct mosi_cmd {
     u32 magic;    /* 0x01000000 */
-    u32 size;     /* byte count of data at data_ptr (≤ LED_FRAME_SIZE) */
+    u32 size;     /* byte count at data_ptr, at most LED_FRAME_SIZE */
     u64 data_ptr; /* userspace VA of the LED frame */
 } __packed;
 
@@ -85,21 +88,21 @@ struct mosi_cmd {
 #define IOCTL_INTERVAL_READ       0x80047002u
 #define IOCTL_INTERVAL_WRITE      0x40047002u
 
-/* MISO initial frame. */
+/* The CDJ-3000 idle MISO frame. */
 static const u8 miso_idle[MISO_SIZE] = {
     /* b00-b04: header */
     0x00, 0x00, 0x01, 0x04, 0x03,
     /* b05-b11: button bitmasks */
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    /* b12-b15: device state + rotary encoder (rest = ROTARY_IDLE) */
+    /* b12-b15: device state and rotary encoder (idle values) */
     0x81, 0x00, 0xff, 0xff,
     /* b16-b19: LCD touch */
     0x00, 0x00, 0x00, 0x00,
     /* b20-b21: unknown */
     0x00, 0x7f,
-    /* b22-b25: tempo slider + vinyl */
+    /* b22-b25: tempo slider and vinyl */
     0x50, 0x7f, 0x00, 0x00,
-    /* b26-b31: jog wheel (position=0xffff, velocity=0xffff, touch=0x00) */
+    /* b26-b31: jog wheel (position 0xffff, velocity 0xffff, touch 0x00) */
     0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
     /* b32-b43: cap sensor baseline */
     0x51, 0x01,
@@ -121,7 +124,7 @@ static struct cdev    subucom_cdev[NDEVS];
 static struct device *subucom_dev[NDEVS];
 
 /* CRC-16/X-25: poly 0x8408 (reflected 0x1021), init 0xFFFF, final XOR 0xFFFF.
- * Applied over the first 62 bytes of the MISO frame; result stored LE in b62-b63. */
+ * The 64-byte frames carry it over the first 62 bytes, stored LE in b62-b63. */
 static u16 crc16_x25(const u8 *data, int n)
 {
     u16 crc = 0xFFFF;
@@ -134,21 +137,21 @@ static u16 crc16_x25(const u8 *data, int n)
     return crc ^ 0xFFFF;
 }
 
-/* MISO state: spi_read() sleeps interval_us then delivers the frame.
- * No external hrtimer needed - usleep_range() throttles in the caller's
- * context, avoiding the hrtimer→wake_up→wait_event race on QEMU/HVF. */
+/* MISO state. spi_read() sleeps for interval_us in the caller's context and
+ * then delivers the frame. Do not use an hrtimer here: its wake-up races with
+ * wait_event under QEMU with HVF. */
 static DEFINE_SPINLOCK(miso_lock);
 static u8 inject_pending[MISO_SIZE];
-static int has_inject;   /* 1 = inject_pending is valid */
+static int has_inject;   /* 1 when inject_pending is valid */
 
-/* MOSI: EP122 writes LED frames via MOSI_TRANSFER ioctl.
- * mosi_frame holds the last 64-byte LED payload (dereferenced from the ioctl cmd). */
+/* MOSI: EP122 writes LED frames through the MOSI_TRANSFER ioctl. mosi_frame
+ * holds the last 64-byte LED payload, copied from the command's data_ptr. */
 static DEFINE_SPINLOCK(mosi_lock);
 static u8 mosi_frame[LED_FRAME_SIZE];
-static int mosi_fresh;   /* 1 = unread LED frame available */
+static int mosi_fresh;   /* 1 when an unread LED frame is available */
 static wait_queue_head_t mosi_wq;
 
-/* Ioctl-configurable parameters */
+/* Parameters that the ioctls read and set. */
 static u16 timer_status;
 static u8  bits_per_word = 8;
 static u32 rx_bytes      = MISO_SIZE;
@@ -158,53 +161,56 @@ static u32 interval_us   = INTERVAL_US;
 /* Model                                                              */
 /*                                                                    */
 /* model=cdj3k (CDJ-3000, default), cdj3kx (CDJ-3000X) or cdj1500x    */
-/* (CDJ-1500X). The CDJ-3000X's sub-CPU frame is the CDJ-3000 frame 4 */
-/* bytes further on, behind a u16 format version (which it requires   */
-/* non-zero) and 2 pad bytes. The CDJ-3000's SD-cover bit (byte 16    */
-/* bit 0 there) is a button on the CDJ-3000X. The CDJ-1500X's frame   */
-/* is 32 bytes: format version at byte 0 (required non-zero), data to */
-/* byte 23, its CRC at 24-25; it idles with the version alone.        */
+/* (CDJ-1500X). The CDJ-3000X's sub-CPU frame is the CDJ-3000 frame   */
+/* shifted by 4 bytes, after a u16 format version, which the app      */
+/* requires to be non-zero, and 2 pad bytes. The bit that is the      */
+/* SD-cover switch on the CDJ-3000 (bit 0 of byte 16 in the shifted   */
+/* frame) is a button on the CDJ-3000X. The CDJ-1500X's frame is 32   */
+/* bytes long: a format version at byte 0, which must be non-zero,    */
+/* data up to byte 23, and the CRC at bytes 24-25. Its idle frame is  */
+/* all zeros apart from the version.                                  */
 /* ------------------------------------------------------------------ */
 
 static char *model = "cdj3k";
 module_param(model, charp, 0444);
-MODULE_PARM_DESC(model, "Player: cdj3k = CDJ-3000 (default), cdj3kx = CDJ-3000X, cdj1500x = CDJ-1500X");
+MODULE_PARM_DESC(model, "The player: cdj3k for the CDJ-3000 (default), cdj3kx for the CDJ-3000X, cdj1500x for the CDJ-1500X");
 
 /* Resolved once at init; the parameter is read-only afterwards. */
 static bool model_is_x;
 static bool model_is_1500x;
 
-/* The sub-CPU device node the loaded model's app opens. */
+/* The sub-CPU device node that the loaded model's app opens. */
 static const char *spi_dev_name(void)
 {
     return model_is_1500x ? SPI_DEV_NAME_1500X : SPI_DEV_NAME;
 }
 
-/* The idle frame for the loaded model (miso_idle adjusted at init). */
+/* The idle frame of the loaded model, derived from miso_idle at init. */
 static u8 miso_idle_model[MISO_SIZE];
 
 /* ------------------------------------------------------------------ */
 /* Testmode boot injection                                            */
 /*                                                                    */
-/* inject_testmode=1 holds the service-mode combo for ~5 s so         */
-/* subucom_read sees it during boot: CDJ-3000 = BTN_CALL_PREV +       */
-/* BTN_TEMPO_RANGE (byte 6 == 0x04, byte 8 == 0x08); CDJ-3000X =      */
-/* byte 10 == 0x04 and byte 12 == 0x01. subucom_read compares whole   */
-/* bytes. The combo is ORed into every frame spi_read delivers, idle  */
-/* or host-injected, so host writes do not cancel it. A delayed_work  */
-/* releases it before the app starts its 850 Hz polling loop.         */
+/* inject_testmode=1 holds the service-mode combo for about 5 s, so   */
+/* subucom_read sees it during boot. The combo is BTN_TEMPO_RANGE and */
+/* BTN_CALL_PREV on the CDJ-3000 (byte 6 0x04, byte 8 0x08), byte 10  */
+/* 0x04 and byte 12 0x01 on the CDJ-3000X, and SHIFT and HOT CUE B on */
+/* the CDJ-1500X (byte 17 0x01, byte 18 0x40). subucom_read compares  */
+/* whole bytes. The combo is ORed into every frame that spi_read      */
+/* delivers, idle or injected, so host writes do not cancel it. A     */
+/* delayed_work releases it before the app starts its 850 Hz loop.    */
 /* ------------------------------------------------------------------ */
 
 static int inject_testmode;
 module_param(inject_testmode, int, 0444);
-MODULE_PARM_DESC(inject_testmode, "Pre-inject testmode buttons for ~5s on load (0=off, 1=on)");
+MODULE_PARM_DESC(inject_testmode, "Hold the testmode buttons for about 5 s after loading (0 off, 1 on)");
 
 #define TESTMODE_INJECT_MS  5000
 
 /* Combo bytes and masks for the loaded model; set at init. */
 static u8 testmode_byte[2];
 static u8 testmode_mask[2];
-static int testmode_held;   /* 1 = combo ORed into every frame */
+static int testmode_held;   /* 1 while the combo is ORed into every frame */
 
 static void testmode_clear_work_fn(struct work_struct *work);
 static DECLARE_DELAYED_WORK(testmode_clear_work, testmode_clear_work_fn);
@@ -215,11 +221,10 @@ static void testmode_clear_work_fn(struct work_struct *work)
     spin_lock_irqsave(&miso_lock, flags);
     testmode_held = 0;
     spin_unlock_irqrestore(&miso_lock, flags);
-    pr_info("%s: testmode combo released after %d ms\n", DRV_NAME, TESTMODE_INJECT_MS);
+    pr_info("%s: released the testmode combo after %d ms\n", DRV_NAME, TESTMODE_INJECT_MS);
 }
 
-/* uaccess helpers. cdj3k-emu only targets vanilla 6.6 - the Pioneer 4.4
- * branch that called __arch_copy_{to,from}_user directly is no longer needed. */
+/* Copy to or from user space; return -EFAULT when the copy fails. */
 static inline int xput_bytes(void __user *dst, const u8 *src, size_t n)
 {
     return copy_to_user(dst, src, n) ? -EFAULT : 0;
@@ -251,18 +256,20 @@ static ssize_t spi_read(struct file *filp, char __user *buf,
     u8 frame[MISO_SIZE];
     size_t n;
 
-    /* Throttle at ~850 Hz in the caller's context.
-     * schedule_timeout_interruptible uses TASK_INTERRUPTIBLE - no get_current()
-     * assumptions, and correctly returns early if a signal is pending. */
+    /* Throttle to about 850 Hz in the caller's context.
+     * schedule_timeout_interruptible() returns early when a signal is
+     * pending. */
     if (schedule_timeout_interruptible(usecs_to_jiffies(interval_us) + 1))
         return -ERESTARTSYS;
 
-    /* Build the MISO frame: injected or idle, then stamp CRC-16/X-25 */
+    /* Build the MISO frame from the injected or idle frame, then stamp its
+     * CRC-16/X-25. */
     spin_lock_irqsave(&miso_lock, flags);
     if (has_inject) {
         memcpy(frame, inject_pending, MISO_SIZE);
-        /* has_inject stays 1 - injected frame is sticky until ctrl_write()
-         * replaces it with a new frame (e.g. idle on button release). */
+        /* has_inject stays 1: the injected frame stays in effect until
+         * ctrl_write() replaces it, for example with the idle frame when a
+         * button is released. */
     } else {
         memcpy(frame, miso_idle_model, MISO_SIZE);
     }
@@ -273,8 +280,7 @@ static ssize_t spi_read(struct file *filp, char __user *buf,
     spin_unlock_irqrestore(&miso_lock, flags);
 
     if (model_is_1500x) {
-        /* CRC-16/X-25 over bytes 0-23, big-endian at 24-25 (subucom_read
-         * --crc 24 --size 32). */
+        /* CRC-16/X-25 over bytes 0-23, stored big-endian at bytes 24-25. */
         u16 crc = crc16_x25(frame, MISO_CRC_1500X);
         frame[MISO_CRC_1500X] = (u8)(crc >> 8);
         frame[MISO_CRC_1500X + 1] = (u8)(crc & 0xFF);
@@ -308,9 +314,9 @@ static long spi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
         return xget_bytes(&bits_per_word, (const void __user *)arg, sizeof(bits_per_word));
 
     case IOCTL_MOSI_TRANSFER: {
-        /* EP122 sends a 16-byte cmd: {magic=0x01000000, size, data_ptr}.
-         * data_ptr is a userspace VA pointing to the actual LED frame.
-         * We dereference it here to capture the real 64-byte payload. */
+        /* EP122 sends a 16-byte command {magic 0x01000000, size, data_ptr}.
+         * data_ptr is a user-space address of the LED frame, which is copied
+         * here. */
         struct mosi_cmd cmd;
         u8 led[LED_FRAME_SIZE];
         u32 copy_size;
@@ -352,10 +358,10 @@ static long spi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
     }
 }
 
-/* spi_read() always delivers a frame after a brief sleep (~1.2 ms).
- * From epoll's perspective this fd is always readable - EP122 calls
- * read() itself to throttle at 850 Hz.  Returning POLLIN unconditionally
- * lets epoll_ctl() succeed so EP122's event loop can watch this fd. */
+/* spi_read() always delivers a frame after a short sleep (about 1.2 ms), so
+ * the fd is always readable; EP122's read() calls set the 850 Hz pace.
+ * Returning POLLIN unconditionally lets epoll_ctl() succeed, so EP122's event
+ * loop can watch this fd. */
 static unsigned int spi_poll(struct file *filp, poll_table *wait)
 {
     return POLLIN | POLLRDNORM;
@@ -384,8 +390,9 @@ static int ctrl_release(struct inode *inode, struct file *filp)
     return 0;
 }
 
-/* write(ctrl, 64 bytes) → inject MISO frame (sticky until next write)
- * write(ctrl, 0 bytes)  → clear inject, revert to idle */
+/* A 64-byte write injects a MISO frame, which stays in effect until the next
+ * write. A zero-byte write clears the injected frame, so reads return the
+ * idle frame again. */
 static ssize_t ctrl_write(struct file *filp, const char __user *buf,
                            size_t count, loff_t *ppos)
 {
@@ -414,7 +421,8 @@ static ssize_t ctrl_write(struct file *filp, const char __user *buf,
     return MISO_SIZE;
 }
 
-/* read(ctrl, 64 bytes) → consume latest LED frame; blocks if none */
+/* A 64-byte read returns the latest LED frame, and blocks until one is
+ * available. */
 static ssize_t ctrl_read(struct file *filp, char __user *buf,
                           size_t count, loff_t *ppos)
 {
@@ -478,7 +486,7 @@ static int __init subucom_virt_init(void)
     model_is_x = model && strcmp(model, "cdj3kx") == 0;
     model_is_1500x = model && strcmp(model, "cdj1500x") == 0;
 
-    /* sub-CPU device */
+    /* The sub-CPU device. */
     cdev_init(&subucom_cdev[0], &spi_fops);
     subucom_cdev[0].owner = THIS_MODULE;
     ret = cdev_add(&subucom_cdev[0], MKDEV(subucom_major, MINOR_SPI), 1);
@@ -489,7 +497,7 @@ static int __init subucom_virt_init(void)
                                    NULL, spi_dev_name());
     if (IS_ERR(subucom_dev[0])) { ret = PTR_ERR(subucom_dev[0]); goto err_cdev0; }
 
-    /* ctrl device */
+    /* The ctrl device. */
     cdev_init(&subucom_cdev[1], &ctrl_fops);
     subucom_cdev[1].owner = THIS_MODULE;
     ret = cdev_add(&subucom_cdev[1], MKDEV(subucom_major, MINOR_CTRL), 1);
@@ -506,7 +514,7 @@ static int __init subucom_virt_init(void)
         memset(miso_idle_model, 0, MISO_SIZE);
         miso_idle_model[0] = 0x01;
     } else if (model_is_x) {
-        /* Format version 1 (u16 LE), pad, the CDJ-3000 frame at +4. */
+        /* Format version 1 (u16 LE) and 2 pad bytes, then the CDJ-3000 frame at offset 4. */
         memset(miso_idle_model, 0, MISO_SIZE);
         miso_idle_model[0] = 0x01;
         memcpy(miso_idle_model + 4, miso_idle, MISO_SIZE - 2 - 4);
@@ -515,7 +523,7 @@ static int __init subucom_virt_init(void)
         memcpy(miso_idle_model, miso_idle, MISO_SIZE);
     }
 
-    /* Testmode boot injection: hold the model's service-mode combo */
+    /* Hold the model's service-mode combo during boot. */
     if (inject_testmode) {
         unsigned long flags;
         if (model_is_1500x) {
@@ -538,11 +546,11 @@ static int __init subucom_virt_init(void)
         spin_unlock_irqrestore(&miso_lock, flags);
         schedule_delayed_work(&testmode_clear_work,
                               msecs_to_jiffies(TESTMODE_INJECT_MS));
-        pr_info("%s: testmode combo held, released in %d ms\n",
+        pr_info("%s: holding the testmode combo for %d ms\n",
                 DRV_NAME, TESTMODE_INJECT_MS);
     }
 
-    pr_info("%s: /dev/%s (major %d minor %d) + /dev/%s (minor %d) ready\n",
+    pr_info("%s: /dev/%s (major %d minor %d) and /dev/%s (minor %d) are ready\n",
             DRV_NAME, spi_dev_name(), subucom_major, MINOR_SPI,
             CTRL_DEV_NAME, MINOR_CTRL);
     return 0;
@@ -572,5 +580,5 @@ module_exit(subucom_virt_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("cdj3k-emu");
-MODULE_DESCRIPTION("Virtual subucom_spi device for CDJ-3000 QEMU emulation");
+MODULE_DESCRIPTION("Virtual subucom_spi device for cdj3k-emu");
 MODULE_ALIAS("subucom_virt");

@@ -7,18 +7,18 @@
 # are created at boot by systemd-tmpfiles with the values it would have
 # written on that same failure path. /var/volatile and /tmp are tmpfs.
 #
-# /var/net_mlan0_state.dat: absent, the app logs
+# When /var/net_mlan0_state.dat is absent, the app logs
 # "[checkNetworkConnectionChange] ... open err." once a second.
 #
-# /tmp/ccode: absent, the app does not start. It stats the file every 100 ms
-# and waits. "XX" is what the monitor writes when it finds no device, and
+# When /tmp/ccode is absent, the app does not start: it stats the file every
+# 100 ms and waits. "XX" is what the monitor writes when it finds no device, and
 # mlan0Addr is written on the same path.
 #
 # The unit that runs wlan-monitor.sh is masked: on its no-SDIO path the script
 # writes the WLAN module caution (E-7026: WLAN module ERROR) to
-# /proc/udev_usbctn1 - wlanbterr after a 10 s probe, or mlanbterr at once,
-# depending on the firmware - and the files it would have written are
-# provided here.  The unit is start-mlan0.service on the CDJ-3000X,
+# /proc/udev_usbctn1, as wlanbterr after a 10 s probe or as mlanbterr at once,
+# depending on the firmware. The files it would have written are provided
+# here instead.  The unit is start-mlan0.service on the CDJ-3000X,
 # start-wlan.service on the CDJ-1500X.
 #
 # mlan0 itself: service mode's version page reads the WLAN address from
@@ -31,7 +31,7 @@ set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 
 if [[ ! -f "$ROOTFS/home/root/scripts/wlan-monitor.sh" ]]; then
-    echo "  -> no wlan-monitor.sh in this rootfs - nothing to do"
+    echo "  -> no wlan-monitor.sh in this rootfs; nothing to do"
     exit 0
 fi
 
@@ -53,7 +53,8 @@ for unit in "$ROOTFS"/etc/systemd/system/*.service; do
     echo "  -> masked $(basename "$unit") (no WLAN module under QEMU)"
     masked=1
 done
-# A rootfs patched before carries cdj3k-mlan0.service and the unit masked.
+# A rootfs that this patch already ran on has cdj3k-mlan0.service, and its
+# wlan-monitor unit is already masked.
 if [[ "$masked" == 0 && ! -f "$ROOTFS/etc/systemd/system/cdj3k-mlan0.service" ]]; then
     echo "ERROR: no unit runs wlan-monitor.sh in this rootfs" >&2
     exit 1

@@ -13,9 +13,9 @@ const HANDLE_W: f32 = 18.0;
 const HANDLE_H: f32 = 28.0;
 const ON_GAP: f32 = 10.0;
 const CHECK: f32 = 15.0;
-/// After a name, before its chip or its author.
+/// The gap after a name, before its chip or its author.
 const CHIP_GAP: f32 = 8.0;
-/// The remove and log buttons at a row's right end.
+/// The size of the remove and log buttons at a row's right end.
 const ACTION: [f32; 2] = [40.0, 32.0];
 const ACTION_GAP: f32 = 8.0;
 
@@ -122,8 +122,8 @@ fn draw_row(row: &mut Row, m: &ModRow, k: f32, pal: &Palette) -> Option<ModsActi
     asked.or(toggled)
 }
 
-/// The mod's checkbox; for a mod the slot's firmware cannot run, a warning
-/// instead. The mod keeps its on/off setting either way.
+/// Draws the mod's checkbox, or a warning when the slot's firmware cannot run
+/// the mod. The mod keeps its on/off setting either way.
 fn row_switch(ui: &egui::Ui, check: Rect, m: &ModRow, pal: &Palette, k: f32) -> Option<ModsAction> {
     let p = ui.painter();
     if let RowStatus::Incompatible(_) = m.status {
@@ -144,8 +144,8 @@ fn row_switch(ui: &egui::Ui, check: Rect, m: &ModRow, pal: &Palette, k: f32) -> 
     resp.clicked().then(|| ModsAction::Toggle(m.name.clone()))
 }
 
-/// Remove (or eject, for a folder used in place) and Log, at the row's right
-/// end.
+/// Draws the Remove button (Eject for a folder used in place) and the Log
+/// button at the row's right end.
 fn row_buttons(ui: &egui::Ui, cell: Rect, m: &ModRow, pal: &Palette, k: f32) -> Option<ModsAction> {
     let mut action = None;
     let size = Vec2::new(ACTION[0] * k, ACTION[1] * k);
@@ -174,8 +174,8 @@ fn row_buttons(ui: &egui::Ui, cell: Rect, m: &ModRow, pal: &Palette, k: f32) -> 
     action
 }
 
-/// The MOD cell: the name, its DEV chip and its author on the first line,
-/// where it comes from on the second. The name gets at least half of the
+/// Draws the MOD cell: the name, its DEV chip and its author on the first
+/// line, and its source on the second. The name gets at least half of the
 /// width left after the DEV chip; the author gets the rest.
 fn row_name(row: &Row, m: &ModRow, pal: &Palette, k: f32) {
     let name = row.cells[MOD];
@@ -230,8 +230,8 @@ fn row_name(row: &Row, m: &ModRow, pal: &Palette, k: f32) {
     );
 }
 
-/// The STATUS cell: the status word, and the detail under it. Hovering shows
-/// the full reason when the row shows only part of it.
+/// Draws the STATUS cell: the status word, and the detail under it.
+/// Hovering shows the full reason when the row shows only part of it.
 fn row_status(row: &Row, m: &ModRow, pal: &Palette, k: f32) {
     let status = row.cells[STATUS];
     let ui: &egui::Ui = row.ui;
@@ -259,8 +259,9 @@ fn row_status(row: &Row, m: &ModRow, pal: &Palette, k: f32) {
     }
 }
 
-/// The second line under a mod's name, fitted to `max`: its source, shortened
-/// from the front, then its version, shortened when longer than half the line.
+/// Returns the second line under a mod's name, fitted to `max`: its source,
+/// shortened from the front, then its version, shortened when longer than
+/// half the line.
 pub(super) fn source_line(p: &egui::Painter, row: &ModRow, font: &FontId, max: f32) -> String {
     let Some(v) = &row.version else {
         return elide_start(p, &row.source, font, max);

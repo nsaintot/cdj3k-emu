@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# bundle-dylibs.sh - self-contain a macOS .app's non-system dylib dependencies.
+# bundle-dylibs.sh - copy a macOS .app's non-system dylib dependencies into the
+# bundle.
 #
 # Usage:
 #     bundle-dylibs.sh <macos_dir> <root> [<root> ...]
@@ -11,16 +12,17 @@
 #               libcdj3k-emu-qemu.dylib).
 #
 # For each root it walks the transitive `otool -L` dependency graph, copies every
-# NON-system dylib (anything not under /usr/lib or /System - i.e. Homebrew
-# /opt/homebrew, /usr/local, etc.) flat into <macos_dir>, and rewrites every load
+# non-system dylib (anything outside /usr/lib and /System, such as the ones in
+# /opt/homebrew or /usr/local) flat into <macos_dir>, and rewrites every load
 # command (and each copied dylib's own id) to @loader_path/<basename> so the app
-# runs on a machine without Homebrew. Each Mach-O it edits is ad-hoc re-signed,
-# since editing load commands invalidates any existing signature; bundle.sh's
-# codesign pass re-seals everything with the final identity afterward.
+# runs on a machine without Homebrew. Editing load commands invalidates a
+# signature, so each edited Mach-O is re-signed ad hoc; packaging/macos/build.sh
+# later signs everything with the final identity.
 #
-# System libraries (/usr/lib, /System) are left untouched - they exist on every
-# Mac. Deps already expressed as @loader_path/<name> pointing at a file already in
-# <macos_dir> are treated as bundled and skipped (idempotent on re-runs).
+# System libraries (/usr/lib, /System) are left untouched because every Mac has
+# them. A dependency that is already @loader_path/<name>, with the file in
+# <macos_dir>, counts as bundled and is skipped, so a second run changes
+# nothing.
 #
 # Needs only what ships with the Xcode Command Line Tools: otool,
 # install_name_tool, codesign. Runs on the stock /bin/bash 3.2.
@@ -58,11 +60,11 @@ in_list() {
 # resolve <install_name> <owner> <origin_dir>: print the source file for a
 # dependency, or nothing if it cannot be found.
 #
-# origin_dir is the directory the owner was *copied from* (its own dir for
-# roots). @loader_path / @rpath siblings are resolved there - Homebrew dylibs
-# routinely name a sibling @rpath/libfoo without carrying an rpath of their own
-# (they rely on the loading executable's rpath), and the sibling lives next to
-# the original, not next to the copy.
+# origin_dir is the directory the owner was copied from (its own directory for
+# roots). @loader_path and @rpath siblings are resolved there: Homebrew dylibs
+# often name a sibling @rpath/libfoo without an rpath of their own (they rely on
+# the loading executable's rpath), and the sibling lives next to the original
+# file, not next to the copy.
 resolve() {
     local dep="$1" owner="$2" origin="$3" tail rp cand
     case "$dep" in
@@ -77,7 +79,8 @@ resolve() {
                 cand="$rp/$tail"
                 if [[ -e "$cand" ]]; then echo "$cand"; return 0; fi
             done < <(otool_rpaths "$owner")
-            # Fallback: the sibling next to the original (most Homebrew @rpath deps).
+            # Fall back to the sibling next to the original, which covers most
+            # Homebrew @rpath dependencies.
             cand="$origin/$tail"
             [[ -e "$cand" ]] && echo "$cand"
             ;;
@@ -88,15 +91,16 @@ resolve() {
 roots=()
 for r in "$@"; do
     if [[ ! -e "$MACOS_DIR/$r" ]]; then
-        echo "bundle-dylibs: root not found: $MACOS_DIR/$r" >&2
+        echo "bundle-dylibs: the root $MACOS_DIR/$r was not found." >&2
         exit 1
     fi
     roots+=("$MACOS_DIR/$r")
 done
 
-# Work list of "file<TAB>origin_dir" entries, consumed by index so entries can be
-# appended while iterating.  processed/bundled are plain lists (bash 3.2 has no
-# associative arrays); rewrites is a "file<TAB>old<TAB>new" line file.
+# The work list holds "file<TAB>origin_dir" entries and is read by index, so
+# entries can be appended while iterating. processed and bundled are plain lists
+# because bash 3.2 has no associative arrays; REWRITES is a file of
+# "file<TAB>old<TAB>new" lines.
 queue=()
 for r in "${roots[@]}"; do queue+=("$r	$(dirname "$r")"); done
 processed=()
@@ -119,7 +123,8 @@ while [[ $i -lt ${#queue[@]} ]]; do
         [[ -n "$own_id" && "$dep" == "$own_id" ]] && continue   # the dylib's own id
         base="$(basename "$dep")"
         new_name="@loader_path/$base"
-        # Already-bundled style: @loader_path/<name> with the file present.
+        # The dependency is already bundled: it is @loader_path/<name> and the
+        # file is present.
         if [[ "$dep" == "$new_name" && -e "$MACOS_DIR/$base" ]]; then
             in_list "$base" "${bundled[@]+"${bundled[@]}"}" || bundled+=("$base")
             queue+=("$MACOS_DIR/$base	$MACOS_DIR")
@@ -127,7 +132,7 @@ while [[ $i -lt ${#queue[@]} ]]; do
         fi
         src="$(resolve "$dep" "$f" "$origin")"
         if [[ -z "$src" || ! -e "$src" ]]; then
-            echo "  WARN: cannot resolve $dep (from $(basename "$f")) - skipping" >&2
+            echo "  WARN: cannot resolve $dep (from $(basename "$f")); skipping it." >&2
             continue
         fi
         real_src="$(cd "$(dirname "$src")" && pwd -P)/$(basename "$src")"
@@ -145,7 +150,7 @@ while [[ $i -lt ${#queue[@]} ]]; do
     done < <(otool_deps "$f")
 done
 
-# Apply install_name_tool edits + ad-hoc re-sign every Mach-O we touched.
+# Apply the install_name_tool edits and re-sign every processed Mach-O ad hoc.
 for f in "${processed[@]}"; do
     args=()
     base="$(basename "$f")"

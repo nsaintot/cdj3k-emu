@@ -1,10 +1,9 @@
 //! Native menu bar, via `muda`.
 //!
 //! `muda` is retained: items are built once and mutated afterwards. The
-//! service is declarative and hands over a whole model each frame, so this is
-//! where the two meet — the previous model is kept and compared, rows that
-//! only changed text or state are written in place, and a menu is rebuilt
-//! only when its shape actually changed.
+//! service hands over a whole model each frame, so this provider keeps the
+//! previous model and compares the two. Rows whose text or state changed are
+//! updated in place, and a menu is rebuilt only when its shape changed.
 
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
@@ -28,8 +27,8 @@ fn readout_text(title: &str, value: &str, detail: &Option<String>) -> String {
     }
 }
 
-/// The action's shortcut, as muda spells it. `CmdOrCtrl` is muda's name for
-/// the primary modifier.
+/// The action's shortcut, as muda spells it. The primary modifier maps to
+/// `Modifiers::META`, which is Command on macOS.
 fn accelerator_for(id: &MenuId) -> Option<Accelerator> {
     let accel = id.accelerator()?;
     let mut mods = Modifiers::empty();
@@ -42,8 +41,7 @@ fn accelerator_for(id: &MenuId) -> Option<Accelerator> {
     Some(Accelerator::new(Some(mods), code_for(accel.key)?))
 }
 
-/// Only the keys the menu actually uses; an unknown one yields no shortcut
-/// rather than a wrong one.
+/// Map the keys the menu uses; any other key gets no shortcut.
 fn code_for(key: &str) -> Option<Code> {
     Some(match key {
         "R" => Code::KeyR,
@@ -54,12 +52,13 @@ fn code_for(key: &str) -> Option<Code> {
     })
 }
 
-/// Handles for the rows we mutate. Kinds without mutable state hold nothing.
+/// Handles for the rows that change after they are built. Rows without
+/// mutable state hold nothing.
 enum Native {
     Item(MenuItem),
     Check(CheckMenuItem),
-    /// A disabled row whose text changes — section headers and the latency
-    /// readout are both this.
+    /// A disabled row whose text changes, such as a section header or the
+    /// latency readout.
     Label(MenuItem),
     Inert,
     Submenu {
@@ -204,8 +203,8 @@ fn build(node: &MenuNode) -> Native {
         MenuNode::Label(text) | MenuNode::Section(text) => {
             Native::Label(MenuItem::new(text, false, None))
         }
-        // A native menu has no place for a multi-line figure, so it reads as
-        // the one disabled line it would have been anyway.
+        // A native menu cannot show a multi-line figure, so the readout becomes
+        // one disabled line.
         MenuNode::Readout {
             title,
             value,
@@ -268,7 +267,7 @@ impl Container for Submenu {
     }
 }
 
-/// Add the widget one row shows as; separators and Quit are muda's own.
+/// Add the native widget for one row; muda supplies separators and Quit.
 fn add_row(parent: &impl Container, node: &MenuNode, native: &Native) {
     match (node, native) {
         (MenuNode::Separator, _) => parent.add(&PredefinedMenuItem::separator()),
@@ -284,9 +283,9 @@ fn add_row(parent: &impl Container, node: &MenuNode, native: &Native) {
 
 /// Update one list of siblings in place, or rebuild it into `parent`.
 ///
-/// `parent` is `None` at the root, which never changes shape — the model
-/// always yields the same six submenus — so the rebuild arm cannot be reached
-/// there and a shape change is simply not applied.
+/// `parent` is `None` at the root. The root never changes shape, because the
+/// model always yields the same six submenus, so a shape change there is not
+/// applied.
 fn reconcile_level(
     natives: &mut Vec<Native>,
     old: &[MenuNode],
@@ -438,13 +437,13 @@ mod tests {
     #[test]
     fn a_notice_paragraph_wraps_at_spaces() {
         let lines = wrap(
-            "Host is x86_64, target is arm64 and virtualizes only same-arch guests.",
+            "This host is x86_64 and the guest is arm64, so every instruction is translated.",
             24,
         );
         assert!(lines.iter().all(|l| l.chars().count() <= 24), "{lines:?}");
         assert_eq!(
             lines.join(" "),
-            "Host is x86_64, target is arm64 and virtualizes only same-arch guests."
+            "This host is x86_64 and the guest is arm64, so every instruction is translated."
         );
     }
 

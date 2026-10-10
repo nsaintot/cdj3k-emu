@@ -14,7 +14,7 @@ set -euo pipefail
 ARCH="${1:?Usage: $0 <x86_64|aarch64>}"
 case "$ARCH" in
     x86_64|aarch64) ;;
-    *) echo "ERROR: unsupported arch: $ARCH" >&2; exit 1 ;;
+    *) echo "ERROR: $ARCH is not a supported architecture." >&2; exit 1 ;;
 esac
 
 TRIPLE="${ARCH}-w64-mingw32"
@@ -33,7 +33,7 @@ export AR="llvm-ar"
 export RANLIB="llvm-ranlib"
 export STRIP="llvm-strip"
 
-fetch() { # <url> <sha256> -> prints the extracted directory
+fetch() { # <url> <sha256>: download, verify and extract; print the extracted directory
     local url="$1" sum="$2" file
     file="$(basename "$url")"
     # A tag archive downloads as a bare <tag>.tar.gz.
@@ -111,7 +111,7 @@ d="$(fetch https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.44/p
     d34f02e113cf7193a1ebf2770d3ac527088d485d4e047ed10e5d217c6ef5de96)"
 autotools "$d"
 
-# proxy-libintl: glib's libintl on Windows, without gettext
+# proxy-libintl provides libintl for glib on Windows without gettext.
 d="$(fetch https://github.com/frida/proxy-libintl/archive/refs/tags/0.4.tar.gz \
     13ef3eea0a3bc0df55293be368dfbcff5a8dd5f4759280f28e030d1494a5dffb)"
 mesontool "$d"
@@ -133,4 +133,4 @@ d="$(fetch https://gitlab.freedesktop.org/slirp/libslirp/-/archive/v4.8.0/libsli
 mesontool "$d"
 
 rm -rf "$WORK"
-echo "deps for ${ARCH} installed in ${PREFIX}"
+echo "Installed the dependencies for ${ARCH} in ${PREFIX}."

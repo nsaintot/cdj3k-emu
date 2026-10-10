@@ -1,10 +1,10 @@
 //! CDJ-3000.
 //!
-//! The shared frame coordinates are this player's: its MISO encoder writes
-//! [`fields`] where they say, and its lamps are the `LED_*` bits below and the
-//! RGB bases of [`MOSI`]. The CDJ-3000X's encoder writes the same fields again,
-//! 4 bytes further on, through [`write_fields`]; its lamps are a [`MosiMap`]
-//! of the same shape, read by the one codec here.
+//! The shared frame coordinates are the CDJ-3000's. Its MISO encoder writes
+//! each field at the offset given in [`fields`], and its lamps are the `LED_*`
+//! bits below and the RGB bases in [`MOSI`]. The CDJ-3000X's encoder writes the
+//! same fields 4 bytes later through [`write_fields`]; its lamps are a
+//! [`MosiMap`] of the same shape, decoded by the codec in this file.
 
 use crate::button::{Btn, POWER_ON};
 use crate::frame::{FrameBit, JogBrightness, MosiMap, RgbLamps, StepLedMask};
@@ -22,26 +22,24 @@ pub const IDLE: [u8; 62] = {
     f[2] = 0x01;
     f[3] = 0x04;
     f[4] = 0x03;
-    // b12: device state (0x80=power_on | 0x01=sdcard_closed)
+    // b12: device state; 0x80 is power on and 0x01 is SD card cover closed.
     f[12] = 0x81;
-    // b14-b15: rotary encoder at rest - see ROTARY_IDLE
+    // b14-b15: rotary encoder at rest (see ROTARY_IDLE)
     f[fields::ROTARY] = ROTARY_IDLE.to_le_bytes()[0];
     f[fields::ROTARY + 1] = ROTARY_IDLE.to_le_bytes()[1];
-    // b16-b19: LCD touch (0x0000 = no touch, LE)
-    // all zero - already set by default
+    // b16-b19: LCD touch, LE; 0x0000 means no touch.
     // b20-b21: unknown
     f[21] = 0x7f;
-    // b22-b23: tempo slider idle (0x0000 BE = 0%)
-    // all zero - already set by default
-    // b24: vinyl speed rotary idle
-    // zero - already set by default
+    // b22-b23: tempo slider idle, 0x0000 BE (0%)
+    // b24: vinyl speed rotary idle, 0x00
     // b26-b27: jog position idle (0xffff LE)
     f[fields::JOG] = 0xff;
     f[fields::JOG + 1] = 0xff;
-    // b28-b29: jog velocity (16-bit LE, INVERSE: 0xffff=stopped, 0x0000=max speed)
+    // b28-b29: jog velocity, 16-bit LE and inverted: 0xffff is stopped and
+    // 0x0000 is maximum speed.
     f[fields::JOG + 2] = 0xff;
     f[fields::JOG + 3] = 0xff;
-    // b30: jog touch state (0x00=none, 0x03=press, 0x04=baseline/idle, 0x0c=turning)
+    // b30: jog touch state (0x00 none, 0x03 press, 0x04 idle, 0x0c turning)
     f[fields::JOG + 4] = 0x04;
     // b32-b43: capacitive sensor
     f[32] = 0x51;
@@ -63,15 +61,17 @@ pub const IDLE: [u8; 62] = {
 /// `0x7F50`, short of `0xFFFF / 2`.
 pub const TEMPO_CENTER: u16 = 0x7F50;
 
-/// Fader travel `0.0..=1.0` as the slider's raw value: piecewise, so the ends
-/// reach `0x0000` and `0xFFFF` and the middle lands on [`TEMPO_CENTER`].
+/// Converts fader travel `0.0..=1.0` to the slider's raw value. The mapping is
+/// piecewise, so the ends reach `0x0000` and `0xFFFF` and the middle lands on
+/// [`TEMPO_CENTER`].
 pub fn tempo_raw(travel: f32) -> u16 {
     const SPAN: f32 = 0xFFFF as f32;
     let mid_bias = TEMPO_CENTER as f32 - SPAN * 0.5;
     (travel * SPAN + mid_bias * (1.0 - 2.0 * (travel - 0.5).abs())).round() as u16
 }
 
-/// The CDJ-3000's analog fields for `state`, written `shift` bytes into `f`.
+/// Writes the CDJ-3000's analog fields for `state` into `f`, offset by `shift`
+/// bytes.
 pub(crate) fn write_fields(f: &mut [u8; MISO_SIZE], state: &PanelState, shift: usize) {
     f[fields::DIRECTION + shift] = state.direction.as_byte();
     let jog = fields::JOG + shift;
@@ -87,8 +87,9 @@ pub(crate) fn write_fields(f: &mut [u8; MISO_SIZE], state: &PanelState, shift: u
     }
 }
 
-/// The CDJ-3000's MISO encoder: [`IDLE`], the pressed bits, [`write_fields`],
-/// the cleared bits, power at [`POWER_ON`], the CRC little-endian at 62.
+/// The CDJ-3000's MISO encoder. It starts from [`IDLE`], sets the pressed bits,
+/// writes the fields with [`write_fields`], clears the released bits, clears
+/// [`POWER_ON`] when the power is off and writes the CRC little-endian at byte 62.
 #[derive(Debug)]
 pub struct Miso;
 
@@ -115,16 +116,17 @@ impl MisoCodec for Miso {
 }
 
 /// The CDJ-3000's lamp bits, in the bitfield every player of the family
-/// shifts by its [`MosiMap::bit_shift`]. Single-bit: `(byte_offset, bitmask)`.
+/// shifts by its [`MosiMap::bit_shift`]. Each one is `(byte_offset, bitmask)`.
 pub(crate) type LedBit = FrameBit;
 
-// Byte 2: sync / master LEDs
+// Byte 2: sync and master LEDs
 pub(crate) const LED_KEY_SYNC: LedBit = (2, 0x03);
 pub(crate) const LED_BEAT_SYNC: LedBit = (2, 0x08);
 pub(crate) const LED_MASTER: LedBit = (2, 0x20);
 
-// Byte 3: mode LEDs + jog illumination
-// SLIP and JILMR share bits (0x03); QUANTIZE and JILMW share bits (0x0c).
+// Byte 3: mode LEDs and jog illumination
+// SLIP and QUANTIZE share the byte with the red (JILMR) and white (JILMW) jog
+// illumination fields.
 pub(crate) const LED_SLIP: StepLedMask = StepLedMask::new(3, 0x10, 0x30);
 pub(crate) const LED_QUANTIZE: StepLedMask = StepLedMask::new(3, 0x40, 0xc0);
 pub(crate) const LED_JOG_WHITE: LedBit = (3, 0x0c); // JILMW
@@ -136,11 +138,12 @@ pub(crate) const LED_BROWSE: StepLedMask = StepLedMask::new(4, 0x04, 0x0c);
 pub(crate) const LED_TAG_LIST: StepLedMask = StepLedMask::new(4, 0x10, 0x30);
 pub(crate) const LED_PLAYLIST: StepLedMask = StepLedMask::new(4, 0x40, 0xc0);
 
-// Byte 5: navigation LEDs (continued; base value 0xc0 always set - IC6003 dim)
+// Byte 5: more navigation LEDs. The base value 0xc0, the IC6003 dimming, is
+// always set.
 pub(crate) const LED_SEARCH: StepLedMask = StepLedMask::new(5, 0x01, 0x03);
 pub(crate) const LED_MENU: StepLedMask = StepLedMask::new(5, 0x04, 0x0c);
 
-// Byte 7: transport + loop LEDs
+// Byte 7: transport and loop LEDs
 pub(crate) const LED_PLAY: LedBit = (7, 0x01);
 pub(crate) const LED_CUE: LedBit = (7, 0x02);
 pub(crate) const LED_LOOP_IN: LedBit = (7, 0x08);
@@ -149,7 +152,7 @@ pub(crate) const LED_RELOOP: LedBit = (7, 0x20);
 pub(crate) const LED_BEAT_JUMP_4: LedBit = (7, 0x40);
 pub(crate) const LED_BEAT_JUMP_8: LedBit = (7, 0x80);
 
-// Byte 8: beat-jump direction / tempo / jog mode LEDs
+// Byte 8: beat jump direction, tempo and jog mode LEDs
 pub(crate) const LED_BEAT_JUMP_NEXT: LedBit = (8, 0x01);
 pub(crate) const LED_BEAT_JUMP_PREV: LedBit = (8, 0x02);
 pub(crate) const LED_TEMPO_RESET: LedBit = (8, 0x08);
@@ -157,7 +160,7 @@ pub(crate) const LED_MASTER_TEMPO: LedBit = (8, 0x10);
 pub(crate) const LED_JOG_MODE_CDJ: LedBit = (8, 0x40);
 pub(crate) const LED_JOG_MODE_VINYL: LedBit = (8, 0x80);
 
-// Byte 9: encoder / search / rev LEDs
+// Byte 9: encoder, search and REV LEDs
 pub(crate) const LED_ENCODER: LedBit = (9, 0x01);
 pub(crate) const LED_TRACK_SEARCH: LedBit = (9, 0x04);
 pub(crate) const LED_REV: LedBit = (9, 0x10);
@@ -195,7 +198,7 @@ enum Wire {
     Step(StepLedMask),
     /// The ring's level, as [`MosiMap::jog`] encodes it.
     JogRing,
-    /// A colour at the base the map gives, else the bit.
+    /// A colour at the base the map gives, or the bit when the map gives none.
     RgbOrBit(fn(&RgbLamps) -> Option<usize>, LedBit),
     /// HOT CUE pad, A = 0.
     Pad(usize),
@@ -308,8 +311,8 @@ pub const SPEC: ModelSpec = ModelSpec {
     firmware_file_names: &["CDJ3K"],
     miso: &Miso,
     mosi: &MOSI,
-    // One LED part throughout. Its white `44 78 7f` cuts back the red die,
-    // the strongest.
+    // The player uses one LED part throughout. Its white point `44 78 7f`
+    // reduces the red die, which is the strongest.
     leds: LedProfiles::uniform(LedProfile {
         dies: AZURE_BLUE_DIES,
         gamma: 1.0,

@@ -1,8 +1,9 @@
 //! The host's audio outputs, for the per-instance "Audio Output" picker.
 //!
-//! The guest is pinned to one device with `-audiodev`, and how a device is
-//! addressed differs per backend — so [`AudioOutDevice::uid`] is whatever the
-//! host's own backend takes, and the two sources do not name devices alike.
+//! The guest is pinned to one device with `-audiodev`. Each backend addresses
+//! devices differently, so [`AudioOutDevice::uid`] holds the identifier that
+//! the host's own backend takes, and uids from different backends are not
+//! comparable.
 
 /// `pw-dump` parsing, compiled everywhere so it is tested everywhere.
 pub mod pipewire;
@@ -27,16 +28,16 @@ pub use imp::enumerate_output_devices;
 pub struct AudioOutDevice {
     /// What this host's audio backend addresses the device by: a CoreAudio
     /// UID (`"AppleHDAEngineOutput:1B,0,1,1:0"`), a PipeWire node name, or a
-    /// WASAPI endpoint id.
-    /// Persisted in `InstanceSettings`, so it has to survive a reboot and a
-    /// replug.
+    /// WASAPI endpoint id. It is persisted in `InstanceSettings`, so it has to
+    /// survive a reboot and a replug.
     pub uid: String,
-    /// Human label, as the desktop's own sound control shows it. Never
-    /// persisted — the uid is the identifier.
+    /// The label that the desktop's sound settings show. It is never
+    /// persisted; the uid is the identifier.
     pub name: String,
     pub is_default: bool,
-    /// Current rate in Hz, or 0 when the source does not report one. The guest
-    /// plays 96 kHz S32 and both backends resample, so a sink running at
-    /// anything else is audible and otherwise invisible.
+    /// The current rate in Hz, or 0 when the backend does not report one. The
+    /// guest plays 96 kHz S32 and the host backend resamples, so a sink at
+    /// another rate is audible, and this field is the only place the mismatch
+    /// shows.
     pub sample_rate_hz: u32,
 }

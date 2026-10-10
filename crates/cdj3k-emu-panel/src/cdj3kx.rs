@@ -1,11 +1,11 @@
 //! CDJ-3000X.
 //!
-//! Its MISO frame is the CDJ-3000's 4 bytes further on, behind a u16 format
-//! version and 2 pad bytes; its MOSI bitfield is 6 bytes further on. The RGB
-//! lamps below are read off the deck, not derived: the hot cue pads and the
-//! media slots land 12 bytes on, but PLAY and CUE - single bits on the
-//! CDJ-3000 - become lamps of their own at 18 and 21, and the selector ring
-//! lights at 54 where the CDJ-3000 has ON AIR.
+//! Its MISO frame is the CDJ-3000's frame moved 4 bytes later, after a u16
+//! format version and 2 pad bytes; its MOSI bitfield is moved 6 bytes later.
+//! The hot cue pads and the media slots sit 12 bytes later than on the
+//! CDJ-3000. PLAY and CUE, which are single bits on the CDJ-3000, are RGB
+//! lamps at 18 and 21, and the selector ring lights at 54, where the CDJ-3000
+//! has ON AIR.
 
 use crate::button::{Btn, POWER_ON};
 use crate::cdj3k;
@@ -20,7 +20,7 @@ pub const MISO_SHIFT: usize = 4;
 /// Offset of the CDJ-3000's MOSI bitfield inside this one.
 pub const BIT_SHIFT: usize = 6;
 
-/// Idle frame payload: format version 1 at bytes 0-1, pad 2-3, then the
+/// The idle frame payload: format version 1 at bytes 0-1, padding at 2-3, then the
 /// CDJ-3000's [`cdj3k::IDLE`](crate::cdj3k::IDLE) shifted by [`MISO_SHIFT`]
 /// (`01 04` at 6-7, direction 8, buttons 9-16, rotary 18-19, touch 20-23,
 /// tempo 26-27, vinyl 28, jog 30-34, cap sensor 36-47).
@@ -28,7 +28,7 @@ pub const BIT_SHIFT: usize = 6;
 /// Byte 16 keeps only the power-on bit: the CDJ-3000's SD-cover bit is
 /// [`Btn::Usb2Stop`] here. Byte 12 bit 7, which no button of this player uses,
 /// stays set for the guest forwarder's power-off check, which reads the
-/// CDJ-3000 offset - see [`Miso`].
+/// CDJ-3000 offset (see [`Miso`]).
 pub const IDLE: [u8; 62] = {
     let mut f = [0u8; 62];
     f[0] = 0x01;
@@ -42,10 +42,10 @@ pub const IDLE: [u8; 62] = {
     f
 };
 
-/// The CDJ-3000X's MISO encoder: the CDJ-3000's fields and buttons
-/// [`MISO_SHIFT`] bytes on, behind [`IDLE`]'s version word, the CRC
-/// little-endian at 62. Power drops at both the shifted POWER ON bit and the
-/// CDJ-3000's, which the guest forwarder reads on every RK3399 deck.
+/// The CDJ-3000X's MISO encoder. It writes the CDJ-3000's fields and buttons
+/// [`MISO_SHIFT`] bytes later, after [`IDLE`]'s version word, and the CRC
+/// little-endian at byte 62. Power off clears both the shifted POWER ON bit and
+/// the CDJ-3000's, which the guest forwarder reads on every RK3399 deck.
 #[derive(Debug)]
 pub struct Miso;
 
@@ -86,8 +86,8 @@ pub const MOSI: MosiMap = MosiMap {
         on_air: None,
         play: Some(18),
         cue: Some(21),
-        // Read off the wire as `48:0a 08 07 | 51:0a 08 07 | 54:4a 57 39`
-        // with both slots idle - one 3-byte grid with the media slots.
+        // The ring is on the same 3-byte grid as the media slots: with both
+        // slots idle, the frame holds `48:0a 08 07 | 51:0a 08 07 | 54:4a 57 39`.
         rotary: Some(54),
         hot_cue: [24, 27, 30, 33, 36, 39, 42, 45],
     },
@@ -100,19 +100,18 @@ pub const SPEC: ModelSpec = ModelSpec {
     title: "CDJ-3000X",
     slug: "cdj3kx",
     aliases: &["3000x", "3kx"],
-    // An 800x1280 portrait panel that apl_start.sh rotates with xrandr on the
-    // real unit; the emulator scans it out landscape directly.
+    // An 800x1280 portrait panel that the deck's apl_start.sh rotates with
+    // xrandr; the emulator scans it out in landscape.
     main_lcd: (1280, 800),
     touch: TouchSpace::ScreenPixels,
-    // Read from a real unit.
     model_env: "CDJ3000X",
     emmc_index: 1,
     system_rev_env: Some("rev_system"),
     firmware_file_names: &["CDJ3000X"],
     miso: &Miso,
     mosi: &MOSI,
-    // Gamma and white per part, fitted to the colour settings against the
-    // hues the CDJ-3000X's screen shows.
+    // Each LED part has its own gamma and white point, fitted so that each
+    // colour setting matches the hue the CDJ-3000X's screen shows.
     leds: LedProfiles {
         pad: CDJ3000X_SLOT,
         slot: CDJ3000X_SLOT,
@@ -134,7 +133,8 @@ pub const SPEC: ModelSpec = ModelSpec {
     jog_brake: JogBrake::Adjustable,
 };
 
-/// The media slots' LEDs, also used for the pads and CUE rim (unmeasured).
+/// The media slots' LEDs. The pads and the CUE rim use the same profile,
+/// which is not measured for them.
 const CDJ3000X_SLOT: LedProfile = LedProfile {
     dies: PRIMARY_DIES,
     gamma: 0.805,

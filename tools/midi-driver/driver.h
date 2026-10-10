@@ -29,10 +29,11 @@
 /* Link to the emulator: a raw MIDI byte stream over a unix socket.  Each
  * emulator instance binds its own at instance-<id>/midi-driver.sock and we
  * dial every one we find, because MIDIServer outlives any emulator run and
- * several instances can be up at once.  One connection = one slot = one
- * MIDIDevice; the connection's lifetime is the device's. */
+ * several instances can be up at once.  Each connection is one slot and one
+ * MIDIDevice, and the device lives as long as the connection. */
 #define MAX_SLOTS 8
-/* Rescan cadence, and how long an idle pump sleeps between wakes.  It bounds
+/* SCAN_SECS is the rescan interval and how long an idle pump sleeps between
+ * wakes.  It bounds
  * only how long a newly toggled slot waits to be noticed; MIDI arrives through
  * poll(), which returns the moment a byte lands. */
 #define SCAN_SECS    2
@@ -43,28 +44,32 @@ struct slot {
     uint32_t        gen;      /* bumped on every reuse; encoded in the refCon */
     char            path[128];
     MIDIDeviceRef   dev;
-    MIDIEndpointRef src;      /* guest -> host */
-    /* Identity the emulator sent: the guest gadget's own, plus the instance's
-     * LocationID, the same values its HID sibling carries. */
+    MIDIEndpointRef src;      /* guest to host */
+    /* The identity the emulator sent: the guest gadget's USB identity and the
+     * instance's LocationID, the same values that the matching HID device
+     * carries. */
     uint32_t        location;
     uint32_t        usb_vp;   /* (vid << 16) | pid */
     CFStringRef     name;     /* product, released in destroy_slot */
     CFStringRef     maker;    /* manufacturer, released in destroy_slot */
-    /* Message assembly for guest -> host bytes, which arrive as an unframed
-     * stream: a MIDIPacket must carry whole messages. */
+    /* State for assembling guest-to-host bytes into whole messages.  The bytes
+     * arrive as an unframed stream, and a MIDIPacket must carry whole
+     * messages. */
     Byte            rs;       /* running status, 0 when none */
     Byte            msg[3];   /* message in progress; msg[0] == 0 when none */
     Byte            have;     /* data bytes held in msg[1..] */
     Byte            need;     /* data bytes msg[0] takes */
     Byte            in_sx;    /* inside a SysEx */
 };
-/* refCon layout: generation in the high bits, slot index in the low.  A
+/* The refCon holds the generation in the high bits and the slot index plus
+ * one in the low 8 bits.  A
  * Send() arriving on an endpoint whose slot has since been reused carries the
  * old generation and is dropped. */
 #define REF_MAKE(gen, idx) ((void *)(uintptr_t)(((uint64_t)(gen) << 8) | ((idx) + 1)))
 #define REF_IDX(r)         ((int)((uintptr_t)(r) & 0xff) - 1)
 #define REF_GEN(r)         ((uint32_t)((uintptr_t)(r) >> 8))
-/* Tags our device so we clean up only our own leftovers, not real hardware. */
+/* MARKER tags this driver's devices, so cleanup removes only its own leftovers
+ * and never real hardware. */
 #define MARKER CFSTR("cdj3kEmuVirtual")
 
 /* Identity the emulator sends on connect; the raw MIDI stream follows it. */
@@ -81,9 +86,10 @@ struct pc_link_identity {
     char     manufacturer[32];
 };
 
-/* plugin.c.  MIDIServer gives the plugin no console; these land in Console
- * and `log stream --predicate 'subsystem == "com.cdj3k.emu"'`.  Lifecycle
- * transitions log at default level, failures at error; nothing per-packet. */
+/* Defined in plugin.c.  MIDIServer gives the plugin no console, so log messages
+ * go to Console and to `log stream --predicate 'subsystem == "com.cdj3k.emu"'`.
+ * Lifecycle transitions log at the default level and failures at the error
+ * level; nothing is logged per packet. */
 #include <os/log.h>
 extern os_log_t g_log;
 
@@ -100,9 +106,11 @@ void remove_stale_devices(void);
 int  create_slot_device(struct slot *sl, int index);
 MIDIDeviceRef slot_detach(struct slot *sl);
 void slot_retire(MIDIDeviceRef dev, uint32_t location);
-/* Bytes read per pump wake.  Bounds the packet list slot_parse fills. */
+/* The number of bytes read per pump wake.  It bounds the packet list that
+ * slot_parse fills. */
 #define READ_CHUNK 256
-/* Fits the worst case: one packet per input byte, each up to 3 data bytes. */
+/* This fits the worst case: one packet per input byte, each with up to 3 data
+ * bytes. */
 #define PARSE_LIST_BYTES 4096
 int  slot_parse(struct slot *sl, const unsigned char *buf, int n,
                 MIDIPacketList *pl, size_t cap);

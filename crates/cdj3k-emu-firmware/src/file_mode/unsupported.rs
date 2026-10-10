@@ -1,12 +1,12 @@
 use std::io;
 use std::path::Path;
 
-/// No mode bits to read: everything is readable and executable.
+/// The host has no mode bits, so every file reports 0o755.
 pub fn permissions(_meta: &std::fs::Metadata) -> u32 {
     0o755
 }
 
-/// No mode bits to set.
+/// The host has no mode bits, so this does nothing.
 pub fn set_executable(_path: &Path) -> io::Result<()> {
     Ok(())
 }

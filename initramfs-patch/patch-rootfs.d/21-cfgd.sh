@@ -1,27 +1,24 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Patch 21: cdj3k-cfgd - guest-side config daemon.
+# Patch 21: cdj3k-cfgd, the guest config daemon.
 #
-# Single bidirectional virtio-serial channel `cdj3k.cfg` (replaces the old
-# cdj3k.usbcmd + cdj3k.usbstate pair). cdj3k-cfgd:
+# cdj3k-cfgd uses one bidirectional virtio-serial channel, `cdj3k.cfg`. It:
 #
-#   - dispatches `usb attach`/`usb detach` from the host (replaces the old
-#     cdj3k-usbcmd-listener.sh)
-#   - exposes whitelisted /sys/module/virtio_snd/parameters via `set`/`get`
-#   - pushes audio_latency_ms (CSV: guest,host,total) to the host every 3s
+#   - runs `usb attach` and `usb detach` from the host
+#   - exposes the allowed /sys/module/virtio_snd/parameters through `set`
+#     and `get`
+#   - pushes audio_latency_ms (CSV: guest,host,total) to the host every 3 s
 #   - reports this boot's mods to the host (patch 30)
 #
-# The USB attach/detach hook scripts (patches 19, 20) write `usb_state 0|1`
-# lines directly to /dev/virtio-ports/cdj3k.cfg - Linux guarantees atomic
-# writes ≤ PIPE_BUF on virtio-serial, so concurrent writes from cfgd and
-# the scripts cannot interleave.
+# The USB attach and detach scripts (patches 19 and 20) signal cfgd with
+# SIGUSR2 and SIGUSR1, and cfgd sends the matching `usb_state 1` or
+# `usb_state 0` line.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 : "${PATCH_ASSETS_DIR:?PATCH_ASSETS_DIR must be set by dispatcher}"
 
-# cfgd_aarch64 lives in PATCH_ASSETS_DIR when called from the .app bundle
-# (packaging/macos/stage.sh copies it from guest/out/), or in guest/out/ when called
-# directly from build-initramfs.sh.
+# cfgd_aarch64 is in PATCH_ASSETS_DIR in an app bundle (packaging/macos/stage.sh
+# copies it from guest/out/), or in guest/out/ when build.sh runs the patches.
 if [[ -f "$PATCH_ASSETS_DIR/cfgd_aarch64" ]]; then
     CFGD_BIN="$PATCH_ASSETS_DIR/cfgd_aarch64"
 elif [[ -f "$PATCH_ASSETS_DIR/../guest/out/cfgd_aarch64" ]]; then
@@ -40,7 +37,7 @@ mkdir -p "$WANTS_DIR"
 
 cat > "$SERVICE_DIR/cdj3k-cfgd.service" << 'SVCEOF'
 [Unit]
-Description=CDJ-3000 cfg daemon (cdj3k.cfg virtio-serial bridge)
+Description=cdj3k config daemon (cdj3k.cfg virtio-serial bridge)
 After=insmod-virtio-snd.service
 StartLimitIntervalSec=0
 

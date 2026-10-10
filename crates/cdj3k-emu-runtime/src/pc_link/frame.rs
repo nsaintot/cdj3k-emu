@@ -1,6 +1,6 @@
 //! Wire format for the `cdj3k.usb-link` virtio-serial channel.
 //!
-//! Matches `guest/pc_link_bridge/` (io.c) byte-for-byte:
+//! It matches `guest/pc_link_bridge/` (io.c) byte for byte:
 //!
 //! ```text
 //!   byte 0       : type     (FRAME_HID = 0x01, FRAME_MIDI = 0x02,
@@ -9,12 +9,13 @@
 //!   bytes 3..    : payload
 //! ```
 //!
-//! Both directions share the same encoding; "direction" is implicit in who
-//! wrote the frame.  HELLO (host -> guest, empty) asks for the gadget
-//! identity; IDENTITY (guest -> host) answers it, see [`super::gadget`].
-//! Max payload is 4 KiB on the guest side (HID reports are as long as the
-//! gadget's descriptor says, USB-MIDI packets are 4 B), but the parser
-//! doesn't enforce a cap; caller decides whether to drop oversized frames.
+//! Both directions use the same encoding, and the writer of a frame implies
+//! its direction. HELLO, an empty frame from the host to the guest, asks for
+//! the gadget identity; IDENTITY, from the guest to the host, answers it (see
+//! [`super::gadget`]). The guest sends at most 4 KiB of payload: HID reports
+//! are as long as the gadget's descriptor says, and USB MIDI packets are 4
+//! bytes. The parser enforces no limit; the caller decides whether to drop
+//! oversized frames.
 
 use std::io::{self, Read, Write};
 
@@ -23,8 +24,8 @@ pub const FRAME_MIDI: u8 = 0x02;
 pub const FRAME_HELLO: u8 = 0x03;
 pub const FRAME_IDENTITY: u8 = 0x04;
 
-/// Read one frame.  Returns `Ok(None)` on clean EOF, `Ok(Some((kind, payload)))`
-/// otherwise.  Any other error short-circuits the read loop.
+/// Read one frame. Return `Ok(None)` at a clean EOF, and
+/// `Ok(Some((kind, payload)))` otherwise. Any other error ends the read loop.
 pub fn read_frame<R: Read>(r: &mut R) -> io::Result<Option<(u8, Vec<u8>)>> {
     let mut hdr = [0u8; 3];
     match r.read_exact(&mut hdr) {
@@ -41,7 +42,8 @@ pub fn read_frame<R: Read>(r: &mut R) -> io::Result<Option<(u8, Vec<u8>)>> {
     Ok(Some((kind, payload)))
 }
 
-/// Frame and write a payload.  Returns when all bytes are flushed (or errors).
+/// Write a payload as one frame. Return once all bytes are flushed or an
+/// error occurs.
 pub fn write_frame<W: Write>(w: &mut W, kind: u8, payload: &[u8]) -> io::Result<()> {
     if payload.len() > u16::MAX as usize {
         return Err(io::Error::new(

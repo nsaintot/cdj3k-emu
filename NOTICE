@@ -13,7 +13,7 @@ Unless you explicitly state otherwise, any contribution intentionally
 submitted for inclusion in cdj3k-emu, as defined in the Apache-2.0 license,
 shall be dual-licensed as above without any additional terms or conditions.
 
-The dual-license above covers all original work in this repository EXCEPT
+The dual license above covers all original work in this repository except
 the GPL-2.0 carve-outs and bundled third-party components listed below.
 
 ----------------------------------------------------------------------
@@ -22,7 +22,7 @@ GPL-2.0 carve-outs (original work in this repository)
 
 The following directories contain modifications to, or out-of-tree
 extensions of, GPL-2.0 upstream projects.  They inherit GPL-2.0-or-later
-from their upstreams and are NOT covered by the MIT/Apache-2.0 dual
+from their upstreams and are not covered by the MIT/Apache-2.0 dual
 license above:
 
   * guest/modules/**             - out-of-tree Linux kernel modules
@@ -32,22 +32,23 @@ license above:
   * qemu/shim/cdj3k_emu_shim.c   - statically linked into qemu-system-aarch64
 
 ----------------------------------------------------------------------
-Third-party firmware (NOT redistributed by this project)
+Third-party firmware (not redistributed by this project)
 ----------------------------------------------------------------------
 
 cdj3k-emu emulates Pioneer DJ's CDJ-3000, CDJ-3000X and CDJ-1500X hardware.
 It requires the user to supply their own copy of the player's firmware
 update file (.UPD) on first launch.  The in-app wizard decrypts the update
-locally, extracts the kernel + rootfs onto a per-user qcow2 disk image under
-"~/Library/Application Support/com.cdj3k.emu/", and never transmits it
-elsewhere.
+locally, extracts the kernel and rootfs onto a per-user qcow2 disk image
+under "~/Library/Application Support/com.cdj3k.emu/" on macOS,
+"~/.local/share/com.cdj3k.emu/" on Linux or "%LOCALAPPDATA%\com.cdj3k.emu\"
+on Windows, and never transmits it elsewhere.
 
   * Pioneer DJ, "CDJ", "rekordbox", "Pro DJ Link", and related marks are
     trademarks of their respective owners.  cdj3k-emu is not affiliated
     with, endorsed by, or sponsored by AlphaTheta Corporation or Pioneer DJ.
   * No Pioneer-owned source code, binaries, firmware images, fonts, or
     artwork are present in this repository or in the distributed
-    .app / .dmg bundle.
+    packages.
   * Distributing this project together with a Pioneer firmware image is
     the redistributor's responsibility and is not authorised by this notice.
 

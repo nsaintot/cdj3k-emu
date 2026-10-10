@@ -1,5 +1,5 @@
-//! Cached static jog wheel geometry - outer rings + inner disk + JOG ADJUST
-//! gear/indicator. Consumed by the jog static cache.
+//! The static jog wheel geometry that the jog static cache holds: the outer
+//! rings, the inner disk, and the JOG ADJUST gear and indicator.
 
 use egui::{Align2, Color32, FontFamily, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 
@@ -11,40 +11,41 @@ use super::super::{
 };
 use super::*;
 
-// ── FWD / REV nav-arrow arcs (owned by this module) ──────────────────────────
-// Two short curved arrows just outside the jog ring at compass 135° (FWD, CW
-// motion) and 225° (REV, CCW motion). Both share a single virtual circle of
-// radius `JOG_NAV_ARC_RADIUS_REF`, jog-centered; only ~`JOG_NAV_ARC_LEN_REF` of
-// arc length is visible per side.
+// ── FWD and REV nav arrows ───────────────────────────────────────────────────
+// Two short curved arrows just outside the jog ring, with their tips at compass
+// 144.5° (FWD, clockwise) and 215.5° (REV, counterclockwise). Both lie on one
+// circle of radius `JOG_NAV_ARC_RADIUS_REF` around the jog center, and each is
+// about `JOG_NAV_ARC_LEN_REF` long.
 pub(super) const JOG_NAV_ARC_RADIUS_REF: f32 = 1115.0;
-/// Length of the stroked arc body (excludes the arrowhead). Tune freely.
+/// Length of the stroked arc body, without the arrowhead.
 pub(super) const JOG_NAV_ARC_LEN_REF: f32 = 275.0;
-/// Arrowhead length along the arc tangent (V1 apex → V2 base on the arc).
+/// Arrowhead length along the arc tangent, from the apex V1 to the base V2 on the arc.
 pub(super) const JOG_NAV_ARC_HEAD_LEN_REF: f32 = 50.0;
-/// Arrowhead width perpendicular to the arc, outward from the jog (V2 → V3).
+/// Arrowhead width perpendicular to the arc, outward from the jog, from V2 to V3.
 pub(super) const JOG_NAV_ARC_HEAD_WIDTH_REF: f32 = 14.0;
 pub(super) const JOG_NAV_ARC_STROKE_REF: f32 = 4.0;
 
 pub(super) const JOG_NAV_ARC_TIP_FWD_DEG: f32 = 144.5;
 pub(super) const JOG_NAV_ARC_TIP_REV_DEG: f32 = 215.5;
 
-// REV / FWD label placement under each arrow.
+// Placement of the REV and FWD labels under the arrows.
 pub(super) const JOG_NAV_ARROW_LABEL_LEFT_X: f32 = 0.13;
 pub(super) const JOG_NAV_ARROW_LABEL_RIGHT_X: f32 = 0.865;
 pub(super) const JOG_NAV_ARROW_LABEL_V: f32 = 0.902;
 pub(super) const JOG_NAV_ARROW_LABEL_FONT_SIZE: f32 = 34.0;
 
-/// Compass-bearing unit vector (0° = north, increasing CW) in egui screen space (Y down).
+/// Returns the unit vector for a compass bearing in egui screen space, where Y points
+/// down. 0° is north, and the bearing increases clockwise.
 #[inline]
 fn compass_unit(deg: f32) -> Vec2 {
     let r = deg.to_radians();
     Vec2::new(r.sin(), -r.cos())
 }
 
-/// Draw one curved nav arrow (arc body + asymmetric arrowhead at the tip).
-/// `tip_deg` is the compass-bearing tip position; `motion_cw` selects the
-/// rotation direction the arrow indicates (CW = body extends toward smaller
-/// compass angles; CCW = body extends toward larger compass angles).
+/// Draws one curved nav arrow: an arc body with an asymmetric arrowhead at the tip.
+/// `tip_deg` is the compass bearing of the tip, and `motion_cw` selects the
+/// rotation the arrow shows. For clockwise the body extends toward smaller compass
+/// angles; for counterclockwise it extends toward larger ones.
 fn append_jog_nav_arrow(
     out: &mut ShapeList,
     center: Pos2,
@@ -57,8 +58,8 @@ fn append_jog_nav_arrow(
     stroke_px: f32,
     color: Color32,
 ) {
-    // Body spans backward from the tip (opposite of the indicated rotation),
-    // and stops at the arrowhead's base so the apex stays pointy.
+    // The body extends backward from the tip, against the indicated rotation,
+    // and stops at the arrowhead's base so that the apex stays pointed.
     let span_deg = (arc_len_px / radius_px).to_degrees();
     let head_span_deg = (head_len_px / radius_px).to_degrees();
     let dir = if motion_cw { -1.0 } else { 1.0 };
@@ -75,8 +76,8 @@ fn append_jog_nav_arrow(
         .collect();
     out.add(Shape::line(arc_pts, Stroke::new(stroke_px, color)));
 
-    // Arrowhead: right-triangle with the apex at the tip and the V1→V2 leg
-    // lying on the arc body's *inner* edge (radius - stroke/2).
+    // The arrowhead is a right triangle with its apex at the tip and its V1-V2
+    // leg on the inner edge of the arc body (radius - stroke/2).
     let inner_r = radius_px - stroke_px * 0.5;
     let v1 = center + compass_unit(tip_deg) * inner_r;
     let v2 = center + compass_unit(body_end_deg) * inner_r;
@@ -146,7 +147,7 @@ pub(super) fn collect_jog_statics(
     );
 }
 
-/// Shapes drawn *before* the pitchbend grip (outer jog rings).
+/// Builds the shapes drawn before the pitchbend grip: the outer jog rings.
 pub(super) fn build_jog_outer(out: &mut ShapeList, center: egui::Pos2, layout: &UiScale) {
     let r_outer_1 = layout.sc(JOG_OUTER_1_STROKE_RADIUS);
     let r_outer_2 = layout.sc(JOG_OUTER_2_STROKE_RADIUS);
@@ -173,8 +174,9 @@ pub(super) fn build_jog_outer(out: &mut ShapeList, center: egui::Pos2, layout: &
     );
 }
 
-/// Shapes drawn *after* the pitchbend grip: `out_mid` is platter + LCD background;
-/// `out_over` is LCD chrome and JOG ADJUST (drawn above the live stream texture).
+/// Builds the shapes drawn after the pitchbend grip. `out_mid` gets the platter and
+/// the LCD background; `out_over` gets the LCD chrome and JOG ADJUST, which are drawn
+/// above the live stream texture.
 pub(super) fn build_jog_inner(
     out_mid: &mut ShapeList,
     out_over: &mut ShapeList,
@@ -187,10 +189,10 @@ pub(super) fn build_jog_inner(
 ) {
     let r_touch = layout.sc(JOG_TOUCH_RADIUS);
 
-    // Touch platter fill (overwrites grip interior).
+    // The touch platter fill covers the inside of the grip.
     out_mid.circle_filled(center, r_touch, COL_DARK);
 
-    // Double border around touch-platter edge.
+    // A double border around the touch platter's edge.
     let touch_border = DoubleBorderSpec::from_strokes_with_gap(
         StrokeSpec {
             width: layout.sc(JOG_TOUCH_BORDER_INNER_WIDTH_REF),
@@ -204,16 +206,18 @@ pub(super) fn build_jog_inner(
     );
     paint_double_circle_ring_collect(out_mid, center, r_touch, touch_border);
 
-    // Inner LCD disk (background only; stream texture is painted between mid/over).
+    // The inner LCD disk is only the background; the stream texture is painted
+    // between `out_mid` and `out_over`.
     build_jog_inner_lcd_background(out_mid, center, layout);
     build_jog_inner_lcd_foreground(out_over, ctx, center, layout);
 
-    // JOG ADJUST knob (gear + ticks + labels) - keyed on jog_adjust.
+    // The JOG ADJUST knob with its gear, ticks and labels, keyed on jog_adjust.
     build_jog_adjust_static(out_over, ctx, layout, jog_adjust, jog_ref, chrome);
 }
 
-/// Static geometry for the JOG ADJUST knob: gear, indicator, tick ring, labels.
-/// Keyed on `jog_adjust` (rotates gear + indicator).
+/// Builds the static geometry for the JOG ADJUST knob: the gear, indicator, tick
+/// ring and labels. It is keyed on `jog_adjust`, which rotates the gear and the
+/// indicator.
 pub(super) fn build_jog_adjust_static(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -239,7 +243,7 @@ pub(super) fn build_jog_adjust_static(
     collect_jog_adjust_labels(out, ctx, center, &s, r_outer, chrome);
 }
 
-/// The knob's gear, indicator and tick ring, sized by `s`.
+/// Builds the knob's gear, indicator and tick ring, sized by `s`.
 fn jog_adjust_spec(
     s: &impl Fn(f32) -> f32,
     r_base: f32,
@@ -288,7 +292,7 @@ fn jog_adjust_spec(
     }
 }
 
-/// The title above the knob and LIGHT / HEAVY under it.
+/// Builds the title above the knob and the LIGHT and HEAVY labels under it.
 fn collect_jog_adjust_labels(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -328,7 +332,8 @@ fn collect_jog_adjust_labels(
     );
 }
 
-/// Inner LCD disk (background only; the stream texture is painted over it).
+/// Builds the inner LCD disk, which is only the background; the stream texture is
+/// painted over it.
 pub(super) fn build_jog_inner_lcd_background(
     out: &mut ShapeList,
     center: egui::Pos2,
@@ -338,8 +343,8 @@ pub(super) fn build_jog_inner_lcd_background(
     out.circle_filled(center, r_inner_lcd, COL_LCD_BG);
 }
 
-/// The inner LCD's chrome over the stream: its c1/c2 silhouette, the c3
-/// separator arcs and the MODE / BEAT SYNC labels.
+/// Builds the inner LCD's chrome over the stream: its c1/c2 silhouette, the c3
+/// separator arcs and the MODE and BEAT SYNC labels.
 pub(super) fn build_jog_inner_lcd_foreground(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -350,28 +355,29 @@ pub(super) fn build_jog_inner_lcd_foreground(
     let stroke = Stroke::new(layout.sc(7.0), COL_BTN);
     let join_overlap = layout.sc(JOG_INNER_LCD_JOIN_OVERLAP_REF);
 
-    // c1: already-known inner LCD cutout circle.
+    // c1 is the inner LCD cutout circle.
     let c1 = r_inner_lcd;
-    // Rectangle centered at O with corners on c1 (diagonals cross at O).
+    // A rectangle centered at O with its corners on c1.
     let mut rect_half_w = c1 * JOG_INNER_LCD_RECT_HALF_WIDTH_FRAC;
     let mut rect_half_h = (c1 * c1 - rect_half_w * rect_half_w).sqrt();
-    // Keep the rectangle "length" horizontal (major axis on X).
+    // Keep the rectangle's long axis horizontal.
     if rect_half_h > rect_half_w {
         std::mem::swap(&mut rect_half_w, &mut rect_half_h);
     }
-    // c2: smaller concentric circle used for side bulges.
+    // c2 is a smaller concentric circle that forms the side bulges.
     let c2 = c1 * JOG_INNER_LCD_C2_RADIUS_FRAC;
 
-    // c1 arcs between the rectangle side-width points (left + right side arcs).
+    // Draw the c1 arcs on the left and right of the rectangle.
     collect_clipped_circle_arcs(out, center, c1, stroke, &|x, _y| {
         x.abs() >= rect_half_w - 1.0e-3
     });
-    // c2 arcs outside the rectangle (left/right + corner bridge arcs).
+    // Draw the c2 arcs outside the rectangle: the left and right arcs and the
+    // corner bridge arcs.
     collect_clipped_circle_arcs(out, center, c2, stroke, &|x, y| {
         x.abs() >= rect_half_w - 1.0e-3 || y.abs() >= rect_half_h - 1.0e-3
     });
 
-    // Rectangle segments between c1 and c2 intersections.
+    // Draw the rectangle's edges between the c1 and c2 intersections.
     let top_y = rect_half_h;
     let bot_y = -rect_half_h;
     let right_x = rect_half_w;
@@ -403,9 +409,9 @@ pub(super) fn build_jog_inner_lcd_foreground(
     collect_inner_lcd_ring(out, ctx, center, layout, c1);
 }
 
-/// The circle of `radius` about `center`, sampled at 256 points, stroked
-/// only where `keep(x, y)` holds (offsets from the centre): each contiguous
-/// run in cyclic order, a run crossing 0/2π included.
+/// Strokes the circle of `radius` around `center`, sampled at 256 points,
+/// wherever `keep(x, y)` holds; x and y are offsets from the centre. Each
+/// contiguous run becomes one line, including a run that wraps past 0/2π.
 fn collect_clipped_circle_arcs(
     out: &mut ShapeList,
     center: Pos2,
@@ -457,9 +463,9 @@ fn collect_clipped_circle_arcs(
     }
 }
 
-/// c3: label ring - separator arcs between adjacent labels in each half,
-/// and the MODE / BEAT SYNC labels; SLIP / VINYL and SYNC / MASTER are
-/// painted dynamically over the stream.
+/// Builds the c3 label ring: the separator arcs between adjacent labels in each
+/// half, and the MODE and BEAT SYNC labels. SLIP, VINYL, SYNC and MASTER are
+/// painted over the stream on every frame.
 fn collect_inner_lcd_ring(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -482,7 +488,8 @@ fn collect_inner_lcd_ring(
     );
     let cutout_outline_px = layout.sc(JOG_INNER_LCD_CUTOUT_OUTLINE_REF);
 
-    // Top group - SLIP / VINYL painted dynamically over the stream (see `paint_jog_inner_lcd_corner_labels`).
+    // The top group. SLIP and VINYL are painted over the stream on every frame
+    // (see `paint_jog_inner_lcd_corner_labels`).
     geometry::inner_lcd_push_curved_label(
         out,
         ctx,
@@ -497,7 +504,8 @@ fn collect_inner_lcd_ring(
         false,
     );
 
-    // Bottom group - SYNC / MASTER painted dynamically.
+    // The bottom group. SYNC and MASTER are painted over the stream on every
+    // frame.
     geometry::inner_lcd_push_curved_label(
         out,
         ctx,

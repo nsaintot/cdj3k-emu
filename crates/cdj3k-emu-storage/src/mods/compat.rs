@@ -60,7 +60,7 @@ impl Declared {
                 .ok_or_else(|| format!("compat.{slug} is not a string"))?;
             if !Model::ALL.iter().any(|m| m.slug() == slug) {
                 return Err(format!(
-                    "compat.{slug}: not a model ({})",
+                    "compat.{slug}: {slug} is not a model; use one of {}",
                     Model::ALL.map(|m| m.slug()).join(", ")
                 ));
             }

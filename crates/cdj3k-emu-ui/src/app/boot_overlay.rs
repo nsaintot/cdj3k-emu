@@ -1,10 +1,9 @@
-//! Boot/idle shade overlay: translucent scrim plus a 12-spoke "dents"
-//! spinner rendered while QEMU is starting and the LCD texture is still
-//! catching up.
+//! The boot and idle shade: a translucent scrim and a 12-spoke spinner, drawn
+//! while QEMU starts and the LCD texture catches up.
 
 const SHADE_BG: egui::Color32 = egui::Color32::from_rgb(25, 25, 25);
-/// Maximum scrim opacity at full fade-in. The chassis chrome stays visible
-/// behind it on purpose - LCD content is masked at the source.
+/// Maximum scrim opacity at full fade-in. The chassis stays visible behind the
+/// scrim; the LCD content is blanked at the source.
 const SHADE_MAX_ALPHA: f32 = 225.0;
 
 const SPOKE_COUNT: usize = 12;
@@ -12,9 +11,9 @@ const SPOKE_COUNT: usize = 12;
 const FADE_TAIL: f32 = 6.0;
 /// Floor brightness for spokes outside the ramp.
 const FADE_FLOOR: f32 = 0.2;
-/// Spinner angular speed (positions per second).
+/// Spinner speed, in spoke positions per second.
 const TICK_RATE: f32 = 24.0;
-/// Polygon segments used per spoke's outer cap (semicircle).
+/// Polygon segments in each spoke's semicircular outer cap.
 const ARC_SEGS: usize = 12;
 /// Outer radius as a fraction of `min(width, height)` (clamped below).
 const SPOKE_OUTER_RADIUS_FRAC: f32 = 0.06;
@@ -25,13 +24,14 @@ const SPOKE_INNER_RATIO: f32 = 0.55;
 /// Stroke width as a fraction of the outer radius (with a 1.5 px floor).
 const SPOKE_STROKE_FRAC: f32 = 0.13;
 const SPOKE_STROKE_MIN: f32 = 1.5;
-/// Repaint cadence while the spinner is animating (60 Hz cap).
+/// Repaint interval while the spinner animates, capped at 60 Hz.
 const REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
-/// Paint the boot/idle shade on top of [`egui::Order::Foreground`].
+/// Paint the boot and idle shade on top of [`egui::Order::Foreground`].
 ///
-/// `alpha` is the current ramp value in `[0, 1]`. `booting` toggles the
-/// spinner; chrome reveals cleanly when it's off during fade-out.
+/// `alpha` is the current ramp value in `[0, 1]`. `booting` shows the spinner;
+/// with it off during the fade-out, the chassis appears without a spinner over
+/// it.
 pub(super) fn paint_boot_shade(ctx: &egui::Context, alpha: f32, booting: bool) {
     // The deck is what is booting, so the shade covers the deck and stops at
     // the in-window menu strip: those controls work throughout.
@@ -68,10 +68,10 @@ pub(super) fn paint_boot_shade(ctx: &egui::Context, alpha: f32, booting: bool) {
         });
 }
 
-/// Each spoke is built as one convex polygon - a rectangle joined to a
-/// semicircular outer cap. Drawing them as separate line + circle leaves
-/// anti-aliased edge pixels that double the alpha at the join; one
-/// convex_polygon goes through one tessellation pass with one fill.
+/// Each spoke is one convex polygon: a rectangle joined to a semicircular outer
+/// cap. A separate line and circle would leave anti-aliased edge pixels that
+/// double the alpha at the join; one convex polygon is tessellated and filled
+/// once.
 fn paint_spinner(
     painter: &egui::Painter,
     center: egui::Pos2,
@@ -98,7 +98,7 @@ fn paint_spinner(
         let theta = (i as f32 / SPOKE_COUNT as f32) * TAU - FRAC_PI_2;
         let (sn, cs) = theta.sin_cos();
 
-        // perp = (-sn, cs).
+        // The perpendicular is (-sn, cs).
         let inner_l = egui::pos2(
             center.x + cs * inner - sn * half_w,
             center.y + sn * inner + cs * half_w,

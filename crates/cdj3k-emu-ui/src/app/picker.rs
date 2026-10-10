@@ -1,8 +1,8 @@
-//! Model picker screen - "choose a device emulation".
+//! The model picker screen, where the user chooses a device emulation.
 //!
-//! One card per [`Model`]. The window is one frame for every step: an identity
-//! strip at the top, a title block, the step's own content, an action bar at
-//! the foot. Pixel sizes are multiplied by `k`, a size factor derived from the
+//! It shows one card per [`Model`]. Every step uses the same frame: an
+//! identity strip at the top, a title block, the step's own content, and an
+//! action bar at the foot. Pixel sizes are multiplied by `k`, a size factor derived from the
 //! window width.
 
 mod cards;
@@ -23,13 +23,13 @@ pub(in crate::app) use header::{
 };
 pub(in crate::app) use paint::{hairline, text_width, tracked, trash_glyph};
 
-/// The delete beside the dismiss in the action bar.
+/// The width of the Delete slot button, beside Close in the action bar.
 const DELETE_BTN_W: f32 = 138.0;
 
 /// What the picker is being asked to show.
 pub(in crate::app) struct PickerView<'a> {
     pub slot: u32,
-    /// A line under the header, e.g. a stop in progress.
+    /// A line under the header, such as a stop in progress.
     pub status: Option<&'a str>,
     /// The model installed in this slot. A slot holds one installation.
     pub installed: Option<Model>,
@@ -37,19 +37,21 @@ pub(in crate::app) struct PickerView<'a> {
     pub running: Option<Model>,
     /// Every card launches with nothing installed (`--no-spawn`).
     pub all_launchable: bool,
-    /// Shown in place of the cards: the model that would take the slot over.
+    /// The model that would replace the slot's installation. Its
+    /// confirmation is shown in place of the cards.
     pub confirm_replace: Option<Model>,
     /// The picker is a window over a live emulation, so it can be dismissed.
     pub dismissable: bool,
     /// The slot shown is not this window's. Its emulation runs in its own
     /// window, so the deck it holds offers a launch rather than a reinstall.
     pub foreign: bool,
-    /// That slot's window is already up, so its installation is its window's
-    /// to change: a delete from here is a request to it.
+    /// That slot's window is already open, so only that window changes the
+    /// slot's installation; a delete from here is sent to it as a request.
     pub busy: bool,
     /// That window's emulation is running, not merely open.
     pub running_elsewhere: bool,
-    /// No slot holds anything: the only way on is an install.
+    /// No slot holds an installation, so the user must install one to
+    /// continue.
     pub every_slot_empty: bool,
     /// The firmware release installed in the slot shown.
     pub release: Option<&'a str>,
@@ -68,7 +70,7 @@ pub(in crate::app) enum PickerAction {
     Open(u32),
     /// A card was clicked.
     Choose(Model),
-    /// The running deck's card was clicked: lay its firmware down again.
+    /// The running deck's card was clicked: reinstall its firmware.
     Reinstall(Model),
     /// The replace confirmation was accepted.
     Replace(Model),
@@ -84,13 +86,13 @@ pub(in crate::app) enum PickerAction {
     CancelDelete,
     /// The Mods bar was clicked.
     ManageMods,
-    /// Something asked of the Mods view.
+    /// An action from the Mods view.
     Mods(super::mods_view::ModsAction),
 }
 
 /// The subtitle of a slot that needs a reinstall
 /// ([`cdj3k_emu_storage::slot_outdated`]).
-const OUTDATED: &str = "Outdated slot installation, reinstall to update the slot";
+const OUTDATED: &str = "The slot installation is outdated. Reinstall to update it.";
 
 /// Draw the picker into `ui`; returns what the user asked for.
 pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<PickerAction> {
@@ -120,8 +122,8 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
 fn picker_header<'a>(view: &PickerView<'a>, sub: &'a str, warn: bool) -> Header<'a> {
     Header {
         slot: Some(view.slot),
-        // The deck the slot holds, running or not - the strip says which slot
-        // this is, and what is in it.
+        // Show the deck the slot holds, running or not, so the strip names
+        // the slot and what it holds.
         model: view.running.or(view.installed),
         release: view.release,
         state: match (view.running, view.busy) {
@@ -141,8 +143,8 @@ fn picker_header<'a>(view: &PickerView<'a>, sub: &'a str, warn: bool) -> Header<
     }
 }
 
-/// The Mods bar along the foot of `space`, for a slot with something
-/// installed; `space` gives up the room it takes.
+/// Draws the Mods bar along the foot of `space` for a slot with something
+/// installed, and shrinks `space` by the bar's height.
 fn draw_mods_strip(
     ui: &egui::Ui,
     view: &PickerView<'_>,
@@ -159,12 +161,10 @@ fn draw_mods_strip(
     clicked.then_some(PickerAction::ManageMods)
 }
 
-/// The action bar's buttons. Leaving the slot as it is: a named button in the
-/// bar, where the window's other actions are, rather than a second cross
-/// under the one the desktop already draws. Any installed slot can be
-/// emptied: one held by another window is emptied by that window, on request.
-/// Leaving is always possible once something is installed somewhere; with
-/// every slot empty an install is the only way on.
+/// Draws the action bar's Close and Delete slot buttons. Close leaves the slot
+/// as it is; it shows when the picker is dismissable or any slot has an
+/// installation. Delete slot empties an installed slot; a slot held by another
+/// window is emptied by that window on request.
 fn draw_slot_actions(
     ui: &mut egui::Ui,
     view: &PickerView<'_>,
@@ -184,14 +184,14 @@ fn draw_slot_actions(
             if closable && theme::secondary(ui, button_size(k), "Close", pal).clicked() {
                 action = Some(PickerAction::Dismiss);
             }
-            // Beside the dismiss, behind a rule and outlined rather than
-            // filled: destructive, but not the thing this step is for.
+            // Delete slot sits after a rule and is outlined, because it is
+            // destructive but is not this step's main action.
             if deletable {
                 if closable {
                     footer_rule(ui, pal, k);
                 }
-                // Which slot is the strip's job, at the top of the window;
-                // the button says what it does, not where.
+                // The label does not name the slot, because the strip at the
+                // top of the window shows it.
                 if theme::destructive_line(
                     ui,
                     [DELETE_BTN_W * k, theme::BUTTON_SIZE[1] * k],

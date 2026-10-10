@@ -128,8 +128,8 @@ impl StagedFirmware {
         // settings name this install, so it has to be finished, not replaced.
         if dir.join(RECORD).exists() && !staged_paths(&dir).provisioned() {
             return Err(io::Error::other(format!(
-                "slot {instance_id}'s last install is part way swapped in; start the slot \
-                 to finish it"
+                "slot {instance_id}'s last install was only partly swapped in; start the \
+                 slot to finish it"
             )));
         }
         clear(&dir)?;
@@ -149,7 +149,8 @@ impl StagedFirmware {
         soc_serial: &str,
     ) -> io::Result<()> {
         for path in [&self.paths.kernel, &self.paths.initramfs, &self.paths.emmc] {
-            // Writable: Windows refuses to flush a read-only handle.
+            // Open for writing, because Windows refuses to flush a read-only
+            // handle.
             let f = std::fs::OpenOptions::new()
                 .write(true)
                 .open(path)
@@ -210,8 +211,8 @@ pub fn pending_install_retry(instance_id: u32) -> Option<StagedRecord> {
 
 fn read_pending(instance_id: u32, retry: bool) -> Option<StagedRecord> {
     let dir = staging_dir(instance_id);
-    // Held for the read, so an install starting now cannot clear the record
-    // from under it.
+    // Hold the lock for the read, so that an install starting now cannot
+    // clear the record from under it.
     let lock = if retry {
         lock_exclusive_retry
     } else {
@@ -226,8 +227,9 @@ fn read_pending(instance_id: u32, retry: bool) -> Option<StagedRecord> {
 }
 
 /// Swap the slot's finished install in and record it in the slot's settings;
-/// `None` when there is none. Only the slot's owner may, and only while its
-/// emulation is not running: the running QEMU's eMMC is the file replaced.
+/// `None` when there is none. Only the slot's owner may call this, and only
+/// while the emulation is stopped, because the swap replaces the eMMC file
+/// that a running QEMU has open.
 pub fn apply_staged(claim: &SlotClaim) -> io::Result<Option<StagedRecord>> {
     let instance_id = claim.instance_id;
     let dir = staging_dir(instance_id);

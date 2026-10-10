@@ -1,19 +1,19 @@
 //! The actuator, through the private `MultitouchSupport.framework`.
 //!
-//! Symbols are resolved with [`dlopen`]/[`dlsym`] rather than declared
+//! Symbols are resolved with `dlopen` and `dlsym` instead of being declared
 //! `extern "C"`, so the build neither links the framework nor runs foul of
 //! arm64e pointer authentication.
 //!
 //! `MTActuatorActuate` blocks for the waveform's mechanical stroke (~5–30 ms,
 //! per the table in [`super`]), so it runs on a dedicated dispatcher thread and
-//! the caller only ever does one non-blocking `try_send`.  That blocking call
-//! is also what paces us: it returns when the previous stroke completes, so no
-//! software-side rate limit is needed, and requests arriving faster than the
+//! the caller only ever does one non-blocking `try_send`. The blocking call
+//! also sets the pace: it returns when the previous stroke completes, so no
+//! software rate limit is needed, and requests that arrive faster than the
 //! chosen waveform allows are dropped at the bounded channel.
 //!
-//! Missing on non-Force-Touch hardware, and the `MTDevice` layout can drift
-//! across macOS releases — both fail closed at [`init`], after which every
-//! `actuate()` is a silent no-op.
+//! The framework is missing on hardware without Force Touch, and the
+//! `MTDevice` layout can change between macOS releases. Either case fails
+//! closed at [`init`], and every later `actuate()` does nothing.
 
 use std::ffi::CString;
 use std::os::raw::{c_int, c_long, c_void};
@@ -24,9 +24,9 @@ use std::thread;
 
 /// Bounded queue depth between `actuate()` callers and the dispatcher thread.
 /// Sized to absorb a brief burst of detents at extreme jog speeds without
-/// either blocking the caller or letting a backlog grow.  When the queue is
-/// full, new requests are dropped (the actuator is already firing as fast as
-/// the hardware allows - those extra clicks couldn't be played anyway).
+/// either blocking the caller or letting a backlog grow. When the queue is
+/// full, new requests are dropped, because the actuator already fires as fast
+/// as the hardware allows.
 const HAPTIC_QUEUE_DEPTH: usize = 8;
 
 type IOReturn = c_int;
@@ -38,8 +38,9 @@ type FnActuatorClose = unsafe extern "C" fn(*mut c_void) -> IOReturn;
 type FnActuatorActuate = unsafe extern "C" fn(*mut c_void, i32, u32, u32, u32) -> IOReturn;
 type FnDeviceCreateList = unsafe extern "C" fn() -> *mut c_void; // CFMutableArrayRef
 
-// ── CoreFoundation symbols (also via dlsym so the build doesn't grow a
-// direct link to CoreFoundation; we already link it transitively). ──────
+// ── CoreFoundation symbols ──────────────────────────────────────────────
+// These are also resolved with dlsym, so the build adds no direct link to
+// CoreFoundation, which is already linked transitively.
 type FnArrayGetCount = unsafe extern "C" fn(*mut c_void) -> c_long;
 type FnArrayGetValueAtIndex = unsafe extern "C" fn(*mut c_void, c_long) -> *mut c_void;
 type FnRelease = unsafe extern "C" fn(*mut c_void);
@@ -49,8 +50,8 @@ const MT_FW: &str =
 const CF_FW: &str = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation";
 
 /// Offset of the `uint64_t` device-ID field inside the opaque MTDevice
-/// struct, measured on M-series machines. It can change across macOS
-/// versions; init then fails closed.
+/// struct on Apple silicon. It can change between macOS versions, and init
+/// then fails closed.
 const MTDEVICE_ID_OFFSET: usize = 64;
 
 struct Symbols {
@@ -70,21 +71,21 @@ unsafe impl Send for Symbols {}
 unsafe impl Sync for Symbols {}
 
 static SYMBOLS: OnceLock<Option<Symbols>> = OnceLock::new();
-/// The opened actuator (CFTypeRef cast to usize - raw pointers aren't
-/// `Sync` and we don't want a `Mutex` on the hot actuate path).
+/// The opened actuator, a CFTypeRef stored as a usize because raw pointers
+/// are not `Sync`.
 static ACTUATOR: AtomicUsize = AtomicUsize::new(0);
 static AVAILABLE: AtomicBool = AtomicBool::new(false);
 
-// ── Telemetry counters (monotonic, never reset) ─────────────────────────
-// Read via [`stats()`].  Callers diff against a previous snapshot to
-// compute rates.  Relaxed atomics: imprecise around a sample boundary
-// by at most a few counts, irrelevant for human-eyed tuning.
+// ── Telemetry counters ──────────────────────────────────────────────────
+// The counters only increase. [`stats()`] reads them, and callers diff two
+// snapshots to get rates. With relaxed atomics, a count can be off by a few
+// around a sample boundary, which does not matter for tuning by eye.
 static FIRED_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static DROPPED_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Bounded channel into the dispatcher thread.  `actuate()` does one
-/// non-blocking `try_send`; the dispatcher drains it as fast as the
-/// trackpad hardware allows.  Stored in a `Mutex<Option<...>>` so
+/// The bounded channel into the dispatcher thread. `actuate()` does one
+/// non-blocking `try_send`, and the dispatcher drains it as fast as the
+/// trackpad hardware allows. It is stored in a `Mutex<Option<...>>` so that
 /// `shutdown()` can drop the sender, which closes the channel and lets
 /// the worker thread exit cleanly.
 static SENDER: OnceLock<Mutex<Option<SyncSender<i32>>>> = OnceLock::new();
@@ -105,8 +106,8 @@ unsafe fn dlsym_required<T>(handle: *mut c_void, name: &str) -> Option<T> {
     if p.is_null() {
         None
     } else {
-        // SAFETY: caller provides T sized to a function pointer, dlsym
-        // returns the requested symbol's address.
+        // SAFETY: the caller passes a `T` the size of a function pointer, and
+        // dlsym returned the symbol's address.
         Some(std::mem::transmute_copy::<*mut c_void, T>(&p))
     }
 }
@@ -128,18 +129,20 @@ fn load_symbols() -> Option<Symbols> {
     }
 }
 
-/// Open the trackpad actuator and spawn the dispatcher thread.
-/// Returns true on success.  Idempotent.
+/// Open the trackpad actuator and start the dispatcher thread. Returns true
+/// on success; a second call after a success does nothing.
 ///
-/// Must be called once at app startup. After this, [`actuate`] silently
-/// no-ops on systems without a Force Touch trackpad (or on macOS releases
-/// where the MT struct layout has drifted).
+/// Call it once at app startup. On a Mac without a Force Touch trackpad, or
+/// on a macOS release where the MTDevice layout has changed, it returns false
+/// and [`actuate`] does nothing.
 pub fn init() -> bool {
     if AVAILABLE.load(Ordering::Relaxed) {
         return true;
     }
     let Some(syms) = SYMBOLS.get_or_init(load_symbols) else {
-        eprintln!("[haptic] MultitouchSupport.framework not loadable - actuator disabled");
+        eprintln!(
+            "[haptic] MultitouchSupport.framework cannot be loaded; the actuator is disabled"
+        );
         return false;
     };
     let actuator_ptr = unsafe {
@@ -172,21 +175,21 @@ pub fn init() -> bool {
         found
     };
     if actuator_ptr.is_null() {
-        eprintln!("[haptic] no trackpad with haptic actuator found");
+        eprintln!("[haptic] no trackpad with a haptic actuator was found");
         return false;
     }
     ACTUATOR.store(actuator_ptr as usize, Ordering::Relaxed);
 
-    // Spawn the dispatcher thread.  It exists only to take the blocking
-    // `MTActuatorActuate` call off the UI thread - the hardware itself
-    // paces the rate (the call returns after the previous waveform's
-    // mechanical stroke completes).  No software rate limit.
+    // The dispatcher thread exists only to take the blocking
+    // `MTActuatorActuate` call off the UI thread. The hardware paces the
+    // rate, because the call returns after the previous waveform's stroke
+    // completes.
     let (tx, rx) = sync_channel::<i32>(HAPTIC_QUEUE_DEPTH);
     let actuator_usize = actuator_ptr as usize;
     thread::Builder::new()
         .name("haptic-dispatcher".into())
         .spawn(move || dispatcher_loop(rx, actuator_usize))
-        .expect("spawn haptic-dispatcher thread");
+        .expect("the haptic-dispatcher thread could not be started");
     let _ = SENDER
         .get_or_init(|| Mutex::new(None))
         .lock()
@@ -208,15 +211,14 @@ fn dispatcher_loop(rx: std::sync::mpsc::Receiver<i32>, actuator_usize: usize) {
             break;
         }
 
-        // Step 1: prime - open the actuator right before the actuate.
+        // Open the actuator right before each actuation.
         let open_ret = unsafe { (syms.actuator_open)(actuator, 0) };
         if open_ret != 0 {
-            eprintln!("[haptic.trigger] open failed ret={open_ret}");
+            eprintln!("[haptic.trigger] the actuator did not open: ret={open_ret}");
             DROPPED_COUNT.fetch_add(1, Ordering::Relaxed);
             continue;
         }
 
-        // Step 2: actuate.
         let ret = unsafe { (syms.actuator_actuate)(actuator, waveform, 0, 0, 0) };
         if ret == 0 {
             FIRED_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -228,31 +230,32 @@ fn dispatcher_loop(rx: std::sync::mpsc::Receiver<i32>, actuator_usize: usize) {
                 _ => "unknown",
             };
             eprintln!(
-                "[haptic.trigger] wf={waveform} ret={ret} ({name}, 0x{:08X})",
+                "[haptic.trigger] waveform {waveform} failed: ret={ret} ({name}, 0x{:08X})",
                 ret as u32,
             );
             DROPPED_COUNT.fetch_add(1, Ordering::Relaxed);
         }
 
-        // Step 3: close so the next iteration starts fresh.  Reopening
-        // immediately after close returns kIOReturnError; the channel recv
-        // and the stroke time leave enough gap before the next open().
+        // Close the actuator so that the next iteration starts fresh.
+        // Reopening it immediately after a close returns kIOReturnError; the
+        // wait on the channel and the stroke time leave enough gap before the
+        // next open.
         unsafe {
             (syms.actuator_close)(actuator);
         }
     }
 }
 
-/// True if an actuator was opened at init time.  Cheap to call from
-/// the hot path - one relaxed atomic load.
+/// Whether an actuator was opened at init. It is one relaxed atomic load, so
+/// the hot path can call it.
 pub fn available() -> bool {
     AVAILABLE.load(Ordering::Relaxed)
 }
 
-/// Queue one haptic pulse with the given waveform ID.  Non-blocking:
-/// the call returns in microseconds (one channel `try_send`).  The
-/// dispatcher thread fires the pulse as fast as the trackpad hardware
-/// allows for that waveform.  See [`super`] for the waveform table.
+/// Queue one haptic pulse with the given waveform ID. The call does not
+/// block: it is one channel `try_send`. The dispatcher thread fires the pulse
+/// as fast as the trackpad hardware allows for that waveform. See [`super`]
+/// for the waveform table.
 pub fn actuate(waveform: i32) {
     if !AVAILABLE.load(Ordering::Relaxed) {
         DROPPED_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -275,8 +278,8 @@ pub fn actuate(waveform: i32) {
     }
 }
 
-/// Snapshot of (fired_total, dropped_total) since process start.  Callers
-/// diff against a previous snapshot to compute rates.
+/// A snapshot of (fired_total, dropped_total) since the process started.
+/// Callers diff two snapshots to get rates.
 pub fn stats() -> (u64, u64) {
     (
         FIRED_COUNT.load(Ordering::Relaxed),
@@ -284,7 +287,7 @@ pub fn stats() -> (u64, u64) {
     )
 }
 
-/// Close the actuator and stop the dispatcher.  macOS also reclaims the
+/// Close the actuator and stop the dispatcher. macOS also reclaims the
 /// actuator on process exit.
 pub fn shutdown() {
     if !AVAILABLE.swap(false, Ordering::Relaxed) {

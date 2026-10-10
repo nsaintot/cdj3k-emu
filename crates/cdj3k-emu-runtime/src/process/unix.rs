@@ -1,7 +1,8 @@
 //! POSIX signals. Each call is async-signal-safe.
 
-/// `atexit`, and a handler for the signals that end a desktop app, which
-/// cleans up inline and exits: `atexit` does not run across an AppKit quit.
+/// Install an `atexit` hook and a handler for the signals that end a desktop
+/// app. The handler cleans up and exits, because `atexit` does not run when
+/// AppKit quits the app.
 pub fn install_exit_hooks() {
     extern "C" fn at_exit() {
         crate::cleanup_runtime_files();
@@ -35,10 +36,10 @@ pub fn kill(pid: i32) {
     unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
 }
 
-/// The exit hooks reach the child by pid, so it joins nothing.
+/// Do nothing: the exit hooks reach the child by its pid.
 pub fn adopt(_pid: u32) {}
 
-/// `terminate` signals the pid; no monitor session is involved.
+/// Do nothing: `terminate` signals the pid and needs no monitor session.
 pub fn set_quit_channel(_monitor: &std::net::TcpStream) {}
 
 /// Clear `FD_CLOEXEC` on `fd`, for a forked child about to exec.

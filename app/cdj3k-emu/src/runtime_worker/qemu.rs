@@ -14,7 +14,7 @@ use crate::launch::ModsLaunch;
 pub(super) enum SpawnCause {
     /// The menu's boot request after the firmware was installed.
     Provisioned,
-    /// The menu's restart, or a setting that takes a restart.
+    /// The menu's restart, or a setting that needs a restart.
     Restart,
     /// The guest shut down by itself.
     GuestExit,
@@ -31,9 +31,13 @@ impl SpawnCause {
 
     fn log_failed(self, e: &InstanceError) {
         match self {
-            Self::Provisioned => eprintln!("cdj3k-emu: post-provision QEMU start failed: {e:?}"),
-            Self::Restart => eprintln!("cdj3k-emu: restart failed: {e:?}"),
-            Self::GuestExit => eprintln!("cdj3k-emu: auto-restart failed: {e:?}"),
+            Self::Provisioned => {
+                eprintln!("cdj3k-emu: starting QEMU after provisioning failed: {e:?}")
+            }
+            Self::Restart => eprintln!("cdj3k-emu: restarting QEMU failed: {e:?}"),
+            Self::GuestExit => {
+                eprintln!("cdj3k-emu: restarting QEMU after the guest exited failed: {e:?}")
+            }
         }
     }
 }
@@ -46,10 +50,10 @@ impl Worker {
             .unwrap_or(false)
     }
 
-    /// Clear up after a guest-initiated shutdown.  PcLink stays: its endpoints
-    /// must outlive the respawn, else rekordbox's polled HID name goes stale.
-    /// The socket dies with the guest; the reader takes EOF and the liveness
-    /// check re-dials.
+    /// Clean up after the guest shuts down by itself. The PC-link bridge stays
+    /// open, because its endpoints must outlive the restart or the HID name
+    /// that rekordbox polls goes stale. The socket closes with the guest; the
+    /// reader gets EOF and the liveness check reconnects.
     pub(super) fn reap_guest(&mut self) {
         self.stop_instance();
         self.pc_link.on_qemu_stopped();
@@ -59,7 +63,7 @@ impl Worker {
     }
 
     pub(super) fn respawn_after_guest_exit(&mut self) {
-        eprintln!("cdj3k-emu: QEMU exited - restarting");
+        eprintln!("cdj3k-emu: QEMU exited; restarting it");
         let (prev_phys, prev_virt) = {
             let s = menu_state::lock();
             (s.usb_phys_mounted_idx, s.usb_virtual_mounted)
@@ -67,7 +71,7 @@ impl Worker {
         self.respawn(prev_phys, prev_virt, SpawnCause::GuestExit);
     }
 
-    /// The menu's Stop: QEMU and the PC-link bridge come down.
+    /// Handle the menu's Stop by stopping QEMU and the PC-link bridge.
     pub(super) fn stop_qemu(&mut self) {
         self.pc_link.stop();
         self.stop_instance();
@@ -100,7 +104,7 @@ impl Worker {
         }
     }
 
-    /// Spawn QEMU with the menu's current settings and a freshly prepared
+    /// Start QEMU with the menu's current settings and a freshly prepared
     /// mods initramfs.
     pub(super) fn spawn_qemu(&mut self, cause: SpawnCause) {
         let boot = apply_menu_to_config(&mut self.config, &self.mods);

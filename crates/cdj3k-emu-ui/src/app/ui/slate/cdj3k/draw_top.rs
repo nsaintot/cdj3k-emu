@@ -1,4 +1,6 @@
-//! Upper deck UI (rekordbox bar, nav, LCD, hot cues). Horizontal LCD / hot-cue band comes from [`super::layout`].
+//! Draws the upper deck: the rekordbox bar, the nav buttons, the LCD and the
+//! hot cues. The horizontal band that holds the LCD and the hot cues comes
+//! from [`super::layout`].
 
 use crate::app::ui::{
     draw_cache::ShapeList, DoubleBorderSpec, StrokeSpec, COL_AMBER, COL_BLACK, COL_BLUE, COL_BTN,
@@ -71,13 +73,14 @@ const HOT_CUE_BTN_OUTER_STROKE: f32 = 4.0;
 /// Vertical center of the label within [`MID_CENTRAL_PANEL_REF`].
 const HOT_CUE_LABEL_V: f32 = 0.08;
 const HOT_CUE_LABEL_FONT_SIZE: f32 = 34.0;
-/// Half-distance from panel center to where each flanking segment ends (covers label + clearance).
+/// Distance from the panel center to the inner end of each flanking segment;
+/// it covers the label and its clearance.
 const HOT_CUE_LABEL_SEG_GAP_CENTER: f32 = 100.0;
 /// Inset from panel left/right edge where each flanking segment starts.
 const HOT_CUE_LABEL_SEG_GAP_EDGE: f32 = 20.0;
 const HOT_CUE_LABEL_SEG_STROKE: f32 = 6.0;
 
-/// Cue control row
+/// Cue control row.
 const CUE_CONTROL_V: f32 = 0.81;
 const CUE_CONTROL_LABEL_FONT_SIZE: f32 = 32.0;
 const CUE_CONTROL_LINE_1_LENGTH: f32 = 50.0;
@@ -99,9 +102,11 @@ const CUE_CONTROL_DELMEM_BTN_GAP: f32 = 0.038;
 const CUE_CONTROL_DELMEM_LABEL_V: f32 = 0.56;
 
 // ── ON AIR LED bar ────────────────────────────────────────────────────────────
-/// Fraction of MENUBAR_COL_REF width for the bar's wider (top) edge. Tune freely.
+/// Width of the bar's wider (top) edge as a fraction of the MENUBAR_COL_REF
+/// width.
 const ON_AIR_BAR_TOP_WIDTH_FRAC: f32 = 0.2;
-/// Bottom width as a fraction of top width - controls the inverted-trapezoid taper (0..1).
+/// Bottom width as a fraction of the top width (0..1), which sets the taper of
+/// the inverted trapezoid.
 const ON_AIR_BAR_TAPER: f32 = 0.80;
 /// V position of the bar's top edge within MENUBAR_COL_REF (0=panel top, 1=bottom).
 const ON_AIR_BAR_V_TOP: f32 = 0.005;
@@ -110,7 +115,8 @@ const ON_AIR_BAR_V_BOT: f32 = 0.02;
 /// Radial glow spread (ref units).
 const ON_AIR_BAR_GLOW_SPREAD_REF: f32 = 15.0;
 
-/// (label, MISO btn) - accent color is read live from led_state MOSI frame.
+/// Each entry is (label, MISO button). The accent color is read live from the
+/// LED state in the MOSI frame.
 const HOT_CUE_BTNS: &[(&str, Btn)] = &[
     ("A", Btn::HotA),
     ("B", Btn::HotB),
@@ -122,8 +128,9 @@ const HOT_CUE_BTNS: &[(&str, Btn)] = &[
     ("H", Btn::HotH),
 ];
 
-/// (label, button, lamp, lit color) - the font color follows the lamp.
-/// Medium-only lit → dimmed color, full → solid (see [`StepLed`](mosi_frame::StepLed)).
+/// Each entry is (label, button, lamp, lit color), and the font color follows
+/// the lamp: a lamp at medium shows a dimmed color and a lamp at full shows the
+/// solid color (see [`StepLed`](mosi_frame::StepLed)).
 const BROWSER_BTNS: &[(&str, Btn, Lamp, Color32)] = &[
     ("SOURCE", Btn::Source, Lamp::Source, COL_BTN_WHITE),
     ("BROWSE", Btn::Browse, Lamp::Browse, COL_BLUE),
@@ -133,14 +140,14 @@ const BROWSER_BTNS: &[(&str, Btn, Lamp, Color32)] = &[
     ("MENU", Btn::Menu, Lamp::Menu, COL_BTN_WHITE),
 ];
 
-/// `c` with its channels scaled by `factor`.
+/// Returns `c` with its channels scaled by `factor`.
 fn dim_color(c: Color32, factor: f32) -> Color32 {
     let scale = |v: u8| (v as f32 * factor).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgb(scale(c.r()), scale(c.g()), scale(c.b()))
 }
 
-/// Collect fully-static elements of the top section into `list` (rebuilt
-/// only on resize): the "— UTILITY" label, the "HOT CUE" legend and the
+/// Collects the static elements of the top section into `list`, which is
+/// rebuilt only on a resize: the "— UTILITY" label, the "HOT CUE" legend and the
 /// cue-control row's legends and separators.
 fn collect_top_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     list.text(
@@ -155,7 +162,7 @@ fn collect_top_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSca
     collect_cue_control_legends(list, ctx, layout);
 }
 
-/// "HOT CUE" label + flanking segments.
+/// Collects the "HOT CUE" label and its flanking segments.
 fn collect_hot_cue_legend(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let label_pos = layout.sp_in_rect(MID_CENTRAL_PANEL_REF, 0.5, HOT_CUE_LABEL_V);
     list.text(
@@ -196,8 +203,8 @@ fn collect_hot_cue_legend(list: &mut ShapeList, ctx: &egui::Context, layout: &Ui
     }
 }
 
-/// Cue-control row: "CUE/LOOP CALL" / "DELETE" / "MEMORY" labels and the
-/// three separator lines.
+/// Collects the cue-control row: the "CUE/LOOP CALL", "DELETE" and "MEMORY"
+/// labels and the three separator lines.
 fn collect_cue_control_legends(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     list.text(
         ctx,
@@ -257,7 +264,7 @@ pub(super) fn draw_top_section(
     draw_delete_memory(app, ui, layout);
 }
 
-/// ON AIR LED bar - inverted trapezoid above the nav button row.
+/// Draws the ON AIR LED bar, an inverted trapezoid above the nav button row.
 fn draw_on_air_bar(app: &CdjApp, p: &egui::Painter, layout: &UiScale) {
     let (r, g, b) = app.mosi().rgb(Lamp::OnAir).unwrap_or_default();
     if let Some(bar_color) = app.mosi().led_color(mosi_frame::LedPart::OnAir, r, g, b) {
@@ -272,10 +279,11 @@ fn draw_on_air_bar(app: &CdjApp, p: &egui::Painter, layout: &UiScale) {
         let br = layout.sp(panel_cx + bot_hw, bar_bot_y);
         let bl = layout.sp(panel_cx - bot_hw, bar_bot_y);
 
-        // Glow layers (outermost → innermost, then main fill on top).
+        // Paint the glow layers from the outermost to the innermost, then the
+        // main fill on top.
         let max_expand = layout.sc(ON_AIR_BAR_GLOW_SPREAD_REF);
         for layer in 0..4usize {
-            let t = 1.0 - layer as f32 / 3.0; // 1.0 → 0.0
+            let t = 1.0 - layer as f32 / 3.0; // `t` falls from 1.0 to 0.0.
             let expand = t * max_expand;
             let glow_alpha = t * 0.28;
             if glow_alpha < 0.005 {

@@ -6,95 +6,99 @@ use cdj3k_emu_platform::host::{self, Accelerator};
 /// Configuration for a single QEMU player instance.
 #[derive(Clone, Debug)]
 pub struct QemuConfig {
-    /// Instance index - selects /tmp/cdj3k-emu/instance-{id}/ socket directory.
+    /// The instance index, which selects the socket directory
+    /// ([`cdj3k_emu_platform::runtime_paths::instance_dir`]).
     pub instance_id: u32,
 
-    /// The player model this instance boots: sets the main LCD scanout mode.
+    /// The player model this instance boots. It sets the main LCD scanout mode.
     pub model: Model,
 
-    /// aarch64 kernel image.
+    /// The aarch64 kernel image.
     pub kernel: PathBuf,
 
-    /// Initramfs image (initramfs-patched.cpio.gz).
+    /// The initramfs image (initramfs-patched.cpio.gz).
     pub initramfs: PathBuf,
 
     /// The hypervisor to run under, or `None` for software emulation.
     pub accel: Option<Accelerator>,
 
-    /// Back guest RAM with a MAP_SHARED file for host-side mmap injection.
+    /// Back the guest RAM with a MAP_SHARED file, so that the host can map it.
     pub shm: bool,
 
-    /// Expose virtio-sound-device.
+    /// Add a virtio-sound-device.
     pub audio: bool,
 
     /// Which host output to bind the stream to, named the way this host's
     /// audio backend names one: a CoreAudio device UID
     /// (kAudioDevicePropertyDeviceUID) on macOS, a PipeWire sink's node name
-    /// on Linux. `None` means "follow the system default output". Only
-    /// meaningful when `audio == true`.
+    /// on Linux. `None` follows the system default output. It applies only
+    /// when `audio` is true.
     pub audio_device_uid: Option<String>,
 
-    /// Boot into EP122 service/test mode.
+    /// Boot EP122 into its service and test mode.
     pub service_mode: bool,
 
-    /// eMMC qcow2 image.
-    /// virtio_blk.c maps device index 0 → /dev/mmcblk1 (major 179, base minor 8).
-    /// Partitions p1..p8 appear as mmcblk1p1..mmcblk1p8.
-    /// p7 = settings (/home/root/settings), p8 = user data (/mnt).
+    /// The eMMC qcow2 image. virtio_blk.c maps device index 0 to /dev/mmcblk1
+    /// (major 179, base minor 8), and partitions p1 to p8 appear as
+    /// mmcblk1p1 to mmcblk1p8. p7 holds the settings (/home/root/settings)
+    /// and p8 the user data (/mnt).
     pub emmc_img: Option<PathBuf>,
 
-    /// vmnet backend for Pro DJ Link.  QEMU opens the interface itself via
-    /// `-netdev vmnet-host` / `vmnet-bridged`, unprivileged under the
+    /// The vmnet back end for Pro DJ Link. QEMU opens the interface itself
+    /// through `-netdev vmnet-host` or `vmnet-bridged`, unprivileged under the
     /// `com.apple.developer.networking.vmnet` entitlement.
     pub net_vmnet: Option<crate::net::vmnet::VmnetMode>,
 
-    /// TAP interface name. Informational where QEMU is handed a descriptor;
-    /// the adapter QEMU opens where it is not (Windows).
+    /// The TAP interface name. Where QEMU receives a descriptor, the name is
+    /// informational; on Windows, QEMU opens the adapter by this name.
     pub net_tap_iface: Option<String>,
 
-    /// Open file descriptor for the QEMU-side TAP device.
-    /// When set, QEMU receives `-netdev tap,fd=<N>`.
-    /// The fd must have FD_CLOEXEC cleared before exec.
+    /// An open file descriptor for QEMU's TAP device. When it is set, QEMU
+    /// receives `-netdev tap,fd=<N>`. FD_CLOEXEC must be cleared on the fd
+    /// before exec.
     pub net_tap_fd: Option<i32>,
 
-    /// QMP TCP port.  Default: 4445 + instance_id (so multiple instances can coexist).
+    /// The QMP TCP port. The launcher uses 4445 plus the instance index, so
+    /// that several instances can run at once.
     pub qmp_port: u16,
 
-    /// GDB TCP port.  Default: 1235 + instance_id.
+    /// The GDB TCP port. The launcher uses 1235 plus the instance index.
     pub gdb_port: u16,
 
-    /// SSH port forwarded from guest :22.  Default: 2222 + instance_id.
+    /// The host port forwarded to the guest's port 22. The launcher uses 2222
+    /// plus the instance index.
     pub ssh_port: u16,
 
-    /// Persistent MAC for the guest virtio-net device. When `None`, falls back
-    /// to the deterministic `0a:00:00:00:00:{instance_id}`.
+    /// The persistent MAC of the guest virtio-net device. When it is `None`,
+    /// the device uses `0a:00:00:00:00:{instance_id}`.
     pub mac: Option<String>,
 
-    /// SoC serial the guest publishes as the `Serial` line of `/proc/cpuinfo`,
-    /// passed as `cdj3k.serial=` on the kernel cmdline and picked up by guest
-    /// patch 12.  `None` leaves the line absent, and `genkey_pr` cannot derive
-    /// the `cabinet.img` key.
+    /// The SoC serial that the guest publishes as the `Serial` line of
+    /// `/proc/cpuinfo`. It is passed as `cdj3k.serial=` on the kernel command
+    /// line, where guest patch 12 picks it up. With `None`, the line is
+    /// absent and `genkey_pr` cannot derive the `cabinet.img` key.
     pub soc_serial: Option<String>,
 
     /// When `true`, QEMU writes the guest serial console to
-    /// `{sock_dir}/serial.log`. Disabled by default in release builds - the
-    /// file grows unbounded over a long session and is only useful when
-    /// debugging boot / kernel panics. Enable from the CLI with `--serial-log`
-    /// or by setting `CDJ3K_SERIAL_LOG=1`.
+    /// `{sock_dir}/serial.log`. It is off by default in release builds,
+    /// because the file grows without limit over a long session and is useful
+    /// only to debug the boot or a kernel panic. Turn it on with
+    /// `--serial-log` or `CDJ3K_SERIAL_LOG=1`.
     pub serial_log: bool,
 }
 
-/// `CDJ3K_SERIAL_SOCKET=1`: put the guest console on a unix socket rather than
-/// a log file. A guest built with `ENABLE_SSH=1` autologins root on it, so it
-/// is a scriptable shell.
+/// `CDJ3K_SERIAL_SOCKET=1` puts the guest console on a Unix socket instead of
+/// a log file. A guest built with `ENABLE_SSH=1` logs root in on it
+/// automatically, so the socket is a scriptable shell.
 fn serial_is_socket() -> bool {
     std::env::var_os("CDJ3K_SERIAL_SOCKET").is_some_and(|v| v != "0" && !v.is_empty())
 }
 
-/// `CDJ3K_KCMD_EXTRA`, trimmed: appended to the kernel cmdline. Lets a dev
-/// boot hold a unit back (`systemd.mask=EP145.service`) so the console shell
-/// is ready before the app starts, which is the only way to instrument its
-/// startup without racing the getty.
+/// Return `CDJ3K_KCMD_EXTRA`, trimmed, for the end of the kernel command line.
+/// A development boot can use it to hold a unit back
+/// (`systemd.mask=EP145.service`), so that the console shell is ready before
+/// the app starts. This is the only way to instrument the app's startup
+/// without racing the getty.
 fn kcmd_extra() -> Option<String> {
     let extra = std::env::var_os("CDJ3K_KCMD_EXTRA")?;
     let extra = extra.to_string_lossy();
@@ -103,7 +107,7 @@ fn kcmd_extra() -> Option<String> {
 }
 
 impl QemuConfig {
-    /// Guest RAM in bytes. Set to 3 GiB.
+    /// The guest RAM size in bytes: 3 GiB.
     pub const MEM_BYTES: u64 = 0xC000_0000;
 
     pub fn new(kernel: PathBuf, initramfs: PathBuf) -> Self {
@@ -130,7 +134,7 @@ impl QemuConfig {
         }
     }
 
-    /// Socket directory: see [`runtime_paths::instance_dir`].
+    /// The socket directory, from [`cdj3k_emu_platform::runtime_paths::instance_dir`].
     pub fn sock_dir(&self) -> PathBuf {
         cdj3k_emu_platform::runtime_paths::instance_dir(self.instance_id)
     }
@@ -141,20 +145,21 @@ impl QemuConfig {
         self.sock_dir().join("qmp-fd.sock")
     }
 
-    /// Shared RAM file path (only when shm=true).
+    /// The path of the shared RAM file, used only when `shm` is true.
     pub fn shm_path(&self) -> PathBuf {
         self.sock_dir().join("ram.shm")
     }
 
-    /// ivshmem-backed file for the jog-LCD zero-copy frame buffer.
-    /// 1 MiB; layout matches `JOG_SHM_*` in `guest/shim/shim.h` and
-    /// `crates/cdj3k-emu-streams/src/jog_stream.rs`.
+    /// The ivshmem backing file for the jog LCD frame buffer, which the host
+    /// reads without copying. It is 1 MiB, and its layout matches `JOG_SHM_*`
+    /// in `guest/shim/shim.h` and `crates/cdj3k-emu-streams/src/jog_stream.rs`.
     pub fn jog_shm_path(&self) -> PathBuf {
         self.sock_dir().join("jog.shm")
     }
 
-    /// Placeholder backing file for the always-present USB virtio-blk slot.
-    /// Created by QemuInstance::spawn; swapped live via QMP blockdev-change-medium.
+    /// The placeholder backing file for the USB virtio-blk slot, which is
+    /// always present. QemuInstance::spawn creates it, and QMP
+    /// blockdev-change-medium swaps it while the guest runs.
     pub fn usb_placeholder_path(&self) -> PathBuf {
         self.sock_dir().join("usb.placeholder")
     }
@@ -192,7 +197,7 @@ impl QemuConfig {
         }
     }
 
-    /// Machine, RAM, accelerator, CPU model and core count.
+    /// The machine, RAM, accelerator, CPU model and core count.
     fn machine_args(&self) -> Vec<String> {
         let cpu = match self.accel {
             Some(accel) => [opt("-accel", accel.name), opt("-cpu", "host")].concat(),
@@ -214,7 +219,7 @@ impl QemuConfig {
         .concat()
     }
 
-    /// Kernel, initramfs and kernel command line.
+    /// The kernel, the initramfs and the kernel command line.
     fn kernel_args(&self) -> Vec<String> {
         [
             opt("-kernel", self.kernel.display().to_string()),
@@ -228,16 +233,15 @@ impl QemuConfig {
         let mut kcmd =
             "root=/dev/ram0 rdinit=/init loglevel=7 nowatchdog rng_core.default_quality=1024"
                 .to_string();
-        // PL011 UART console works on vanilla 6.6 - always wire it up.
+        // The PL011 UART console works on the vanilla 6.6 kernel, so it is
+        // always enabled.
         kcmd.push_str(" console=ttyAMA0,115200");
-        // Forward journal to console so app crash details appear in the serial
-        // log - except when the console is the interactive shell, where the
-        // forwarded stream drowns the prompt and anything typed at it.
+        // Forward the journal to the console, so that app crash details appear
+        // in the serial log. When the console is the interactive shell, the
+        // forwarded stream would drown the prompt, so it stays off.
         if !serial_is_socket() {
             kcmd.push_str(" systemd.journald.forward_to_console=1");
         }
-        // virtio_gpu_init() requires VIRTIO_F_VERSION_1; force-legacy=off on the
-        // MMIO transport ensures that bit is negotiated.
         kcmd.push_str(" virtio_gpu.modeset=1");
         if self.service_mode {
             kcmd.push_str(" subucom_testmode");
@@ -259,16 +263,15 @@ impl QemuConfig {
         if let Some(serial) = &self.soc_serial {
             kcmd.push_str(&format!(" cdj3k.serial={}", serial));
         }
-        // snd-dummy is built-in (CONFIG_SND_DUMMY=y) so its card always
-        // auto-registers first - and JUCE picks card 0. When the real
-        // virtio-snd path is wired up, disable Dummy so JUCE opens vsnd
-        // (which becomes card 0 when Dummy is silent).
+        // snd-dummy is built in (CONFIG_SND_DUMMY=y), so its card registers
+        // first and JUCE picks card 0. With virtio-snd present, disable
+        // snd-dummy so that vsnd becomes card 0 and JUCE opens it.
         if self.audio {
             kcmd.push_str(" snd-dummy.enable=0");
             // Under TCG the guest cannot take the player's 64-frame period
             // (1500 wakeups a second into a 2.7 ms ring at 96 kHz); a larger
-            // one gives the audio thread room to be late. Read by the guest's
-            // insmod-virtio-snd.
+            // one gives the audio thread room to be late. The guest's
+            // insmod-virtio-snd reads this parameter.
             if self.accel.is_none() {
                 kcmd.push_str(" cdj3k.snd_period=512");
             }
@@ -283,13 +286,12 @@ impl QemuConfig {
     /// Where the guest console goes.
     fn serial_args(&self) -> Vec<String> {
         if !self.serial_log {
-            // No serial sink: also suppress QEMU's default monitor and
-            // parallel chardevs. Otherwise the default-monitor allocator
-            // creates a hidden QemuTextConsole that arms the VT100 cursor
-            // blink timer (~250 ms self-rearm), and each fire walks the
-            // glyph cache under BQL - measured at 0.4-0.7% of the audio
-            // refill thread on a two-instance setup. Empty defaults =
-            // no text consoles created = no cursor work.
+            // Without a serial sink, also turn off QEMU's default monitor and
+            // parallel chardevs. Otherwise QEMU creates a hidden
+            // QemuTextConsole whose VT100 cursor blink timer fires every
+            // 250 ms or so and walks the glyph cache under the BQL, which
+            // costs the audio refill thread 0.4-0.7% with two instances
+            // running.
             return [
                 opt("-serial", "null"),
                 opt("-monitor", "none"),
@@ -297,10 +299,10 @@ impl QemuConfig {
             ]
             .concat();
         }
-        // `CDJ3K_SERIAL_SOCKET=1` puts the console on a unix socket instead
-        // of a file. A guest built with `ENABLE_SSH=1` autologins root on
-        // ttyAMA0, so connecting to it is a shell - which is how the guest
-        // gets traced without a debugger or an sshd.
+        // `CDJ3K_SERIAL_SOCKET=1` puts the console on a Unix socket instead
+        // of a file. A guest built with `ENABLE_SSH=1` logs root in on
+        // ttyAMA0 automatically, so the socket gives a shell without a
+        // debugger or an sshd.
         let sink = if serial_is_socket() {
             let sock = self.sock_dir().join("serial.sock").display().to_string();
             format!("unix:{},server=on,wait=off", sock)
@@ -310,7 +312,7 @@ impl QemuConfig {
         opt("-serial", sink)
     }
 
-    /// Guest RAM backed by [`Self::shm_path`], when `shm` is set.
+    /// Back the guest RAM with [`Self::shm_path`] when `shm` is set.
     fn ram_file_args(&self) -> Vec<String> {
         if !self.shm {
             return Vec::new();
@@ -359,9 +361,9 @@ impl QemuConfig {
         // A host with no backend gets no `-audiodev` rather than another
         // host's driver, which QEMU would refuse.
         let (true, Some(backend)) = (self.audio, host::AUDIO) else {
-            // When disabled: no virtio-sound device. The guest auto-loads
-            // snd-dummy so JUCE still enumerates an ALSA card without
-            // generating any guest↔host audio traffic.
+            // With audio off there is no virtio-sound device. The guest loads
+            // snd-dummy, so JUCE still finds an ALSA card and no audio passes
+            // between the guest and the host.
             return Vec::new();
         };
         let mut audiodev = String::from(backend.driver);
@@ -371,8 +373,8 @@ impl QemuConfig {
             // A pinned device from the per-instance Audio Output picker is
             // named here so the backend binds to it rather than to the
             // system default. Both selectors' values contain ':' and
-            // spaces, which QEMU's `-audiodev` parser passes through — it
-            // splits on ',' and '=' only.
+            // spaces, which QEMU's `-audiodev` parser accepts, because it
+            // splits only on ',' and '='.
             audiodev.push_str(backend.device_selector);
             audiodev.push_str(uid);
         }
@@ -431,9 +433,9 @@ impl QemuConfig {
         args
     }
 
-    /// ivshmem-plain (jog LCD zero-copy frame buffer). The guest's
-    /// deck_shim.so writes extracted 320×240 XRGB pixels directly into
-    /// BAR2; the host mmaps `jog.shm` and polls the seqlock counter.
+    /// The ivshmem-plain device for the jog LCD frame buffer. The guest's
+    /// deck_shim.so writes the 320×240 XRGB pixels directly into BAR2, and
+    /// the host maps `jog.shm` and polls the seqlock counter.
     fn jog_shm_args(&self) -> Vec<String> {
         [
             opt(
@@ -450,22 +452,26 @@ impl QemuConfig {
 
     /// The USB slot and the eMMC.
     ///
-    /// Pioneer virtio_blk.c probes in reverse virtio-mmio slot order (last
-    /// listed = first probed). USB is listed BEFORE eMMC so the indices work
-    /// out:
-    ///   usb0  (listed first  → probed second → index 1 → /dev/sdb)
-    ///   emmc0 (listed second → probed first  → index 0 → /dev/mmcblk1)
+    /// The guest probes the virtio-mmio slots in reverse order, so the last
+    /// device listed is probed first and takes virtio-blk index 0. The
+    /// guest's virtio_blk names index 0 `mmcblkN` and index 1 `sdb`
+    /// (guest/kernel-patches/01-virtio-blk-naming.patch), so the USB slot is
+    /// listed before the eMMC:
     ///
-    /// The USB slot is always present, initially backed by a 1-sector
-    /// placeholder. UsbManager hot-swaps the medium via QMP
-    /// blockdev-change-medium without restarting QEMU;
-    /// virtio_blk_change_media fires virtio_notify_config which triggers
-    /// Pioneer's virtblk_config_changed → revalidate_disk on the guest.
+    /// - usb0 is listed first, probed second, and becomes /dev/sdb.
+    /// - emmc0 is listed second, probed first, and becomes /dev/mmcblk1, or
+    ///   /dev/mmcblk0 on the CDJ-1500X.
     ///
-    /// file.locking=off - qcow2/raw open uses fcntl byte-range locks at offset
-    /// 100; if a prior QEMU subprocess hasn't fully released its FD when we
-    /// restart, the new process aborts with "Failed to lock byte 100". We
-    /// gate exclusive access at the host (.app) level instead.
+    /// The USB slot is always present and starts with a one-sector
+    /// placeholder. UsbManager swaps the medium through QMP
+    /// blockdev-change-medium without restarting QEMU. QEMU then notifies a
+    /// config change, and the guest resizes the disk with
+    /// set_capacity_and_notify.
+    ///
+    /// The drives use file.locking=off. Opening a qcow2 or raw image takes
+    /// fcntl byte-range locks at offset 100, and if the previous QEMU has not
+    /// released its fd when the slot restarts, the new process aborts with
+    /// "Failed to lock byte 100". The app enforces exclusive access itself.
     fn disk_args(&self) -> Vec<String> {
         let mut args = [
             opt(
@@ -503,17 +509,17 @@ impl QemuConfig {
 
 /// The virtio-serial channels, each a `cdj3k.<name>` port in the guest.
 const CHANNELS: [&str; 3] = [
-    // Bidirectional: subucom_forwarder bridges subucom_ctrl ↔ host.
+    // subucom_forwarder carries traffic both ways between subucom_ctrl and
+    // the host.
     "ctrl",
-    // Bidirectional: cdj3k-cfgd ↔ host runtime.
-    //   host→guest: usb attach|detach, set/get sysfs params
-    //   guest→host: usb_state, param values, latency every 3s
+    // cdj3k-cfgd and the host runtime talk both ways. The protocol is
+    // described in `crate::cfg`.
     "cfg",
-    // Bidirectional: pc-link-bridge in the guest ↔ cdj3k-emu-runtime.
-    // Carries HID (/dev/hidraw0) and MIDI (/dev/snd/midiC1D0) frames
-    // for the dummy_hcd-attached gadget; the host surfaces HID as an
-    // IOHIDUserDevice and MIDI as a CoreMIDI endpoint. Idle until the
-    // pc_link toggle goes on.
+    // pc-link-bridge in the guest and cdj3k-emu-runtime talk both ways. The
+    // port carries HID (/dev/hidraw0) and MIDI (/dev/snd/midiC1D0) frames for
+    // the gadget attached to dummy_hcd; the host shows HID as an
+    // IOHIDUserDevice and MIDI as a CoreMIDI endpoint. The port is idle until
+    // the pc_link toggle turns on.
     "usb-link",
 ];
 

@@ -1,8 +1,8 @@
 # Builds the three Linux artefacts: .deb, .rpm and .AppImage.
 #
-# Same bookworm base as the QEMU stage, so everything shipped has one glibc
-# floor (2.36). Build for one architecture at a time: `--platform linux/arm64`
-# or `linux/amd64`.
+# The image uses the same bookworm base as the QEMU stage, so everything that
+# ships has the same glibc floor (2.36). Build for one architecture at a time,
+# with `--platform linux/arm64` or `linux/amd64`.
 FROM debian:bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -14,18 +14,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpixman-1-0 libslirp0 libglib2.0-0 libzstd1 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
-# The emulator's own toolchain. Pinned by rust-toolchain.toml when present.
+# Install Rust; rust-toolchain.toml in the repository pins the version cargo
+# uses.
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# nfpm writes the deb and the rpm from one recipe; appimagetool writes the
-# third. Both are single static binaries, fetched per architecture.
+# nfpm writes the deb and the rpm from one recipe, and appimagetool writes the
+# AppImage. Both are single static binaries, fetched for each architecture.
 ARG NFPM_VERSION=2.41.1
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
         amd64) nfpm_arch=x86_64; ai_arch=x86_64 ;; \
         arm64) nfpm_arch=arm64;  ai_arch=aarch64 ;; \
-        *) echo "unsupported architecture" >&2; exit 1 ;; \
+        *) echo "This architecture is not supported." >&2; exit 1 ;; \
     esac; \
     curl -sSL -o /tmp/nfpm.tar.gz \
         "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_${nfpm_arch}.tar.gz"; \

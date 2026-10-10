@@ -95,8 +95,8 @@ pub fn check() -> Result<Status, Error> {
     let data = fetch::get(&url).map_err(|e| {
         if e.not_found {
             Error::new(
-                "the latest release carries no update index; it was published \
-                 before the updater - download it from the releases page",
+                "the latest release has no update index because it predates \
+                 the updater; download it from the releases page",
             )
         } else {
             e
@@ -116,7 +116,7 @@ pub fn check() -> Result<Status, Error> {
     )
 }
 
-/// [`check`]'s decision, for an index already verified.
+/// Decide [`check`]'s status from an index that is already verified.
 fn evaluate(
     index: &Index,
     running: &str,
@@ -126,7 +126,7 @@ fn evaluate(
 ) -> Result<Status, Error> {
     let latest = Version::parse(&index.version).ok_or_else(|| {
         Error::new(format!(
-            "the update index names version {:?}",
+            "the update index names version {:?}, which does not parse",
             index.version
         ))
     })?;
@@ -160,7 +160,8 @@ pub fn download_dir(version: &str) -> PathBuf {
 }
 
 /// Fetch `offer`'s package, checked against the signed index. `progress`
-/// hears the bytes so far and the total; setting `cancel` stops it.
+/// receives the bytes downloaded so far and the total; setting `cancel` stops
+/// the download.
 pub fn download(
     offer: &Offer,
     progress: &mut dyn FnMut(u64, u64),

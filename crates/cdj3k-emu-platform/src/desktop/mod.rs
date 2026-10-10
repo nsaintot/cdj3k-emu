@@ -1,17 +1,16 @@
 //! Platform desktop integration: native window options, the window shell,
 //! file pickers, and revealing a file in the host's file manager.
 //!
-//! **Rendering:** egui draws the UI with **OpenGL** (glow) into the window's
-//! content area. On macOS that is not Cocoa/AppKit `NSView` drawing APIs for
-//! the panel - only the **window shell** (title bar, resize) is standard AppKit
-//! `NSWindow`.
+//! egui draws the UI with OpenGL (glow) into the window's content area. On
+//! macOS, AppKit provides only the window shell (title bar and resizing)
+//! through `NSWindow`; the panel does not use `NSView` drawing.
 //!
-//! **Two window shapes.** The app opens as the compact, fixed-size model
+//! The window has two shapes. The app opens as the compact, fixed-size model
 //! picker ([`PICKER_SIZE`]). Choosing a model turns the same window into the
-//! resizable, aspect-locked panel ([`enter_panel_window`]); "Switch
-//! Emulation" shrinks it back ([`enter_picker_window`]). Only the panel frame
-//! is persisted, per instance slot and model ([`frame_key`]), by each host's
-//! adapter: AppKit's frame autosave on macOS, a file of our own on Linux and
+//! resizable, aspect-locked panel ([`enter_panel_window`]), and emptying the
+//! slot shrinks it back ([`enter_picker_window`]). Only the panel frame is
+//! saved, per slot and model ([`frame_key`]), by each host's adapter: AppKit's
+//! frame autosave on macOS, and a file in the app data directory on Linux and
 //! Windows.
 
 #[cfg(target_os = "macos")]
@@ -43,9 +42,10 @@ pub use imp::{
     set_caption_area, CAPTION_IN_STRIP, OWN_WINDOW_ICON, PLACES_WINDOWS,
 };
 
-/// The in-window strip standing in for the title bar, where
-/// [`CAPTION_IN_STRIP`]: its rectangle and the widgets on it, in points. What
-/// is in `strip` and in none of `widgets` drags the window.
+/// The in-window strip that stands in for the title bar on hosts where
+/// [`CAPTION_IN_STRIP`] is true: its rectangle and the widgets on it, in
+/// points. A press inside `strip` and outside every rectangle in `widgets`
+/// drags the window.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CaptionArea {
     pub strip: egui::Rect,
@@ -53,8 +53,8 @@ pub struct CaptionArea {
     pub pixels_per_point: f32,
 }
 
-/// What holding a window to its aspect carries between frames: the settle
-/// snap's view of the size.
+/// The state that the settle snap keeps between frames: the last size and
+/// when it last changed.
 #[derive(Debug)]
 pub struct ResizeState {
     last_size: egui::Vec2,
@@ -71,19 +71,19 @@ impl Default for ResizeState {
 }
 
 /// How long the size has to stay put before the settle snap fires, so a drag
-/// in progress is not fought. Time rather than frames: frames arrive only as
-/// fast as something repaints.
+/// in progress is not fought. It is a duration because frames arrive only
+/// when something repaints.
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(40);
 /// Movement (px²) under which the size counts as unchanged.
 const STABLE_SIZE_TOL_SQ: f32 = 0.25;
-/// Width error (px) the settle snap lets stand. Above a whole pixel, so it
-/// never chases the rounding of a native aspect lock.
+/// The width error in px that the settle snap leaves alone. It is above one
+/// pixel, so the snap never chases the rounding of a native aspect lock.
 const SNAP_TOL_PX: f32 = 1.5;
 
 /// Square the window up to `ref_w`:`ref_h` once a resize has settled.
 ///
-/// Behind every native lock, because those constrain resizes and nothing
-/// else: a window that comes up at the wrong shape, from a saved frame or a
+/// This runs behind every native lock, because a native lock only constrains
+/// resizes: a window that comes up at the wrong shape, from a saved frame or a
 /// model change, would otherwise stay that way. Where the lock works, a
 /// settled window is already square and this does nothing.
 fn snap_when_settled(ctx: &egui::Context, state: &mut ResizeState, (ref_w, ref_h): (f32, f32)) {
@@ -124,7 +124,8 @@ fn snap_when_settled(ctx: &egui::Context, state: &mut ResizeState, (ref_w, ref_h
 /// The name a panel frame is saved under, per slot and model.
 ///
 /// The CDJ-3000 uses the unsuffixed name, which existing saved frames use;
-/// other models append their slug (different canvas aspect).
+/// other models append their slug, because their canvas has a different
+/// aspect.
 pub fn frame_key(instance_id: u32, model: cdj3k_emu_panel::Model) -> String {
     match model {
         cdj3k_emu_panel::Model::Cdj3k => format!("cdj3k-emu-instance-{}", instance_id),
@@ -132,15 +133,15 @@ pub fn frame_key(instance_id: u32, model: cdj3k_emu_panel::Model) -> String {
     }
 }
 
-/// Set the process's user-visible name (Dock tile, menu bar, Activity Monitor).
-/// Must be called before [`eframe::run_native`].
+/// Set the process name that the user sees in the Dock tile, the menu bar and
+/// Activity Monitor. Call it before [`eframe::run_native`].
 pub fn set_app_name(name: &str) {
     let _ = imp::set_app_name(name);
 }
 
-/// Compact, fixed-size window the app wears whenever it is not a panel
-/// (points): the startup picker, and the setup window over it. One shape for
-/// both, so stepping between them never resizes anything.
+/// The compact, fixed size in points of the window whenever it is not a
+/// panel: the startup picker and the setup window over it. Both use the same
+/// size, so moving between them never resizes the window.
 pub const PICKER_SIZE: [f32; 2] = [760.0, 600.0];
 
 const MIN_WINDOW_W: f32 = 200.0;
@@ -182,9 +183,9 @@ const MOD_TYPES: &[&str] = &["tgz", "gz", "tar", "toml"];
 
 /// A file dialog the frame loop polls for its answer ([`PendingPick::take`]).
 ///
-/// How the dialog runs is the host's: on a thread of its own where blocking
-/// the UI thread would stop the app answering the desktop (Linux, Windows),
-/// on the UI thread where the toolkit requires it (AppKit).
+/// Each host runs the dialog its own way: on a separate thread where blocking
+/// the UI thread would stop the app from answering the desktop (Linux,
+/// Windows), and on the UI thread where the toolkit requires it (AppKit).
 pub struct PendingPick {
     rx: std::sync::mpsc::Receiver<Option<std::path::PathBuf>>,
 }

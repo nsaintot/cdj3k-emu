@@ -3,10 +3,10 @@
  * instance's id. */
 #include "driver.h"
 
-/* The deck's identity: VID+PID (usbVendorProduct) + LocationID pair the MIDI
- * device with its HID sibling; the USB id selects a DJ app's built-in map.
- * `location` comes from that instance's identity and equals the LocationID on
- * the HID device it registered. */
+/* The USB vendor and product IDs (usbVendorProduct) and the LocationID pair the
+ * MIDI device with its HID sibling.  A DJ app picks its built-in mapping from
+ * the USB IDs.  `location` comes from that instance's identity and equals the
+ * LocationID on the HID device it registered. */
 void configure_device(MIDIDeviceRef dev, const struct slot *sl) {
     uint32_t location = sl->location;
     CFStringRef name = sl->name;
@@ -33,7 +33,8 @@ void configure_device(MIDIDeviceRef dev, const struct slot *sl) {
     MIDIObjectSetIntegerProperty(dev, CFSTR("UMP Enabled"), 0);
 }
 
-/* Remove any device we left in the setup from a previous load/crash. */
+/* Remove any device this driver left in the setup after a previous load or a
+ * crash. */
 void remove_stale_devices(void) {
     /* Collect first: MIDISetupRemoveDevice shifts the list, so removing while
      * walking it by index skips the entry after each hit. */
@@ -84,11 +85,10 @@ int create_slot_device(struct slot *sl, int index) {
             MIDIEndpointSetRefCons(MIDIEntityGetDestination(en, k),
                                    REF_MAKE(sl->gen, index), NULL);
     }
-    os_log(g_log, "slot %d device up, location %u", index, (unsigned)sl->location);
+    os_log(g_log, "slot %d: published the device at location %u", index, (unsigned)sl->location);
     return 0;
 }
 
-/* Unpublish one slot's device when its link drops (like unplugging a CDJ). */
 /* Detach the slot and hand back the device it published, if any.  The caller
  * retires that device with the slot lock released: MIDISetupRemoveDevice takes
  * MIDIServer's own setup lock, and MIDIServer holds that lock while calling
@@ -103,15 +103,15 @@ MIDIDeviceRef slot_detach(struct slot *sl) {
     return dev;
 }
 
-/* Retire a device handed back by slot_detach.  Never called with the slot
- * lock held. */
+/* Remove a device that slot_detach handed back.  It is never called with the
+ * slot lock held. */
 void slot_retire(MIDIDeviceRef dev, uint32_t location) {
     if (!dev) return;
-    os_log(g_log, "device down, location %u", (unsigned)location);
+    os_log(g_log, "removing the device at location %u", (unsigned)location);
     MIDISetupRemoveDevice(dev);
 }
 
-/* Data bytes that follow a status byte. */
+/* Return the number of data bytes that follow a status byte. */
 static Byte data_len(Byte status) {
     switch (status & 0xf0) {
     case 0xc0: case 0xd0: return 1;

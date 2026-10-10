@@ -14,13 +14,13 @@ use crate::app::picker::{
 };
 use crate::app::theme;
 
-/// The setup window's size on every step: the size of the picker it opens
-/// over.
+/// The setup window's size on every step, which is the size of the picker it
+/// opens over.
 const SETUP_WINDOW_SIZE: [f32; 2] = desktop::PICKER_SIZE;
 
 impl CdjShell {
-    /// The setup window: one window for the whole job of giving this slot an
-    /// emulation, whichever step it is on.
+    /// Shows the setup window, one window for every step of giving this slot
+    /// an emulation.
     pub(super) fn show_setup_window(&mut self, ctx: &egui::Context) -> Option<PickerAction> {
         if self.setup.is_none() {
             self.setup_pos = None;
@@ -28,8 +28,8 @@ impl CdjShell {
             return None;
         }
         let closed = Arc::new(AtomicBool::new(false));
-        // Over the startup picker, a second window of the same size and chrome
-        // is only used where the host can centre it on the first.
+        // Over the startup picker, use a second window of the same size and
+        // chrome only where the host can centre it on the first.
         let over_the_picker = matches!(self.screen, Screen::Picker);
         let action = if over_the_picker && !desktop::PLACES_WINDOWS {
             self.setup_in_main_window(ctx, &closed)
@@ -42,8 +42,9 @@ impl CdjShell {
         action
     }
 
-    /// The setup screen as a second OS window, centred on the first where the
-    /// host allows it. Wayland ignores the position; the compositor places it.
+    /// Shows the setup screen as a second OS window, centred on the first
+    /// where the host allows it. Wayland ignores the position, and the
+    /// compositor places the window.
     fn setup_in_own_window(
         &mut self,
         ctx: &egui::Context,
@@ -59,9 +60,10 @@ impl CdjShell {
             Some(SetupStep::Mods) => "Manage Mods",
             _ => "Manage Emulation",
         };
-        // Not built non-resizable: winit pins min and max to the size at
-        // creation, before it knows the scale, and a compositor places the
-        // window by that pin. The size is pinned from the first frame instead.
+        // The window is not built as non-resizable, because winit would pin
+        // min and max to the size at creation, before it knows the scale, and
+        // a compositor places the window by that size. The size is pinned from
+        // the first frame instead.
         let mut builder = egui::ViewportBuilder::default()
             .with_title(title)
             .with_inner_size(SETUP_WINDOW_SIZE);
@@ -79,8 +81,8 @@ impl CdjShell {
                 if root.input(|i| i.viewport().close_requested()) {
                     closed_inner.store(true, Relaxed);
                 }
-                // Min and max equal hold the size; restated whenever the
-                // window measures wrong.
+                // Setting min and max to the same size holds the size; set
+                // them again whenever the window's size is wrong.
                 let size = egui::Vec2::from(SETUP_WINDOW_SIZE);
                 if first_frame || (root.content_rect().size() - size).length() > 1.0 {
                     root.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(size));
@@ -97,8 +99,8 @@ impl CdjShell {
         action
     }
 
-    /// The setup screen inside the window it came from, over whatever it
-    /// interrupted.
+    /// Shows the setup screen inside the window it came from, over whatever
+    /// that window was showing.
     pub(super) fn setup_in_main_window(
         &mut self,
         ctx: &egui::Context,
@@ -112,9 +114,9 @@ impl CdjShell {
             .show(ctx, |ui| {
                 let screen = ctx.content_rect();
                 ui.painter().rect_filled(screen, 0.0, pal.paper);
-                // It owns the window while it is up, so nothing behind it can
-                // be clicked through. Registered before the setup's widgets:
-                // the last one registered over a point takes its clicks.
+                // Block clicks to everything behind the setup screen. This is
+                // registered before the setup's widgets, because the last
+                // widget registered over a point takes its clicks.
                 ui.interact(screen, ui.id().with("block"), egui::Sense::click_and_drag());
                 ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
                     ui.set_clip_rect(screen);
@@ -181,16 +183,16 @@ impl CdjShell {
             },
         )
         .body;
-        // The wizard lays out its own gutters and its own action bar, so
-        // it takes the body whole.
+        // The wizard lays out its own gutters and action bar, so it gets the
+        // whole body.
         ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
             self.wizard.draw(ui, closed);
         });
     }
 
-    /// The slot's mods. Repaints regularly so the list follows the slot's
-    /// files and the boot report, and a finished pick or download is
-    /// collected.
+    /// Draws the slot's mods. It repaints regularly so the list follows the
+    /// slot's files and the boot report, and so a finished pick or download
+    /// is collected.
     fn draw_mods_step(&mut self, ui: &mut egui::Ui) -> Option<PickerAction> {
         self.poll_mods();
         let action = self
@@ -202,7 +204,7 @@ impl CdjShell {
         action
     }
 
-    /// The wait while the emulation stops so the slot can be emptied.
+    /// Draws the wait while the emulation stops so the slot can be emptied.
     fn draw_stopping_step(&self, ui: &mut egui::Ui) {
         let going = self.model;
         draw_busy(
@@ -213,12 +215,12 @@ impl CdjShell {
                 release: self.viewed_release.as_deref(),
                 state: Some("STOPPING"),
                 title: "Emulation",
-                sub: "The emulation has to stop before its installation may be touched.",
+                sub: "The emulation must stop before its installation can be changed.",
                 switchable: false,
                 warn: false,
             },
             &format!("Stopping the {} emulation…", going.title()),
-            "The slot is emptied once it has.",
+            "The slot is emptied once the emulation has stopped.",
         );
     }
 }

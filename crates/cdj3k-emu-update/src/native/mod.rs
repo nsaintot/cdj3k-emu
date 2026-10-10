@@ -27,7 +27,7 @@ pub enum Event {
 }
 
 /// Load the host's updater for slot `own` and start its scheduled checks.
-/// False where there is none, or it would not load.
+/// Returns false when the host has no updater or it fails to load.
 pub fn start(own: u32) -> bool {
     imp::start(own)
 }
@@ -37,13 +37,13 @@ pub fn take_events() -> Vec<Event> {
     imp::take_events()
 }
 
-/// A check the user asked for: the updater shows its window whatever it
-/// finds.
+/// Run a check that the user asked for; the updater shows its window
+/// whatever the result.
 pub fn check_now() {
     imp::check_now()
 }
 
-/// Let a requested relaunch go ahead. False if none is waiting.
+/// Let a requested relaunch go ahead. Returns false if none is waiting.
 pub fn proceed_relaunch() -> bool {
     imp::proceed_relaunch()
 }
@@ -55,7 +55,7 @@ pub fn install_pending() -> bool {
 
 /// Install the update that waits for the quit now. The updater then ends
 /// this process itself, and relaunches the app when `relaunch` is set.
-/// False if none is waiting.
+/// Returns false if none is waiting.
 pub fn install_now(relaunch: bool) -> bool {
     imp::install_now(relaunch)
 }

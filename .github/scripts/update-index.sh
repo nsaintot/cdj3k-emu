@@ -35,7 +35,7 @@ for path in "$dir"/*; do
         x64 | x86_64) arch=x86_64 ;;
         arm64 | aarch64) arch=aarch64 ;;
         universal) ;;
-        *) echo "::error::$name: unknown architecture $arch" >&2; exit 1 ;;
+        *) echo "::error::$name has an unknown architecture: $arch." >&2; exit 1 ;;
     esac
     case "$ext" in
         exe) kind=inno ;;
@@ -49,7 +49,7 @@ for path in "$dir"/*; do
         --arg sha256 "$(sha256sum "$path" | cut -d' ' -f1)" \
         '{os: $os, arch: $arch, kind: $kind, url: $url, size: $size, sha256: $sha256}')")
 done
-[[ ${#entries[@]} -gt 0 ]] || { echo "::error::no packages in $dir" >&2; exit 1; }
+[[ ${#entries[@]} -gt 0 ]] || { echo "::error::$dir contains no packages." >&2; exit 1; }
 
 printf '%s\n' "${entries[@]}" | jq -s \
     --arg version "$version" \

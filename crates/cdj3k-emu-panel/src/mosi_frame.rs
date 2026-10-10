@@ -9,15 +9,17 @@ pub const MOSI_SIZE: usize = 64;
 
 /// Gamma used when converting raw LED PWM bytes to sRGB display values.
 ///
-/// The deck writes linear-light PWM values (duty cycle ∝ radiant flux).
-/// Our display is sRGB (gamma ≈ 2.2).  Applying a 1/gamma power curve converts
-/// linear light to perceptual brightness so the UI matches the hardware visually.
+/// The deck writes linear-light PWM values: the duty cycle is proportional to
+/// the radiant flux. The display is sRGB, with a gamma of about 2.2, so a
+/// 1/gamma power curve converts linear light to perceptual brightness and the
+/// UI matches the hardware.
 ///
-/// Raise toward 2.5 if colors still look washed out.
+/// Raise it toward 2.5 if colours look washed out.
 pub const LED_GAMMA: f32 = 2.2;
 
-/// Peak output level (0–255) the dominant LED channel is normalised to.
-/// 255 = fully saturated / maximum brightness; we lower it to reduce intensity.
+/// Peak output level (0-255) that the dominant LED channel is normalised to.
+/// At 255 the channel is at full brightness; a lower value reduces the
+/// intensity.
 pub const LED_PEAK: f32 = 220.0;
 
 /// Exponent that lifts [`led_drive_factor`]: a dim LED reads brighter than its
@@ -77,7 +79,7 @@ pub struct LedProfiles {
 }
 
 impl LedProfiles {
-    /// Every part the same.
+    /// Uses `p` for every part.
     pub const fn uniform(p: LedProfile) -> Self {
         Self {
             pad: p,
@@ -107,16 +109,17 @@ pub const PRIMARY_DIES: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0,
 /// diffuser.
 pub const AZURE_BLUE_DIES: [[f32; 3]; 3] =
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0446, 0.1975, 1.0]];
-/// A bluish green whose red lies outside sRGB, with the azure blue.
+/// Dies with a bluish green whose red component lies outside sRGB, and the
+/// azure blue.
 pub const TEAL_GREEN_DIES: [[f32; 3]; 3] = [
     [1.0, 0.0, 0.0],
     [-0.0846, 1.0, 0.2176],
     [0.0446, 0.1975, 1.0],
 ];
 
-/// A drive whose weakest channel is at least this share of its strongest
-/// takes the full white balance of a `balance_whites_only` profile; one at
-/// [`WHITE_BALANCE_FROM`] or under takes none.
+/// A drive whose weakest channel is at least [`WHITE_BALANCE_FULL`] of its
+/// strongest gets the full white balance of a `balance_whites_only` profile; a
+/// drive at [`WHITE_BALANCE_FROM`] or below gets none.
 const WHITE_BALANCE_FROM: f32 = 0.15;
 const WHITE_BALANCE_FULL: f32 = 0.45;
 
@@ -215,9 +218,9 @@ pub const LED_SPILL: f32 = 0.5;
 #[cfg(feature = "egui-color")]
 const SPILL_WEIGHT: [f32; 3] = [0.4611, 0.8457, 0.2687];
 
-/// The emitter itself: [`led_linear`] scaled by `exposure`, with what passes
-/// full scale spilling into the other channels by luminance. Brightest
-/// channel at 255.
+/// The colour of the emitter itself: [`led_linear`] scaled by `exposure`. The
+/// part of a channel above full scale spills into the other channels, weighted
+/// by luminance.
 #[cfg(feature = "egui-color")]
 pub fn led_color_hot(
     profile: &LedProfile,
@@ -272,18 +275,18 @@ impl StepLed {
 pub enum LampState {
     Bit(bool),
     Step(StepLed),
-    /// A plain value, e.g. a jog ring meter.
+    /// A plain value, such as a jog ring meter.
     Level(u8),
     /// Raw PWM per die, red, green, blue.
     Rgb(u8, u8, u8),
 }
 
-/// Drive of a lamp at [`StepLed::Medium`]: half.
+/// The drive of a lamp at [`StepLed::Medium`], which is half.
 const MEDIUM_DRIVE: u8 = 0x80;
 
 impl LampState {
     /// How hard the lamp is driven, 0..255: a colour's brightest channel, a
-    /// step at half or full, anything else on at full.
+    /// step at half or full, and any other lamp at full when it is on.
     pub fn drive(self) -> u8 {
         match self {
             LampState::Bit(on) => {
@@ -347,7 +350,7 @@ impl MosiFrame {
         self.drive(lamp) > 0
     }
 
-    /// `lamp` as a step: a lamp driven another way reads full when lit.
+    /// `lamp` as a step. A lamp driven another way reads as full when lit.
     pub fn step(&self, lamp: Lamp) -> StepLed {
         match self.lamp(lamp) {
             Some(LampState::Step(s)) => s,

@@ -20,7 +20,7 @@ pub(super) struct Shared {
     /// A Sparkle install that could not proceed; retried from the menu or
     /// "Try Again".
     pub(super) native_waiting: Mutex<Option<Finish>>,
-    /// A check, download or restart thread is running.
+    /// Whether a check, download or restart thread is running.
     pub(super) busy: AtomicBool,
     /// Stops the download.
     pub(super) cancel: AtomicBool,
@@ -106,8 +106,8 @@ impl Updater {
         });
     }
 
-    /// Download and prepare the update while the emulation runs; a deb or an
-    /// rpm goes to the downloads folder instead.
+    /// Download and prepare the update while the emulation runs. A deb or an
+    /// rpm is saved to the downloads folder instead.
     pub(super) fn update(&mut self, ctx: &egui::Context, offer: Offer) {
         self.shared.cancel.store(false, Ordering::Relaxed);
         let ctx = ctx.clone();
@@ -159,7 +159,8 @@ impl Updater {
                 sh.set(&ctx, Phase::Restarting(Step::Closing));
                 cdj3k_emu_update::close_other_slots(own)?;
                 sh.set(&ctx, Phase::Restarting(Step::Stopping));
-                // Resumed on failure, including a stop that outlasts the wait.
+                // The emulation is resumed on failure, including when stopping
+                // it takes longer than the wait.
                 stopped_here = !sh.stopped.load(Ordering::Acquire);
                 stop_emulation(sh, &ctx)?;
                 match &finish {
@@ -185,7 +186,7 @@ impl Updater {
                     }
                     let message = if e.is_cancelled() {
                         sh.declined.store(true, Ordering::Release);
-                        "installation declined; continuing with the current version".into()
+                        "the installation was declined; the current version stays installed".into()
                     } else {
                         eprintln!("cdj3k-emu: update failed: {e}");
                         e.to_string()

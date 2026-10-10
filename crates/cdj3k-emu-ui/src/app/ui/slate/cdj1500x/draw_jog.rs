@@ -2,9 +2,10 @@
 //! and the hub in the middle with its ring of LEDs.
 //!
 //! The platter's top is plain; the grip's knurl (raised pyramids lit from the
-//! top left) and a white bar on it show it turning. The hub's ring lights the
-//! pair of bars at the position the deck sends ([`cdj1500x::jog_ring`]). Drag,
-//! scroll and the slingshot are the shared [`CdjApp::jog_interact`].
+//! top left) and a white bar on it show that it is turning. The hub's ring
+//! lights the pair of segments at the position the deck sends
+//! ([`cdj1500x::jog_ring`]). Drag, scroll and the slingshot use the shared
+//! [`CdjApp::jog_interact`].
 
 use std::f32::consts::TAU;
 
@@ -20,7 +21,7 @@ use super::layout::px;
 
 const CENTER: (f32, f32) = (714.83, 1604.53);
 
-/// Radii from the centre out, drawing pixels.
+/// Radii from the centre outward, in drawing pixels.
 const HUB_R: f32 = 177.5;
 const PLATTER_R: f32 = 364.4;
 const KNURL_IN_R: f32 = 379.0;
@@ -31,17 +32,19 @@ const KNURL_OUT_R: f32 = 436.0;
 /// The assembly's outer edge.
 const RIM_R: f32 = 443.0;
 
-/// Diamonds around the knurl band, and how many deep it is: square at the
-/// band's mean radius.
+/// Number of diamonds around the knurl band and number of rows across it.
+/// With these counts the diamonds are square at the band's mean radius.
 const KNURL_DIAMONDS: usize = 150;
 const KNURL_ROWS: usize = 3;
-/// Share of its cell a diamond covers; the rest shows the dark groove.
+/// Share of its cell that a diamond covers; the rest shows the dark groove.
 const KNURL_FILL: f32 = 1.0;
-/// Share of a diamond its flat top covers: the pyramids are cut off.
+/// Share of a diamond that its flat top covers, because the pyramids are
+/// truncated.
 const KNURL_TOP: f32 = 0.55;
-/// The knurl's faces in soft light: the tops at one shade, the sides a little
-/// lighter or darker as they face the top left, all darker towards the outer
-/// edge where the grip falls away.
+/// Shading of the knurl's faces in soft light. The tops share one shade, the
+/// sides are a little lighter or darker depending on how they face the top
+/// left, and every face darkens towards the outer edge, where the grip falls
+/// away.
 const KNURL_LIGHT: Vec2 = Vec2::new(-0.45, -0.89);
 const KNURL_TOP_SHADE: f32 = 0.55;
 const KNURL_SIDE_SHADE: f32 = 0.22;
@@ -49,17 +52,17 @@ const KNURL_FALLOFF: f32 = 0.15;
 const KNURL_CHAMFER_SHADE: f32 = 0.25;
 const COL_KNURL_LIT: Color32 = Color32::from_rgb(80, 80, 88);
 
-/// The hub's LED ring: segments around it, between these radii.
+/// The hub's LED ring: the number of segments and their inner and outer radii.
 const RING_SEGMENTS: usize = 72;
 const RING_IN_R: f32 = 110.0;
 const RING_OUT_R: f32 = 142.0;
-/// Share of each segment's pitch it fills.
+/// Share of its pitch that each segment fills.
 const RING_FILL: f32 = 0.4;
-/// How many segments light at a position: the deck's 36 positions over the
-/// 72 bars.
+/// Number of segments lit at one position: the deck's 36 positions spread
+/// over the 72 segments.
 const RING_LIT: usize = RING_SEGMENTS / cdj1500x::JOG_RING_POSITIONS as usize;
-/// The segment at the top, where the deck's position 0 lights: segments run
-/// clockwise from 3 o'clock.
+/// The segment at the top, where the deck's position 0 lights. Segments are
+/// numbered clockwise from 3 o'clock.
 const RING_TOP: usize = RING_SEGMENTS * 3 / 4;
 const COL_RING_OFF: Color32 = Color32::from_rgb(48, 48, 54);
 
@@ -79,8 +82,8 @@ pub(super) fn draw_jog(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, l
     app.jog_interact(ui, layout, center, s(PLATTER_R), s(RIM_R));
 
     let line = Stroke::new(layout.sc(LINE_STROKE), COL_SILVER);
-    // The gap, the chamfer, the grooves' floor, then the platter over them
-    // out to where the knurl begins.
+    // Draw the gap, the chamfer and the grooves' floor, then the platter on
+    // top of them, out to where the knurl begins.
     p.add(Shape::circle_filled(center, s(RIM_R), COL_RIM_GAP));
     p.add(Shape::circle_filled(
         center,
@@ -100,7 +103,7 @@ pub(super) fn draw_jog(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, l
         .get_or_build(key, |list| list.add(Shape::mesh(knurl(center, angle, s))))
         .to_vec();
     shapes.reserve(RING_SEGMENTS + 7);
-    // The position bar, across the knurl.
+    // Draw the position bar across the knurl.
     let dir = Vec2::angled(angle);
     let side = dir.rot90() * s(BAR_HALF_W);
     shapes.push(Shape::convex_polygon(
@@ -114,8 +117,8 @@ pub(super) fn draw_jog(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, l
         Stroke::NONE,
     ));
 
-    // The circle that divides the touch zone from the grip, a plain band in
-    // from the knurl.
+    // Draw the circle that divides the touch zone from the grip, a plain band
+    // inside the knurl.
     shapes.push(Shape::circle_stroke(center, s(PLATTER_R), line));
     shapes.push(Shape::circle_filled(center, s(HUB_R), COL_LCD_BG));
     shapes.push(Shape::circle_stroke(
@@ -129,7 +132,7 @@ pub(super) fn draw_jog(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, l
     p.extend(shapes);
 }
 
-/// The hub's LED ring, as the deck drives it.
+/// Draws the hub's LED ring as the deck drives it.
 fn push_led_ring(shapes: &mut Vec<Shape>, app: &CdjApp, center: Pos2, s: &impl Fn(f32) -> f32) {
     let ring = match app.mosi().lamp(Lamp::JogMeter) {
         Some(LampState::Level(v)) => cdj1500x::jog_ring(v),
@@ -161,9 +164,9 @@ fn push_led_ring(shapes: &mut Vec<Shape>, app: &CdjApp, center: Pos2, s: &impl F
     }
 }
 
-/// The knurl turned to `angle`: rows of flat-topped pyramids, each row half a
-/// diamond out from the last and half a pitch round, the edge rows halved by
-/// the band's edges.
+/// Builds the knurl turned to `angle`: rows of flat-topped pyramids, each row
+/// offset from the previous one by half a diamond outward and half a pitch
+/// around. The band's edges cut the edge rows in half.
 fn knurl(center: Pos2, angle: f32, s: impl Fn(f32) -> f32) -> Mesh {
     let pitch = TAU / KNURL_DIAMONDS as f32;
     let depth = (KNURL_END_R - KNURL_IN_R) / KNURL_ROWS as f32;
@@ -199,7 +202,8 @@ fn knurl(center: Pos2, angle: f32, s: impl Fn(f32) -> f32) -> Mesh {
                 (inn, cw, -radial - round),
                 (cw, out, radial - round),
             ] {
-                // An edge row's half beyond the band folds flat onto its apex.
+                // Skip the sides of an edge row's half that lies beyond the band,
+                // which is clamped flat onto the apex.
                 if v0 == apex || v1 == apex {
                     continue;
                 }
@@ -212,7 +216,8 @@ fn knurl(center: Pos2, angle: f32, s: impl Fn(f32) -> f32) -> Mesh {
     mesh
 }
 
-/// The knurl's colour at `shade`, from the groove's dark to fully lit.
+/// Returns the knurl's colour at `shade`, from the dark of the groove at 0 to
+/// fully lit at 1.
 fn knurl_shade(shade: f32) -> Color32 {
     let t = shade.clamp(0.0, 1.0);
     let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
@@ -223,13 +228,13 @@ fn knurl_shade(shade: f32) -> Color32 {
     )
 }
 
-/// How far the platter's face stands above the panel, and the grip's foot:
-/// the grip slopes from the one to the other, so seen side on the jog is a
-/// trapezoid.
+/// The height of the platter's face above the panel, and the height of the
+/// grip's foot. The grip slopes from one to the other, so the jog is a
+/// trapezoid when seen from the side.
 pub(super) const HEIGHT: f32 = 120.0;
 const FOOT: f32 = 6.0;
 
-/// The jog, standing off the panel.
+/// Describes the jog as a raised part standing off the panel.
 pub(super) fn raised() -> Raised {
     let c = Pos2::new(px(CENTER.0), px(CENTER.1));
     Raised {
@@ -241,8 +246,8 @@ pub(super) fn raised() -> Raised {
             height: HEIGHT,
             foot: FOOT,
         },
-        // The foot is the gap's side, unoutlined: the panel meets the gap
-        // with no edge.
+        // The foot is the side of the gap and is not outlined, because the
+        // panel meets the gap without an edge.
         walls: vec![Footprint {
             outlined: false,
             ..Footprint::upright(super::key::circle(c, px(RIM_R)), FOOT)

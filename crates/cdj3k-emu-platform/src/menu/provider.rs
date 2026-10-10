@@ -8,9 +8,9 @@ use super::id::MenuId;
 use super::model::MenuModel;
 
 pub trait MenuProvider {
-    /// Present this model. Called every frame with a freshly built model, so a
-    /// provider holding native widgets is responsible for recognising that
-    /// nothing changed rather than rebuilding.
+    /// Present this model. It is called every frame with a new model, so a
+    /// provider that holds native widgets must detect that nothing changed and
+    /// skip the rebuild.
     fn apply(&mut self, model: &MenuModel);
 
     /// Actions raised since the last call, oldest first.
@@ -18,8 +18,8 @@ pub trait MenuProvider {
 
     /// The in-window provider, when this is one.
     ///
-    /// Drawing needs an egui frame, which the trait does not carry; this
-    /// reaches the one provider that draws without widening the interface.
+    /// Drawing needs an egui frame, which the trait does not carry. This method
+    /// reaches the one provider that draws, without widening the interface.
     fn as_egui(&mut self) -> Option<&mut super::egui_provider::EguiProvider> {
         None
     }

@@ -1,6 +1,6 @@
-//! Button widgets for [`CdjApp`]: rectangular, circular, and arc-quadrant
-//! buttons. Each computes interaction state, maintains the shape cache,
-//! and drives MISO press/release encoding via [`CdjApp::handle_btn_interaction`].
+//! Button widgets for [`CdjApp`]: rectangular, circular and arc-quadrant
+//! buttons. Each one computes its interaction state, keeps its shape cache,
+//! and sends presses and releases through [`CdjApp::handle_btn_interaction`].
 
 use cdj3k_emu_panel::Btn;
 use egui::{Color32, Pos2, Rect};
@@ -20,18 +20,19 @@ fn color_to_u32(c: Color32) -> u32 {
 
 impl CdjApp {
     /// Where `btn` sits in the frame of the player on screen, or `None` if
-    /// that player has no such button - which is how a slate stays honest
-    /// about a control its player does not carry.
+    /// that player has no such button. A slate then sends nothing for a
+    /// control the player lacks.
     pub(super) fn button(&self, btn: Btn) -> Option<(usize, u8)> {
         self.model.button(btn)
     }
 
-    /// Shared button press/release logic with optional ctrl-latch.
+    /// The press and release logic that every button shares, with an optional
+    /// Ctrl latch.
     ///
-    /// On press edge: sets `held_btn` and injects.
-    /// On release edge without ctrl: clears `held_btn` and injects.
-    /// On release edge with ctrl: moves the button into `latched_btns` and
-    /// injects (button stays on until ctrl is released).
+    /// On a press, it sets `held_btn` and injects a frame. On a release without
+    /// Ctrl, it clears `held_btn` and injects. On a release with Ctrl, it moves
+    /// the button into `latched_btns` and injects; the button stays on until
+    /// Ctrl is released.
     pub(super) fn handle_btn_interaction(&mut self, is_down: bool, ctrl: bool, btn: (usize, u8)) {
         let was_held = self.held_btn == Some(btn);
         if is_down && !was_held && !self.latched_btns.contains(&btn) {
@@ -46,7 +47,8 @@ impl CdjApp {
         }
     }
 
-    /// Draw a rectangular button; inject on press edge, clear on release edge.
+    /// Draw a rectangular button that injects a press when pressed and clears
+    /// it when released.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn btn(
         &mut self,
@@ -73,7 +75,8 @@ impl CdjApp {
         let bit = self.button(btn);
         let is_pressed = is_down || bit.is_some_and(|b| self.latched_btns.contains(&b));
 
-        // State key: mix all LED-driven colors so any change invalidates the cache.
+        // The state key mixes every LED-driven color, so any change invalidates
+        // the cache.
         let nudge_u32 = label_nudge
             .map(|n| n.x.to_bits() ^ n.y.to_bits().rotate_left(17))
             .unwrap_or(0);
@@ -112,11 +115,11 @@ impl CdjApp {
         }
     }
 
-    /// Draw a button whose look the caller collects, given whether it is
-    /// pressed; inject on press edge, clear on release edge. `rect` is the
-    /// hit area; `state` packs whatever else the look depends on, so a change
-    /// rebuilds the cached shapes. A `btn` of `None` is a key whose frame bit
-    /// is not known yet: it presses on screen and sends nothing.
+    /// Draw a button whose look the caller builds, given whether it is
+    /// pressed. It injects a press when pressed and clears it when released.
+    /// `rect` is the hit area; `state` packs whatever else the look depends on,
+    /// so a change rebuilds the cached shapes. A `btn` of `None` is a key whose
+    /// frame bit is not known yet: it presses on screen and sends nothing.
     pub(super) fn shape_btn(
         &mut self,
         ui: &mut egui::Ui,
@@ -147,7 +150,8 @@ impl CdjApp {
         }
     }
 
-    /// Draw a circle button; inject on press edge, clear on release edge.
+    /// Draw a circular button that injects a press when pressed and clears it
+    /// when released.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn circle_btn(
         &mut self,
@@ -206,7 +210,8 @@ impl CdjApp {
         }
     }
 
-    /// Draw an arc-shaped button; inject on press edge, clear on release.
+    /// Draw an arc-shaped button that injects a press when pressed and clears
+    /// it when released.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn arc_quad_btn(
         &mut self,
@@ -278,7 +283,8 @@ impl CdjApp {
     }
 }
 
-/// Bounding rect of an arc-quadrant button - sampled along inner and outer arcs.
+/// Bounding rect of an arc-quadrant button, from samples along its inner and
+/// outer arcs.
 fn arc_quad_bounding_rect(
     center: Pos2,
     inner_r: f32,

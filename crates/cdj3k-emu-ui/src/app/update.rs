@@ -1,5 +1,5 @@
-//! One panel frame: the streams in, the physics ticked, the slate, the shade
-//! and the pop-outs drawn, the bloom pass queued.
+//! Runs one panel frame: it reads the streams, ticks the physics, draws the
+//! slate, the shade and the pop-outs, and queues the bloom pass.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,33 +12,31 @@ use cdj3k_emu_streams::ctrl_stream::LedState;
 use super::jog_physics::JOG_OMEGA_MOVING_THRESHOLD;
 use super::{bloom, boot_overlay, ui, CdjApp};
 
-/// Fresh main-LCD generations to observe after QEMU starts before the boot
-/// spinner overlay is removed.
-/// The panel frame is all zeroes until the guest drives it. If it never does,
-/// drop the shade anyway this long after QEMU starts.
+/// The panel frame is all zeroes until the guest drives it. If the guest
+/// never does, drop the shade this long after QEMU starts.
 const BOOT_SHADE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// EMA factor for the smoothed FPS estimate.
 const FPS_EMA_ALPHA: f32 = 0.1;
 
-/// Repaint cadence requested by UI animation (60 Hz cap).
+/// The repaint interval that UI animation requests, which caps it at 60 Hz.
 const ANIM_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
 
-/// Linear ramp speed for the boot/idle shade alpha (units of alpha per
-/// second; 1.0 here means the full 0→1 fade takes 1 s).
+/// Linear ramp speed of the boot and idle shade alpha, in alpha units per
+/// second. At 1.0, a full fade from 0 to 1 takes 1 s.
 const SHADE_FADE_SPEED: f32 = 1.0;
 
 impl CdjApp {
-    /// One panel frame: ingest the LCD/LED streams, tick the jog physics,
-    /// draw the slate, the boot shade and the pop-out viewports. Driven by
-    /// the shell while the panel screen is up.
+    /// Runs one panel frame: it reads the LCD and LED streams, ticks the jog
+    /// physics, and draws the slate, the boot shade and the pop-out viewports.
+    /// The shell calls it while the panel screen is up.
     pub fn update(&mut self, ctx: &egui::Context, root: &mut egui::Ui, frame: &mut eframe::Frame) {
-        // No sleep here. With vsync disabled in NativeOptions, eframe only
-        // paints when something requested a repaint - the gate's metronome
-        // thread paces those requests so this `update()` runs at most ~60 Hz.
-        // Skip the global-profiler mutex hit entirely when profiling is off.
-        // `set_scopes_on` defaults to false in shipping builds (we only flip
-        // it via `--profile` / `CDJ3K_PROFILE=1` in `CdjApp::new`).
+        // Do not sleep here. With vsync disabled in NativeOptions, eframe
+        // paints only when something requests a repaint, and the gate's
+        // metronome thread paces those requests so that `update()` runs at
+        // most about 60 times a second. Skip the global profiler's mutex when
+        // profiling is off; `set_scopes_on` stays false unless `--profile` or
+        // `CDJ3K_PROFILE=1` turns it on in `CdjApp::new`.
         if puffin::are_scopes_on() {
             puffin::GlobalProfiler::lock().new_frame();
         }
@@ -80,16 +78,16 @@ impl CdjApp {
         self.draw_panel(ctx, root, booting);
         self.show_popouts(ctx, target_alpha);
 
-        // Bloom composite - fires last; thresholds + blurs scene_tex, writes
-        // to screen.
+        // Queue the bloom composite last. It thresholds and blurs scene_tex
+        // and writes the result to the screen.
         self.queue_bloom_pass(ctx);
     }
 
     /// Upload whatever the main and jog LCD streams brought since the last
     /// frame.
     fn ingest_lcd_streams(&mut self, frame: &mut eframe::Frame) {
-        // Blank LCD textures after a QEMU exit so popouts go black instead
-        // of holding the last captured frame.
+        // Blank the LCD textures after QEMU exits, so the pop-outs go black
+        // and do not hold the last captured frame.
         if self.lcd_textures_need_blank {
             if let Some(gl) = frame.gl().cloned() {
                 self.blank_lcd_textures(&gl);
@@ -100,7 +98,7 @@ impl CdjApp {
         if let Some(dirty) = self.display_stream.take() {
             puffin::profile_scope!("texture_upload_display");
             self.upload_display_dirty(frame, &dirty);
-            // Init bloom pipeline once we have a GL context.
+            // Create the bloom pipeline once a GL context exists.
             if self.bloom.is_none() {
                 if let Some(gl) = frame.gl() {
                     self.bloom = Some(Arc::new(Mutex::new(bloom::BloomPipeline::new(gl))));
@@ -110,7 +108,8 @@ impl CdjApp {
 
         if let Some(jf) = self.jog_stream.take() {
             puffin::profile_scope!("texture_upload_jog");
-            // corner_rgba is already swapped to RGBA by the stream's `sample_corner_rgba`.
+            // The stream's `sample_corner_rgba` already gives corner_rgba in RGBA
+            // order.
             self.jog_corner_label_colors = std::array::from_fn(|i| {
                 Color32::from_rgba_unmultiplied(
                     jf.corner_rgba[i][0],
@@ -154,7 +153,7 @@ impl CdjApp {
             self.tick_jog(dt);
         }
 
-        // Release all ctrl-latched buttons when ctrl is no longer held.
+        // Release all Ctrl-latched buttons when Ctrl is no longer held.
         let ctrl = ctx.input(|i| i.modifiers.ctrl);
         if !ctrl && !self.latched_btns.is_empty() {
             puffin::profile_scope!("latched_clear_inject");
@@ -163,11 +162,12 @@ impl CdjApp {
         }
     }
 
-    /// Schedule repaints only for pure UI animation - stream threads own the
-    /// wakeups for new_display/new_jog/new_led via their own
-    /// `request_repaint_after`. Echoing those here would create a feedback
-    /// loop (data arrives → stream wakes UI → update schedules another
-    /// repaint 16 ms later → extra frame with no new data).
+    /// Schedule repaints only for UI animation. The stream threads request
+    /// their own repaints for new display, jog and LED data through
+    /// `request_repaint_after`. Requesting them here as well would create a
+    /// feedback loop: data arrives, the stream wakes the UI, `update`
+    /// schedules another repaint 16 ms later, and an extra frame is drawn
+    /// with no new data.
     fn schedule_animation(&self, ctx: &egui::Context) {
         let jog_motion = self.jog_omega.abs() > JOG_OMEGA_MOVING_THRESHOLD
             || self.jog_is_dragging()
@@ -177,10 +177,11 @@ impl CdjApp {
         }
     }
 
-    /// The slate, and the boot shade over it.
+    /// Draws the slate and the boot shade over it.
     fn draw_panel(&mut self, ctx: &egui::Context, root: &mut egui::Ui, booting: bool) {
-        // egui is immediate-mode: shapes must be re-submitted each update to
-        // stay visible. The shape caches make this cheap when nothing changes.
+        // egui is immediate-mode, so shapes must be submitted again on each
+        // update to stay visible. The shape caches make this cheap when
+        // nothing changes.
         self.bloom_excludes.clear();
         self.bloom_keeps.clear();
         {
@@ -198,18 +199,18 @@ impl CdjApp {
         }
     }
 
-    /// The debug, jog and main pop-out viewports, and their state mirrored to
-    /// the menu.
+    /// Shows the debug, jog and main pop-out viewports, and mirrors their
+    /// state to the menu.
     fn show_popouts(&mut self, ctx: &egui::Context, target_alpha: f32) {
-        // Refresh the snapshot consumed by the deferred debug viewport.
-        // Cheap (a handful of clones + array copies); kept outside the
-        // secondary-viewports gate so the snapshot stays current even while booting.
+        // Refresh the snapshot that the deferred debug viewport reads. This
+        // is cheap: a few clones and array copies. It runs outside the
+        // secondary-viewports gate so the snapshot stays current while booting.
         if let Ok(mut g) = self.debug.snapshot.lock() {
             *g = self.debug_snapshot();
         }
 
-        // Secondary viewports: stay hidden until the shade is fully gone -
-        // they aren't covered by the shade overlay.
+        // Keep the secondary viewports hidden until the shade is fully gone,
+        // because the shade overlay does not cover them.
         if self.shade_alpha == 0.0 && target_alpha == 0.0 {
             puffin::profile_scope!("secondary_viewports");
             self.show_debug_viewport(ctx);
@@ -217,15 +218,15 @@ impl CdjApp {
             self.show_main_viewport(ctx);
         }
 
-        // Mirror viewport state back to shared state so the menu reflects close
-        // events triggered by clicking ×.
+        // Mirror the viewport state back to the shared state, so the menu
+        // reflects a pop-out closed with its × button.
         let mut s = menu_state::lock();
         s.jog_screen_popped = self.jog_screen_popped;
         s.main_screen_popped = self.main_screen_popped;
         s.debug_screen_popped = self.debug_screen_popped;
     }
 
-    /// Pull menu state (set by the native macOS menu or the egui menu):
+    /// Read the menu state that the native macOS menu or the egui menu sets:
     /// the pop-out toggles and power-off requests.
     fn poll_menu_state(&mut self) {
         let (jog, main, debug) = {
@@ -252,8 +253,8 @@ impl CdjApp {
         }
     }
 
-    /// Step the boot/idle shade alpha toward its target. Returns `(booting,
-    /// target_alpha)` for downstream gating.
+    /// Step the boot and idle shade alpha toward its target. Returns
+    /// `(booting, target_alpha)` for the callers that depend on them.
     fn tick_boot_shade(&mut self, ctx: &egui::Context) -> (bool, f32) {
         let (qemu_running, shade_forced, ui_only) = {
             let s = menu_state::lock();
@@ -267,7 +268,7 @@ impl CdjApp {
             .is_some_and(|t| t.elapsed() >= BOOT_SHADE_TIMEOUT);
         let booting = (qemu_running && !panel_driven && !waited) || shade_forced;
         menu_state::lock().guest_booted = qemu_running && !booting;
-        // `--no-spawn` has no guest to wait for: keep the chassis unshaded.
+        // `--no-spawn` has no guest to wait for, so the chassis stays unshaded.
         let target_alpha: f32 = if ui_only {
             0.0
         } else if !qemu_running || booting {
@@ -279,8 +280,8 @@ impl CdjApp {
         (booting, target_alpha)
     }
 
-    /// Note QEMU starting, and on its exit blank the LCD textures so popout
-    /// windows go black.
+    /// Record when QEMU starts, and blank the LCD textures when it exits so
+    /// the pop-out windows go black.
     fn track_qemu(&mut self, qemu_running: bool) {
         if qemu_running && !self.qemu_was_running {
             self.qemu_running_since = Some(Instant::now());
@@ -294,7 +295,8 @@ impl CdjApp {
         }
     }
 
-    /// Linear ramp toward target (configurable speed).
+    /// Ramp the shade alpha linearly toward `target_alpha` at
+    /// [`SHADE_FADE_SPEED`].
     fn ramp_shade(&mut self, ctx: &egui::Context, target_alpha: f32) {
         let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
         let prev_alpha = self.shade_alpha;
@@ -309,8 +311,8 @@ impl CdjApp {
         }
     }
 
-    /// Append a deferred bloom pass to the topmost layer (runs after all
-    /// chrome has been submitted).
+    /// Append a deferred bloom pass to the topmost layer, so it runs after all
+    /// the chrome has been submitted.
     fn queue_bloom_pass(&self, ctx: &egui::Context) {
         let Some(bloom_arc) = self.bloom.clone() else {
             return;
@@ -324,9 +326,9 @@ impl CdjApp {
         let cb = eframe::egui_glow::CallbackFn::new(move |info, painter| {
             puffin::profile_scope!("bloom_gl");
             let [w, h] = info.screen_size_px;
-            // Lock-poison fallback: if a previous bloom run panicked, just
-            // skip this frame's bloom rather than propagating the panic
-            // through the GL callback (which would tear down the renderer).
+            // If a previous bloom run panicked and poisoned the lock, skip
+            // this frame's bloom; propagating the panic through the GL
+            // callback would tear down the renderer.
             let Ok(mut bloom) = bloom_arc.lock() else {
                 return;
             };
@@ -339,9 +341,9 @@ impl CdjApp {
                 scene_key,
             );
         });
-        // `Order::Debug` is above the `Order::Foreground` a menu draws in, and
-        // the pass covers the whole viewport: the mask's chrome rects keep it
-        // off the strip and every open panel.
+        // `Order::Debug` is above the `Order::Foreground` that a menu draws
+        // in, and the pass covers the whole viewport; the mask's chrome rects
+        // keep the bloom off the menu strip and every open panel.
         ctx.layer_painter(egui::LayerId::new(
             egui::Order::Debug,
             egui::Id::new("bloom_pass"),

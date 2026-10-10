@@ -2,16 +2,16 @@
 //! extent parsing, which disks may be offered, the PowerShell the elevated
 //! steps run, and the messages.
 //!
-//! Compiled on every host so it is tested everywhere; only Windows calls into
-//! it.
+//! The module is compiled on every host so that it is tested everywhere, but
+//! only Windows calls into it.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-/// `STORAGE_BUS_TYPE` values a stick or card reader reports.
+/// The `STORAGE_BUS_TYPE` values that a stick or card reader reports.
 pub const BUS_USB: u32 = 7;
 pub const BUS_SD: u32 = 12;
 pub const BUS_MMC: u32 = 13;
 
-/// The parts of a `STORAGE_DEVICE_DESCRIPTOR` the disk list uses.
+/// The parts of a `STORAGE_DEVICE_DESCRIPTOR` that the disk list uses.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Descriptor {
     pub bus_type: u32,
@@ -28,7 +28,8 @@ fn i64_at(buf: &[u8], off: usize) -> Option<i64> {
     Some(i64::from_le_bytes(buf.get(off..off + 8)?.try_into().ok()?))
 }
 
-/// The NUL-terminated ASCII string at `off`; offset 0 means "absent".
+/// Read the NUL-terminated ASCII string at `off`. An offset of 0 means that
+/// the string is absent.
 fn cstr_at(buf: &[u8], off: u32) -> String {
     let Some(tail) = (off != 0).then(|| buf.get(off as usize..)).flatten() else {
         return String::new();
@@ -38,7 +39,7 @@ fn cstr_at(buf: &[u8], off: u32) -> String {
 }
 
 /// Read a `STORAGE_DEVICE_DESCRIPTOR` as `IOCTL_STORAGE_QUERY_PROPERTY`
-/// returns it: a 36-byte header whose offsets point into the same buffer.
+/// returns it: a 36-byte header with offsets that point into the same buffer.
 pub fn parse_descriptor(buf: &[u8]) -> Option<Descriptor> {
     let size = u32_at(buf, 4)? as usize;
     if size < 36 || size > buf.len() {
@@ -53,14 +54,14 @@ pub fn parse_descriptor(buf: &[u8]) -> Option<Descriptor> {
     })
 }
 
-/// `DiskSize` of a `DISK_GEOMETRY_EX`: a 24-byte `DISK_GEOMETRY`, then the
-/// size in bytes.
+/// Read `DiskSize` from a `DISK_GEOMETRY_EX`, which is a 24-byte
+/// `DISK_GEOMETRY` followed by the size in bytes.
 pub fn geometry_disk_size(buf: &[u8]) -> Option<u64> {
     u64::try_from(i64_at(buf, 24)?).ok()
 }
 
-/// Disk numbers of a `VOLUME_DISK_EXTENTS`: a count, 4 bytes of padding, then
-/// 24-byte extents that start with the disk number.
+/// Read the disk numbers from a `VOLUME_DISK_EXTENTS`, which is a count,
+/// 4 bytes of padding, and then 24-byte extents that start with the disk number.
 pub fn parse_disk_extents(buf: &[u8]) -> Vec<u32> {
     let count = u32_at(buf, 0).unwrap_or(0) as usize;
     let mut disks = Vec::new();
@@ -75,8 +76,8 @@ pub fn parse_disk_extents(buf: &[u8]) -> Vec<u32> {
     disks
 }
 
-/// Whether a disk may be offered to the deck: a USB, SD or MMC bus, a medium
-/// in it, and not a disk Windows runs from.
+/// Return whether a disk may be offered to the deck: it must be on a USB, SD or
+/// MMC bus, hold a medium, and not be a disk that Windows runs from.
 pub fn is_eligible(bus_type: u32, size_bytes: u64, is_system: bool) -> bool {
     matches!(bus_type, BUS_USB | BUS_SD | BUS_MMC) && size_bytes > 0 && !is_system
 }
@@ -91,7 +92,8 @@ pub fn drive_path(n: u32) -> String {
     format!(r"\\.\PhysicalDrive{n}")
 }
 
-/// The number in `PhysicalDrive<N>`, and nothing else.
+/// Parse the number from a name of the form `PhysicalDrive<N>`. Any other name
+/// returns `None`.
 pub fn drive_number(name: &str) -> Option<u32> {
     let digits = name.strip_prefix("PhysicalDrive")?;
     if digits.is_empty() || digits.len() > 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
@@ -100,9 +102,9 @@ pub fn drive_number(name: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// `\\?\Volume{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}` without a trailing
-/// separator: the shape `FindFirstVolumeW` yields, and the only shape the
-/// elevated script is given.
+/// Return whether `p` is `\\?\Volume{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}`
+/// without a trailing separator. `FindFirstVolumeW` returns this form, and it
+/// is the only form that the elevated script receives.
 pub fn is_volume_path(p: &str) -> bool {
     let Some(guid) = p
         .strip_prefix(r"\\?\Volume{")
@@ -118,7 +120,7 @@ pub fn is_volume_path(p: &str) -> bool {
             .all(|(g, n)| g.len() == n && g.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// `S-1-<digits>(-<digits>)*`.
+/// Return whether `s` is a SID of the form `S-1-<digits>(-<digits>)*`.
 pub fn is_valid_sid(s: &str) -> bool {
     let Some(rest) = s.strip_prefix("S-1-") else {
         return false;
@@ -129,8 +131,8 @@ pub fn is_valid_sid(s: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// The most recognisable name for a disk: the volume label, else the drive's
-/// own name, else its number.
+/// Return the most recognisable name for a disk: the volume label, else the
+/// drive's own name, else its number.
 pub fn display_name(volume_label: &str, d: &Descriptor, n: u32) -> String {
     let drive = format!("{} {}", d.vendor, d.product);
     let name = [volume_label.trim(), drive.trim()]
@@ -140,7 +142,7 @@ pub fn display_name(volume_label: &str, d: &Descriptor, n: u32) -> String {
     name.unwrap_or_else(|| drive_name(n))
 }
 
-/// What a busy volume reads as.
+/// Build the message shown when a volume is in use.
 pub fn busy_message(mount: &str, holders: &[String]) -> String {
     let by = if holders.is_empty() {
         String::from("another program")
@@ -198,9 +200,10 @@ pub fn ps_quote(s: &str) -> String {
 ///
 /// The security descriptor of a device object lasts until the device is
 /// removed, so one prompt covers every open until the disk is unplugged. The
-/// disk must take the grant; a volume that refuses is left to the ordinary
-/// open, which a removable volume allows a standard user. A failure writes its
-/// message to `err_file` and exits 1.
+/// grant on the disk must succeed. A volume that refuses the grant is opened
+/// the ordinary way, which Windows allows a standard user for a removable
+/// volume. On failure, the script writes its message to `err_file` and exits
+/// with 1.
 pub fn grant_script(sid: &str, disk: &str, volumes: &[String], err_file: &str) -> String {
     let volumes = volumes
         .iter()
@@ -227,11 +230,12 @@ pub fn grant_script(sid: &str, disk: &str, volumes: &[String], err_file: &str) -
 }
 
 /// Partition and format an empty VHDX the way the Linux adapter lays out an
-/// image: MBR, one partition from 1 MiB to the end, exFAT labelled REKORDBOX.
+/// image: an MBR with one exFAT partition labelled REKORDBOX, from 1 MiB to
+/// the end.
 ///
-/// The image is attached without a drive letter so Explorer never offers it,
-/// and always detached. A failure writes its message to `err_file`
-/// and exits 1.
+/// The image is attached without a drive letter so that Explorer never offers
+/// it, and it is always detached. On failure, the script writes its message to
+/// `err_file` and exits with 1.
 pub fn format_script(image: &str, err_file: &str) -> String {
     format!(
         "$ErrorActionPreference='Stop';$p={image};$m=$null;\
@@ -292,7 +296,7 @@ mod tests {
         assert!(d.vendor.is_empty() && d.product.is_empty() && !d.removable);
         assert!(parse_descriptor(&buf[..20]).is_none());
         assert!(parse_descriptor(&[]).is_none());
-        // A size field larger than what was returned.
+        // The size field is larger than the returned buffer.
         let mut short = buf.clone();
         short[4..8].copy_from_slice(&9999u32.to_le_bytes());
         assert!(parse_descriptor(&short).is_none());
@@ -323,7 +327,7 @@ mod tests {
             buf[8 + i * 24..12 + i * 24].copy_from_slice(&n.to_le_bytes());
         }
         assert_eq!(parse_disk_extents(&buf), vec![2, 5]);
-        // A count the buffer cannot back stops at what is there.
+        // A count larger than the buffer holds stops at the last complete extent.
         buf[0..4].copy_from_slice(&50u32.to_le_bytes());
         assert_eq!(parse_disk_extents(&buf), vec![2, 5]);
         assert!(parse_disk_extents(&[]).is_empty());

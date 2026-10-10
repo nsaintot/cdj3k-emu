@@ -1,34 +1,37 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Patch 25: xorg headless config - dummy_drv.so with runtime card0 detection
+# Patch 25: the headless Xorg config, which uses dummy_drv.so when the guest
+# has no /dev/dri/card0.
 #
-# Problem: x11-only.sh launches "X :0" with no -configdir, so Xorg loads
-# /etc/X11/xorg.conf.d/20-modesetting.conf (Driver "modesetting").  On Pioneer
-# kernel this opens /dev/dri/card0 from virtio_gpu.ko; when there is no DRM
-# device Xorg exits "no screens found".
+# x11-only.sh launches "X :0" with no -configdir, so Xorg loads
+# /etc/X11/xorg.conf.d/20-modesetting.conf (Driver "modesetting"), which opens
+# /dev/dri/card0. virtio_gpu provides card0 only when QEMU exposes a
+# virtio-gpu device; without a DRM device, Xorg exits with "no screens found".
 #
-# Fix:
-#   1. Write xorg-headless.conf (Driver "dummy") to /etc/x11-headless-conf/.
-#      dummy_drv.so creates a pure-software virtual screen with no kernel device.
-#      This is the only file in that directory so modesetting is never loaded.
-#   2. Rewrite x11-only.sh to check /dev/dri/card0 at boot:
-#        - card0 present  → exec X :0  (modesetting via 20-modesetting.conf)
-#        - no card0       → exec X :0 -configdir /etc/x11-headless-conf
-#      This makes both --gl (card0 from virtio_gpu.ko) and headless modes work
-#      without rebuilding the initramfs.
+# The patch:
+#   1. Writes xorg-headless.conf (Driver "dummy") to /etc/x11-headless-conf/.
+#      dummy_drv.so creates a software screen with no kernel device. It is the
+#      only file in that directory, so modesetting is never loaded.
+#   2. Rewrites x11-only.sh to check /dev/dri/card0 at boot:
+#        - When card0 exists, it runs exec X :0 (modesetting, through
+#          20-modesetting.conf).
+#        - Without card0, it runs exec X :0 -configdir /etc/x11-headless-conf.
+#      Both modes then work without rebuilding the initramfs.
 #   3. Drop the stock CPU pins: x11-only.sh's (taskset -c 3 on the CDJ-3000,
 #      -c 5 on the CDJ-3000X), and apl_start.sh's `taskset -pc 5` of Xorg and
 #      its InputThread (CDJ-3000X). apl_start.sh also sets
 #      sched_rt_runtime_us=-1, so under emulation the player's real-time
 #      threads on the pinned core starve Xorg.
 #
-# Note: the dummy_drv.so binary (Xorg ABI 24.0, Ubuntu 20.04 arm64) is deployed
-# to /usr/lib/xorg/modules/drivers/ by build-initramfs.sh.
+# Patch 22 installs the dummy_drv.so binary (Xorg ABI 24.0, Ubuntu 20.04
+# arm64) in /usr/lib/xorg/modules/drivers/.
 #
-# Constraints (confirmed from Pioneer binary tracing):
-#   - xorg-headless.conf must contain ONLY Monitor + Device + Screen sections.
-#   - ServerLayout, InputDevice (Driver "void"), and ServerFlags all crash
-#     Pioneer Xorg 1.20.4 - those drivers are absent from the Pioneer rootfs.
+# Constraints:
+#   - xorg-headless.conf must contain only the Monitor, Device and Screen
+#     sections.
+#   - ServerLayout, InputDevice (Driver "void") and ServerFlags each crash
+#     Pioneer's Xorg 1.20.4, because those drivers are absent from the
+#     Pioneer rootfs.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 
@@ -62,14 +65,14 @@ fi
 
 X11_SH="$ROOTFS/etc/systemd/system/x11-only.sh"
 if [[ ! -f "$X11_SH" ]]; then
-    echo "  WARNING: $X11_SH not found - skipping x11-only.sh patch"
+    echo "  WARNING: $X11_SH not found; x11-only.sh is not patched"
     exit 0
 fi
 
 # Rewrite x11-only.sh with runtime card0 detection and no CPU pin.
 cat > "$X11_SH" << 'SHEOF'
 #!/bin/sh
-# card0 present = virtio_gpu loaded (--gl mode); absent = headless.
+# card0 exists when QEMU exposes virtio-gpu; without it, X runs headless.
 if [ -e /dev/dri/card0 ]; then
     exec X :0
 else

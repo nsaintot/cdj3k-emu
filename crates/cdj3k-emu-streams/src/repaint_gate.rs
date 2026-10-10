@@ -1,31 +1,30 @@
-//! Cooperative 60 Hz cap shared across all stream wakeups.
+//! A 60 Hz cap that all stream wakeups share.
 //!
 //! ## Design
 //!
-//! A dedicated **metronome thread** owns the rate-limiting. It sleeps for
+//! A dedicated metronome thread owns the rate limit. It sleeps for
 //! `min_interval` between ticks; on each tick it checks an `AtomicBool` flag
-//! and, if set, calls `egui::Context::request_repaint()` to wake the UI.
+//! and, if it is set, calls `egui::Context::request_repaint()` to wake the UI.
 //!
-//! Stream threads call [`RepaintGate::request`] which is a single
-//! `AtomicBool::store` - never sleeps, never locks, never calls into egui
-//! directly. The cost of a stream wakeup is a few nanoseconds.
+//! Stream threads call [`RepaintGate::request`], which is a single
+//! `AtomicBool::store`: it does not sleep, lock or call into egui. A stream
+//! wakeup costs a few nanoseconds.
 //!
 //! ## Why a separate thread
 //!
-//! On macOS + ProMotion, `request_repaint_after(d)` cannot enforce the cap:
+//! On macOS with ProMotion, `request_repaint_after(d)` cannot enforce the cap:
 //!
-//! - With **vsync=true**, eframe paints at every vsync (120 Hz on ProMotion)
-//!   when *any* repaint is pending - the delay is only an upper bound, not
-//!   a "paint no sooner than" floor. A `thread::sleep` at the top of
-//!   `update()` would enforce the cap but blocks the winit event loop,
-//!   dropping stream wakeups that arrive during the sleep.
-//! - With **vsync=false**, eframe doesn't sync to the display at all; any
-//!   pending repaint is painted immediately, and self-rescheduling closures
-//!   become tight busy loops at thousands of fps.
+//! - With vsync on, eframe paints at every vsync (120 Hz on ProMotion) while
+//!   any repaint is pending; the delay is only an upper bound. Do not sleep at
+//!   the top of `update()`: it blocks the winit event loop and drops the
+//!   stream wakeups that arrive during the sleep.
+//! - With vsync off, eframe does not sync to the display: it paints any
+//!   pending repaint immediately, and self-rescheduling closures become busy
+//!   loops at thousands of frames per second.
 //!
-//! The metronome decouples cap timing from the UI thread entirely. The main
-//! thread never sleeps; eframe paints at vsync only when the metronome
-//! actually requested it, which happens at most once per `min_interval`.
+//! The metronome keeps the cap's timing off the UI thread. The main thread
+//! never sleeps, and eframe paints only when the metronome requests it, at
+//! most once per `min_interval`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -34,9 +33,8 @@ use std::time::Duration;
 
 #[derive(Clone)]
 pub struct RepaintGate {
-    /// Set by `request()`, consumed (swap to false) by the metronome thread
-    /// on each tick. When the swap returns `true`, the metronome calls
-    /// `request_repaint()` once.
+    /// Set by `request()`. The metronome thread swaps it to false on each
+    /// tick and, when the swap returns `true`, calls `request_repaint()` once.
     pending: Arc<AtomicBool>,
 }
 
@@ -55,9 +53,9 @@ impl RepaintGate {
         Self { pending }
     }
 
-    /// Request a repaint at the next metronome tick. Cheap (~5 ns); safe to
-    /// call from any thread at arbitrary rates. Multiple calls between ticks
-    /// collapse into a single repaint.
+    /// Requests a repaint at the next metronome tick. The call costs about
+    /// 5 ns and is safe from any thread at any rate. Several calls between
+    /// ticks give one repaint.
     pub fn request(&self) {
         self.pending.store(true, Ordering::Relaxed);
     }

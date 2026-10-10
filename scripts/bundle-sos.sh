@@ -12,18 +12,18 @@ set -euo pipefail
 
 BIN_DIR="${1:?Usage: $0 <bin dir> <lib dir> <binary>...}"; shift
 LIB_DIR="${1:?Usage: $0 <bin dir> <lib dir> <binary>...}"; shift
-[[ $# -gt 0 ]] || { echo "ERROR: no binaries given" >&2; exit 1; }
+[[ $# -gt 0 ]] || { echo "ERROR: no binaries were given." >&2; exit 1; }
 
-command -v patchelf >/dev/null || { echo "ERROR: patchelf not installed" >&2; exit 1; }
+command -v patchelf >/dev/null || { echo "ERROR: patchelf is not installed." >&2; exit 1; }
 
 mkdir -p "$LIB_DIR"
 
-# Never vendored. The first group would bind us to the wrong driver or
-# daemon; the second is the C runtime, which the glibc floor covers and which
-# cannot be mixed with the host's loader.
+# These libraries are never vendored. Vendoring the first group would bind the
+# app to the wrong driver or daemon. The second group is the C runtime, which
+# the glibc floor covers and which cannot be mixed with the host's loader.
 is_host_owned() {
     case "$1" in
-        # Drivers, display, sound: the user's stack, not ours.
+        # Driver, display and sound libraries come from the user's system.
         libGL.so*|libGLX.so*|libGLdispatch.so*|libEGL.so*|libgbm.so*|libdrm.so*|\
         libOpenGL.so*|libGLESv2.so*|\
         libX11.so*|libX11-xcb.so*|libxcb*.so*|libXau.so*|libXdmcp.so*|libXext.so*|\
@@ -41,8 +41,9 @@ is_host_owned() {
 
 copied=()
 missing=()
-# Breadth-first over the dependency graph: a vendored library's own
-# dependencies have to come too, or the loader finds nothing at run time.
+# Walk the dependency graph breadth first: a vendored library's own
+# dependencies must be vendored too, or the loader cannot find them at run
+# time.
 queue=("$@")
 seen=""
 while [[ ${#queue[@]} -gt 0 ]]; do

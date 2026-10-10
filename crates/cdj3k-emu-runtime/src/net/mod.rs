@@ -1,7 +1,8 @@
-//! Putting the guest on a chosen interface, whatever the host calls that.
+//! Attaches the guest to the interface the user chose, on every host.
 //!
-//! The first spawn in `launch.rs` and the worker's reconcile both ask here,
-//! so a selection made at boot and one made while running behave the same.
+//! The first spawn in `launch.rs` and the worker's reconcile both call this
+//! module, so a selection made at boot behaves the same as one made while
+//! running.
 
 /// macOS-only: the user-mode TAP bridge is built out of `ifconfig bridge` and
 /// an elevated watcher script.
@@ -15,7 +16,8 @@ pub mod lease;
 #[cfg(target_os = "linux")]
 mod linux_net;
 
-/// The text side of Windows bridging, checked on every host.
+/// Text handling for Windows bridging. It touches no host state, so it is
+/// built and tested on every host.
 pub mod winbridge;
 #[cfg(target_os = "windows")]
 mod windows_helper;

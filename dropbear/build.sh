@@ -3,7 +3,7 @@
 # dropbear/build.sh
 #
 # Clone dropbear at DROPBEAR_TAG and build it as one static aarch64 binary
-# for firmware that ships no SSH server (e.g. the CDJ-1500X). The build runs
+# for firmware that ships no SSH server, such as the CDJ-1500X. The build runs
 # in an arm64 Alpine container, so musl links it fully static and it runs on
 # any guest libc. build.sh calls this and copies dropbear/out/ into guest/out/.
 #
@@ -11,13 +11,13 @@
 #   bash dropbear/build.sh
 #
 # Output:
-#   dropbear/src/                       - dropbear source tree
-#   dropbear/out/dropbear_aarch64       - multi-call binary: dropbear, dbclient,
-#                                         dropbearkey and scp by argv[0]
+#   dropbear/src/                       - the dropbear source tree
+#   dropbear/out/dropbear_aarch64       - a multi-call binary; argv[0] selects
+#                                         dropbear, dbclient, dropbearkey or scp
 #   dropbear/out/dropbear_aarch64.LICENSE
 #
-# Idempotent: nothing happens while dropbear/out/ was built from the same tag
-# and build flags.
+# The script does nothing when dropbear/out/ was already built from the same
+# tag and build flags.
 
 set -euo pipefail
 
@@ -37,7 +37,7 @@ PROGRAMS="dropbear dbclient dropbearkey scp"
 stamp="${DROPBEAR_COMMIT} ${ALPINE_IMAGE} ${CONFIGURE_FLAGS} ${PROGRAMS}"
 if [ -f "${OUT_DIR}/dropbear_aarch64" ] && [ -f "${OUT_DIR}/.cdj3k-stamp" ] \
     && [ "$(cat "${OUT_DIR}/.cdj3k-stamp")" = "${stamp}" ]; then
-    echo "==> dropbear ${DROPBEAR_TAG} already built - skipping"
+    echo "==> dropbear ${DROPBEAR_TAG} is already built; skipping."
     exit 0
 fi
 
@@ -48,7 +48,7 @@ fi
 got="$(git -C "${SRC_DIR}" rev-parse HEAD)"
 if [ "${got}" != "${DROPBEAR_COMMIT}" ]; then
     echo "ERROR: dropbear/src is at ${got}, expected ${DROPBEAR_COMMIT} (${DROPBEAR_TAG})" >&2
-    echo "       Remove dropbear/src and re-run." >&2
+    echo "       Remove dropbear/src and run this script again." >&2
     exit 1
 fi
 

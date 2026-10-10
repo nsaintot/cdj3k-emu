@@ -1,14 +1,14 @@
 //! What a click does.
 //!
 //! [`apply`] is the only place a menu action changes state, for every
-//! provider. It mutates `menu_state` and nothing else: anything needing the
-//! host toolkit — a file picker, a new process — comes back as an
-//! [`ActionEffect`] for the caller to carry out once the lock is released.
+//! provider. It changes `menu_state` and nothing else. Work that needs the
+//! host toolkit, such as a file picker or a new process, comes back as an
+//! [`ActionEffect`] that the caller carries out once the lock is released.
 
 use super::id::MenuId;
 use crate::menu_state;
 
-/// Work a click implies that [`apply`] leaves to the caller.
+/// Work that a click requires and that [`apply`] leaves to the caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionEffect {
     None,
@@ -74,16 +74,17 @@ fn emulation(s: &mut menu_state::AppState, id: &MenuId) {
             s.restart_requested = true;
         }
         MenuId::Haptic => {
-            // Pure host-side toggle. The jog physics layer reads the flag at
-            // each detent-crossing; `haptic_toggle_requested` tells the runtime
-            // worker to persist it. No QEMU restart, no guest push.
+            // This toggle is host-side only. The jog physics reads the flag at
+            // each detent crossing, and `haptic_toggle_requested` tells the
+            // runtime worker to persist it. Nothing restarts QEMU or reaches
+            // the guest.
             s.haptic_enabled = !s.haptic_enabled;
             s.haptic_toggle_requested = true;
         }
         MenuId::PcLink => {
-            // Flip the user-facing state immediately so the checkmark feels
-            // responsive; the runtime worker reads `pc_link_toggle_requested`
-            // and does the cfgd command plus the PcLink construct/drop.
+            // Flip the state at once so that the checkmark responds
+            // immediately. The runtime worker reads `pc_link_toggle_requested`,
+            // sends the cfgd command, and creates or drops the PcLink.
             s.pc_link_enabled = !s.pc_link_enabled;
             s.pc_link_toggle_requested = true;
         }
@@ -111,7 +112,7 @@ fn audio(s: &mut menu_state::AppState, id: &MenuId) {
             s.audio_toggle_requested = true;
         }
         MenuId::Alc => {
-            // Runtime worker consumes this and pushes
+            // The runtime worker consumes this and sends
             // `set audio_sync_enabled <0|1>` to the guest cfg daemon.
             s.alc_enabled = !s.alc_enabled;
             s.alc_toggle_requested = true;
@@ -129,7 +130,8 @@ fn select_audio_device(s: &mut menu_state::AppState, uid: Option<&String>) {
     }
 }
 
-/// Select a network; a different one from the current forces the shade.
+/// Select a network. Selecting a network other than the current one forces
+/// the shade.
 fn select_interface(s: &mut menu_state::AppState, selection: u32) {
     if s.selected_interface != selection {
         s.shade_forced = true;
@@ -137,9 +139,8 @@ fn select_interface(s: &mut menu_state::AppState, selection: u32) {
     s.selected_interface = selection;
 }
 
-/// Click-to-switch only. Re-selecting the mounted disk is a no-op (the runtime
-/// worker filters it), and ejecting goes exclusively through Eject Current
-/// Media.
+/// Switch to the clicked disk. Selecting the mounted disk again does nothing,
+/// and only Eject Current Media ejects.
 fn select_physical_disk(s: &mut menu_state::AppState, index: usize) {
     let idx = index as i32;
     if s.usb_phys_mounted_idx != idx {

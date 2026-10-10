@@ -1,5 +1,6 @@
-//! CDJ-1500X cabinet outline: the silhouette, the rear lip, the screen slab
-//! and the housing's front edge. The bottom-most layer, behind every control.
+//! The CDJ-1500X cabinet outline: the silhouette, the rear lip, the screen
+//! slab and the housing's front edge. It is the bottom layer, behind every
+//! control.
 
 use std::f32::consts::PI;
 
@@ -19,7 +20,8 @@ const COL_CHASSIS: Color32 = COL_SILVER;
 
 const CORNER_SEGS: usize = 12;
 
-/// Collect the cabinet outline into `out` (cached; rebuilt on resize).
+/// Collects the cabinet outline into `out` for the static cache, which is
+/// rebuilt on a resize.
 pub(super) fn collect_chassis(out: &mut ShapeList, layout: &UiScale) {
     let half = CHASSIS_STROKE * 0.5;
     let cabinet = Rect::from_min_max(Pos2::new(half, half), Pos2::new(REF_W - half, REF_H - half));
@@ -28,8 +30,8 @@ pub(super) fn collect_chassis(out: &mut ShapeList, layout: &UiScale) {
         Stroke::new(layout.sc(CHASSIS_STROKE), COL_CHASSIS),
     ));
 
-    // Rear lip: its sides, the line along its foot, and the housing's
-    // corners rounding off under it to the outline.
+    // Draw the rear lip: its sides, the line along its foot, and the
+    // housing's corners, which round off under it to the outline.
     let lip = Stroke::new(layout.sc(LIP_STROKE), COL_CHASSIS);
     for x in [LIP_INSET, REF_W - LIP_INSET] {
         out.add(Shape::line_segment(
@@ -82,7 +84,8 @@ pub(super) fn collect_chassis(out: &mut ShapeList, layout: &UiScale) {
     }
 }
 
-/// A rounded rectangle's outline, clockwise from the top-left corner's end.
+/// Returns a rounded rectangle's outline, clockwise from the end of the
+/// top-left corner.
 fn rounded_rect(layout: &UiScale, r: Rect, radius: f32) -> Vec<Pos2> {
     let mut pts = Vec::with_capacity(4 * (CORNER_SEGS + 1));
     let c = |x: f32, y: f32| Pos2::new(x, y);
@@ -121,8 +124,8 @@ fn rounded_rect(layout: &UiScale, r: Rect, radius: f32) -> Vec<Pos2> {
     pts
 }
 
-/// Push an arc about `center` from `start` to `end` radians, both ends
-/// included, in screen space.
+/// Pushes the screen points of an arc around `center`, from `start` to `end`
+/// radians, with both ends included.
 fn push_arc(
     pts: &mut Vec<Pos2>,
     layout: &UiScale,
@@ -140,7 +143,7 @@ fn push_arc(
 /// The model name printed under the tempo fader.
 const BADGE: (f32, f32, f32, f32) = (1231.0, 2071.0, 1378.0, 2091.0);
 
-/// The printed model name (cached with the other captions).
+/// Collects the printed model name, which is cached with the other captions.
 pub(super) fn collect_badge(out: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let (l, t, r, b) = BADGE;
     out.text_in_ink_box(

@@ -1,9 +1,9 @@
 #!/bin/sh
 # AppRun - the AppImage's entry point.
 #
-# The image mounts at a different path every launch, so the payload is named
-# from $APPDIR rather than left to the binary's own search. Everything else it
-# needs is found relative to the executable by $ORIGIN.
+# The image mounts at a different path on every launch, so this script sets
+# CDJ3K_RESOURCES from its own location. The binary finds its libraries
+# relative to itself through $ORIGIN.
 set -eu
 HERE="$(dirname "$(readlink -f "$0")")"
 export CDJ3K_RESOURCES="${CDJ3K_RESOURCES:-$HERE/opt/cdj3k-emu/share/cdj3k-emu}"

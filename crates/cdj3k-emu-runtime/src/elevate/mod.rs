@@ -1,7 +1,7 @@
 //! Running one shell command as root.
 //!
-//! Unix hosts run `/bin/sh -c <cmd>` as root, only the prompt differing;
-//! Windows runs `cmd.exe /C <cmd>` as administrator.
+//! Unix hosts run `/bin/sh -c <cmd>` as root and differ only in the prompt
+//! they show. Windows runs `cmd.exe /C <cmd>` as administrator.
 //!
 //! Networking is the only caller: creating a bridge, tap or macvtap needs
 //! root, and no entitlement covers it.

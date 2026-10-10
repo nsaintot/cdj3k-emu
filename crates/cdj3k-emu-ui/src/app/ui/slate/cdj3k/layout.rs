@@ -11,7 +11,7 @@ pub(super) const fn jog_rect() -> Rect {
     )
 }
 
-/// Transport column (Cue / Play / search)
+/// Transport column (CUE, PLAY and the search buttons).
 pub const TRANSPORT_REF_SIZE_H: f32 = 4080.0;
 pub const TRANSPORT_REF_SIZE_W: f32 = 510.0;
 pub const TRANSPORT_REF_TOP: f32 = 280.0;
@@ -49,8 +49,8 @@ pub const JOG_REF_LEFT: f32 = TRANSPORT_REF_RIGHT;
 pub const JOG_REF_RIGHT: f32 = JOG_REF_LEFT + JOG_REF_SIZE_W;
 
 // NAVIGATION
-/// Centre of the nav pod - the rotary and its four buttons - within the modes
-/// column, shared with the decorative line that runs around it.
+/// Centre of the nav pod (the rotary and its four buttons) within the modes
+/// column. The decorative line that runs around the pod uses it too.
 pub const NAV_POD_U: f32 = 0.36038;
 pub const NAV_POD_V: f32 = 0.137745;
 
@@ -67,9 +67,9 @@ pub const MODES_REF_RIGHT: f32 = MODES_REF_LEFT + MODES_REF_SIZE_W;
 // BOTTOM DECORATIVE
 
 // LCD
-/// The screen's glass, measured off `cdj-3000-schema.png`: 1903 x 1030 at
-/// y 357..1387. Shared, because the panel that draws the screen and the chassis
-/// that frames it must land on one rectangle - the recess walls meet the glass.
+/// The screen's glass is 1903 x 1030 reference units at y 357..1387. The panel
+/// that draws the screen and the chassis that frames it share this rectangle,
+/// because the recess walls meet the glass.
 ///
 /// The aspect is the drawing's, which is a 16:9 panel seen tilted, so it is
 /// wider than 1280/720; the guest framebuffer stretches to fill it.

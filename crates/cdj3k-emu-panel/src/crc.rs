@@ -1,6 +1,6 @@
 //! CRC-16/X-25 (ITU-T, polynomial `0x8408`, init `0xFFFF`, output XOR'd with
-//! `0xFFFF`). Trailer of every MISO frame; also used for ad-hoc integrity
-//! checks of MOSI captures.
+//! `0xFFFF`). It ends every MISO frame and is also used to check MOSI
+//! captures.
 
 /// Compute the CRC-16/X-25 of `data`.
 pub fn crc16_x25(data: &[u8]) -> u16 {

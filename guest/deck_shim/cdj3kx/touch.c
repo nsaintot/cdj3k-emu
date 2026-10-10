@@ -1,18 +1,19 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
 /* ------------------------------------------------------------------ */
-/* CDJ-3000X / CDJ-1500X touch panel - sub-CPU frame → evdev records  */
+/* CDJ-3000X and CDJ-1500X touch panel: sub-CPU frames to evdev      */
 /* ------------------------------------------------------------------ */
 /*
- * The app reads its touch panel as a Goodix kernel input device and hands
- * what it finds to XWarpPointer; QEMU virt has that device nowhere.  The
- * coordinates ride in the sub-CPU frame the app already receives, so read()
- * passes each frame here and the contact is written to a stub pipe as the
- * records the app looks for: EV_ABS with ABS_MT_SLOT, ABS_MT_TRACKING_ID,
- * ABS_MT_POSITION_X/Y, closed by EV_SYN.  The values are X screen pixels.
+ * The app reads its touch panel as a Goodix kernel input device and passes
+ * the positions to XWarpPointer; QEMU virt has no such device. The
+ * coordinates travel in the sub-CPU frame that the app already receives, so
+ * read() passes each frame here, and the contact is written to a stub pipe as
+ * the records the app expects: EV_ABS with ABS_MT_SLOT, ABS_MT_TRACKING_ID,
+ * ABS_MT_POSITION_X and ABS_MT_POSITION_Y, followed by EV_SYN. The values are
+ * X screen pixels.
  *
- * Every gt928 detail lives in this file.  The core carries none and reaches
- * the panel only through the weak `deck_touch_*` hooks below, which a model
- * that keeps touch inside the sub-CPU frame simply does not define.
+ * Every gt928 detail lives in this file. The core reaches the panel only
+ * through the weak `deck_touch_*` hooks below, which a model that keeps touch
+ * inside the sub-CPU frame does not define.
  */
 
 #include "deck_shim.h"
@@ -21,7 +22,7 @@
 #define GT928_PATH        "/dev/input/by-id/gt928"
 #define MAX_GT928_FDS     4
 
-/* linux/input-event-codes.h subset the app matches on */
+/* The subset of linux/input-event-codes.h that the app matches on. */
 #define GT_EV_SYN             0x00
 #define GT_EV_ABS             0x03
 #define GT_SYN_REPORT         0x00
@@ -30,11 +31,12 @@
 #define GT_ABS_MT_POSITION_Y  0x36
 #define GT_ABS_MT_TRACKING_ID 0x39
 
-/* The frame carries touch as two u16 LE, X then Y, already in the model's
- * own units (screen pixels here). Pixel 0 is a coordinate, so a contact is
- * flagged in the X word's top bit (cdj3k_emu_panel::TOUCH_DOWN).  On the
- * CDJ-3000X the words sit at 20 in its 64-byte frame; the CDJ-1500X's app
- * reads 32 bytes and checks none past its CRC at 24-25, so they ride at 26. */
+/* The frame carries touch as two u16 LE words, X then Y, already in the
+ * model's own units (screen pixels here). Pixel 0 is a valid coordinate, so a
+ * contact is flagged in the top bit of the X word (cdj3k_emu_panel::TOUCH_DOWN).
+ * On the CDJ-3000X the words start at byte 20 of the 64-byte frame. The
+ * CDJ-1500X app reads 32 bytes and checks nothing after its CRC at bytes
+ * 24-25, so there the words start at byte 26. */
 #define FRAME_TOUCH_X_3KX    20
 #define FRAME_TOUCH_X_1500X  26
 #define FRAME_TOUCH_DOWN 0x8000u
@@ -48,15 +50,16 @@ struct touch_event {
     int32_t  value;
 };
 
-/* The stub pipe, created on the first open of the node, so only the process
- * that reads the panel holds it.  Both ends pack into one word (read end
- * high, write end low) so they appear together; PIPE_NONE until then. */
+/* The stub pipe is created on the first open of the node, so only the
+ * process that reads the panel holds it. Both ends are packed into one word
+ * (read end high, write end low) so they become visible together; the word is
+ * PIPE_NONE until then. */
 #define PIPE_NONE UINT64_MAX
 static uint64_t g_pipe = PIPE_NONE;
 static int g_active[MAX_GT928_FDS] = { -1, -1, -1, -1 };
 
-/* Last contact published, so a frame that changes nothing writes nothing.
- * Only the holder of g_publishing touches these. */
+/* The last contact published, so a frame that changes nothing writes
+ * nothing. Only the holder of g_publishing touches these. */
 static int g_publishing;
 static int g_touch_down;
 static int g_touch_x;
@@ -66,8 +69,8 @@ static int g_touch_id;
 static inline int pipe_rd(uint64_t p) { return (int)(uint32_t)(p >> 32); }
 static inline int pipe_wr(uint64_t p) { return (int)(uint32_t)p; }
 
-/* One binary serves every model, so the panel answers only on the one that
- * has it; elsewhere the app never opens the node anyway. */
+/* One binary serves every model, so the touch panel responds only on the
+ * models that have one; the other apps never open the node. */
 static int touch_is_ours(void) {
     deck_model_t m = deck_model();
     return m == DECK_MODEL_CDJ3KX || m == DECK_MODEL_CDJ1500X;
@@ -83,9 +86,9 @@ static uint64_t touch_pipe(void) {
     uint64_t cur = __atomic_load_n(&g_pipe, __ATOMIC_ACQUIRE);
     if (cur != PIPE_NONE) return cur;
 
-    /* The app blocks in select()/read() on the read end, so the pipe stays
-     * blocking; the write end is not, and a full pipe drops the sample
-     * rather than stalling the thread feeding it. */
+    /* The app blocks in select() and read() on the read end, so that end
+     * stays blocking. The write end is non-blocking, so a full pipe drops
+     * the sample and does not stall the thread that feeds it. */
     int pfds[2];
     if (syscall(SYS_pipe2, pfds, O_CLOEXEC) != 0) return PIPE_NONE;
     int fl = (int)syscall(SYS_fcntl, pfds[1], F_GETFL, 0);
@@ -156,16 +159,16 @@ void deck_touch_publish(const unsigned char *frame, size_t n) {
     }
     if (!listening) return;
 
-    /* One publisher at a time, so records reach the pipe in state order.
-     * A frame that finds another thread publishing is skipped: the state
-     * is a level, and the next frame carries it. */
+    /* One publisher at a time, so the records reach the pipe in order. A
+     * frame that arrives while another thread is publishing is skipped; the
+     * next frame carries the full contact state again. */
     if (__atomic_exchange_n(&g_publishing, 1, __ATOMIC_ACQUIRE)) return;
 
     unsigned rx = (unsigned)frame[at] | ((unsigned)frame[at + 1] << 8);
     unsigned ry = (unsigned)frame[at + 2] | ((unsigned)frame[at + 3] << 8);
     int down = (rx & FRAME_TOUCH_DOWN) != 0;
-    /* The host sends the model's own units, so the pair travels into the
-     * records unchanged once the flag is off. */
+    /* The host sends the model's own units, so the pair goes into the
+     * records unchanged once the flag is cleared. */
     int x = (int)(rx & ~FRAME_TOUCH_DOWN);
     int y = (int)ry;
 
@@ -188,7 +191,7 @@ void deck_touch_publish(const unsigned char *frame, size_t n) {
     }
     fill(&ev[k++], GT_EV_SYN, GT_SYN_REPORT, 0, &now);
 
-    /* pipe full: the next frame carries the state on */
+    /* If the pipe is full, drop these records; the next frame tries again. */
     if (sys_write(pipe_wr(p), ev, (size_t)k * sizeof(ev[0])) < 0) goto out;
 
     if (down && !g_touch_down) g_touch_id++;

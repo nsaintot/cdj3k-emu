@@ -179,7 +179,7 @@ fn draw_jog_mode(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, layout:
     let vinyl_led = app.mosi().lit(Lamp::JogModeVinyl);
     let cdj_led = app.mosi().lit(Lamp::JogModeCdj);
 
-    // VINYL label (yellow, illuminated when active)
+    // The VINYL legend is blue while its lamp is lit.
     p.text(
         layout.sp(label_x, combo_ref.center().y + JOG_MODE_VINYL_OFF_Y),
         egui::Align2::CENTER_CENTER,
@@ -190,7 +190,7 @@ fn draw_jog_mode(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, layout:
         ),
         if vinyl_led { COL_BLUE } else { COL_DARK },
     );
-    // CDJ label
+    // The CDJ legend is green while its lamp is lit.
     p.text(
         layout.sp(label_x, combo_ref.center().y + JOG_MODE_CDJ_OFF_Y),
         egui::Align2::CENTER_CENTER,

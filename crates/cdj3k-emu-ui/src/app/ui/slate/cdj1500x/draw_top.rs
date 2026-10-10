@@ -1,8 +1,8 @@
 //! The row under the screen: DELETE and its lamp, the eight HOT CUE keys,
 //! and the BACK / TAG TRACK pair.
 //!
-//! Positions are drawing pixels, converted by [`px`]; captions are fitted to
-//! the ink boxes the drawing prints them in.
+//! Positions are in drawing pixels and are converted by [`px`]. Each caption
+//! is fitted to its ink box in the drawing.
 
 use cdj3k_emu_panel::{Btn, Lamp};
 use egui::{Color32, FontFamily, Pos2, Rect, Stroke, Vec2};
@@ -17,7 +17,7 @@ use super::UiScale;
 
 // ── DELETE ────────────────────────────────────────────────────────────────────
 const DELETE_CENTER: (f32, f32) = (124.8, 1050.9);
-/// Outer edge of the round key; the profile insets from it.
+/// The round key's outer radius; the key's profile is inset from it.
 const DELETE_R: f32 = 27.5;
 const DELETE_CAPTION: (f32, f32, f32, f32) = (85.0, 994.0, 167.0, 1009.0);
 
@@ -28,11 +28,12 @@ const DELETE_LAMP_R: f32 = 4.5;
 const COL_STANDBY: Color32 = Color32::from_rgb(235, 40, 30);
 
 // ── HOT CUE ───────────────────────────────────────────────────────────────────
-/// Outer edge of key A; the others follow at [`HOT_CUE_PITCH`].
+/// Outer edge of key A; the other keys follow at intervals of
+/// [`HOT_CUE_PITCH`].
 const HOT_CUE_A: (f32, f32, f32, f32) = (247.0, 1016.0, 349.5, 1086.0);
 const HOT_CUE_PITCH: f32 = 119.0;
 const HOT_CUE_R: f32 = 9.0;
-/// The letter's ink box, from the key's left and top edge.
+/// The offset of the letter's ink box from the key's left and top edges.
 const HOT_CUE_LETTER_OFF: (f32, f32) = (19.0, 18.0);
 const HOT_CUE_LETTER_H: f32 = 14.0;
 const HOT_CUE_CAPTION: (f32, f32, f32, f32) = (667.0, 987.0, 763.0, 1002.0);
@@ -50,9 +51,10 @@ const HOT_CUE_KEYS: [(&str, Btn); 8] = [
 const COL_HOT_CUE_LIT: Color32 = COL_BTN_CUE;
 
 // ── BACK / TAG TRACK ──────────────────────────────────────────────────────────
-/// The pair's outer edge: two half-stadiums meeting flat sides in the middle.
+/// The pair's outer edge: two half-stadiums whose flat sides meet in the
+/// middle.
 const PAIR: (f32, f32, f32, f32) = (1226.5, 1023.0, 1381.5, 1078.0);
-/// BACK's flat side, and TAG TRACK's, with the gap between them.
+/// The x of BACK's flat side and of TAG TRACK's, with a gap between them.
 const PAIR_BACK_RIGHT: f32 = 1303.0;
 const PAIR_TAG_LEFT: f32 = 1305.0;
 /// Corner radius where a half meets the gap.
@@ -74,17 +76,18 @@ fn letter_family() -> FontFamily {
     FontFamily::Name(cdj3k_emu_platform::fonts::NIMBUS_SANS.into())
 }
 
-/// A drawing-pixel box as a screen rect.
+/// Converts a box in drawing pixels to a screen rect.
 fn screen_box(layout: &UiScale, (l, t, r, b): (f32, f32, f32, f32)) -> Rect {
     Rect::from_min_max(layout.sp(px(l), px(t)), layout.sp(px(r), px(b)))
 }
 
-/// A drawing-pixel box as a reference rect.
+/// Converts a box in drawing pixels to a reference rect.
 fn ref_box((l, t, r, b): (f32, f32, f32, f32)) -> Rect {
     Rect::from_min_max(Pos2::new(px(l), px(t)), Pos2::new(px(r), px(b)))
 }
 
-/// Captions and the DELETE lamp (cached; rebuilt on resize).
+/// Collects the captions and the DELETE lamp's ring into the static cache,
+/// which is rebuilt on a resize.
 pub(super) fn collect_top_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     for (text, ink) in [
         ("DELETE", DELETE_CAPTION),
@@ -111,7 +114,7 @@ pub(super) fn collect_top_statics(list: &mut ShapeList, ctx: &egui::Context, lay
     );
 }
 
-/// The row's keys.
+/// Draws the row's keys.
 pub(super) fn draw_top_section(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     draw_delete(app, ui, layout);
     draw_hot_cues(app, ui, layout);
@@ -146,8 +149,8 @@ fn back_tag_outlines() -> [Outline; 2] {
     ]
 }
 
-/// The caps of the row's keys, reference units: what stands above the
-/// panel when the deck tilts.
+/// Returns the outlines of the row's key caps in reference units. They stand
+/// above the panel when the deck tilts.
 pub(super) fn footprints() -> Vec<Vec<Pos2>> {
     std::iter::once(delete_outline())
         .chain((0..HOT_CUE_KEYS.len()).map(hot_cue_outline))
@@ -157,8 +160,8 @@ pub(super) fn footprints() -> Vec<Vec<Pos2>> {
 }
 
 fn draw_delete(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
-    // The lamp's ring is drawn with the statics; lit, its dot covers the
-    // dark fill inside it.
+    // The lamp's ring is drawn with the statics. When the lamp is lit, its dot
+    // covers the dark fill inside the ring.
     if app.mosi().lit(Lamp::Standby) {
         let lamp = layout.sp(px(DELETE_LAMP_CENTER.0), px(DELETE_LAMP_CENTER.1));
         ui.painter().circle_filled(
@@ -202,7 +205,8 @@ fn draw_hot_cues(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     }
 }
 
-/// A key letter, its ink `h` tall with its top-left at `at`, at its own width.
+/// Draws a key letter whose ink is `h` tall, with its top-left corner at `at`
+/// and at its natural width.
 fn collect_letter(
     list: &mut ShapeList,
     ctx: &egui::Context,

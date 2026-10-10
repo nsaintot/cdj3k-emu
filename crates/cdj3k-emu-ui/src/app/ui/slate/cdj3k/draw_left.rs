@@ -18,7 +18,8 @@ use loops::*;
 use media::*;
 use transport::*;
 
-/// Transport column in reference space: **left** strip - ref X from [`layout`].
+/// The transport column on the left, in reference space; its x range comes
+/// from [`layout`].
 pub(super) const PERF_TRANSPORT_COL_REF: Rect = Rect::from_min_max(
     Pos2::new(layout::TRANSPORT_REF_LEFT, layout::TRANSPORT_REF_TOP),
     Pos2::new(layout::TRANSPORT_REF_RIGHT, layout::TRANSPORT_REF_BOT),
@@ -27,7 +28,7 @@ pub(super) const PERF_TRANSPORT_COL_REF: Rect = Rect::from_min_max(
 /// Vertical fraction within [`PERF_TRANSPORT_COL_REF`] for the "DIRECTION" label.
 pub(super) const PERF_V_DIRECTION_LABEL: f32 = 0.55;
 
-/// Where this panel puts the direction flip-switch.
+/// Where this panel places the direction switch.
 pub(super) const DIRECTION_PLACE: DirectionPlacement = DirectionPlacement {
     col: PERF_TRANSPORT_COL_REF,
     center_u: 0.5,
@@ -80,7 +81,8 @@ pub(super) const PERF_CALL_DELETE_SEGMENT_LENGTH: f32 = 100.0;
 pub(super) const PERF_CALL_DELETE_SEGMENT_THICKNESS: f32 = 4.0;
 /// Upward offset from button center to label center (ref units). Labels sit above the button top edge.
 pub(super) const PERF_CALL_DELETE_LABEL_NUDGE_Y: f32 = 100.0;
-/// Outer container - same width/height as a hot cue button (HOT_CUE_BTN_WIDTH_REF=180, aspect=1.8).
+/// The outer container is the same size as a hot cue button
+/// (HOT_CUE_BTN_WIDTH_REF is 180 and the aspect ratio is 1.8).
 pub(super) const PERF_CALL_DELETE_OUTER_H: f32 = 100.0;
 pub(super) const PERF_CALL_DELETE_OUTER_W: f32 = 200.0;
 pub(super) const PERF_CALL_DELETE_OUTER_ROUNDING: f32 = 12.0; // HOT_CUE_BTN_HEIGHT * 0.12
@@ -217,15 +219,17 @@ fn draw_slip_quantize(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     );
 }
 
-/// CALL/DELETE: aligned vertically with the hot cue row in the mid-central
-/// panel. Static chrome (outer container, labels, segment) lives in statics.rs.
+/// Draws the CALL/DELETE button, aligned vertically with the hot cue row in
+/// the mid-central panel. Its static chrome (the outer container, labels and
+/// segment) is drawn in statics.rs.
 fn draw_call_delete(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let col = PERF_TRANSPORT_COL_REF;
     let cy_ref = col.top() + col.height() * PERF_V_CALL_DELETE;
     let btn_size = PERF_CALL_DELETE_BTN_SIZE;
     let btn_cx_ref = col.left() + col.width() * PERF_CALL_DELETE_BTN_U;
 
-    // Inner square black button with hot-cue-style double border.
+    // The inner button is a black square with a double border like the hot
+    // cue buttons'.
     let btn_rect = layout.ar2rect(
         btn_cx_ref - btn_size * 0.5,
         cy_ref - btn_size * 0.5,
@@ -250,9 +254,9 @@ fn draw_call_delete(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
         btn_rect,
         "",
         layout.sc(PERF_LABEL_FONT_SIZE),
-        None,            // accent hidden on black bg
-        Some(COL_BLACK), // bg fill
-        None,            // touchdown = COL_BTN_HOT
+        None,            // No accent: it would not show on the black fill.
+        Some(COL_BLACK), // The background fill.
+        None,            // None keeps the default pressed fill, COL_BTN_HOT.
         None,
         None,
         Some(call_delete_border),

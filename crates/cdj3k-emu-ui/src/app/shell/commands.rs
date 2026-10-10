@@ -45,7 +45,7 @@ impl CdjShell {
             // A Mods view asks `restart-pending` every 2 s.
             if command != Command::RestartPending {
                 eprintln!(
-                    "cdj3k-emu: slot {}: another window sent {}, replied {}",
+                    "cdj3k-emu: Slot {}: another window sent {}, and this window replied {}.",
                     self.instance,
                     command.as_str(),
                     reply.as_str()
@@ -177,7 +177,7 @@ impl CdjShell {
     fn on_reply(&mut self, slot: u32, command: Command, reply: std::io::Result<Option<Reply>>) {
         if let Err(e) = &reply {
             eprintln!(
-                "cdj3k-emu: sending {} to slot {slot}'s window failed: {e}",
+                "cdj3k-emu: Sending {} to slot {slot}'s window failed: {e}",
                 command.as_str()
             );
         }

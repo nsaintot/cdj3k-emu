@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /* gadget.c: the gadget identity, read back from configfs.
  *
- * The firmware's usb_gadget.sh (patch 28 keeps its identity lines) is the one
- * place a model's USB identity is defined.  The host builds its virtual HID
- * device and MIDI device from what this reports, so both match the gadget the
- * app talks to.
+ * The firmware's usb_gadget.sh, whose identity lines patch 28 keeps, is the
+ * only place that defines a model's USB identity. The host builds its virtual
+ * HID device and MIDI device from what this reports, so both match the gadget
+ * that the app talks to.
  *
- * Payload: one `key=value` line per field, report_desc as lowercase hex.
+ * The payload has one `key=value` line per field, with report_desc in
+ * lowercase hex:
  *   idVendor=0x2b73
  *   idProduct=0x004e
  *   bcdDevice=0x0140
@@ -42,8 +43,8 @@ static ssize_t read_file(const char *path, void *buf, size_t cap)
     return (ssize_t)got;
 }
 
-/* Append `key=<file contents, trailing newline stripped>\n`.  Returns the new
- * length, or -1 if the file is missing or the buffer is full. */
+/* Append `key=<file contents without the trailing newline>\n`. Returns the
+ * new length, or -1 if the file is missing or the buffer is full. */
 static int add_text(char *out, size_t cap, int len, const char *key, const char *file)
 {
     char path[160], val[128];
@@ -71,7 +72,7 @@ int gadget_identity(char *out, size_t cap)
     for (size_t i = 0; i < sizeof k_text / sizeof k_text[0]; i++) {
         len = add_text(out, cap, len, k_text[i].key, k_text[i].file);
         if (len < 0) {
-            fprintf(stderr, "pc-link-bridge: gadget %s unreadable\n", k_text[i].file);
+            fprintf(stderr, "pc-link-bridge: cannot read the gadget's %s\n", k_text[i].file);
             return -1;
         }
     }
@@ -79,7 +80,7 @@ int gadget_identity(char *out, size_t cap)
     unsigned char desc[512];
     ssize_t n = read_file(GADGET_DIR "/functions/hid.usb0/report_desc", desc, sizeof desc);
     if (n <= 0) {
-        fprintf(stderr, "pc-link-bridge: gadget report_desc unreadable\n");
+        fprintf(stderr, "pc-link-bridge: cannot read the gadget's report_desc\n");
         return -1;
     }
     int w = snprintf(out + len, cap - (size_t)len, "report_desc=");

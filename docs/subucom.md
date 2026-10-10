@@ -1,9 +1,9 @@
 # cdj3k-emu - subucom Protocol
 
-> Reference for the sub-CPU (subucom) SPI protocol the CDJ-3000 firmware uses
-> to talk to the deck's input hardware, and how cdj3k-emu emulates it
-> end-to-end through a virtual char device, a guest forwarder, and a host
-> `ctrl.sock` peer.
+> This page describes the sub-CPU (subucom) SPI protocol that the CDJ-3000
+> firmware uses to talk to the deck's input hardware, and how cdj3k-emu
+> emulates it end to end with a virtual char device, a guest forwarder and a
+> host `ctrl.sock` peer.
 
 ---
 
@@ -45,10 +45,10 @@
                                   EP122
 ```
 
-Cadence: EP122 polls `/dev/subucom_spi1.0` at ~850 Hz (1176 µs period).
-Each direction is 64 B × 850 Hz ≈ 54 KB/s - negligible compared to audio
-or video. The forwarder and ctrl.sock are blocking; there is no
-framing - the receiver simply reads in 64-byte chunks.
+EP122 polls `/dev/subucom_spi1.0` at about 850 Hz (a 1176 µs period). Each
+direction carries 64 B × 850 Hz ≈ 54 KB/s, which is small next to audio or
+video. The forwarder and `ctrl.sock` are blocking, and there is no framing:
+the receiver reads 64-byte chunks.
 
 For the `ctrl.sock` virtio-serial transport (host UNIX-socket side,
 reconnect/blocking semantics, `host_connected` 0-read behaviour), see
@@ -67,8 +67,8 @@ indicators).
 
 EP122 talks to it over `ff1d0000.spi` in Mode 3 at 3.2 MHz, CS0,
 ~850 Hz polling. Each poll is a full-duplex 64-byte exchange: **MOSI**
-(EP122 → sub-CPU) carries LED state; **MISO** (sub-CPU → EP122) carries
-input state. cdj3k-emu replaces the sub-CPU with software but keeps
+(EP122 to the sub-CPU) carries LED state, and **MISO** (the sub-CPU to EP122)
+carries input state. cdj3k-emu replaces the sub-CPU with software but keeps
 EP122 unchanged.
 
 ---
@@ -84,15 +84,15 @@ Both directions are **64 bytes, fixed length**.
 | `[5..62]` | payload (LED PWM for MOSI, input state for MISO) |
 | `[62..64]` | **CRC-16/X-25** over bytes `[0..62]`, stored little-endian |
 
-The CRC is poly `0x8408` (reflected `0x1021`), init `0xFFFF`, final XOR
-`0xFFFF`. Implementation: `crates/cdj3k-emu-panel/src/crc.rs` (Rust)
-and `guest/modules/subucom_virt/subucom_virt.c` (kernel).
+The CRC uses the polynomial `0x8408` (reflected `0x1021`), init `0xFFFF` and
+final XOR `0xFFFF`. It is implemented in `crates/cdj3k-emu-panel/src/crc.rs`
+(Rust) and `guest/modules/subucom_virt/subucom_virt.c` (kernel).
 
-On the CDJ-3000X (EP145) both frames are this one shifted. The MISO frame
+On the CDJ-3000X (EP145), both frames use this layout, shifted. The MISO frame
 sits behind a u16 format version (non-zero, or EP145 drops the frame) with
 the same CRC window; the MOSI frame moves the LED bitfield and the RGB lamps
 and adds lamps of its own. `cdj3kx.rs` carries the shifts: its MISO encoder
-writes the CDJ-3000's fields `MISO_SHIFT` bytes on, and its `MosiMap`
+writes the CDJ-3000's fields `MISO_SHIFT` bytes later, and its `MosiMap`
 (`cdj3kx::MOSI`) moves the lamps.
 
 The CDJ-1500X (EP166) has 32-byte frames of its own on
@@ -107,27 +107,26 @@ EP122 writes **linear-light PWM bytes**. Three LED classes coexist:
   transport, beat-jump, encoder, …
 - **Two-bit "step" LEDs** (`StepLedMask`) - navigation (`SOURCE`,
   `BROWSE`, `TAG LIST`, `PLAYLIST`, `SEARCH`, `MENU`) and
-  `SLIP`/`QUANTIZE`. `medium` bit alone = dim, `medium|full` = bright,
-  decoded to `StepLed::{Off, Medium, Full}`.
+  `SLIP`/`QUANTIZE`. The `medium` bit alone means dim and `medium|full`
+  means bright; the decoder maps them to `StepLed::{Off, Medium, Full}`.
 - **RGB groups** - eight hot-cue pads at `[12..36]`, plus SD, USB-LIGHT,
   ON-AIR at `[36..45]`, each a raw `(R, G, B)` PWM triple.
 
-The host converts raw PWM → display colour in `mosi_frame.rs`
+The host converts raw PWM into a display colour in `mosi_frame.rs`
 (`led_color`): the part's `LedProfile` turns the PWM duty into light
 (`led_linear`: its dies, gamma and white gains), then the dominant channel
 is normalised to `LED_PEAK` for a saturated colour, rising to 255 as the
-colour nears white. This preserves hue at any drive level;
-`led_drive_factor` is exposed for callers that want to dim the visual to
-match drive.
+colour nears white. This keeps the hue at any drive level;
+`led_drive_factor` lets a caller dim the drawn LED to match the drive.
 
-> Canonical LED → byte/mask map: the `LED_*` bits in
-> `crates/cdj3k-emu-panel/src/cdj3k.rs` (CDJ-3000 coordinates), shifted per
-> model by the `MosiMap` in `cdj3k.rs` / `cdj3kx.rs`; the CDJ-1500X's own
-> layout is in `cdj1500x.rs`.
+> The `LED_*` bits in `crates/cdj3k-emu-panel/src/cdj3k.rs` map each LED to
+> its byte and mask in CDJ-3000 coordinates; the `MosiMap` in `cdj3k.rs` and
+> `cdj3kx.rs` shifts them per model. The CDJ-1500X's layout is in
+> `cdj1500x.rs`.
 
 ### MISO payload (input state)
 
-Mostly bitmasks plus a handful of scalar fields. By region:
+The payload is mostly bitmasks plus a few scalar fields. By region:
 
 - **Buttons** `[5..12]` - packed bitmasks, one bit per button
   (PLAY/CUE/SEARCH, HOT A..H, BROWSE/MENU/QUANTIZE, POWER_ON, …).
@@ -141,7 +140,7 @@ Mostly bitmasks plus a handful of scalar fields. By region:
   **inverse**: `0xFFFF`=stopped, `0x0000`=max), touch byte
   (`0x00`=none / `0x03`=press / `0x04`=idle baseline / `0x0c`=turning).
 - **Capacitive sensors** `b32..b44` - 12 bytes; baseline ≈ `0xD5/0xD6`
-  per channel, deviations = finger proximity.
+  per channel; a deviation means a finger is near.
 - **Device state** `b12` - `0x80`=power-on, `0x01`=SD-cover-closed.
   High nibble carries the sub-CPU power-off timer (see *forwarder*).
 
@@ -149,10 +148,10 @@ A pre-baked `IDLE` per model holds the "nothing pressed" baseline. The UI
 describes the panel in a model-neutral `PanelState` (pressed and cleared
 frame bits, fader travel, jog, rotary, direction, vinyl, touch, power) and
 `miso_frame::encode(model, &state)` hands it to the player's `MisoCodec`,
-which starts from its `IDLE`, writes each control the way its deck does -
-the CDJ-3000's tempo dead-zone curve included - and stamps the CRC.
+which starts from its `IDLE`, writes each control the way its deck does
+(including the CDJ-3000's tempo dead-zone curve) and stamps the CRC.
 
-> Canonical map: `crates/cdj3k-emu-panel/src/miso_frame.rs` (CDJ-3000
+> The canonical map is in `crates/cdj3k-emu-panel/src/miso_frame.rs` (CDJ-3000
 > coordinates); each model's encoder is in its spec file (`cdj3k.rs`,
 > `cdj3kx.rs`, `cdj1500x.rs`).
 
@@ -162,123 +161,115 @@ the CDJ-3000's tempo dead-zone curve included - and stamps the CRC.
 
 ### 1. Kernel module `subucom_virt.ko`
 
-`guest/modules/subucom_virt/subucom_virt.c`. Creates two char devices
-under a dynamic major:
+The module, `guest/modules/subucom_virt/subucom_virt.c`, creates two char
+devices under a dynamic major:
 
 | Path | Minor | Used by | Purpose |
 |------|-------|---------|---------|
 | `/dev/subucom_spi1.0` | 0 | EP122 | Real SPI device replacement |
 | `/dev/subucom_ctrl`   | 1 | forwarder | Host bridge |
 
-EP122 talks to `subucom_spi1.0` with the original SPI ioctls - the
-module accepts and remembers `TIMER_STATUS`, `BITS_PER_WORD`,
-`RX_BYTES`, `INTERVAL` reads/writes so EP122's probe succeeds. The
-interesting call is **`MOSI_TRANSFER` (`0x40107000`)**: EP122 passes a
+EP122 talks to `subucom_spi1.0` with the original SPI ioctls. The module
+accepts and remembers reads and writes of `TIMER_STATUS`, `BITS_PER_WORD`,
+`RX_BYTES` and `INTERVAL`, so EP122's probe succeeds. The main call is **`MOSI_TRANSFER` (`0x40107000`)**: EP122 passes a
 16-byte `{magic, size, data_ptr}` struct; the module dereferences
 `data_ptr` to copy out the 64-byte LED payload, stashes it under
 `mosi_lock`, and wakes `mosi_wq` so any reader of `/dev/subucom_ctrl`
 unblocks.
 
-MISO is delivered through `spi_read()`. There is **no free-running
-hrtimer** - the read blocks on `schedule_timeout_interruptible` for one
-poll interval (`interval_us`, default `1176 µs`), then returns either
-the latest host-injected frame (`inject_pending`) or the baked-in
-`miso_idle` template; either way it stamps a fresh CRC-16/X-25 before
-copy-out (`subucom_virt.c`). Throttling in the caller's
-context (instead of via hrtimer→waitqueue) was a deliberate fix for a
-QEMU/HVF wake-up race.
+MISO is delivered through `spi_read()`. There is no free-running hrtimer: the
+read sleeps in `schedule_timeout_interruptible` for one poll interval
+(`interval_us`, default `1176 µs`), then returns either the latest
+host-injected frame (`inject_pending`) or the built-in `miso_idle` template.
+Either way it stamps a fresh CRC-16/X-25 before the copy-out. Do not move the
+throttle to an hrtimer that wakes a waitqueue: that wake-up races under QEMU
+with HVF.
 
 Host injection through `/dev/subucom_ctrl` is **sticky**: a 64-byte
 write replaces `inject_pending` and stays in effect until the next
-write, so the host doesn't need to spin re-injecting the same frame at
-850 Hz. Writing zero bytes clears the injection and the module falls
-back to idle. `epoll` on `subucom_spi1.0` always reports `POLLIN` -
-EP122 throttles itself via `read()` rather than waiting on poll
-(`subucom_virt.c`).
+write, so the host does not need to re-inject the same frame at 850 Hz.
+Writing zero bytes clears the injection, and the module falls back to idle.
+`epoll` on `subucom_spi1.0` always reports `POLLIN`; EP122 is throttled by the
+blocking `read()`.
 
-A module-param `inject_testmode=1` holds the model's service-mode combo
-(`BTN_CALL_PREV + BTN_TEMPO_RANGE` on the CDJ-3000) for 5 s from insmod,
-released by a `delayed_work`, so the boot sequence enters service mode
-without host interaction. The combo is ORed into every delivered frame,
-idle or injected: a host write during those 5 s does not cancel it.
+The module parameter `inject_testmode=1` holds the model's service-mode button
+combination (`BTN_CALL_PREV` and `BTN_TEMPO_RANGE` on the CDJ-3000) for 5 s
+after insmod, and a `delayed_work` releases it, so the boot enters service
+mode without host input. The combination is ORed into every delivered frame,
+idle or injected, so a host write during those 5 s does not cancel it.
 
 ### 2. Guest user-space forwarder
 
-`guest/subucom/forwarder.c`. Single static aarch64 binary, two
-directions:
+The forwarder, `guest/subucom/forwarder.c`, is a single static aarch64 binary
+that handles both directions:
 
-- **LED thread** (`led_thread`, `forwarder.c`): blocking
-  `read(ctrl_rfd, 64)` on `/dev/subucom_ctrl`, then `write(vport_fd, …)`
-  to the `cdj3k.ctrl` virtio-serial port. One frame per syscall pair.
-- **Main loop**: blocking `read(vport_fd, 64)` from the host, then
-  `write(ctrl_wfd, …)` back into `/dev/subucom_ctrl` (which lands in
-  `inject_pending`). A `read() == 0` means `host_connected=false` (no
-  cdj-ui peer on `ctrl.sock`); the loop just sleeps and retries - it
-  does **not** close the vport, because reopening would burn a
+- **LED thread** (`led_thread`): a blocking `read(ctrl_rfd, 64)` on
+  `/dev/subucom_ctrl`, then a `write(vport_fd, …)` to the `cdj3k.ctrl`
+  virtio-serial port, one frame per pair of syscalls.
+- **Main loop**: a blocking `read(vport_fd, 64)` from the host, then a
+  `write(ctrl_wfd, …)` back into `/dev/subucom_ctrl`, which lands in
+  `inject_pending`. A `read()` that returns 0 means `host_connected=false`
+  (no cdj-ui peer on `ctrl.sock`); the loop sleeps and retries. It does
+  **not** close the vport, because reopening it would use up a
   `guest_connected` toggle on the QEMU side.
 
 The forwarder also watches `b12` for the EP122 power-off signal
 (high-nibble `bit 3` clearing): on the first matching frame it spawns
-`poweroff_thread` which `execl`s `/bin/systemctl reboot` after a 2 s
-delay. (Real hardware sends a sub-CPU power-off pulse; we map it to a
-guest reboot.)
+`poweroff_thread`, which runs `/bin/systemctl reboot` after 2 s. On real
+hardware the sub-CPU cuts the power at this point; the emulator reboots the
+guest instead.
 
-Locating the vport: `/sys/class/virtio-ports/*/name` is scanned for
-literal `"cdj3k.ctrl"`, then the corresponding `/dev/vportNpM` is
-opened (`forwarder.c`).
+The forwarder finds the vport by scanning `/sys/class/virtio-ports/*/name` for
+the literal `"cdj3k.ctrl"` and opening the matching `/dev/vportNpM`.
 
 ### 3. Host side - `CtrlStream`
 
-`crates/cdj3k-emu-streams/src/ctrl_stream.rs`. Connects to
-`{sock_dir}/ctrl.sock` with infinite reconnect (2 s backoff). One
-background `ctrl-stream` thread runs `read_loop` - strictly 64-byte
-reads, no framing, no length prefix. The write half is `try_clone`d so
-`inject(&[u8; 64])` can be called from any thread (in practice, the
-egui paint thread on user gesture).
+`CtrlStream` (`crates/cdj3k-emu-streams/src/ctrl_stream.rs`) connects to
+`{sock_dir}/ctrl.sock` and reconnects forever with a 2 s backoff. One
+background `ctrl-stream` thread runs `read_loop`, which reads exactly 64 bytes
+at a time, with no framing or length prefix. The write half is `try_clone`d,
+so `inject(&[u8; 64])` can be called from any thread; in practice the egui
+paint thread calls it on a user gesture.
 
 Two snapshot mechanisms coexist:
 
-- `peek_latest_mosi()` / `latest_mosi_arc()` - **unconditional**, always
-  reflects the most recent wire frame. Used by the debug viewport so it
-  sees every heartbeat.
-- `take()` - repaint-gated: only stored when bytes changed since the
-  last gate-trigger. EP122 retransmits visually-identical frames at
-  ~100 Hz; gating keeps the main viewport asleep when no LED actually
-  changed (`ctrl_stream.rs`).
+- `peek_latest_mosi()` and `latest_mosi_arc()` always return the most recent
+  wire frame. The debug viewport uses them so that it sees every heartbeat.
+- `take()` is repaint-gated: a frame is stored for it only when its bytes
+  differ from the frame that last triggered a repaint. EP122 resends identical
+  frames at about 100 Hz, and the gate keeps the main viewport asleep when no
+  LED changed.
 
 ### 4. Decoders - `cdj3k-emu-panel` crate
 
 `MosiFrame::new(bytes, model)` answers for a `Lamp` through the model's
-`MosiCodec` (`lamp`, and `lit`, `step`, `rgb`, `drive` over it), and `miso_frame::encode(model, &state)` writes the control frame, so the UI
-never indexes raw bytes. The `egui-color` feature exposes
-`MosiFrame::led_color(part, r, g, b) -> Option<Color32>`, performing the
-gamma + peak-normalise conversion through the part's `LedProfile` in one
-call.
+`MosiCodec` (`lamp`, and `lit`, `step`, `rgb` and `drive` built on it), and
+`miso_frame::encode(model, &state)` writes the control frame, so the UI never
+indexes raw bytes. The `egui-color` feature exposes
+`MosiFrame::led_color(part, r, g, b) -> Option<Color32>`, which applies the
+gamma and peak normalisation through the part's `LedProfile` in one call.
 
 ---
 
 ## Why this split (kernel module + forwarder + virtio-serial)
 
-EP122 reaches the sub-CPU via plain `read(2)` / `ioctl(2)` on a char
-device. LD_PRELOAD'ing those syscalls would work but couples subucom
-emulation to EP122's process lifecycle (in-place restarts lose state)
-and forces the preload to reimplement epoll/ioctl redirection.
-Patching kernel SPI core is invasive and version-tied. Shipping our
-own char device side-steps both: it *is* `subucom_spi1.0`, survives any
-EP122 crash, needs no preload, and exposes a `/dev/subucom_ctrl` side
-that's plain user-space - debuggable with `cat`/`dd`/`subucom_live`
-(`guest/subucom/live.c`), and replaceable without rebuilding the
-kernel module. The forwarder being unprivileged user-space means it
-can be killed, gdb'd, or restarted at runtime without touching either
-the module or EP122.
+EP122 reaches the sub-CPU through plain `read(2)` and `ioctl(2)` calls on a
+char device.
+
+- The module provides `subucom_spi1.0` itself, so it survives EP122 crashes
+  and restarts and needs no preload and no patch to the kernel's SPI core.
+- `/dev/subucom_ctrl` is plain user space: `cat`, `dd` and `subucom_live`
+  (`guest/subucom/live.c`) can read it, and its user side can change without
+  rebuilding the module.
+- The forwarder is an unprivileged process that can be killed, debugged or
+  restarted without touching the module or EP122.
 
 ---
 
 ## Out of scope
 
-- **Slingshot / scroll-bend** input shaping. That lives in the UI layer
-  (gesture → MISO frame synthesis), not the subucom protocol itself.
-  See `README.md` for user-facing controls.
+- **Slingshot and scroll-bend** input shaping. It lives in the UI layer, which
+  turns gestures into MISO frames. See `README.md` for the controls.
 - **Per-byte field tables.** The model spec files (`cdj3k.rs`, `cdj3kx.rs`,
   `cdj1500x.rs`) hold them.
 - **`ctrl.sock` framing / reconnect.** See

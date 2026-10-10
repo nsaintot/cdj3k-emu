@@ -1,9 +1,8 @@
 //! The menu as data.
 //!
 //! The service emits one of these per sync; a provider renders it. The model
-//! is a superset: it carries everything any backend could want, and a provider
-//! drops what it cannot express rather than the service trimming to the
-//! weakest backend.
+//! carries everything any backend can show, and each provider drops what it
+//! cannot express.
 
 use super::id::MenuId;
 
@@ -26,8 +25,8 @@ pub struct Notice {
 
 /// A glyph a provider may draw beside a row or in a status strip.
 ///
-/// The *state* is decided here because it comes from application state; which
-/// picture stands for it is the provider's business.
+/// The model decides the state, because it comes from application state; the
+/// provider picks the picture for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuIcon {
     Emulation,
@@ -49,18 +48,17 @@ pub enum NetKind {
 /// One row, or one nested menu.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MenuNode {
-    /// Clickable row.
+    /// A clickable row.
     Item {
         id: MenuId,
         label: String,
         enabled: bool,
-        /// Trailing value — a device node, an address. Set apart from the
-        /// label because it is data, not wording.
+        /// A trailing value, such as a device node or an address. It is kept
+        /// apart from the label because it is data.
         detail: Option<String>,
     },
-    /// Clickable row carrying a tick. Radio groups are expressed as a run of
-    /// these with one `checked` — the model does not distinguish the two,
-    /// because no backend we target enforces radio semantics for us.
+    /// A clickable row with a tick. A radio group is a run of these with one
+    /// `checked`, because no supported backend enforces radio behaviour.
     Check {
         id: MenuId,
         label: String,
@@ -68,38 +66,37 @@ pub enum MenuNode {
         checked: bool,
         detail: Option<String>,
     },
-    /// Non-clickable text.
+    /// Text that cannot be clicked.
     Label(String),
     /// A heading over the rows beneath it.
     Section(String),
-    /// A figure worth reading at a glance — the audio pipeline latency.
-    /// Distinct from a label because it is three pieces of text with a
-    /// hierarchy, not one line.
+    /// A figure read at a glance, such as the audio pipeline latency. It is
+    /// three pieces of text with a hierarchy, so it is not a label.
     Readout {
         title: String,
         value: String,
         detail: Option<String>,
     },
     Separator,
-    /// A row the host toolkit owns rather than us. A backend without the
-    /// concept renders nothing.
+    /// A row that the host toolkit owns. A backend without the concept renders
+    /// nothing.
     Predefined(Predefined),
     Submenu {
         label: String,
         enabled: bool,
         children: Vec<MenuNode>,
-        /// What this menu is currently set to, for a provider that shows the
-        /// state on the opener rather than only inside — `en7`, `141 ms`.
+        /// What this menu is currently set to, such as `en7` or `141 ms`, for a
+        /// provider that shows the state on the opener.
         status: Option<String>,
-        /// The part of the status that is a bare value rather than a name —
-        /// the firmware release beside the deck. Set apart so a provider can
+        /// The part of the status that is a bare value, such as the firmware
+        /// release beside the deck. It is kept apart so that a provider can
         /// set it in the face it uses for data.
         detail: Option<String>,
         icon: Option<MenuIcon>,
     },
 }
 
-/// Rows supplied by the platform, not by us.
+/// Rows that the platform supplies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Predefined {
     Quit,
@@ -200,7 +197,8 @@ impl MenuNode {
         }
     }
 
-    /// Whether two nodes occupy the same slot — same kind, same identity.
+    /// Whether two nodes occupy the same slot: the same kind and the same
+    /// identity.
     ///
     /// A provider that holds native widgets uses this to decide between
     /// updating a row in place and rebuilding the menu it sits in. Labels,
@@ -210,8 +208,8 @@ impl MenuNode {
         match (self, other) {
             (Self::Item { id: a, .. }, Self::Item { id: b, .. }) => a == b,
             (Self::Check { id: a, .. }, Self::Check { id: b, .. }) => a == b,
-            // Headers are positional, so a label only has to stay a label;
-            // its text is updated in place (this is how the latency row works).
+            // A label is positional, so it only has to stay a label; its text
+            // is updated in place.
             (Self::Label(_), Self::Label(_)) => true,
             (Self::Section(a), Self::Section(b)) => a == b,
             (Self::Readout { .. }, Self::Readout { .. }) => true,
@@ -270,8 +268,8 @@ mod tests {
 mod design_tests {
     use super::*;
 
-    /// The in-window bar shows each menu's state on its opener; the native bar
-    /// shows neither. Both read one model, so the state has to live in it.
+    /// The in-window bar shows each menu's state on its opener, and the native
+    /// bar does not. Both read one model, so the state lives in it.
     #[test]
     fn a_status_and_glyph_ride_on_the_opener() {
         let n = MenuNode::submenu("Network", vec![])
@@ -283,8 +281,8 @@ mod design_tests {
         assert_eq!(icon, &Some(MenuIcon::Network(NetKind::Bridged)));
     }
 
-    /// The icon carries the state, not the picture: which glyph stands for a
-    /// mounted disk is the provider's business.
+    /// The icon carries the state, and the provider picks the glyph for a
+    /// mounted disk.
     #[test]
     fn the_icon_carries_state_rather_than_a_picture() {
         assert_ne!(
@@ -308,8 +306,8 @@ mod design_tests {
         assert_eq!(detail.as_deref(), Some("sdb"));
     }
 
-    /// A status change must not force a native menu rebuild: the opener's
-    /// state changes constantly and its children do not.
+    /// A status change must not force a native menu rebuild, because the
+    /// opener's state changes constantly and its children do not.
     #[test]
     fn changing_only_the_status_keeps_the_shape() {
         let a =

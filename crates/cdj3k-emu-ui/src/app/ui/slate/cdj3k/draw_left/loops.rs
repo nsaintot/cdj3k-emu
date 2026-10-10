@@ -209,7 +209,7 @@ pub(super) fn draw_beat_loop(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiSca
 
 /// BEAT JUMP ◀ and ▶.
 pub(super) fn draw_beat_jump(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
-    // Reference-space layout (never pass screen `Pos2` from `sp_in_rect` into `sr` / `ar2rect`).
+    // `sr` and `ar2rect` take reference units, never a screen `Pos2`.
     let cy_ref =
         PERF_TRANSPORT_COL_REF.top() + PERF_TRANSPORT_COL_REF.height() * PERF_V_BEAT_JUMP_BTNS;
     let w_ref = PERF_BEAT_JUMP_BTN_SIZE;

@@ -18,7 +18,8 @@ pub struct AppSettings {
     /// Me Later". 0 for none.
     pub update_remind_after: u64,
     /// Download and prepare what the automatic check finds without asking,
-    /// then offer the restart. Off by default. macOS keeps Sparkle's own.
+    /// then offer the restart. Off by default. On macOS, Sparkle's own setting
+    /// applies instead.
     pub update_auto_install: bool,
 }
 
@@ -81,7 +82,7 @@ impl AppSettings {
 mod tests {
     use super::*;
 
-    /// Both keys survive their own save and the startup prune.
+    /// Every key survives its own save and the startup prune.
     #[test]
     fn app_settings_round_trip_through_the_prune() {
         let _home = crate::TestHome::new("appsettings");

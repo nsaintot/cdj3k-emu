@@ -21,7 +21,7 @@ impl LocalListener {
 fn unsupported() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
-        "no local stream sockets on this host",
+        "this host has no local stream sockets",
     )
 }
 

@@ -33,7 +33,8 @@ pub const RNG_OBJECT: &str = "rng-random,id=rng0,filename=/dev/urandom";
 fn macos_major_version() -> u32 {
     static CACHED: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
     *CACHED.get_or_init(|| {
-        // macOS major = Darwin major − 9, from macOS 11.
+        // From macOS 11 on, the macOS major version is the Darwin major
+        // version minus 9.
         match darwin_major() {
             major if major >= 20 => major - 9,
             _ => 0,

@@ -1,5 +1,5 @@
-//! Button-shape collectors used by the per-frame button cache: rectangular,
-//! circular, arc-quadrant, hot-cue, and inset-fill variants.
+//! The button shape collectors that the button cache uses: rectangular,
+//! circular, arc-quadrant, hot-cue and inset-fill buttons.
 
 use std::f32::consts::PI;
 
@@ -11,8 +11,8 @@ use crate::app::ui::draw_cache::ShapeList;
 use super::super::{COL_BTN_HOT, COL_BTN_TEXT, COL_SILVER};
 use super::*;
 
-/// Label, colours and border of a rectangular button, as [`collect_button`]
-/// takes them.
+/// The label, colours and border of a rectangular button, in the form
+/// [`collect_button`] takes them.
 struct RectButton<'a> {
     label: &'a str,
     font_size: f32,
@@ -26,7 +26,7 @@ struct RectButton<'a> {
 }
 
 impl RectButton<'_> {
-    /// Fill and label colour, pressed or not.
+    /// Returns the fill and label colours for the pressed or released state.
     fn colors(&self, is_pressed: bool) -> (Color32, Color32) {
         let font_color = self.font_color.unwrap_or(COL_BTN_TEXT);
         if is_pressed {
@@ -48,8 +48,8 @@ impl RectButton<'_> {
     }
 }
 
-/// A button label centred on `pos`: a single glyph on its ink, longer text on
-/// its line box.
+/// Draws a button label centred on `pos`. A single glyph is centred on its
+/// ink; longer text is centred on its line box.
 fn collect_label(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -87,11 +87,10 @@ fn collect_button_basic(
     );
 }
 
-/// Collect an inset-fill rectangular button into `out`.  The double
-/// border still wraps the full `rect`, but the colored fill is drawn in
-/// an inner rect that envelops the label glyph (with `pad_h` / `pad_v`
-/// pixel padding on each axis).  Used by buttons whose colored fill is
-/// supposed to read as a label highlight, not a full button background.
+/// Collects an inset-fill rectangular button into `out`. The double border
+/// wraps the full `rect`, but the colored fill is drawn in an inner rect around
+/// the label, padded by `pad_h` and `pad_v` pixels. Use it when the fill should
+/// look like a label highlight instead of a button background.
 fn collect_button_inset_fill(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -103,7 +102,7 @@ fn collect_button_inset_fill(
 ) {
     let (fill, text_color) = btn.colors(is_pressed);
 
-    // Measure the label so the inset rect tracks the actual glyph box.
+    // Measure the label so that the inset rect follows its glyph box.
     let font = btn.font();
     let galley =
         ctx.fonts_mut(|f| f.layout_no_wrap(btn.label.to_owned(), font.clone(), text_color));
@@ -117,14 +116,15 @@ fn collect_button_inset_fill(
     let inset_rounding = (inset_rect.height() * 0.15).max(1.0);
     out.rect_filled(inset_rect, inset_rounding, fill);
 
-    // Outer rect keeps the original size + double border.
+    // The outer rect keeps its original size and the double border.
     let outer_rounding = (rect.height() * 0.15).max(1.0);
     collect_double_rect_border(out, rect, Some(outer_rounding), btn.border);
 
     collect_label(out, ctx, label_pos, btn.label, font, text_color);
 }
 
-/// Collect a hot-cue style button into `out`. No interaction - caller provides `is_pressed`.
+/// Collects a hot-cue button into `out`. It handles no interaction; the caller
+/// provides `is_pressed`.
 fn collect_button_hotcue(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -155,7 +155,8 @@ fn collect_button_hotcue(
     );
 }
 
-/// Collect shapes for a button dispatching on `button_type`. No interaction.
+/// Collects the shapes for a button of `button_type`. It handles no
+/// interaction.
 pub(in crate::app) fn collect_button(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -192,7 +193,8 @@ pub(in crate::app) fn collect_button(
     }
 }
 
-/// Collect a circle button into `out`. No interaction - caller provides `is_pressed`.
+/// Collects a circle button into `out`. It handles no interaction; the caller
+/// provides `is_pressed`.
 pub(in crate::app) fn collect_circle_button(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -226,9 +228,10 @@ pub(in crate::app) fn collect_circle_button(
     collect_label(out, ctx, label_pos, btn_label, font, label_color);
 }
 
-/// Polar angle about the button's centre at which the radial line through
-/// `inner_angle` on the inner arc meets the circle of radius `r`: the
-/// button's sides are vertical, so `x` stays `inner_r * cos(inner_angle)`.
+/// Returns the polar angle about the button's centre where the vertical line
+/// through the inner arc's point at `inner_angle` meets the circle of radius
+/// `r`. The button's sides are vertical, so `x` stays
+/// `inner_r * cos(inner_angle)`.
 fn arc_angle_at(inner_r: f32, upper: bool, inner_angle: f32, r: f32) -> f32 {
     let x = inner_r * inner_angle.cos();
     let y_sq = r * r - x * x;
@@ -239,8 +242,8 @@ fn arc_angle_at(inner_r: f32, upper: bool, inner_angle: f32, r: f32) -> f32 {
     y.atan2(x)
 }
 
-/// [`ARC_SEGMENTS`] chords along the circle of radius `r` about `center`,
-/// from angle `s` to `e`.
+/// Returns the points of [`ARC_SEGMENTS`] chords along the circle of radius
+/// `r` around `center`, from angle `s` to `e`.
 fn arc_points(center: Pos2, r: f32, s: f32, e: f32) -> Vec<Pos2> {
     (0..=ARC_SEGMENTS)
         .map(|i| {
@@ -251,8 +254,8 @@ fn arc_points(center: Pos2, r: f32, s: f32, e: f32) -> Vec<Pos2> {
         .collect()
 }
 
-/// Midway between the inner and outer arcs, on the vertical through the
-/// inner arc at `a_mid`.
+/// Returns the label position: midway between the inner and outer arcs, on
+/// the vertical through the inner arc at `a_mid`.
 fn arc_label_pos(center: Pos2, inner_r: f32, outer_r: f32, upper: bool, a_mid: f32) -> Pos2 {
     let x_mid = inner_r * a_mid.cos();
     let y_inner_mid = inner_r * a_mid.sin();
@@ -268,8 +271,8 @@ fn arc_label_pos(center: Pos2, inner_r: f32, outer_r: f32, upper: bool, a_mid: f
     )
 }
 
-/// An arc-quad button's label centred on `pos`; `line_height` spaces a
-/// multi-line label.
+/// Draws an arc-quad button's label centred on `pos`; `line_height` sets the
+/// line spacing of a multi-line label.
 fn collect_arc_label(
     out: &mut ShapeList,
     ctx: &egui::Context,
@@ -303,7 +306,8 @@ fn collect_arc_label(
     out.add(Shape::galley(pos - galley.size() * 0.5, galley, font_color));
 }
 
-/// Collect an arc-quad button into `out`. No interaction - caller provides `is_pressed`.
+/// Collects an arc-quad button into `out`. It handles no interaction; the
+/// caller provides `is_pressed`.
 pub(in crate::app) fn collect_arc_quad_button(
     out: &mut ShapeList,
     ctx: &egui::Context,

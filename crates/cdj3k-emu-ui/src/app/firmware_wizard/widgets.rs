@@ -8,14 +8,14 @@ use egui::{
 use super::provision::{ProvisionStep, STAGES};
 use crate::app::{picker, theme};
 
-/// The label column every form row hangs its field off.
+/// The width of the label column, which lines up the fields of every form row.
 const LABEL_W: f32 = 116.0;
 /// The stage meter: the height of a segment, and the gap to the next.
 const METER_SEG_H: f32 = 3.0;
 const METER_GAP: f32 = 6.0;
-/// The name of the stage under way, over the meter.
+/// Font size of the name of the current stage, shown over the meter.
 const METER_TITLE_FONT: f32 = 15.0;
-/// The square of state before a banner's line.
+/// Size of the square, in the state's colour, before a banner's text.
 const MARK: f32 = 7.0;
 
 /// A field label: capitals at the window's micro size, tracked by the painter
@@ -36,8 +36,8 @@ pub(super) fn micro_label(ui: &mut egui::Ui, k: f32, col: Color32, text: &str) {
     );
 }
 
-/// The same label, in the fixed column a form row hangs its field off, sitting
-/// level with the middle of that field.
+/// Draws the same label in the fixed label column, level with the middle of the
+/// row's field.
 pub(super) fn label_column(ui: &mut egui::Ui, k: f32, col: Color32, text: &str) {
     let text = text.to_uppercase();
     let (rect, _) =
@@ -68,8 +68,7 @@ pub(super) fn banner(
         .corner_radius(CornerRadius::from(theme::ROUND * k))
         .inner_margin(egui::epaint::MarginF32::symmetric(14.0 * k, 11.0 * k))
         .show(ui, |ui| {
-            // Full width, so it reads as a bar across the step rather than a
-            // tag pinned to its own text.
+            // Use the full width, so the banner reads as a bar across the step.
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(MARK * k), Sense::hover());

@@ -11,7 +11,7 @@ pub(super) const fn jog_rect() -> Rect {
     )
 }
 
-/// Transport column (Cue / Play / search)
+/// Transport column (CUE, PLAY and the search buttons).
 pub const TRANSPORT_REF_SIZE_H: f32 = 4080.0;
 pub const TRANSPORT_REF_SIZE_W: f32 = 510.0;
 pub const TRANSPORT_REF_TOP: f32 = 579.0;
@@ -40,8 +40,8 @@ pub const MID_CENTRAL_REF_LEFT: f32 = TOP_CENTRAL_REF_LEFT - MID_CENTRAL_AFTER_T
 pub const MID_CENTRAL_REF_RIGHT: f32 = MID_CENTRAL_REF_LEFT + MID_CENTRAL_REF_SIZE_W;
 
 // JOG
-// Centred on ref (1666, 3280) - the panel's own centre line, and the centre
-// the drawing's outer ring fits to within a quarter of a drawing pixel.
+// The jog is centred on ref (1666, 3280), which lies on the panel's centre
+// line and is the centre of the drawing's outer ring.
 pub const JOG_AFTER_MID_CENTRAL_GAP: f32 = -47.0;
 pub const JOG_AFTER_TRANSPORT_GAP: f32 = 76.0;
 pub const JOG_REF_SIZE_H: f32 = 2140.0;
@@ -52,8 +52,8 @@ pub const JOG_REF_LEFT: f32 = TRANSPORT_REF_RIGHT + JOG_AFTER_TRANSPORT_GAP;
 pub const JOG_REF_RIGHT: f32 = JOG_REF_LEFT + JOG_REF_SIZE_W;
 
 // NAVIGATION
-/// Centre of the nav pod - the rotary and its four buttons - within the modes
-/// column, shared with the decorative line that runs around it.
+/// Centre of the nav pod (the rotary and its four buttons) within the modes
+/// column. The decorative line that runs around the pod uses it too.
 pub const NAV_POD_U: f32 = 0.444;
 pub const NAV_POD_V: f32 = 0.135;
 

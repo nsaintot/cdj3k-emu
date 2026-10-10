@@ -1,12 +1,12 @@
-//! Linux adapter: lsblk/udisks, polkit, and image formatting with sfdisk and
-//! mkfs.exfat.
+//! The Linux adapter. It uses lsblk, udisks and polkit, and formats images
+//! with sfdisk and mkfs.exfat.
 
 use super::{DiskProvider, HostDiskProvider, PhysicalDisk, RawMedium, UsbError};
 use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::process::Command;
 
-/// What a refused raw open means here.
+/// The hint shown when this host refuses to open the raw device.
 pub const PERMISSION_HINT: &str = "udisks did not authorize opening the device.";
 
 pub const PASSES_FDS: bool = true;
@@ -44,7 +44,8 @@ pub(super) fn open_raw(disk: &PhysicalDisk, qmp_fd_socket: &Path) -> Result<RawM
 /// The medium for a block device QEMU holds as fdset `id`.
 ///
 /// QEMU picks `host_device` over `file` by stat-ing the path, and
-/// `/dev/fdset/N` is no block node, so the driver chain is spelled out.
+/// `/dev/fdset/N` is not a block device node, so the driver chain is given
+/// explicitly.
 fn fdset_medium(id: u64) -> String {
     let chain = serde_json::json!({
         "driver": "raw",
@@ -75,7 +76,8 @@ fn open_device(dev_path: &str) -> std::io::Result<OwnedFd> {
     }
 }
 
-/// `Block.OpenDevice` on the disk's udisks object, allowing polkit to ask.
+/// Call `Block.OpenDevice` on the disk's udisks object, and let polkit prompt
+/// the user.
 fn udisks_open(dev_path: &str) -> std::io::Result<OwnedFd> {
     use std::collections::HashMap;
     use zbus::zvariant::Value;
@@ -106,8 +108,8 @@ fn udisks_open(dev_path: &str) -> std::io::Result<OwnedFd> {
     Ok(fd.into())
 }
 
-/// A refusal from polkit reads as a permission error; the rest keep udisks'
-/// own message, which names the cause (`EBUSY` included).
+/// Map a polkit refusal to a permission error. Other errors keep udisks' own
+/// message, which names the cause, such as `EBUSY`.
 fn udisks_error(e: zbus::Error) -> std::io::Error {
     let refused = matches!(&e, zbus::Error::MethodError(name, _, _)
         if name.as_str().starts_with("org.freedesktop.UDisks2.Error.NotAuthorized"));
@@ -119,8 +121,8 @@ fn udisks_error(e: zbus::Error) -> std::io::Error {
     std::io::Error::new(kind, format!("udisks OpenDevice: {e}"))
 }
 
-/// udisks' object path for a block device: letters and digits kept, every
-/// other byte written as `_xx`.
+/// Build udisks' object path for a block device. Letters and digits stay as
+/// they are, and every other byte becomes `_xx`.
 fn udisks_object_path(name: &str) -> String {
     let mut path = String::from("/org/freedesktop/UDisks2/block_devices/");
     for b in name.bytes() {
@@ -133,7 +135,8 @@ fn udisks_object_path(name: &str) -> String {
     path
 }
 
-/// `/dev/<name>` where the name is a plain block-device name.
+/// Return whether `path` is `/dev/<name>`, where the name is a plain
+/// block-device name.
 ///
 /// Rejects anything with a separator, a space or a quote, so the name maps to
 /// exactly one udisks object however the path was obtained.
@@ -159,11 +162,12 @@ pub fn create_image(img_path: &Path, size_bytes: u64) -> std::io::Result<()> {
     format_exfat(img_path)
 }
 
-/// Format a raw image file as MBR + exFAT, the same layout macOS produces.
+/// Format a raw image file with an MBR partition table and one exFAT
+/// partition, the same layout that macOS produces.
 ///
-/// All of it happens on the file: a `udisksctl loop-setup` node stays
-/// `root:disk`, so a desktop user cannot partition or format it directly.
-/// `sfdisk` and `mkfs.exfat` both take an ordinary file.
+/// Every step works on the image file. A `udisksctl loop-setup` node stays
+/// `root:disk`, so a desktop user cannot partition or format it directly, and
+/// `sfdisk` and `mkfs.exfat` both accept an ordinary file.
 ///
 /// A rekordbox stick is MBR with one exFAT partition, and the guest's mount
 /// script looks for `sdb1` before falling back to the whole device.
@@ -194,7 +198,7 @@ pub fn format_exfat(img_path: &Path) -> std::io::Result<()> {
             .map_err(|e| {
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!("mkfs.exfat not available ({e}); install exfatprogs"),
+                    format!("mkfs.exfat is not available ({e}); install exfatprogs"),
                 )
             })?;
         if !status.success() {
@@ -208,13 +212,14 @@ pub fn format_exfat(img_path: &Path) -> std::io::Result<()> {
     write_mbr(img_path, part_sectors)
 }
 
-/// One MBR partition of `sectors` starting at 1 MiB, typed exFAT.
+/// Write an MBR with one exFAT partition of `sectors` sectors, starting at
+/// 1 MiB.
 fn write_mbr(img_path: &Path, sectors: u64) -> std::io::Result<()> {
     use std::io::Write;
 
-    // `label: dos` is an MBR; type 7 is what every exFAT stick uses. The size
-    // is given rather than left implicit so the partition matches the
-    // filesystem already written into it.
+    // `label: dos` is an MBR, and every exFAT stick uses type 7. The size is
+    // given explicitly so that the partition matches the filesystem already
+    // written into it.
     let mut sfdisk = Command::new(cdj3k_emu_platform::bundled::system_tool("sfdisk"))
         .arg(img_path)
         .stdin(std::process::Stdio::piped())
@@ -224,13 +229,13 @@ fn write_mbr(img_path: &Path, sectors: u64) -> std::io::Result<()> {
         .map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("sfdisk not available ({e}); install util-linux"),
+                format!("sfdisk is not available ({e}); install util-linux"),
             )
         })?;
     sfdisk
         .stdin
         .take()
-        .expect("piped")
+        .expect("sfdisk's stdin is piped")
         .write_all(format!("label: dos\nstart=2048, size={sectors}, type=7\n").as_bytes())?;
     let out = sfdisk.wait_with_output()?;
     if !out.status.success() {
@@ -274,9 +279,9 @@ fn splice_allocated(src: &Path, dst: &Path, dst_offset: u64) -> std::io::Result<
             )
         } else {
             match std::io::Error::last_os_error().raw_os_error() {
-                // Nothing allocated past `pos`: the rest is a hole.
+                // Nothing is allocated past `pos`, so the rest is a hole.
                 Some(libc::ENXIO) => break,
-                // The filesystem has no extent map. Take the lot.
+                // The filesystem has no extent map, so copy the whole remaining range.
                 Some(libc::EINVAL) => (pos, end),
                 _ => return Err(std::io::Error::last_os_error()),
             }

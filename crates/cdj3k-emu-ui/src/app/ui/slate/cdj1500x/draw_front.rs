@@ -1,17 +1,14 @@
 //! The CDJ-1500X's front face, shown when the deck is tilted, and the toggle
 //! that tilts it.
 //!
-//! The face is two steps. The top shell ends in a band carrying the phone
-//! pad; under it the lower body stands
-//! [`SETBACK`] further back, narrowing to its feet, with EJECT, the USB
-//! legends and the tray opening. The tray glows with the casing's cavity light;
-//! its two ports sit on its left wall, out of view from the front.
+//! The face has two steps. The top shell ends in a band that carries the
+//! phone pad. Under it, the lower body stands [`SETBACK`] further back and
+//! narrows to its feet; it carries EJECT, the USB legends and the tray
+//! opening. The tray glows with the casing's cavity light, and its two ports
+//! sit on its left wall, out of view from the front.
 //!
-//! Measured off AlphaTheta's tilted product shot (`cdj1500x_specification_01`,
-//! seen about 42 degrees off vertical): its front edge gives 0.91 image px
-//! per reference unit across, and a vertical face shows at sin 42 of that.
-//! The setback is the overhang that hides the USB 1 legend in that shot.
-//! Depths into the tray are estimates.
+//! The setback is the overhang that hides the USB 1 legend when the deck is
+//! tilted by 42 degrees. Depths into the tray are estimates.
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -30,15 +27,13 @@ mod tray;
 
 use tray::{TRAY_CORNER_R, TRAY_H, TRAY_L, TRAY_R};
 
-/// The tilt: how far the deck turns, how far the camera stands, how long the
-/// turn takes.
+/// The tilt angle, the camera distance and the duration of the turn.
 pub(super) const TILT_ANGLE: f32 = 42.0 * std::f32::consts::PI / 180.0;
 pub(super) const CAM_DIST: f32 = 2.5 * REF_H;
 pub(super) const TILT_SECS: f32 = 0.6;
 /// The screen housing rises from its front line toward the back: the
-/// cabinet is 116.5 mm tall at the back and about 67 mm at the front. The
-/// angle is the one that gives the tilted product shot its ratio of screen
-/// to panel depth, 0.764.
+/// cabinet is 116.5 mm tall at the back and about 67 mm at the front. At
+/// this angle the tilted deck shows a screen-to-panel depth ratio of 0.764.
 pub(super) const HOUSING_ANGLE: f32 = 8.5 * std::f32::consts::PI / 180.0;
 
 // ── The band, on the face under the top's front edge ──────────────────────────
@@ -49,13 +44,15 @@ const PAD: (f32, f32, f32, f32) = (2050.0, 70.0, 2228.0, 230.0);
 // ── The lower body ────────────────────────────────────────────────────────────
 const SETBACK: f32 = 35.0;
 const LOWER_H: f32 = 336.0;
-/// Its sides, in from the cabinet's at its top and at its foot.
+/// How far the lower body's sides sit inside the cabinet's sides, at the top
+/// and at the foot.
 const LOWER_INSET_TOP: f32 = 82.0;
 const LOWER_INSET_BOT: f32 = 225.0;
-/// Its sides drop straight this far before the chamfer turns them in.
+/// The lower body's sides drop straight this far before the chamfer turns
+/// them in.
 const LOWER_STRAIGHT: f32 = 74.0;
 const LOWER_FOOT_R: f32 = 90.0;
-/// EJECT and the legends, on the lower body's face (from its top edge).
+/// EJECT on the lower body's face, measured from the face's top edge.
 const EJECT: (f32, f32, f32, f32) = (341.0, 57.0, 489.0, 139.0);
 /// The USB legends' left edge and centres, and their size; USB 1 sits over
 /// USB 2, as the ports do on the tray's wall.
@@ -96,7 +93,7 @@ fn lower() -> Face {
     }
 }
 
-/// The deck's outermost points: what the tilt fits to the canvas.
+/// The deck's outermost points, which the tilt fits to the canvas.
 pub(super) fn extent() -> [P3; 6] {
     let foot = -(BAND_H + LOWER_H);
     let back = crease().0 * HOUSING_ANGLE.tan();
@@ -110,7 +107,7 @@ pub(super) fn extent() -> [P3; 6] {
     ]
 }
 
-/// What projects a face of the deck onto the screen this frame.
+/// Projects the deck's faces onto the screen for the current frame.
 struct Projector<'a> {
     ctx: &'a egui::Context,
     layout: &'a UiScale,
@@ -130,7 +127,7 @@ impl Projector<'_> {
     }
 }
 
-/// Draw the front face under `tilt`, and drive EJECT.
+/// Draws the front face under `tilt` and handles EJECT.
 pub(super) fn draw_front(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -151,9 +148,9 @@ pub(super) fn draw_front(
     shapes.extend(lower_face(app, &pr));
     shapes.extend(band_face(app, &pr));
     app.frame_shape_count += shapes.len() as u64;
-    // Nothing of the face shows above the top surface's front edge: near
-    // flat the camera looks down past that edge, and the face, hanging below
-    // it, projects in behind the top surface.
+    // No part of the face shows above the top surface's front edge. When the
+    // deck is nearly flat, the camera looks down past that edge, and the face,
+    // which hangs below it, projects behind the top surface.
     let edge_y = tilt.project([REF_W * 0.5, REF_H, 0.0]).y;
     let below_edge = p.clip_rect().intersect(Rect::everything_below(edge_y));
     let rest = shapes.split_off(interior);
@@ -164,7 +161,7 @@ pub(super) fn draw_front(
     eject_interact(app, ui, tilt, edge_y);
 }
 
-/// The lower body's face, around the opening.
+/// Draws the lower body's face around the tray opening.
 fn lower_face(app: &mut CdjApp, pr: &Projector) -> Vec<Shape> {
     let mut l = ShapeList::default();
     let outline = lower_outline();
@@ -206,7 +203,7 @@ fn lower_face(app: &mut CdjApp, pr: &Projector) -> Vec<Shape> {
     pr.project(&mut app.tilt_cache, lower(), l)
 }
 
-/// The mouth's rounded corners: the face fills in to each round.
+/// Fills the face in to the mouth's rounded corners.
 fn collect_mouth_corners(l: &mut ShapeList, mouth: Rect) {
     let r = TRAY_CORNER_R;
     for (corner, c, a0) in [
@@ -240,8 +237,8 @@ fn collect_mouth_corners(l: &mut ShapeList, mouth: Rect) {
     }
 }
 
-/// The band, over the lower body: flat between the cabinet's corners, and
-/// wrapping round them.
+/// Draws the band above the lower body. It is flat between the cabinet's
+/// corners and wraps around them.
 fn band_face(app: &mut CdjApp, pr: &Projector) -> Vec<Shape> {
     let r = CABINET_R;
     let mut l = ShapeList::default();
@@ -257,9 +254,9 @@ fn band_face(app: &mut CdjApp, pr: &Projector) -> Vec<Shape> {
     shapes
 }
 
-/// EJECT, hit-tested on the raw pointer: the panel's pointer is mapped onto
-/// the top surface. `edge_y` is the screen height of the top surface's front
-/// edge, above which nothing of the face shows.
+/// Hit-tests EJECT on the raw pointer, because the panel's pointer is mapped
+/// onto the top surface. `edge_y` is the screen y of the top surface's front
+/// edge; no part of the face shows above it.
 fn eject_interact(app: &mut CdjApp, ui: &egui::Ui, tilt: &Tilt, edge_y: f32) {
     let quad: Vec<Pos2> = [
         (EJECT.0, EJECT.1),
@@ -281,8 +278,9 @@ fn eject_interact(app: &mut CdjApp, ui: &egui::Ui, tilt: &Tilt, edge_y: f32) {
     }
 }
 
-/// The lower body's outline on its face: its sides drop straight, then a
-/// chamfer turns them in to the foot, whose corners round into it.
+/// Returns the lower body's outline on its face. The sides drop straight,
+/// then a chamfer turns them in toward the foot, and the foot's corners are
+/// rounded.
 fn lower_outline() -> Vec<Pos2> {
     let segs = 8;
     let (h, r, v) = (LOWER_H, LOWER_FOOT_R, LOWER_STRAIGHT);
@@ -309,8 +307,8 @@ fn lower_outline() -> Vec<Pos2> {
     pts
 }
 
-/// The band where it wraps the cabinet's rounded corners: a quarter of a
-/// cylinder each side, its bottom edge and its outer silhouette drawn.
+/// Draws the band where it wraps the cabinet's rounded corners: a quarter
+/// cylinder on each side, with its bottom edge and outer silhouette stroked.
 fn band_corners(layout: &UiScale, tilt: &Tilt) -> Vec<Shape> {
     let segs = 10;
     let r = CABINET_R;
@@ -341,8 +339,9 @@ fn band_corners(layout: &UiScale, tilt: &Tilt) -> Vec<Shape> {
     out
 }
 
-/// Keep the part of convex `poly` on one side of a line: `x = at` when
-/// `across`, else `y = at`; the side below `at` when `below`.
+/// Clips the convex `poly` to one side of a line. The line is `x = at` when
+/// `across` is set and `y = at` otherwise; the kept side is below `at` when
+/// `below` is set.
 fn clip(poly: &[Pos2], across: bool, at: f32, below: bool) -> Vec<Pos2> {
     let side = |p: Pos2| {
         let d = if across { p.x } else { p.y } - at;
@@ -378,8 +377,8 @@ fn inside(poly: &[Pos2], p: Pos2) -> bool {
     })
 }
 
-/// EJECT: a small key in a recess, its name on the cap, the legend lit at
-/// `drive` (0 dark, 255 full).
+/// Draws EJECT, a small key in a recess with its name on the cap. The name is
+/// lit at `drive`, from 0 (dark) to 255 (full).
 fn collect_eject(l: &mut ShapeList, ctx: &egui::Context, held: bool, drive: u8) {
     let key = rect(EJECT);
     l.rect_filled(key, 8.0, COL_BLACK);
@@ -400,7 +399,7 @@ fn collect_eject(l: &mut ShapeList, ctx: &egui::Context, held: bool, drive: u8) 
     );
 }
 
-/// The phone pad; its lamp bar is always lit white.
+/// Draws the phone pad. Its lamp bar is always lit white.
 fn collect_pad(l: &mut ShapeList) {
     let pad = rect(PAD);
     l.rect_filled(pad, 12.0, COL_BLACK);
@@ -427,9 +426,9 @@ fn collect_pad(l: &mut ShapeList) {
     l.rect_filled(lamp, 3.0, COL_WHITE);
 }
 
-/// The tilt toggle: a disc with a double chevron, pointing down to tilt and
-/// up to come back. Hit-tested on the raw pointer, which the tilt does not
-/// remap. Returns whether it was clicked.
+/// Draws the tilt toggle, a disc with a double chevron that points down to
+/// tilt the deck and up to bring it back. It is hit-tested on the raw
+/// pointer, which the tilt does not remap. Returns whether it was clicked.
 pub(super) fn draw_toggle(
     app: &mut CdjApp,
     p: &egui::Painter,

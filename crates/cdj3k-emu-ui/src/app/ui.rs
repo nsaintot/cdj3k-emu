@@ -1,10 +1,10 @@
-//! Panel UI: a shared control toolkit + per-model slates.
+//! The panel UI: a shared control toolkit and one slate per model.
 //!
-//! The SHARED toolkit lives at this root: the colour palette, [`UiScale`]
-//! (reference-canvas to screen mapping), the button/rotary primitives
-//! ([`draw_primitives`]), the shape caches ([`draw_cache`]) and the jog-wheel
-//! assembly ([`draw_jog`]). Each [`slate`] composes the toolkit into the full
-//! panel of one model.
+//! The shared toolkit lives at this root: the colour palette, [`UiScale`]
+//! (which maps the reference canvas to the screen), the button and rotary
+//! primitives ([`draw_primitives`]), the shape caches ([`draw_cache`]) and the
+//! jog wheel assembly ([`draw_jog`]). Each [`slate`] builds the full panel of
+//! one model from the toolkit.
 
 pub(super) mod draw_cache;
 pub(super) mod draw_direction;
@@ -21,9 +21,10 @@ use egui::{Color32, Pos2, Rect, Vec2};
 
 use super::CdjApp;
 
-/// Navigation rotary: detent positions per full revolution.
+/// The number of detents in one turn of the navigation rotary.
 pub(in crate::app) const NAV_DETENT_COUNT: f32 = 18.0;
-/// Navigation rotary: pixels of smooth scroll per detent (LCD scroll + rotary).
+/// Pixels of smooth scroll per navigation rotary detent, for both the LCD and
+/// the rotary.
 pub(in crate::app) const NAV_SCROLL_PX_PER_TICK: f32 = 50.0;
 
 pub(super) const COL_BLACK: Color32 = Color32::from_rgb(20, 20, 26);
@@ -72,7 +73,8 @@ pub(super) struct UiScale {
 }
 
 impl UiScale {
-    /// Letterbox a `ref_w` x `ref_h` reference canvas into `avail`, centred.
+    /// Fits a `ref_w` x `ref_h` reference canvas into `avail`, centred and
+    /// letterboxed.
     pub(super) fn fit(avail: Rect, ref_w: f32, ref_h: f32) -> Self {
         let scale = (avail.width() / ref_w).min(avail.height() / ref_h);
         let ox = avail.left() + (avail.width() - ref_w * scale) * 0.5;
@@ -86,9 +88,10 @@ impl UiScale {
     }
 }
 
-/// `CDJ3K_DEBUG_ALIGN=1` on a debug build: a red square at each corner of the
-/// reference canvas, so a letterboxing or aspect regression is visible at a
-/// glance. Read once - the panel asks on every frame.
+/// Returns whether `CDJ3K_DEBUG_ALIGN=1` is set. On a debug build it draws a
+/// red square at each corner of the reference canvas, which shows a
+/// letterboxing or aspect error at a glance. The variable is read once,
+/// because the panel asks on every frame.
 #[cfg(debug_assertions)]
 fn debug_align_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -122,10 +125,10 @@ impl UiScale {
         Pos2::new(self.ox + x * self.scale, self.oy + y * self.scale)
     }
 
-    /// Point inside `region` using normalized coordinates `u`, `v` in 0..1
-    /// (`region` is in unscaled layout-reference space, same as `sp` / `sr`).
-    /// Returns a point inside `region` using normalized coordinates (`horizontal_pct`, `vertical_pct`) in 0..1.
-    /// E.g., (0.5, 0.0) is the top-center, (1.0, 1.0) is the bottom-right.
+    /// Returns the screen point at the fractions (`horizontal_pct`,
+    /// `vertical_pct`), each in 0..1, of `region`. `region` is in unscaled
+    /// reference space, like the arguments of `sp` and `sr`. For example,
+    /// (0.5, 0.0) is the top centre and (1.0, 1.0) is the bottom-right corner.
     pub(super) fn sp_in_rect(&self, region: Rect, horizontal_pct: f32, vertical_pct: f32) -> Pos2 {
         let x = region.left() + region.width() * horizontal_pct;
         let y = region.top() + region.height() * vertical_pct;
@@ -191,17 +194,15 @@ pub(super) fn default_circle_btn_border(layout: &UiScale) -> DoubleBorderSpec {
 
 /// Snapshot of the parts of [`CdjApp`] state that the debug viewport reads.
 ///
-/// The debug viewport runs as a *deferred* viewport with its own update cycle,
-/// so we cannot borrow `&CdjApp` from inside its closure (different thread of
-/// execution as far as egui is concerned). Each main `update()` writes a fresh
-/// snapshot into a shared `Arc<Mutex<DebugSnapshot>>`; the deferred closure
-/// reads from it. This decouples the debug window's repaint cadence from the
-/// main window - its FPS counter measures *its own* render rate.
+/// The debug viewport is a deferred viewport with its own update cycle, so its
+/// closure cannot borrow `&CdjApp`. Each main `update()` writes a fresh
+/// snapshot into a shared `Arc<Mutex<DebugSnapshot>>`, and the closure reads
+/// it. The debug window therefore repaints at its own rate, and its FPS counter
+/// measures that rate.
 #[derive(Clone)]
 pub struct DebugSnapshot {
     pub status: String,
-    /// Main viewport fps (so the debug pane can show both its own and the
-    /// main viewport's frame rate independently).
+    /// The main viewport's frame rate, shown next to the debug pane's own.
     pub main_fps: f32,
     pub main_shape_count: u64,
     pub jog_dbg_lines: [String; 3],
@@ -224,12 +225,12 @@ impl Default for DebugSnapshot {
     }
 }
 
-/// Render the debug pane from a snapshot. `local_fps` is the fps measured
-/// inside the debug viewport's own update cycle (independent of `main_fps`).
+/// Draws the debug pane from a snapshot. `local_fps` is the frame rate of the
+/// debug viewport's own update cycle.
 pub(super) fn draw_debug_content(ui: &mut egui::Ui, snap: &DebugSnapshot, local_fps: f32) {
     let mono = egui::FontId::monospace(11.0);
 
-    // ---- Status / FPS / shape count ----
+    // ---- Status, FPS and shape count ----
     ui.label(egui::RichText::new(&snap.status).font(mono.clone()));
     ui.label(
         egui::RichText::new(format!(
@@ -265,7 +266,7 @@ pub(super) fn draw_debug_content(ui: &mut egui::Ui, snap: &DebugSnapshot, local_
     mosi_decoded(ui, &snap.led_frame, mono);
 }
 
-/// A heading, then the first 64 bytes of `frame` in 4 rows of 16.
+/// Draws a heading, then the first 64 bytes of `frame` in 4 rows of 16.
 fn hex_dump(ui: &mut egui::Ui, heading: &str, frame: &[u8], mono: &egui::FontId) {
     ui.label(egui::RichText::new(heading).font(mono.clone()).strong());
     for row in 0..4 {
@@ -279,8 +280,8 @@ fn hex_dump(ui: &mut egui::Ui, heading: &str, frame: &[u8], mono: &egui::FontId)
     }
 }
 
-/// The LED frame read back: its bitfield bytes, the pads' RGB and the
-/// indicators'.
+/// Draws the decoded LED frame: its bitfield bytes and the RGB values of the
+/// pads and the indicators.
 fn mosi_decoded(ui: &mut egui::Ui, led: &[u8], mono: egui::FontId) {
     ui.add_space(4.0);
     ui.label(

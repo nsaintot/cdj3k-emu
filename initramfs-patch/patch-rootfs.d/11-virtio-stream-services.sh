@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Patch 15: virtio-serial stream services - subucom-forwarder.
+# Patch 11: the virtio-serial stream service, subucom-forwarder.
 #
-# Main LCD is exposed natively via X → virtio-console (no capture process needed).
-# Jog LCD uses ivshmem zero-copy: deck_shim writes pixels directly into the
-# ivshmem BAR; the host polls the seqlock counter from its mmap. No userspace
-# forwarder process and no wake channel needed for the jog stream.
+# The main LCD reaches the host through X and needs no capture process.
+# The jog LCD uses zero-copy ivshmem: deck_shim writes pixels directly into
+# the ivshmem BAR, and the host polls the seqlock counter from its mmap. The
+# jog stream needs no user-space forwarder process and no wake channel.
 #
-# Binaries (/usr/bin/subucom_forwarder) are built in the Docker image and
-# extracted by build-initramfs.sh before this patch runs.
+# build.sh, or the provisioning guest, installs /usr/bin/subucom_forwarder
+# before this patch runs.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"
 
@@ -18,14 +18,15 @@ MULTI_USER_WANTS="$SERVICE_DIR/multi-user.target.wants"
 mkdir -p "$MULTI_USER_WANTS"
 
 # ---- subucom-forwarder.service ----
-# Bidirectional bridge: /dev/subucom_ctrl ↔ cdj3k.ctrl virtio-serial port.
-#   LED  (guest→host): subucom_ctrl → vport → ctrl.sock
-#   CTRL (host→guest): ctrl.sock → vport → subucom_ctrl
-# Must start after insmod-virtio-rng (subucom_virt.ko); virtio_console is
-# built into the 6.6 kernel, so /dev/virtio-ports/cdj3k.ctrl is always present.
+# The forwarder copies frames in both directions between /dev/subucom_ctrl and
+# the cdj3k.ctrl virtio-serial port: LED frames from the guest to the host,
+# control frames from the host to the guest. It waits for /dev/subucom_ctrl
+# itself, so it does not depend on when insmod-subucom-virt.service loads
+# subucom_virt.ko. virtio_console is built into the 6.6 kernel, so
+# /dev/virtio-ports/cdj3k.ctrl is always present.
 cat > "$SERVICE_DIR/subucom-forwarder.service" << 'SVCEOF'
 [Unit]
-Description=subucom bidirectional bridge (subucom_ctrl <-> cdj3k.ctrl virtio-serial)
+Description=Bridge between /dev/subucom_ctrl and the cdj3k.ctrl virtio-serial port
 After=insmod-virtio-rng.service
 After=insmod-virtio-console.service
 StartLimitIntervalSec=0

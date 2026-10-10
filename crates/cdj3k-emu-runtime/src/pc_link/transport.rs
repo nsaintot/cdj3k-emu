@@ -1,21 +1,22 @@
-//! Unix-socket transport for the `cdj3k.usb-link` virtio-serial channel.
+//! The Unix socket transport for the `cdj3k.usb-link` virtio-serial channel.
 //!
-//! QEMU runs the chardev as `server=on,wait=off`, so we (the host) act as
-//! the client: we connect to `{sock_dir}/usb-link.sock`, then the kernel's
-//! virtio_console driver marks the guest port as `HOST_CONNECTED`, the
-//! guest `cdj3k-pc-link-bridge` daemon starts pumping, and bytes flow.
+//! QEMU runs the chardev as `server=on,wait=off`, so the host is the client.
+//! Once the host connects to `{sock_dir}/usb-link.sock`, the guest kernel's
+//! virtio_console driver marks the port as `HOST_CONNECTED`, and the guest
+//! `cdj3k-pc-link-bridge` daemon starts forwarding data.
 //!
-//! Threading model: two threads per connection: one **reader** (socket →
-//! demux → `FrameSink`) and one **writer** (mpsc channel → frame → socket).
-//! The caller owns the mpsc::channel pair so the backends can hold a
-//! `Sender<OutFrame>` independently of the transport's own lifetime.  When
-//! the connection drops, both threads exit; [`Transport::shutdown_into_rx`]
-//! joins them and hands the `Receiver` back, so a caller keeping the backends
-//! alive can re-dial and reuse the same channel.  Dropping the `Transport`
-//! without reclaiming discards the `Receiver`.
+//! Each connection has two threads. The reader reads the socket,
+//! demultiplexes the frames and passes them to the `FrameSink`. The writer
+//! takes frames from the mpsc channel and writes them to the socket.
+//! The caller owns the mpsc channel pair, so the back ends can hold a
+//! `Sender<OutFrame>` that outlives the transport. When the connection
+//! drops, both threads exit; [`Transport::shutdown_into_rx`] joins them and
+//! returns the `Receiver`, so a caller that keeps the back ends can re-dial
+//! and reuse the same channel. Dropping the `Transport` without reclaiming
+//! the `Receiver` discards it.
 //!
-//! `stop`, `alive` and both join handles are per connection, constructed only
-//! in [`Transport::spawn`].
+//! `stop`, `alive` and both join handles belong to one connection, and only
+//! [`Transport::spawn`] creates them.
 
 use std::io::{self, BufWriter, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -31,46 +32,49 @@ use crate::pc_link::frame::{
 };
 use crate::pc_link::gadget::GadgetIdentity;
 
-/// One frame to send out the writer half: `(kind, payload)`.
+/// One frame for the writer to send, as `(kind, payload)`.
 pub type OutFrame = (u8, Vec<u8>);
 
-/// How long the writer parks on the channel before re-checking `stop`.
-/// Bounds how long `shutdown_into_rx` stalls waiting for the writer.
+/// How long the writer waits on the channel before it checks `stop` again.
+/// This limits how long `shutdown_into_rx` waits for the writer.
 const RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// How long [`Transport::handshake`] waits for the IDENTITY reply, and how
-/// often it resends HELLO meanwhile: virtio-serial drops what the host writes
-/// while the guest bridge has the port closed.
+/// often it resends HELLO in the meantime. virtio-serial drops what the host
+/// writes while the guest bridge has the port closed.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(1500);
 const HELLO_RESEND: Duration = Duration::from_millis(300);
 
-/// Callback handed to the reader thread; one demuxed frame per call.  Must be
-/// `Send + Sync` and not block.  The same sink outlives any single connection.
+/// The callback that the reader thread calls once per demultiplexed frame. It
+/// must be `Send + Sync` and must not block. The same sink outlives each
+/// connection.
 pub trait FrameSink: Send + Sync {
     fn on_hid(&self, payload: &[u8]);
     fn on_midi(&self, payload: &[u8]);
 }
 
-/// Live transport bound to a connected stream.  Drop to stop both threads.
+/// A live transport on a connected stream. Drop it to stop both threads.
 pub struct Transport {
     stop: Arc<AtomicBool>,
     alive: Arc<AtomicBool>,
-    /// Clone of the connection, used by `shutdown_into_rx` to `shutdown()`
-    /// and unblock the reader/writer without waiting for the guest to close.
+    /// A clone of the connection. `shutdown_into_rx` calls `shutdown()` on it
+    /// to unblock the reader and the writer without waiting for the guest to
+    /// close.
     shutdown_handle: UnixStream,
-    /// Returns the outbound channel on exit, so a reconnect can reuse it.
+    /// The writer returns the outbound channel on exit, so that a reconnect
+    /// can reuse it.
     writer_thread: Option<thread::JoinHandle<Receiver<OutFrame>>>,
     reader_thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Transport {
-    /// Connect to `sock_path`, returning the stream without starting any I/O.
+    /// Connect to `sock_path` and return the stream without starting any I/O.
     ///
-    /// Split from [`Transport::spawn`] so a caller can find out the guest side
-    /// is absent *before* registering OS-visible endpoints: the host retries
-    /// the connect at the worker poll cadence, and building the backends first
-    /// would register and tear down a virtual HID device many times a second
-    /// for the whole of guest boot.
+    /// This is separate from [`Transport::spawn`], so that a caller learns
+    /// that the guest is absent before it registers endpoints that macOS
+    /// shows. The host retries the connect at the worker's poll interval, and
+    /// building the back ends first would register and remove a virtual HID
+    /// device many times a second while the guest boots.
     pub fn dial(sock_path: &Path) -> io::Result<UnixStream> {
         let stream = UnixStream::connect(sock_path)?;
         stream.set_nonblocking(false)?;
@@ -78,22 +82,22 @@ impl Transport {
     }
 
     /// Ask the guest bridge for its gadget identity on a freshly dialed
-    /// stream, before any endpoint is built from it.  Frames other than the
-    /// reply are discarded: nothing is registered yet to receive them.
+    /// stream, before any endpoint is built from it. Frames other than the
+    /// reply are discarded, because nothing is registered yet to receive them.
     pub fn handshake(stream: &UnixStream) -> io::Result<GadgetIdentity> {
         let result = handshake_loop(stream);
         stream.set_read_timeout(None)?;
         result
     }
 
-    /// Spawn the I/O threads on an already-dialed stream.
+    /// Start the I/O threads on a stream that is already connected.
     ///
-    /// - `rx`: writer thread drains this for host→guest frames.  The caller
-    ///   keeps the matching `Sender` alive (typically cloned into each
-    ///   backend), and can take `rx` back with
+    /// - `rx`: the writer thread reads the frames for the guest from it. The
+    ///   caller keeps the matching `Sender` alive, usually with a clone in
+    ///   each back end, and can take `rx` back with
     ///   [`Transport::shutdown_into_rx`].
-    /// - `sink`: reader thread dispatches guest→host frames here.  Shared, so
-    ///   one sink serves every connection the caller dials.
+    /// - `sink`: the reader thread passes the frames from the guest to it. It
+    ///   is shared, so one sink serves every connection the caller dials.
     pub fn spawn(
         stream: UnixStream,
         rx: Receiver<OutFrame>,
@@ -120,8 +124,8 @@ impl Transport {
         {
             Ok(h) => h,
             Err(e) => {
-                // The writer is already running and owns `rx`.  Stop and join
-                // it; `rx` is lost with it, which the caller treats as fatal.
+                // The writer is already running and owns `rx`. Stop and join
+                // it; `rx` is lost with it, and the caller treats that as fatal.
                 stop.store(true, Ordering::Release);
                 alive.store(false, Ordering::Release);
                 let _ = shutdown_handle.shutdown(std::net::Shutdown::Both);
@@ -139,26 +143,28 @@ impl Transport {
         })
     }
 
-    /// Whether both I/O threads are still running.  Transport liveness only:
-    /// with `server=on,wait=off`, the guest can exit while QEMU keeps the port
-    /// open, and neither thread observes it.
+    /// Whether both I/O threads are still running. This reports only on the
+    /// transport: with `server=on,wait=off`, the guest can exit while QEMU
+    /// keeps the port open, and neither thread notices.
     pub fn is_transport_alive(&self) -> bool {
         self.alive.load(Ordering::Acquire)
     }
 
-    /// Stop both threads and hand back the outbound channel.  Reclaiming the
-    /// `Receiver` lets a caller re-dial without disturbing the backends'
-    /// `Sender` clones.
+    /// Stop both threads and return the outbound channel. With the
+    /// `Receiver` back, a caller can re-dial without disturbing the back
+    /// ends' `Sender` clones.
     ///
-    /// `None` means the writer thread panicked and dropped the `Receiver`; the
-    /// channel is gone and every `send` fails.  Callers treat that as fatal.
+    /// `None` means that the writer thread panicked and dropped the
+    /// `Receiver`. The channel is then gone, every `send` fails, and callers
+    /// treat it as fatal.
     ///
-    /// Idempotent: handles are `Option`s, so a second call joins nothing.
+    /// The call is idempotent: the handles are `Option`s, so a second call
+    /// joins nothing.
     pub fn shutdown_into_rx(&mut self) -> Option<Receiver<OutFrame>> {
         self.stop.store(true, Ordering::Release);
         self.alive.store(false, Ordering::Release);
-        // Must precede the reader join: the reader is parked in read_exact,
-        // and only a shutdown of the socket unblocks it.
+        // Shut the socket down before joining the reader, because the reader
+        // is blocked in read_exact and only a shutdown unblocks it.
         let _ = self.shutdown_handle.shutdown(std::net::Shutdown::Both);
         let rx = self.writer_thread.take().and_then(|h| h.join().ok());
         if let Some(h) = self.reader_thread.take() {
@@ -217,8 +223,8 @@ fn handshake_loop(stream: &UnixStream) -> io::Result<GadgetIdentity> {
     }
 }
 
-/// A frame read that survives read timeouts: bytes already received stay in
-/// `buf`, and the next call continues from them.  Reads never go past the end
+/// A frame read that survives read timeouts. Bytes already received stay in
+/// `buf`, and the next call continues from them. Reads never go past the end
 /// of the current frame, so the stream stays aligned for the reader thread.
 #[derive(Default)]
 struct PartialFrame {
@@ -228,8 +234,9 @@ struct PartialFrame {
 impl PartialFrame {
     const HDR: usize = 3;
 
-    /// `Ok(None)` on EOF at a frame boundary; EOF inside a frame is
-    /// `UnexpectedEof`.  A timeout error leaves the partial frame in place.
+    /// Return `Ok(None)` at an EOF on a frame boundary, and `UnexpectedEof`
+    /// at an EOF inside a frame. A timeout error leaves the partial frame in
+    /// place.
     fn read<R: Read>(&mut self, r: &mut R) -> io::Result<Option<(u8, Vec<u8>)>> {
         loop {
             let want = if self.buf.len() < Self::HDR {
@@ -274,20 +281,21 @@ fn writer_loop(
     alive: Arc<AtomicBool>,
 ) -> Receiver<OutFrame> {
     use std::sync::mpsc::RecvTimeoutError;
-    // BufWriter so the 3-byte header and payload reach the kernel in one syscall.
+    // Use a BufWriter, so that the 3-byte header and the payload reach the
+    // kernel in one syscall.
     let mut w = BufWriter::new(stream);
     loop {
-        // Timeout so the loop observes `stop`: a blocking recv() would hang
-        // the join in `shutdown_into_rx`.
+        // Receive with a timeout, so that the loop sees `stop`. A blocking
+        // recv() would hang the join in `shutdown_into_rx`.
         if stop.load(Ordering::Acquire) {
             break;
         }
         match rx.recv_timeout(RECV_TIMEOUT) {
             Ok((kind, payload)) => {
                 if let Err(e) = write_frame(&mut w, kind, &payload) {
-                    eprintln!("pc-link: writer error ({e:?}) — exiting");
-                    // Clear `alive` too: a write failure kills the host→guest
-                    // half before the reader sees EOF.
+                    eprintln!("pc-link: the writer thread failed ({e:?}) and is exiting.");
+                    // Clear `alive` too, because a write failure ends the
+                    // direction to the guest before the reader sees EOF.
                     alive.store(false, Ordering::Release);
                     stop.store(true, Ordering::Release);
                     break;
@@ -295,8 +303,8 @@ fn writer_loop(
             }
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => {
-                // Unreachable while the backends hold a `Sender`; kept so a
-                // future change to that ownership cannot busy-loop here.
+                // This cannot happen while the back ends hold a `Sender`. It
+                // stops a change to that ownership from busy-looping here.
                 alive.store(false, Ordering::Release);
                 break;
             }
@@ -319,22 +327,25 @@ fn reader_loop(
             Ok(Some((FRAME_MIDI, payload))) => sink.on_midi(&payload),
             // A late reply to a resent HELLO.
             Ok(Some((FRAME_IDENTITY, _))) => {}
-            // Unknown frame type; not fatal.
-            Ok(Some((other, _))) => eprintln!("pc-link: unknown frame type 0x{other:02x}"),
-            Ok(None) => break, // clean EOF
+            // An unknown frame type is not fatal.
+            Ok(Some((other, _))) => {
+                eprintln!("pc-link: ignoring an unknown frame type 0x{other:02x}.")
+            }
+            // A clean EOF.
+            Ok(None) => break,
             Err(e) => {
-                eprintln!("pc-link: reader error ({e:?}) — exiting");
+                eprintln!("pc-link: the reader thread failed ({e:?}) and is exiting.");
                 break;
             }
         }
     }
     alive.store(false, Ordering::Release);
-    // Wake the writer so it stops holding queued frames.  Parked in
-    // recv_timeout, so the join costs <= RECV_TIMEOUT.
+    // Wake the writer, so that it stops holding queued frames. The writer is
+    // waiting in recv_timeout, so joining it takes at most RECV_TIMEOUT.
     stop.store(true, Ordering::Release);
 }
 
-/// The socket QEMU exposes for the cdj3k.usb-link virtserialport.
+/// The socket that QEMU exposes for the cdj3k.usb-link virtserialport.
 pub fn usb_link_sock_path(sock_dir: &Path) -> PathBuf {
     sock_dir.join("usb-link.sock")
 }
@@ -448,7 +459,8 @@ mod tests {
             for _ in 0..20 {
                 write_frame(&mut peer, FRAME_HID, &[0u8; 8]).unwrap();
             }
-            // The IDENTITY header, then the rest after a host read timeout.
+            // Send part of the IDENTITY header, and the rest after a host read
+            // timeout.
             let id = concat!(
                 "idVendor=0x2b73\nidProduct=0x002f\nbcdDevice=0x0320\n",
                 "manufacturer=Pioneer DJ\nproduct=CDJ-3000\nserialnumber=DJMP000001EH\n",
@@ -460,7 +472,8 @@ mod tests {
             thread::sleep(HELLO_RESEND + Duration::from_millis(100));
             peer.write_all(&[len[1]]).unwrap();
             peer.write_all(id).unwrap();
-            // One resend over the pause; none per HID frame.
+            // Count the HELLO resends: one during the pause, and none for the
+            // HID frames.
             peer.set_read_timeout(Some(Duration::from_millis(200)))
                 .unwrap();
             let mut hellos = 0;

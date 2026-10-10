@@ -42,8 +42,8 @@ const MB: u64 = 1024 * 1024;
 const GB: u64 = 1024 * MB;
 const SECTOR: u64 = 512;
 
-/// Total virtual disk size: 29.1 GB.
-pub const EMMC_SIZE: u64 = 29 * GB + 100 * MB; // 29,360,128,000 bytes ≈ 29.1 GB
+/// Total virtual disk size: 31,243,370,496 bytes, about 29.1 GiB.
+pub const EMMC_SIZE: u64 = 29 * GB + 100 * MB;
 
 /// fw_env.config: /dev/mmcblk<emmc_index>  0x003f8000  0x8000
 const UBOOT_ENV_OFFSET: u64 = 0x003f8000;
@@ -53,16 +53,17 @@ const UBOOT_ENV_SIZE: usize = 0x8000;
 pub struct EmmcConfig {
     /// Output path for the qcow2 image.
     pub path: PathBuf,
-    /// Instance ID - used to derive the serial number.
+    /// The slot number, from which the serial number is derived.
     pub instance_id: u32,
     /// The deck this image is for.  Selects the `model` U-Boot variable, which
     /// `genkey_pr` hashes with the SoC serial into the cabinet.img passphrase.
     pub model: Model,
     /// Version metadata from the firmware ISO.
     pub firmware: FirmwareInfo,
-    /// The firmware's `images/cabinet.img`, staged raw in a partition nothing
-    /// boots from for the guest to install on its first boot.  `None` stages
-    /// nothing, and the deck runs without Widevine or Device Library Plus.
+    /// The firmware's `images/cabinet.img`, written raw into a partition that
+    /// nothing boots from, so that the guest can install it on its first boot.
+    /// `None` stages nothing, and the deck runs without Widevine or Device
+    /// Library Plus.
     pub cabinet: Option<Vec<u8>>,
 }
 
@@ -78,8 +79,8 @@ impl EmmcConfig {
     }
 }
 
-/// The eMMC image of slot `instance_id`:
-/// `~/Library/Application Support/<BUNDLE_ID>/instance-N/emmc.qcow2`.
+/// The eMMC image of slot `instance_id`: `instance-N/emmc.qcow2` in the
+/// per-user data directory.
 pub fn default_path(instance_id: u32) -> PathBuf {
     crate::FirmwarePaths::new(instance_id).emmc
 }
@@ -98,10 +99,9 @@ pub fn provision_emmc(config: &EmmcConfig) -> std::io::Result<&Path> {
     let raw_path = config.path.with_extension("raw.tmp");
     write_gpt_raw(&raw_path, config)?;
 
-    // Step 2: convert to qcow2.  `qemu-img` is resolved by
-    // [`cdj3k_emu_platform::bundled::tool`], which prefers the copy bundled
-    // next to the running executable so Finder-launched .app instances don't
-    // depend on the user's shell PATH.
+    // Step 2: convert to qcow2. [`cdj3k_emu_platform::bundled::tool`] finds
+    // `qemu-img`, preferring the copy bundled next to the running executable,
+    // so a packaged build does not depend on the user's `PATH`.
     convert_to_qcow2(&raw_path, &config.path)?;
     std::fs::remove_file(&raw_path)?;
 
@@ -110,8 +110,8 @@ pub fn provision_emmc(config: &EmmcConfig) -> std::io::Result<&Path> {
 
 /// The U-Boot environment a slot's eMMC carries, as key/value pairs.
 ///
-/// `None` when the block is not mapped in the image or its CRC does not cover
-/// what follows it - a half-written or foreign image says nothing.
+/// Returns `None` when the block is not mapped in the image or its CRC does
+/// not match the data after it, as in a half-written or foreign image.
 pub fn read_uboot_env(emmc: &Path) -> Option<BTreeMap<String, String>> {
     let block = crate::qcow2::read_at(emmc, UBOOT_ENV_OFFSET, UBOOT_ENV_SIZE).ok()??;
     let (stored, data) = block.split_at(4);
@@ -146,7 +146,7 @@ fn write_uboot_env(
 
     let vars = uboot_vars(model, fw, &serial);
 
-    // Build env data: null-terminated "key=value" strings + final null terminator.
+    // Write each "key=value" pair with a null terminator, then a final null.
     let mut env_data = Vec::with_capacity(UBOOT_ENV_SIZE - 4);
     for (k, v) in &vars {
         env_data.extend_from_slice(k.as_bytes());
@@ -156,7 +156,6 @@ fn write_uboot_env(
     }
     env_data.push(0); // double-null terminator
 
-    // Pad to (UBOOT_ENV_SIZE - 4) with zeros.
     let data_len = UBOOT_ENV_SIZE - 4;
     assert!(
         env_data.len() <= data_len,
@@ -173,12 +172,12 @@ fn write_uboot_env(
     Ok(())
 }
 
-/// The variables a deck's U-Boot environment holds, `serial_number` being
-/// this slot's.
+/// The variables a deck's U-Boot environment holds; `serial_number` is this
+/// slot's serial.
 fn uboot_vars<'a>(model: Model, fw: &'a FirmwareInfo, serial: &'a str) -> Vec<(&'a str, &'a str)> {
     let spec = model.spec();
     let mut vars: Vec<(&str, &str)> = match model {
-        // As the dumped unit's: it records no release or revision.
+        // The CDJ-1500X environment has no release or revision variables.
         Model::Cdj1500x => vec![
             ("arch", "arm"),
             ("baudrate", "1500000"),
@@ -282,14 +281,13 @@ fn sectors(bytes: u64) -> u64 {
     bytes.div_ceil(SECTOR)
 }
 
-/// Marker for the staged cabinet image, first line of a 512-byte ASCII header
-/// at the start of the recovery partition.  The header carries the image
-/// length; the image itself follows it. Guest patch 14 reads both.
+/// The first line of the 512-byte ASCII header at the start of the staging
+/// partition. The header carries the image length, and the cabinet image
+/// follows it. Guest patch 14 reads both.
 const CABINET_STAGE_MAGIC: &str = "CDJ3KCAB1";
 const CABINET_STAGE_HEADER: u64 = 512;
 
-/// Write `cabinet` into the partition beginning at `first_lba`, behind the
-/// ASCII header the guest parses.
+/// Write `cabinet` into `part`, behind the ASCII header the guest parses.
 fn stage_cabinet(
     file: &mut std::fs::File,
     part: &PartEntry,
@@ -315,7 +313,8 @@ fn stage_cabinet(
 }
 
 fn write_gpt_raw(raw_path: &Path, config: &EmmcConfig) -> std::io::Result<()> {
-    // Sparse at full virtual size: only the GPT and the U-Boot env are written.
+    // Create a sparse file at the full virtual size; only the GPT, the staged
+    // cabinet and the U-Boot env are written.
     cdj3k_emu_platform::sparse_file::create(raw_path, EMMC_SIZE)?;
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -325,8 +324,8 @@ fn write_gpt_raw(raw_path: &Path, config: &EmmcConfig) -> std::io::Result<()> {
     let disk_sectors = EMMC_SIZE / SECTOR;
     let data = linux_data_type();
 
-    // Partition layout (all sizes in sectors, 1 MiB-aligned start).
-    // First usable LBA = 34 (GPT overhead); align first partition to LBA 2048 (1 MiB).
+    // Partitions start on 1 MiB boundaries. The first usable LBA is 34, after
+    // the GPT, and the first partition starts at LBA 2048 (1 MiB).
     let align = 2048u64; // 1 MiB in 512-byte sectors
     let mut cursor = align;
 
@@ -335,7 +334,7 @@ fn write_gpt_raw(raw_path: &Path, config: &EmmcConfig) -> std::io::Result<()> {
         let first = cursor;
         let last = first + n_sectors - 1;
         cursor = last + 1;
-        // Align next start to 1 MiB boundary.
+        // Round the next start up to a 1 MiB boundary.
         if !cursor.is_multiple_of(align) {
             cursor = (cursor / align + 1) * align;
         }
@@ -396,9 +395,10 @@ fn convert_to_qcow2(raw: &Path, out: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    /// Each deck's partitions are its own scripts': the CDJ-1500X keeps its
-    /// settings on p4 and stages the cabinet on p3, the RK3399 decks keep
-    /// settings on p7 and stage on p4, recovery.
+    /// Each deck gets the partitions its own scripts mount. The CDJ-1500X
+    /// keeps its settings on p4 and stages the cabinet on p3. The RK3399 decks
+    /// keep their settings on p7 and stage the cabinet on p4, the recovery
+    /// partition.
     #[test]
     fn each_deck_gets_the_partitions_its_scripts_mount() {
         let l = layout(Model::Cdj1500x);
@@ -416,8 +416,8 @@ mod tests {
         }
     }
 
-    /// The CDJ-1500X's environment is the dumped unit's: its product UUID,
-    /// no release or revision, and the slot's own serial.
+    /// The CDJ-1500X environment carries its product UUID, no release or
+    /// revision, and the slot's own serial.
     #[test]
     fn the_uboot_env_follows_the_deck() {
         let fw = FirmwareInfo {

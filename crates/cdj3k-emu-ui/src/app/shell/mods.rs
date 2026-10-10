@@ -85,7 +85,7 @@ impl CdjShell {
             self.mods_download = None;
             match result {
                 Ok(file) => {
-                    // The add unpacks the archive, so the download can go.
+                    // The add unpacks the archive, so the download can be deleted.
                     self.add_mod_path(&file, Some(&url));
                     if let Some(dir) = file.parent() {
                         let _ = std::fs::remove_dir_all(dir);

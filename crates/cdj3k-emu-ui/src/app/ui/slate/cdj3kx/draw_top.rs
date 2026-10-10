@@ -1,4 +1,6 @@
-//! Upper deck UI (rekordbox bar, nav, LCD, hot cues). Horizontal LCD / hot-cue band comes from [`super::layout`].
+//! Draws the upper deck: the rekordbox bar, the nav buttons, the LCD and the
+//! hot cues. The horizontal band that holds the LCD and the hot cues comes
+//! from [`super::layout`].
 
 use crate::app::ui::{
     draw_cache::ShapeList, DoubleBorderSpec, StrokeSpec, COL_AMBER, COL_BLACK, COL_BLUE, COL_BTN,
@@ -38,7 +40,7 @@ const NAV_BTN_INNER_STROKE: f32 = 2.0;
 const NAV_BTN_OUTER_STROKE: f32 = 1.0;
 
 // --- LCD screen ---
-/// 16:9 display aspect ratio.
+/// Display aspect ratio, 16:10 (1280 x 800).
 pub(in crate::app) const LCD_ASPECT: f32 = 1280.0 / 800.0;
 /// LCD outer bezel width as a fraction of [`MENUBAR_COL_REF`] width.
 pub(in crate::app) const LCD_WIDTH_FRAC: f32 = 0.815;
@@ -64,13 +66,14 @@ const HOT_CUE_BTN_OUTER_STROKE: f32 = 4.0;
 /// Vertical center of the label within [`MID_CENTRAL_PANEL_REF`].
 const HOT_CUE_LABEL_V: f32 = 0.08;
 const HOT_CUE_LABEL_FONT_SIZE: f32 = 34.0;
-/// Half-distance from panel center to where each flanking segment ends (covers label + clearance).
+/// Distance from the panel center to the inner end of each flanking segment;
+/// it covers the label and its clearance.
 const HOT_CUE_LABEL_SEG_GAP_CENTER: f32 = 100.0;
 /// Inset from panel left/right edge where each flanking segment starts.
 const HOT_CUE_LABEL_SEG_GAP_EDGE: f32 = 163.0;
 const HOT_CUE_LABEL_SEG_STROKE: f32 = 6.0;
 
-/// Cue control row
+/// Cue control row.
 const CUE_CONTROL_V: f32 = 0.81;
 const CUE_CONTROL_LABEL_FONT_SIZE: f32 = 32.0;
 const CUE_CONTROL_LINE_1_LENGTH: f32 = 62.0;
@@ -91,7 +94,8 @@ const CUE_CONTROL_MEM_BTN_SIZE: f32 = 25.0;
 const CUE_CONTROL_DELMEM_BTN_GAP: f32 = 0.034;
 const CUE_CONTROL_DELMEM_LABEL_V: f32 = 0.56;
 
-/// (label, MISO btn) - accent color is read live from led_state MOSI frame.
+/// Each entry is (label, MISO button). The accent color is read live from the
+/// LED state in the MOSI frame.
 const HOT_CUE_BTNS: &[(&str, Btn)] = &[
     ("A", Btn::HotA),
     ("B", Btn::HotB),
@@ -103,8 +107,9 @@ const HOT_CUE_BTNS: &[(&str, Btn)] = &[
     ("H", Btn::HotH),
 ];
 
-/// (label, button, lamp, lit color) - the font color follows the lamp.
-/// Medium-only lit → dimmed color, full → solid (see [`StepLed`](mosi_frame::StepLed)).
+/// Each entry is (label, button, lamp, lit color), and the font color follows
+/// the lamp: a lamp at medium shows a dimmed color and a lamp at full shows the
+/// solid color (see [`StepLed`](mosi_frame::StepLed)).
 const BROWSER_BTNS: &[(&str, Btn, Lamp, Color32)] = &[
     ("SOURCE", Btn::Source, Lamp::Source, COL_BTN_WHITE),
     ("BROWSE", Btn::Browse, Lamp::Browse, COL_BLUE),
@@ -114,21 +119,21 @@ const BROWSER_BTNS: &[(&str, Btn, Lamp, Color32)] = &[
     ("MENU", Btn::Menu, Lamp::Menu, COL_BTN_WHITE),
 ];
 
-/// `c` with its channels scaled by `factor`.
+/// Returns `c` with its channels scaled by `factor`.
 fn dim_color(c: Color32, factor: f32) -> Color32 {
     let scale = |v: u8| (v as f32 * factor).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgb(scale(c.r()), scale(c.g()), scale(c.b()))
 }
 
-/// Collect fully-static elements of the top section into `list` (rebuilt
-/// only on resize): the "HOT CUE" legend and the cue-control row's legends
+/// Collects the static elements of the top section into `list`, which is
+/// rebuilt only on a resize: the "HOT CUE" legend and the cue-control row's legends
 /// and separators.
 fn collect_top_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     collect_hot_cue_legend(list, ctx, layout);
     collect_cue_control_legends(list, ctx, layout);
 }
 
-/// "HOT CUE" label + flanking segments.
+/// Collects the "HOT CUE" label and its flanking segments.
 fn collect_hot_cue_legend(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let label_pos = layout.sp_in_rect(MID_CENTRAL_PANEL_REF, 0.5, HOT_CUE_LABEL_V);
     list.text(
@@ -169,8 +174,8 @@ fn collect_hot_cue_legend(list: &mut ShapeList, ctx: &egui::Context, layout: &Ui
     }
 }
 
-/// Cue-control row: "CUE/LOOP CALL" / "DELETE" / "MEMORY" labels and the
-/// three separator lines.
+/// Collects the cue-control row: the "CUE/LOOP CALL", "DELETE" and "MEMORY"
+/// labels and the three separator lines.
 fn collect_cue_control_legends(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     list.text(
         ctx,

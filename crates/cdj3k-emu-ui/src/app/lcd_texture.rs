@@ -1,6 +1,6 @@
-//! GL texture allocation, sub-image upload, and blank-on-exit for the main
-//! display (sized by [`Model::main_lcd`](cdj3k_emu_panel::Model::main_lcd))
-//! and the 320×240 jog LCD framebuffers.
+//! Allocates, updates and blanks the GL textures of the main display (sized
+//! by [`Model::main_lcd`](cdj3k_emu_panel::Model::main_lcd)) and of the
+//! 320×240 jog LCD.
 
 use cdj3k_emu_streams::jog_stream::{JogFrame, JOG_FB_H, JOG_FB_W};
 use cdj3k_emu_streams::main_stream::{DisplayDirty, SHM_PIXELS_OFFSET};
@@ -9,12 +9,12 @@ use glow::HasContext as _;
 
 use super::CdjApp;
 
-/// XRGB / RGBA pixel size in bytes.
+/// Size of an XRGB or RGBA pixel, in bytes.
 const PX_BYTES: usize = 4;
 
 impl CdjApp {
-    /// A model switch changes the main framebuffer size: re-specify the
-    /// storage of the texture the painter already knows under its id.
+    /// After a model switch changes the main framebuffer size, re-specify the
+    /// storage of the texture that the painter already knows by its id.
     fn ensure_display_storage(&mut self, gl: &glow::Context) {
         if !self.textures.main_stale {
             return;
@@ -26,8 +26,9 @@ impl CdjApp {
         self.textures.main_stale = false;
     }
 
-    /// Zero both LCD GL textures so popout windows go black after QEMU exit.
-    /// Cleared once by the next paint after `lcd_textures_need_blank` is set.
+    /// Clear both LCD GL textures so the popout windows go black after QEMU
+    /// exits. The next paint after `lcd_textures_need_blank` is set calls it
+    /// once.
     pub(super) fn blank_lcd_textures(&mut self, gl: &glow::Context) {
         self.ensure_display_storage(gl);
         unsafe {
@@ -43,8 +44,8 @@ impl CdjApp {
         }
     }
 
-    /// Lazy-allocate the main LCD texture and upload a dirty sub-rect.
-    /// Returns `true` if `display_tex_id` is now usable.
+    /// Allocate the main LCD texture if needed and upload a dirty sub-rect.
+    /// Returns `true` if the texture behind `textures.main_id` is usable.
     pub(super) fn upload_display_dirty(
         &mut self,
         frame: &mut eframe::Frame,
@@ -56,8 +57,8 @@ impl CdjApp {
 
         self.ensure_display_storage(&gl);
         if self.textures.main_gl.is_none() {
-            // TEXTURE_SWIZZLE_A = ONE forces sampled alpha to 1.0 so egui's
-            // premultiplied blend works even though QEMU stores 0 in the X byte.
+            // TEXTURE_SWIZZLE_A = ONE forces the sampled alpha to 1.0, so egui's
+            // premultiplied blend works although QEMU stores 0 in the X byte.
             let (w, h) = self.model.main_lcd();
             let tex =
                 unsafe { allocate_lcd_texture(&gl, w as i32, h as i32, LcdSwizzle::AlphaOnly) };
@@ -66,14 +67,16 @@ impl CdjApp {
             self.textures.main_id = Some(tex_id);
         }
 
-        // Zero-copy upload: shm pixels are RGBA8888 (QEMU converts XRGB→RGBA
-        // in shm_gfx_update); UNPACK_ROW_LENGTH lets us point directly into
-        // the mmap without any row copy, even for dirty sub-rects.
+        // Upload without copying. The shm pixels are already RGBA8888, because
+        // QEMU converts XRGB to RGBA in shm_gfx_update, and UNPACK_ROW_LENGTH
+        // lets the upload read rows straight from the mmap, even for dirty
+        // sub-rects.
         if let Some(tex) = self.textures.main_gl {
             let offset = SHM_PIXELS_OFFSET
                 + dirty.y as usize * dirty.stride as usize
                 + dirty.x as usize * PX_BYTES;
-            // Minimum slice: full rows except last (which only needs w*4 bytes).
+            // The smallest slice that covers the rect: whole rows, except the
+            // last row, which needs only w*4 bytes.
             let len = (dirty.h as usize - 1) * dirty.stride as usize + dirty.w as usize * PX_BYTES;
             let pixels = &dirty.mmap[offset..offset + len];
             unsafe {
@@ -92,17 +95,17 @@ impl CdjApp {
         true
     }
 
-    /// Lazy-allocate the jog LCD texture (with channel swizzles) and upload
-    /// the dirty sub-rect from the latest [`JogFrame`].
+    /// Allocate the jog LCD texture, with its channel swizzles, if needed, and
+    /// upload the dirty sub-rect from the latest [`JogFrame`].
     pub(super) fn upload_jog_dirty(&mut self, frame: &mut eframe::Frame, jf: &JogFrame) -> bool {
         let Some(gl) = frame.gl().cloned() else {
             return false;
         };
 
         if self.textures.jog_gl.is_none() {
-            // Channel swizzles: shader.r ← wire byte 2, shader.b ← wire byte 0,
-            // shader.a ← 1.0. Lets the shader handle the byte-swap instead of
-            // a per-pixel CPU pass on the stream thread.
+            // The swizzles make the shader read red from wire byte 2, blue from
+            // wire byte 0, and alpha as 1.0. The GPU swaps the bytes, so the
+            // stream thread needs no per-pixel pass.
             let tex = unsafe {
                 allocate_lcd_texture(
                     &gl,
@@ -118,13 +121,14 @@ impl CdjApp {
 
         if let Some(tex) = self.textures.jog_gl {
             // The jog stream always publishes the full 320×240 canvas in its
-            // `image` Arc, even for partial-rect packets (those write the
-            // subrect at (jf.x, jf.y) in the same buffer). Use
-            // UNPACK_ROW_LENGTH = JOG_FB_W to read at the correct stride.
+            // `image` Arc. A partial update writes its rect at (jf.x, jf.y) in
+            // the same buffer, so UNPACK_ROW_LENGTH = JOG_FB_W gives the right
+            // stride.
             //
             // SAFETY: `Color32` is `#[repr(C)] [u8; 4]`, so `Vec<Color32>`
-            // and a `&[u8]` of 4× the length share layout. The reborrow lasts
-            // only inside this block; the underlying Arc keeps storage alive.
+            // and a `&[u8]` four times as long have the same layout. The
+            // reborrow lasts only inside this block, and the Arc keeps the
+            // storage alive.
             let pixels = &jf.image.pixels;
             let bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(
@@ -155,22 +159,25 @@ impl CdjApp {
 
 #[derive(Clone, Copy)]
 enum LcdSwizzle {
-    /// Force sampled alpha to 1.0; leave RGB untouched.
+    /// Forces the sampled alpha to 1.0 and leaves RGB unchanged.
     AlphaOnly,
-    /// BGR(X) wire bytes → shader RGB; sampled alpha = 1.0.
+    /// Reads the BGRX wire bytes as RGB and forces the sampled alpha to 1.0.
     BgrToRgbAlphaOne,
 }
 
 /// Allocate an RGBA8 LCD texture with linear sampling, clamp wrap, and the
-/// requested channel swizzle. Plain RGBA8, not sRGB: egui's shader takes what
-/// it samples as gamma-encoded, which the deck's framebuffer bytes already are.
+/// requested channel swizzle. The format is plain RGBA8, because egui's shader
+/// treats what it samples as gamma-encoded, and the deck's framebuffer bytes
+/// already are.
 unsafe fn allocate_lcd_texture(
     gl: &glow::Context,
     w: i32,
     h: i32,
     swizzle: LcdSwizzle,
 ) -> glow::Texture {
-    let tex = gl.create_texture().expect("create LCD texture");
+    let tex = gl
+        .create_texture()
+        .expect("could not create an LCD texture");
     gl.bind_texture(glow::TEXTURE_2D, Some(tex));
     gl.tex_parameter_i32(
         glow::TEXTURE_2D,
@@ -206,8 +213,8 @@ unsafe fn allocate_lcd_texture(
     tex
 }
 
-/// (Re)allocate `tex`'s level-0 storage as an uninitialised `w`×`h`
-/// RGBA8 image.
+/// Allocate, or allocate again, `tex`'s level-0 storage as an uninitialised
+/// `w`×`h` RGBA8 image.
 unsafe fn specify_lcd_storage(gl: &glow::Context, tex: glow::Texture, w: i32, h: i32) {
     gl.bind_texture(glow::TEXTURE_2D, Some(tex));
     gl.tex_image_2d(

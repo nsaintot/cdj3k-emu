@@ -89,8 +89,8 @@ impl SlotMods {
 
     /// Read the mod at `path`: a `.tgz`/`.tar.gz`/`.tar` (holding the mod
     /// folder or its contents), a folder used in place, or the folder's
-    /// `mod.toml`. `origin` is the source the list shows for an archive; its
-    /// file name by default.
+    /// `mod.toml`. `origin` is the source the list shows for an archive; it
+    /// defaults to the archive's file name.
     pub fn prepare(&self, path: &Path, origin: Option<&str>) -> io::Result<PendingAdd> {
         self.sweep();
         let file = path.file_name().map(|f| f.to_string_lossy().into_owned());
@@ -154,7 +154,10 @@ impl SlotMods {
         let tmp = self.dir.join(format!(".add-{}", unique_suffix()));
         let read = unpack(archive, &tmp).and_then(|()| {
             let root = mod_root(&tmp).ok_or_else(|| {
-                io::Error::other(format!("{}: no {MANIFEST} at its root", archive.display()))
+                io::Error::other(format!(
+                    "{}: the archive has no {MANIFEST} at its root",
+                    archive.display()
+                ))
             })?;
             let manifest = manifest::read(&root).map_err(io::Error::other)?;
             Ok((manifest, root))
@@ -427,7 +430,10 @@ mod tests {
         for archive in [root.join("no-manifest.tgz"), two_folders] {
             assert_eq!(
                 mods.prepare(&archive, None).unwrap_err().to_string(),
-                format!("{}: no mod.toml at its root", archive.display())
+                format!(
+                    "{}: the archive has no mod.toml at its root",
+                    archive.display()
+                )
             );
         }
 
@@ -440,11 +446,11 @@ mod tests {
             mods.prepare(&root.join("bad.tgz"), None)
                 .unwrap_err()
                 .to_string(),
-            "mod.toml: no mod.version"
+            "mod.toml: mod.version is missing"
         );
         assert_eq!(
             mods.prepare(&bad, None).unwrap_err().to_string(),
-            "mod.toml: no mod.version"
+            "mod.toml: mod.version is missing"
         );
 
         let missing = root.join("missing.tgz");

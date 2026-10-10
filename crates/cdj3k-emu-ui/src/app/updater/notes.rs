@@ -1,13 +1,13 @@
-//! Release notes from the index (GitHub Markdown): headings, nested bullets
-//! and paragraphs; inline formatting is dropped.
+//! Draws the release notes from the index, written in GitHub Markdown. It
+//! shows headings, nested bullets and paragraphs, and drops inline formatting.
 
 use egui::{RichText, Stroke, Vec2};
 
 use super::super::theme::{self, Palette};
 
-/// Box height, at the reference width.
+/// The box height at the reference width.
 const NOTES_H: f32 = 150.0;
-/// Indent per bullet level, at the reference width.
+/// The indent per bullet level at the reference width.
 const NOTES_INDENT: f32 = 14.0;
 
 pub(super) fn notes_box(ui: &mut egui::Ui, markdown: &str, pal: &Palette, k: f32) {
@@ -22,7 +22,8 @@ pub(super) fn notes_box(ui: &mut egui::Ui, markdown: &str, pal: &Palette, k: f32
         .inner_margin(egui::epaint::MarginF32::symmetric(12.0 * k, 10.0 * k))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            // Plain text rows; the window style sets rows to field height.
+            // Size the rows for plain text; otherwise the window style gives
+            // each row the height of a field.
             ui.spacing_mut().interact_size.y = 0.0;
             ui.spacing_mut().item_spacing = Vec2::new(6.0 * k, 3.0 * k);
             egui::ScrollArea::vertical()
@@ -79,7 +80,7 @@ enum NotesLine {
     Gap,
 }
 
-/// Lines of a GitHub release body to draw.
+/// Parses a GitHub release body into the lines to draw.
 fn notes_lines(markdown: &str) -> Vec<NotesLine> {
     let plain = |s: &str| s.replace("**", "").replace('`', "").trim().to_owned();
     let mut out: Vec<NotesLine> = Vec::new();
@@ -111,7 +112,7 @@ fn notes_lines(markdown: &str) -> Vec<NotesLine> {
     out
 }
 
-/// A heading's text: one to six `#` and a space before it.
+/// Returns a heading's text, which follows one to six `#` and a space.
 fn heading(text: &str) -> Option<&str> {
     let rest = text.trim_start_matches('#');
     let level = text.len() - rest.len();

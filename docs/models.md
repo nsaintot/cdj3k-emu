@@ -10,15 +10,15 @@
 `cdj3kx.rs`, `cdj1500x.rs`) carries everything that differs: framebuffer size,
 touch space, the U-Boot `model` and system-revision variables, the eMMC's
 device number, the `.UPD` file names, the MISO encoder, the MOSI decoder and
-the LED profiles. Consumers read the spec rather than match on the model; the only
-matches are `Model::spec`, the slate lookup (`slate::for_model`) and the panel
-window's autosave name. Adding a player is a spec with its encoder, a `Model`
-variant and a slate.
+the LED profiles. Consumers read the spec and do not match on the model; the
+only matches are `Model::spec`, the slate lookup (`slate::for_model`) and the
+panel window's autosave name. To add a player, write a spec with its encoder,
+add a `Model` variant and add a slate.
 
 The MISO encoder is a `MisoCodec`: the UI describes the panel in a
-model-neutral `PanelState` and the player's encoder writes its frame, so a
-deck's quirks - an offset, a byte order, a tempo curve, where its power flag
-rides - live in its own spec file rather than as flags in a shared codec.
+model-neutral `PanelState` and the player's encoder writes its frame, so each
+deck's quirks, such as an offset, a byte order, a tempo curve or the position
+of its power flag, live in its own spec file.
 
 The MOSI decoder is its mirror, a `MosiCodec`: the UI names a `Lamp` and the
 player's decoder answers with a `LampState` (a bit, a step, a value or a
@@ -36,8 +36,8 @@ previous model's frames.
 
 Each slot is its own process and holds one installation; its model is
 `model=` in the slot's `settings.txt`. How an install reaches the slot is in
-[Storage](storage.md). AppKit frame autosave is keyed by slot and model, since
-the two canvases have different aspects.
+[Storage](storage.md). AppKit frame autosave is keyed by slot and model,
+because each model's canvas has a different aspect ratio.
 
 ## Firmware
 
@@ -64,11 +64,11 @@ The CDJ-3000X's panel is 800x1280 portrait, rotated by `apl_start.sh` with
 xrandr; on the virtual output those calls fall through and virtio-gpu scans
 out landscape.
 
-One patch set (`initramfs-patch/patch-rootfs.d/`) serves both images. The
+One patch set (`initramfs-patch/patch-rootfs.d/`) serves every image. The
 dispatcher (`patch-rootfs.sh`) finds the player's unit and exports `APP_UNIT`,
 `APP_NAME` and `APP_SLUG`; the steps order their services against that unit,
-install the LD_PRELOAD drop-in under it and pass the slug on. Where the two
-images differ, a step follows what the rootfs holds rather than the model:
+install the LD_PRELOAD drop-in under it and pass the slug on. Where the
+images differ, a step checks what the rootfs holds, not the model:
 
 - Patch 25 keeps the stock Xorg `taskset` pin (core 3 on the CDJ-3000, core 5
   on the CDJ-3000X) only when the guest has that core.
@@ -76,15 +76,16 @@ images differ, a step follows what the rootfs holds rather than the model:
   `wlan-monitor.sh` (the CDJ-3000X's and the CDJ-1500X's do), and masks
   whichever unit runs it: `start-mlan0.service` on the CDJ-3000X,
   `start-wlan.service` on the CDJ-1500X.
-  It also gives those images an `mlan0`: the kernel's built-in dummy
-  interface renamed at boot, down, with eth0's address made local. Without
-  one, service mode's version page re-runs `ifconfig mlan0` twice a second.
+  It also gives those images an `mlan0` interface: the kernel's built-in
+  dummy interface, renamed at boot and left down, with eth0's address made
+  local. Without it, service mode's version page re-runs `ifconfig mlan0`
+  twice a second.
 - Patch 14 copies `cabinet.img` onto the settings partition only when the
   install staged one, which it does when the image carries
   `images/cabinet.img`.
 - Patch 20 waits on the player's own process name before unmounting.
 
-A few steps follow the slug, where the images do not tell:
+A few steps check the slug, because the images do not show the difference:
 
 - Patch 02 installs the bundled `dropbear_aarch64` on the CDJ-1500X, which
   ships no SSH server.
@@ -100,18 +101,18 @@ In the shim, `core/` serves every deck; `cdj3kx/touch.c` acts only when
 
 ## CDJ-3000X sub-CPU frames
 
-Both frames are the CDJ-3000's shifted. The CDJ-3000X's MISO encoder
+Both frames use the CDJ-3000's layout, shifted. The CDJ-3000X's MISO encoder
 (`cdj3kx::Miso`) writes the CDJ-3000's fields (`cdj3k::write_fields`) and
-buttons 4 bytes on, and its `MosiMap` (`cdj3kx::MOSI`) says where each lamp
-sits; the codecs are the only code that turns a button or a lamp into an
+buttons 4 bytes later, and its `MosiMap` (`cdj3kx::MOSI`) says where each lamp
+sits. The codecs are the only code that turns a button or a lamp into an
 offset.
 
 - MISO: the whole CDJ-3000 frame sits behind a u16 format version, which must
   be non-zero or the app's `RxDataDispatcher::dispatch` drops the frame; the
-  CRC stays at the end. Button bits are the CDJ-3000's, confirmed against the
-  CDJ-3000X's reactions and against its `subucom_read`, whose service
-  combination `subucom_virt.ko model=cdj3kx` injects for Service Mode. The
-  CDJ-3000's SD-cover bit is a button here (`Btn::Usb2Stop`).
+  CRC stays at the end. Button bits are the CDJ-3000's. For Service Mode,
+  `subucom_virt.ko model=cdj3kx` injects the service button combination that
+  the CDJ-3000X's `subucom_read` expects. The CDJ-3000's SD-cover bit is a
+  button here (`Btn::Usb2Stop`).
 - Power: once the power-on bit has been set, the CDJ-3000X runs its shutdown
   preparation when it drops. The guest forwarder checks power at the
   CDJ-3000's position on both RK3399 decks, so the encoder drops it there
@@ -123,7 +124,8 @@ offset.
 Touch: EP145 reads a Goodix `gt928` input device, not the frame's touch words.
 The shim's `cdj3kx/touch.c` synthesises it from those words, which the host
 fills in screen pixels (`Model::touch_units`) with `TOUCH_DOWN` set in the
-x-coordinate word, since pixel 0 is a coordinate.
+x-coordinate word, because 0 is a valid pixel coordinate and cannot mean "no
+touch".
 
 ## CDJ-1500X sub-CPU frames
 
@@ -150,9 +152,9 @@ crates/cdj3k-emu-ui/src/app/ui/
 ```
 
 A slate exposes `REF_W`/`REF_H` and `draw_panel(app, ui)`: it fits its canvas
-(`UiScale::fit`), paints the chassis and its sections - free functions over
-`&mut CdjApp`, so two slates can name them alike - and places the shared jog
-at `layout::jog_rect()` with a `JogChrome`. Zones are composed in each slate's
+(`UiScale::fit`), paints the chassis and its sections, and places the shared
+jog at `layout::jog_rect()` with a `JogChrome`. Sections are free functions
+that take `&mut CdjApp`, so two slates can use the same function names. Zones are composed in each slate's
 `layout.rs`. The CDJ-1500X's slate draws its own jog, keys and knobs instead,
 and can tilt to show its front face and USB tray: `ui/tilt.rs` projects its
 shapes and `app/tilt_input.rs` maps the pointer back onto the plan.

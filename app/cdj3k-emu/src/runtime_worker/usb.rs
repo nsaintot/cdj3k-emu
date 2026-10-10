@@ -11,8 +11,8 @@ use cdj3k_emu_runtime::{
 use super::{persist_inst, Requests, Worker, DISK_REFRESH_INTERVAL};
 
 impl Worker {
-    /// attach_virtual / attach_physical auto-eject whatever was mounted, so
-    /// a virtual↔physical switch needs no separate detach step.
+    /// attach_virtual and attach_physical eject whatever was mounted, so
+    /// switching between a virtual and a physical disk needs no detach step.
     pub(super) fn handle_usb_requests(&mut self, req: &Requests) {
         if req.usb_create {
             self.create_virtual(req.usb_virtual_img.clone());
@@ -20,7 +20,7 @@ impl Worker {
         if req.usb_virt_mount {
             self.mount_virtual(req.usb_virtual_img.clone());
         }
-        // Works for both virtual and physical.
+        // Eject works for both virtual and physical disks.
         if req.usb_eject {
             self.eject();
         }
@@ -40,7 +40,7 @@ impl Worker {
                 DEFAULT_SIZE,
             ) {
                 Ok(()) => mark_virtual_mounted(self.config.instance_id, &path),
-                Err(e) => eprintln!("cdj3k-emu: USB create failed: {e}"),
+                Err(e) => eprintln!("cdj3k-emu: creating the USB image failed: {e}"),
             }
         }
     }
@@ -49,7 +49,7 @@ impl Worker {
         if let (Some(path), Some(inst)) = (path, self.instance.as_mut()) {
             match self.usb.attach_virtual(inst.qmp(), &self.provider, &path) {
                 Ok(()) => mark_virtual_mounted(self.config.instance_id, &path),
-                Err(e) => eprintln!("cdj3k-emu: USB mount failed: {e}"),
+                Err(e) => eprintln!("cdj3k-emu: mounting the USB image failed: {e}"),
             }
         }
     }
@@ -58,14 +58,15 @@ impl Worker {
         if let Some(inst) = self.instance.as_mut() {
             match self.usb.detach(inst.qmp(), &self.provider) {
                 Ok(()) => mark_unmounted(self.config.instance_id),
-                Err(e) => eprintln!("cdj3k-emu: eject failed: {e}"),
+                Err(e) => eprintln!("cdj3k-emu: ejecting the USB disk failed: {e}"),
             }
         }
     }
 
-    /// The physical disk index to attach this tick, or -1: either a fresh
-    /// menu pick or a retry of the last one.  Menu-side already filters
-    /// re-selecting the currently mounted disk; ejecting is via `usb_eject`.
+    /// The index of the physical disk to attach this tick, or -1. The disk is
+    /// either a new menu pick or a retry of the last one. The menu already
+    /// ignores a re-selection of the mounted disk, and ejecting goes through
+    /// `usb_eject`.
     fn physical_target(&mut self, req: &Requests) -> i32 {
         if req.usb_phys_toggle >= 0 {
             self.last_phys_toggle = req.usb_phys_toggle;
@@ -91,7 +92,7 @@ impl Worker {
                     Some(cdj3k_emu_runtime::disk::RETRY_PROMPT);
             }
             Err(e) => {
-                eprintln!("cdj3k-emu: physical USB attach failed: {e}");
+                eprintln!("cdj3k-emu: attaching the physical USB disk failed: {e}");
                 menu_state::lock().usb_error_message = Some(match &e {
                     cdj3k_emu_runtime::UsbError::Io(io) => io.to_string(),
                     e => e.to_string(),
@@ -100,26 +101,28 @@ impl Worker {
         }
     }
 
-    /// Guest-initiated eject (EP122 button → unbind-usb-device.sh).  The guest
-    /// emits `usb_state 0` after it has unmounted everything; the host side
-    /// mirrors that (swap medium → placeholder, remount host disk if it was
-    /// physical) and updates menu_state + persistence.  `usb_state 1` arrives
-    /// from the attach script for host-initiated mounts and carries no new
-    /// info, so it is ignored.
+    /// Handle an eject started in the guest, where the deck's eject button
+    /// runs unbind-usb-device.sh. The guest emits `usb_state 0` after it has
+    /// unmounted everything. The host then swaps the medium for the
+    /// placeholder, remounts the host disk if it was physical, and updates
+    /// menu_state and the saved settings. The attach script emits
+    /// `usb_state 1` for mounts started on the host; it carries no new
+    /// information, so it is ignored.
     pub(super) fn acknowledge_guest_eject(&mut self) {
         if let Some(false) = self.cfg_client.poll_usb_state() {
             if let Some(inst) = self.instance.as_mut() {
                 match self.usb.acknowledge_guest_eject(inst.qmp(), &self.provider) {
                     Ok(true) => mark_unmounted(self.config.instance_id),
                     Ok(false) => {}
-                    Err(e) => eprintln!("cdj3k-emu: ack guest eject failed: {e}"),
+                    Err(e) => eprintln!("cdj3k-emu: acknowledging the guest's eject failed: {e}"),
                 }
             }
         }
     }
 
-    /// Reset the USB manager for a fresh QEMU and queue a remount of what was
-    /// mounted before (`prev_phys_idx` / `prev_virt` read from the menu).
+    /// Reset the USB manager for a new QEMU and queue a remount of the disk
+    /// that was mounted before. `prev_phys_idx` and `prev_virt` come from the
+    /// menu.
     pub(super) fn reset_usb_and_queue_remount(&mut self, prev_phys_idx: i32, prev_virt: bool) {
         reset_usb(&mut self.usb, &self.config, &self.cfg_client);
         self.pending_remount = PendingRemount::capture(prev_phys_idx, prev_virt, &self.phys_disks);
@@ -133,7 +136,7 @@ impl Worker {
         }
     }
 
-    /// Republish the host's removable disks to the menu.  The first scan also
+    /// Publish the host's removable disks to the menu again. The first scan also
     /// picks the slot's saved physical disk if it is present.
     pub(super) fn refresh_disks(&mut self) {
         if self.last_disk_refresh.elapsed() < DISK_REFRESH_INTERVAL {
@@ -179,10 +182,10 @@ fn publish_disks(fresh: &[PhysicalDisk], restore: Option<i32>) {
     }
 }
 
-/// Mark the virtual USB image at `path` as the current mount for this
-/// instance: set the menu mirror (and clear any physical-mount index since
-/// attach_virtual auto-ejects), then persist `usb_virtual_path` + clear
-/// any prior `usb_physical_bsd` so the next launch restores the same one.
+/// Mark the virtual USB image at `path` as this slot's current mount. Update
+/// the menu and clear its physical-mount index, because attach_virtual ejects
+/// any physical disk. Then save `usb_virtual_path` and clear any earlier
+/// `usb_physical_bsd`, so that the next launch restores the same image.
 fn mark_virtual_mounted(instance_id: u32, path: &std::path::Path) {
     {
         let mut s = menu_state::lock();
@@ -223,8 +226,8 @@ fn mark_unmounted(instance_id: u32) {
     });
 }
 
-/// Clear USB manager and mounted-state fields after any QEMU restart.
-/// The new QEMU instance always starts with the placeholder; nothing is mounted.
+/// Reset the USB manager and the mounted-state fields after a QEMU restart. A
+/// new QEMU instance always starts with the placeholder, so nothing is mounted.
 pub(super) fn reset_usb(usb: &mut UsbManager, config: &QemuConfig, cfg: &CfgClient) {
     *usb = UsbManager::new(config, cfg.clone());
     let mut s = menu_state::lock();
@@ -238,7 +241,8 @@ pub(super) enum PendingRemount {
 }
 
 impl PendingRemount {
-    /// Build from pre-reset state. Returns None if nothing was mounted.
+    /// Build the remount from the state before the reset. Returns None if
+    /// nothing was mounted.
     fn capture(prev_phys_idx: i32, prev_virt: bool, phys_disks: &[PhysicalDisk]) -> Option<Self> {
         if prev_phys_idx >= 0 {
             phys_disks
@@ -257,7 +261,8 @@ impl PendingRemount {
         }
     }
 
-    /// Try to apply the remount. Returns true on success (caller clears pending).
+    /// Try to apply the remount. Returns true on success, and the caller then
+    /// clears the pending remount.
     fn try_apply(
         &self,
         usb: &mut UsbManager,
@@ -271,7 +276,7 @@ impl PendingRemount {
                     true
                 }
                 Err(e) => {
-                    eprintln!("cdj3k-emu: physical USB remount pending: {e}");
+                    eprintln!("cdj3k-emu: remounting the physical USB disk failed; retrying: {e}");
                     false
                 }
             },
@@ -281,7 +286,7 @@ impl PendingRemount {
                     true
                 }
                 Err(e) => {
-                    eprintln!("cdj3k-emu: virtual USB remount pending: {e}");
+                    eprintln!("cdj3k-emu: remounting the virtual USB image failed; retrying: {e}");
                     false
                 }
             },

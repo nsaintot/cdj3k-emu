@@ -1,5 +1,5 @@
-//! A host with no QEMU build of its own: the command names the executable a
-//! host adapter would ship beside us.
+//! A host with no QEMU build of its own. The command names the executable
+//! that a host adapter would ship beside this binary.
 
 use std::io;
 use std::process::Command;

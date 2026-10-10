@@ -1,6 +1,6 @@
-//! Pop-out OS windows (separate viewports) for jog LCD, main LCD, and the
-//! debug pane. Each viewport mirrors content captured by the main update
-//! cycle into a borrowed Arc snapshot or shared GL texture id.
+//! Pop-out OS windows (separate viewports) for the jog LCD, the main LCD and
+//! the debug pane. Each viewport shows content that the main update cycle
+//! captures into a shared Arc snapshot or a shared GL texture id.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,8 +14,8 @@ use super::ui::draw_lcd::capture_lcd_touch;
 use super::CdjApp;
 use super::MIN_FRAME_INTERVAL;
 
-/// Mutable state owned by the deferred debug viewport. Independent of the
-/// main viewport so the debug pane measures its own frame rate.
+/// Mutable state owned by the deferred debug viewport. It is separate from
+/// the main viewport's state, so the debug pane measures its own frame rate.
 #[derive(Clone, Copy)]
 pub(crate) struct DebugViewportState {
     pub last_paint_at: Instant,
@@ -33,11 +33,12 @@ impl Default for DebugViewportState {
     }
 }
 
-/// EMA factor used to smooth per-viewport fps estimates.
+/// The EMA factor that smooths each viewport's fps estimate.
 const FPS_ALPHA: f32 = 0.1;
-/// Aspect-tolerance (px) before we re-issue an `InnerSize` to enforce ratio.
+/// The aspect error, in pixels, above which an `InnerSize` command is sent
+/// again to restore the aspect ratio.
 const ASPECT_FIX_TOL_PX: f32 = 2.0;
-/// Jog LCD aspect ratio (square framebuffer).
+/// The jog LCD's aspect ratio; its framebuffer is square.
 const JOG_LCD_ASPECT: f32 = JOG_FB_W as f32 / JOG_FB_H as f32;
 
 const JOG_LCD_INITIAL_SIZE: [f32; 2] = [320.0, 240.0];
@@ -87,13 +88,14 @@ impl CdjApp {
         if !self.debug_screen_popped {
             return;
         }
-        // Deferred viewport: own update cycle, can't borrow `&self`. Reads
-        // from shared Arcs populated each main update.
+        // A deferred viewport has its own update cycle and cannot borrow
+        // `&self`, so it reads from shared Arcs that each main update fills.
         let snapshot = Arc::clone(&self.debug.snapshot);
         let vp_state = Arc::clone(&self.debug.viewport_state);
         let wants_close = Arc::clone(&self.debug.wants_close);
-        // Live MOSI peek bypasses the snapshot path so debug shows real-time
-        // wire bytes even when the main viewport's repaint filter is quiet.
+        // Read the live MOSI frame directly, bypassing the snapshot, so the
+        // debug pane shows the current wire bytes while the main viewport is
+        // not repainting.
         let live_mosi = self.ctrl_stream.latest_mosi_arc();
 
         ctx.show_viewport_deferred(
@@ -125,12 +127,12 @@ impl CdjApp {
                         });
                     });
 
-                // Self-driven 60 Hz tick. We can't use cross-thread repaint
-                // hints from the metronome here: on macOS, `request_repaint`
-                // from a background thread doesn't reliably wake a *deferred*
-                // viewport's event loop. Calling `request_repaint_after` from
-                // *inside* this closure goes through the in-thread scheduling
-                // path (capped only by ProMotion vsync ≤120 Hz, but reliable).
+                // Schedule the next frame at 60 Hz from inside the viewport.
+                // On macOS, `request_repaint` from a background thread such as
+                // the metronome does not reliably wake a deferred viewport's
+                // event loop. `request_repaint_after` inside this closure uses
+                // the in-thread scheduling path, which is reliable and limited
+                // only by the ProMotion refresh rate of up to 120 Hz.
                 root.request_repaint_after(MIN_FRAME_INTERVAL);
             },
         );
@@ -146,7 +148,8 @@ impl CdjApp {
         }
         let tex_id = self.textures.main_id;
         let connected = self.display_stream.is_connected();
-        // The popout opens at the framebuffer's native size and keeps its aspect.
+        // The pop-out opens at the framebuffer's native size and keeps its
+        // aspect ratio.
         let (fb_w, fb_h) = self.model.main_lcd();
         let main_aspect = fb_w as f32 / fb_h as f32;
         let main_initial = [fb_w as f32, fb_h as f32];
@@ -161,8 +164,8 @@ impl CdjApp {
                 .with_inner_size(main_initial)
                 .with_min_inner_size(main_min),
             |root, _class| {
-                // The popout's own root, not the outer captured context, so
-                // input and the window's size read from the popout window.
+                // Use the pop-out's own root, so input and the window size
+                // come from the pop-out window.
                 enforce_aspect_ratio(root, main_aspect);
                 handle_close_request(root, &close_inner);
                 egui::CentralPanel::default()
@@ -194,7 +197,7 @@ impl CdjApp {
     }
 }
 
-/// Re-issue an `InnerSize` viewport command if the current size's aspect
+/// Send an `InnerSize` viewport command again if the current size's aspect
 /// ratio drifts from `aspect` by more than [`ASPECT_FIX_TOL_PX`].
 fn enforce_aspect_ratio(ctx: &egui::Context, aspect: f32) {
     let size = ctx.content_rect().size();

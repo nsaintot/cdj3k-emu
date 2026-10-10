@@ -1,4 +1,5 @@
-//! Firmware install wizard: decrypt UPD → extract kernel + initramfs → provision eMMC.
+//! The firmware install wizard. It decrypts the UPD, extracts the kernel and
+//! the initramfs, and provisions the eMMC.
 //!
 //! The firmware input is either a Pioneer `.UPD` plus its LUKS key file, or an
 //! already-decrypted ISO 9660 image (the `.UPD` payload), which skips the
@@ -29,36 +30,39 @@ use widgets::{banner, meter, micro_label};
 
 /// The log frame's own margin and border, top and bottom.
 const LOG_FRAME_PAD: f32 = 18.0;
-/// Between the foot of the log and the action bar under it.
+/// The gap between the bottom of the log and the action bar.
 const LOG_BAR_GAP: f32 = 16.0;
-/// Between form rows.
+/// The gap between form rows.
 const ROW_GAP: f32 = 16.0;
-/// Kept clear at the left of the action bar, where the build is drawn.
+/// The space kept clear at the left of the action bar, where the build version
+/// is drawn.
 const VERSION_ROOM: f32 = 46.0;
 
-/// Where a finished install went, which the shell settles: only the slot's
-/// owner swaps it in, and only while the slot's emulation is not running.
+/// The outcome of a finished install, which the shell decides. Only the window
+/// that owns the slot swaps the install in, and only while the slot's emulation
+/// is not running.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Installed {
-    /// Swapped in; the slot's deck boots from it.
+    /// The install is swapped in, and the slot's deck boots from it.
     Applied,
-    /// Waiting behind the slot's running emulation, which boots from it once
-    /// it restarts.
+    /// The install waits while the slot's emulation runs; the deck boots from
+    /// it after a restart.
     Staged,
 }
 
 /// The install step of the setup window: the form, the progress and the log.
 /// It does not own a window; the shell hosts it.
 pub struct FirmwareWizard {
-    /// The model being provisioned (chosen on the picker / the running one).
+    /// The model being provisioned: the one chosen on the picker, or the
+    /// running one.
     pub model: Model,
     /// A file dialog that is open right now, and which field it fills. The
     /// dialog runs on its own thread so the window keeps drawing while it is
     /// up; `poll` collects the answer.
     pending_pick: Option<(bool, PendingPick)>,
     upd_path: String,
-    /// The path last probed for an ISO 9660 image, and the answer; the form
-    /// asks every frame.
+    /// The path last checked for an ISO 9660 image and the result. It is
+    /// cached because the form asks on every frame.
     iso_probe: std::cell::RefCell<Option<(String, bool)>>,
     key_path: String,
     /// Provision passwordless root SSH into the guest.
@@ -69,16 +73,18 @@ pub struct FirmwareWizard {
     home_instance: u32,
     /// A run has finished since the shell last asked.
     finished: bool,
-    /// What the shell made of the finished run.
+    /// Where the shell put the finished run: applied or staged.
     installed: Option<Installed>,
     /// `(slot, model)` the user asked to boot, or open, from the Done banner;
     /// taken by the shell.
     boot_request: Option<(u32, Model)>,
-    /// Shared log buffer; provision thread appends lines, UI reads every frame.
+    /// The shared log buffer. The provision thread appends lines and the UI
+    /// reads it every frame.
     log: Arc<Mutex<String>>,
-    /// Set while provisioning is running; None = form or finished.
+    /// Set while provisioning runs; `None` while the form shows or after the
+    /// run has finished.
     provision_status: Option<Arc<Mutex<ProvisionStep>>>,
-    /// Cached terminal state after thread completes.
+    /// The terminal state, kept after the provision thread completes.
     terminal: Option<ProvisionStep>,
 }
 
@@ -127,8 +133,8 @@ impl FirmwareWizard {
         std::mem::take(&mut self.finished)
     }
 
-    /// Say where the finished run went, which picks what the Done banner
-    /// offers.
+    /// Record where the shell put the finished run. It decides what the Done
+    /// banner offers.
     pub fn set_installed(&mut self, installed: Installed) {
         self.installed = Some(installed);
     }
@@ -147,8 +153,8 @@ impl FirmwareWizard {
         };
         let step = status.lock().unwrap().clone();
         if step.is_terminal() {
-            // Success is reported, not acted on: the deck starts when the user
-            // says so, not behind a window they are still reading.
+            // Report success without starting the deck; the user starts it
+            // from the Done banner.
             self.finished = matches!(step, ProvisionStep::Done);
             self.terminal = Some(step);
             self.provision_status = None;
@@ -186,7 +192,8 @@ impl FirmwareWizard {
         });
     }
 
-    /// Where the run stands: the meter while it runs, a banner once it ends.
+    /// Draws the run's state: the meter while it runs and a banner once it
+    /// ends.
     fn draw_status(&self, ui: &mut egui::Ui, k: f32, pal: &theme::Palette) {
         match (&self.provision_status, &self.terminal) {
             (Some(status), _) => {
@@ -205,8 +212,8 @@ impl FirmwareWizard {
         }
     }
 
-    /// The log, in whatever is left above the action bar, which the split
-    /// already took out of the height.
+    /// Draws the log in the space left above the action bar. The split has
+    /// already taken the bar out of the height.
     fn draw_log(&self, ui: &mut egui::Ui, k: f32, pal: &theme::Palette) {
         micro_label(ui, k, pal.dim, "Log");
         let snapshot = self.log.lock().unwrap().clone();
@@ -245,7 +252,8 @@ impl FirmwareWizard {
             });
     }
 
-    /// The action bar's buttons, laid right to left, for where the run stands.
+    /// Draws the action bar's buttons, from right to left, for the run's
+    /// current state.
     fn draw_actions(
         &mut self,
         ui: &mut egui::Ui,
@@ -255,8 +263,9 @@ impl FirmwareWizard {
         pal: &theme::Palette,
     ) {
         match (&self.provision_status, &self.terminal) {
-            // Nothing is offered while a run is under way: the window
-            // refuses to close, and says so at the bar's quiet end.
+            // Offer no action while a run is under way, because the window
+            // refuses to close. Keep the left end of the bar clear for the
+            // build version.
             _ if running => {
                 ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
                     ui.add_space(VERSION_ROOM * k);
@@ -278,8 +287,8 @@ impl FirmwareWizard {
         }
     }
 
-    /// What the Done banner offers: going on to the deck, and leaving it for
-    /// later.
+    /// Draws the Done banner's actions: one goes to the deck and one leaves it
+    /// for later.
     fn done_actions(
         &mut self,
         ui: &mut egui::Ui,
@@ -301,7 +310,8 @@ impl FirmwareWizard {
         }
     }
 
-    /// The Done banner's go and dismiss labels, for where the install went.
+    /// The labels of the Done banner's go and dismiss buttons, which depend on
+    /// where the install went.
     fn done_offers(&self) -> (Option<String>, Option<&'static str>) {
         let own = self.target_instance == self.home_instance;
         match (self.installed, own) {
@@ -316,7 +326,7 @@ impl FirmwareWizard {
         }
     }
 
-    /// Install, once the form has what it needs, and Cancel.
+    /// Draws Install, enabled once the form is complete, and Cancel.
     fn form_actions(
         &mut self,
         ui: &mut egui::Ui,
@@ -342,18 +352,18 @@ impl FirmwareWizard {
         }
     }
 
-    /// The Done banner's line: where the install went.
+    /// The Done banner's text, which says where the install went.
     fn done_line(&self) -> String {
         let own = self.target_instance == self.home_instance;
         match (self.installed, own) {
             (Some(Installed::Staged), true) => {
-                "Firmware installed. Will take effect after restarting.".to_owned()
+                "Firmware installed. It takes effect after a restart.".to_owned()
             }
             (Some(Installed::Staged), false) => format!(
-                "Firmware installed. Slot {} will take effect after restarting.",
+                "Firmware installed. It takes effect in slot {} after a restart.",
                 self.target_instance
             ),
-            _ => "Firmware installed".to_owned(),
+            _ => "Firmware installed.".to_owned(),
         }
     }
 
@@ -368,9 +378,9 @@ impl FirmwareWizard {
             match cdj3k_emu_firmware::LuksKey::from_file(Path::new(&self.key_path)) {
                 Ok(k) => Some(k),
                 Err(e) => {
-                    *self.log.lock().unwrap() = format!("[key] could not read key file: {e}\n");
+                    *self.log.lock().unwrap() = format!("[key] Could not read the key file: {e}\n");
                     self.terminal = Some(ProvisionStep::Error(format!(
-                        "Could not read key file: {e}"
+                        "Could not read the key file: {e}"
                     )));
                     return;
                 }
@@ -384,20 +394,21 @@ impl FirmwareWizard {
         let status = Arc::new(Mutex::new(ProvisionStep::Decrypting));
         self.provision_status = Some(status.clone());
 
-        // Clear + recycle the same log Arc.
+        // Clear the log and reuse the same Arc.
         self.log.lock().unwrap().clear();
         let log = self.log.clone();
 
         std::thread::Builder::new()
             .name("cdj3k-emu-provision".into())
             .spawn(move || provision(upd, key, target, model, ssh, status, log, ctx))
-            .expect("failed to spawn provision thread");
+            .expect("could not start the provision thread");
     }
 
     pub(super) fn reset(&mut self) {
-        // An install that went through has consumed its firmware file, so the
-        // next one starts on an empty form. One that was called off or failed
-        // keeps its paths, the next attempt being the same one again.
+        // A successful install has used up its firmware file, so the next
+        // install starts with an empty form. An install that was called off or
+        // failed keeps its paths, because the next attempt usually retries the
+        // same files.
         if matches!(self.terminal, Some(ProvisionStep::Done)) {
             self.upd_path.clear();
             self.key_path.clear();
@@ -429,7 +440,7 @@ pub fn provision_blocking(
     let key = match key_path {
         Some(p) => Some(
             cdj3k_emu_firmware::LuksKey::from_file(p)
-                .map_err(|e| format!("could not read key file {}: {e}", p.display()))?,
+                .map_err(|e| format!("could not read the key file {}: {e}", p.display()))?,
         ),
         None => None,
     };
@@ -473,6 +484,9 @@ pub fn provision_blocking(
     match &*status {
         ProvisionStep::Done => Ok(()),
         ProvisionStep::Error(e) => Err(e.clone()),
-        other => Err(format!("stopped at: {}", other.label())),
+        other => Err(format!(
+            "the run stopped before it finished ({})",
+            other.label()
+        )),
     }
 }

@@ -111,8 +111,8 @@ impl<'a> Pen<'a> {
 /// The square viewBox most glyphs are drawn on.
 const SQ: Vec2 = Vec2::splat(15.0);
 
-/// Which glyph stands for a state is this provider's business; the state
-/// itself came from the model. A disabled menu's glyph is drawn whole, in the
+/// This provider picks the glyph for a state; the state itself comes from the
+/// model. A disabled menu's glyph is drawn whole, in the
 /// disabled grey.
 pub(super) fn paint_icon(ui: &Ui, rect: Rect, icon: MenuIcon, enabled: bool) {
     let ink = |c: Color32| if enabled { c } else { TEXT_DISABLED };

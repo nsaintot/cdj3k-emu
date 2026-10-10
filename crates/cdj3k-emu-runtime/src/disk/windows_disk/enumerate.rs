@@ -1,4 +1,4 @@
-//! Which whole disks may be offered, and the volumes on each.
+//! Find the whole disks that may be offered, and the volumes on each.
 
 use std::collections::HashMap;
 
@@ -19,22 +19,22 @@ use crate::disk::{human_size, PhysicalDisk};
 /// `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS`, which windows-sys does not carry.
 const IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS: u32 = 0x0056_0000;
 
-/// Disk numbers probed.
+/// How many disk numbers are probed, starting at 0.
 const MAX_DRIVES: u32 = 32;
 
-/// A volume and what says where it is.
+/// A volume and the place where it is mounted.
 #[derive(Clone, Debug)]
 pub(super) struct Volume {
-    /// `\\?\Volume{guid}`: what a handle opens.
+    /// The `\\?\Volume{guid}` path, which is the path that a handle opens.
     pub(super) path: String,
     /// The first drive letter or folder it is mounted at.
     pub(super) mount: Option<String>,
 }
 
-/// Whole disks the user could plausibly hand to the deck.
+/// List the whole disks that the user could plausibly give to the deck.
 pub fn list_removable() -> Vec<PhysicalDisk> {
-    // A disk Windows runs from is never offered; when it cannot be told which
-    // that is, nothing is.
+    // A disk that Windows runs from is never offered. When the system disk
+    // cannot be identified, no disk is offered.
     let Some(system) = system_disks() else {
         return Vec::new();
     };
@@ -49,7 +49,8 @@ fn describe(n: u32, is_system: bool, volumes: Option<&Vec<Volume>>) -> Option<Ph
     let h = open(&path, 0).ok()?;
 
     let mut buf = [0u8; 1024];
-    // PropertyId StorageDeviceProperty, QueryType PropertyStandardQuery: zeros.
+    // A zeroed query selects PropertyId StorageDeviceProperty and QueryType
+    // PropertyStandardQuery.
     ioctl(&h, IOCTL_STORAGE_QUERY_PROPERTY, &[0u8; 12], &mut buf).ok()?;
     let descriptor = parse::parse_descriptor(&buf)?;
 
@@ -78,7 +79,7 @@ fn describe(n: u32, is_system: bool, volumes: Option<&Vec<Volume>>) -> Option<Ph
     })
 }
 
-/// Disks the Windows directory lives on.
+/// Return the disks that the Windows directory lives on.
 fn system_disks() -> Option<Vec<u32>> {
     let mut buf = [0u16; 260];
     // SAFETY: the buffer's length is passed.
@@ -92,7 +93,7 @@ fn system_disks() -> Option<Vec<u32>> {
     (!disks.is_empty()).then_some(disks)
 }
 
-/// Disk numbers a volume spans.
+/// Return the numbers of the disks that a volume spans.
 fn disks_of_volume(path: &str) -> Option<Vec<u32>> {
     let h = open(path, 0).ok()?;
     let mut buf = [0u8; 1024];
@@ -100,7 +101,7 @@ fn disks_of_volume(path: &str) -> Option<Vec<u32>> {
     Some(parse::parse_disk_extents(&buf))
 }
 
-/// Every mounted volume, under each disk it lies on.
+/// List every mounted volume, grouped under each disk that it lies on.
 fn volumes_by_disk() -> HashMap<u32, Vec<Volume>> {
     let mut by_disk: HashMap<u32, Vec<Volume>> = HashMap::new();
     let mut name = [0u16; 260];
@@ -138,7 +139,7 @@ pub(super) fn volumes_of(disk: u32) -> Vec<Volume> {
     volumes_by_disk().remove(&disk).unwrap_or_default()
 }
 
-/// The first place a volume is mounted, `E:\` for instance.
+/// Return the first place where a volume is mounted, such as `E:\`.
 fn mount_point(volume_with_slash: &str) -> Option<String> {
     let name = wide(volume_with_slash);
     let mut buf = [0u16; 512];
@@ -159,7 +160,7 @@ fn mount_point(volume_with_slash: &str) -> Option<String> {
     (!first.is_empty()).then(|| String::from_utf16_lossy(first))
 }
 
-/// The label written on a volume, when its filesystem is readable.
+/// Return a volume's label, when its filesystem is readable.
 pub(super) fn volume_label(volume_path: &str) -> Option<String> {
     let root = wide(&format!("{volume_path}\\"));
     let mut label = [0u16; 262];

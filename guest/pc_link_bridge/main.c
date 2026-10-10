@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-/* main.c: startup, signal handling, and the poll(2) pump.  See bridge.h for
- * the overall data path and the translation-unit map. */
+/* main.c: startup, signal handling and the poll(2) loop. See bridge.h for
+ * the data path and the list of source files. */
 
 #define _GNU_SOURCE
 #include <errno.h>
@@ -34,24 +34,23 @@ int main(void)
     if (vport_fd  < 0) return 0;
     int hidraw_fd = wait_open(HIDRAW_PATH, O_NONBLOCK);
     if (hidraw_fd < 0) return 0;
-    /* MIDI is best-effort: without the guest-side USB-Audio card there is
-     * nothing to bridge and `midi_fd = -1` short-circuits the MIDI legs of
-     * the pump.  snd-usb-audio probes after the gadget binds, so give it a
-     * few seconds. */
+    /* MIDI is optional: without the guest's USB-Audio card there is nothing
+     * to bridge, and a midi_fd of -1 skips the MIDI paths of the loop.
+     * snd-usb-audio probes after the gadget binds, so give it a few
+     * seconds. */
     int midi_fd   = open_usb_midi(5000);
 
-    fprintf(stderr, "pc-link-bridge: vport=%d hidraw=%d midi=%d — pumping\n",
+    fprintf(stderr, "pc-link-bridge: vport=%d hidraw=%d midi=%d; forwarding started\n",
             vport_fd, hidraw_fd, midi_fd);
 
-    /* Signal USB-B connect (SOURCE CONTROL MODE row), and force PC mode on an
-     * app that cannot select it from that row. */
+    /* Report a USB-B connection, which enables the SOURCE CONTROL MODE row,
+     * and force PC mode on an app that cannot select it from that row. */
     usbg_open();
     set_usb_connected(1);
     force_pc_mode();
 
-    /* Poll up to three fds for input.  When MIDI is unavailable (EBUSY at
-     * open), the third slot is skipped; poll(fd=-1) is a documented no-op
-     * but we'd rather not feed -1 to the kernel, so we collapse the array. */
+    /* Poll up to three fds for input. When MIDI is unavailable, poll only
+     * the first two. */
     while (!g_stop) {
         struct pollfd pfds[3] = {
             { .fd = vport_fd,  .events = POLLIN },
@@ -67,33 +66,31 @@ int main(void)
         }
         if (rc == 0) continue;
 
-        /* host → guest */
+        /* Forward a frame from the host to a guest endpoint. */
         if (pfds[0].revents & POLLIN) {
             if (recv_and_dispatch(vport_fd, hidraw_fd, midi_fd) < 0) {
-                /* read_exact returned EOF or hard error.  Treat as
-                 * "host disconnected"; back off and keep polling rather
-                 * than exit, so the host's next PcLink::start lands on a
-                 * live daemon (avoids a systemd-restart race where the
-                 * bridge isn't yet open when the host tries to connect). */
+                /* The host disconnected or a read failed. Back off and keep
+                 * polling, so the host's next PcLink::start finds a running
+                 * daemon; after a systemd restart, the host could connect
+                 * before the bridge has opened the port. */
                 msleep(200);
                 continue;
             }
         }
         if (pfds[0].revents & (POLLHUP | POLLERR)) {
-            /* virtio_console raises POLLHUP whenever the host port has no
-             * client attached.  Don't exit; back off briefly so we don't
-             * spin on the immediate-return poll, then re-poll for a host
-             * to (re)connect.  systemd's Restart=always would otherwise
-             * tear us down + bring us back on a 2s loop; that race is
-             * exactly how the host's PcLink::start ends up connecting to
-             * a moment when no guest reader is present. */
+            /* virtio_console raises POLLHUP whenever no client is attached
+             * to the host side of the port. Sleep briefly so poll() does not
+             * spin, and keep polling until a host connects. If the bridge
+             * exited, systemd's Restart=always would restart it every 2 s,
+             * and the host's PcLink::start could connect while no guest
+             * reader is present. */
             msleep(200);
             continue;
         }
 
-        /* An endpoint that hangs up keeps poll() returning immediately, so a
-         * dead hidraw or MIDI fd is dropped from the set rather than spun on.
-         * Unbinding the gadget from its UDC does this. */
+        /* An endpoint that hangs up makes poll() return at once, so a dead
+         * hidraw or MIDI fd is removed from the set. Unbinding the gadget
+         * from its UDC causes such a hang-up. */
         for (int i = 1; i <= 2; i++) {
             if (pfds[i].fd >= 0 && (pfds[i].revents & (POLLERR | POLLHUP | POLLNVAL))) {
                 fprintf(stderr, "pc-link-bridge: %s endpoint hung up; dropping it\n",
@@ -108,7 +105,8 @@ int main(void)
             break;
         }
 
-        /* guest → host: drain whatever's ready, framing per read. */
+        /* Forward whatever the guest endpoints have ready to the host, one
+         * frame per read. */
         uint8_t buf[MAX_PAYLOAD];
         if (pfds[1].revents & POLLIN) {
             ssize_t n = read_some(hidraw_fd, buf, sizeof buf);

@@ -1,6 +1,7 @@
 //! Hosts with no app-data convention.
 //!
-//! The temporary directory, so settings last until the next reboot.
+//! These hosts use the temporary directory, so settings last until the next
+//! reboot.
 
 use std::path::PathBuf;
 

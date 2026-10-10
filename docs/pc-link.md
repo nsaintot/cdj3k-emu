@@ -1,9 +1,10 @@
 # PC Link (USB-B HID/MIDI)
 
-Emulates the deck's rear USB-B cable: carries the emulated deck's USB-HID and
-USB-MIDI interfaces to macOS so DJ apps (djay, Traktor, ...) control the emulated
-deck as real hardware (where supported). The **PC Link** menu toggle is the cable, on = plugged,
-off = unplugged.
+PC Link emulates the deck's rear USB-B cable. It carries the emulated deck's
+USB-HID and USB-MIDI interfaces to macOS, so DJ apps (djay, Traktor, ...) that
+support the deck can control it as they would real hardware. The
+**Emulation › PC Link (USB-B)** menu toggle acts as the cable: on means plugged
+in, off means unplugged.
 
 ## Data path
 
@@ -21,8 +22,8 @@ app ── f_midi ─ dummy_hcd ─ /dev/snd/midiC2D0 (USB-Audio) ┤
 ```
 
 - `cdj3k-pc-link-bridge` (guest) pumps `/dev/hidraw0` and card 2 MIDI over the
-  virtio-serial port. `hidraw`'s leading report-number byte is added/stripped in
-  the bridge; the wire payload is the bare report (64 bytes on the CDJ-3000,
+  virtio-serial port. The bridge adds and strips `hidraw`'s leading
+  report-number byte; the wire payload is the bare report (64 bytes on the CDJ-3000,
   256 in / 1024 out on the CDJ-3000X, as the gadget's descriptor says).
 - `PcLink` (macOS) terminates the port: HID reports become an `IOHIDUserDevice`;
   MIDI is handed to the CoreMIDI driver plugin (`tools/midi-driver`).
@@ -43,7 +44,7 @@ replaces the UDC bind with one that waits for `dummy_udc`.
 | Product | `CDJ-3000` | `CDJ-3000X` |
 | HID report (in / out) | 64 / 64 bytes | 256 / 1024 bytes |
 
-The host holds none of this. Every connection opens with a handshake: `PcLink`
+The host stores none of these values. Every connection opens with a handshake: `PcLink`
 sends an empty HELLO frame (resent every 300 ms, since virtio-serial drops what
 arrives while the bridge has the port closed) and waits up to 1.5 s for the
 bridge's IDENTITY reply (`guest/pc_link_bridge/gadget.c`), read back from
@@ -54,8 +55,8 @@ keeps the endpoints it already registered.
 
 ## Architecture
 
-Both interfaces share one virtio-serial port, demuxed by frame type, then
-diverge: HID terminates in the app, MIDI needs a third process.
+Both interfaces share one virtio-serial port, and the app separates them by
+frame type. HID ends in the app; MIDI needs a third process.
 
 ```
 ┌─ GUEST (QEMU) ───────────────────────┐   ┌─ cdj3k-emu (app) ──────────────────┐
@@ -81,7 +82,7 @@ diverge: HID terminates in the app, MIDI needs a third process.
               ┌───────────────────────┐            ┌────────────────────────────┐
               │  HidBackend           │            │ instance-<id>/             │
               │  IOHIDUserDevice      │            │   midi-driver.sock         │
-              │  (needs entitlement)  │            │ app BINDS, plugin DIALS    │
+              │  (needs entitlement)  │            │ app binds, plugin dials    │
               └──────────┬────────────┘            │ identity, then raw MIDI    │
                          │                         └─────────────┬──────────────┘
                          ▼                                       ▼
@@ -101,8 +102,8 @@ diverge: HID terminates in the app, MIDI needs a third process.
 HID can live in the app because `IOHIDUserDevice` creates the device in the
 calling process. MIDI cannot: `MIDIDeviceCreate` is refused outside a driver,
 and drivers are loaded by `MIDIServer`. A virtual endpoint (`MIDISourceCreate`)
-needs no driver but has no parent entity, so apps that walk
-endpoint → entity → device ignore it. The second socket carries the bytes from
+needs no driver but has no parent entity, so apps that walk from an endpoint to
+its entity and device ignore it. The second socket carries the bytes from
 the app into the plugin, which runs inside MIDIServer.
 
 ### Who starts what
@@ -115,14 +116,14 @@ the dialer:
 
 | Event | Result |
 |---|---|
-| PC Link on, no DAW | app binds its socket; nothing connects, nothing published |
-| a DAW opens CoreMIDI | MIDIServer starts → `Start()` → pump → dial → identity → device appears |
-| second slot switches on | it binds its own socket; the pump dials it too → second device |
-| a slot stops | its socket closes; the pump reads EOF → that device is removed |
-| every slot stops | dials keep failing every 2 s; nothing published |
+| PC Link on, no DAW | the app binds its socket; nothing connects and nothing is published |
+| a DAW opens CoreMIDI | MIDIServer starts and calls `Start()`; the pump dials the slot, reads the identity, and the device appears |
+| a second slot switches on | it binds its own socket; the pump dials it too, and a second device appears |
+| a slot stops | its socket closes; the pump reads EOF and removes that device |
+| every slot stops | dials keep failing every 2 s; nothing is published |
 | the last DAW quits | MIDIServer exits, taking the plugin's thread with it |
 
-## Toggle = plug / unplug
+## The toggle plugs and unplugs the cable
 
 On:
 1. `cfgd` runs `systemctl start cdj3k-pc-link-bridge`. The runtime resends the
@@ -131,8 +132,8 @@ On:
    interposer redirects the app's `/proc/udev_usbg1` probe to it). The app's
    `meow::UsbHostPcConnectDetector` reads it once and raises the SOURCE
    **CONTROL MODE (CDJ)** row.
-3. PC mode (`connection_with_hostapp::PcModeSwitcher`), the gate the app
-   checks before emitting/accepting HID and MIDI:
+3. The app enters PC mode (`connection_with_hostapp::PcModeSwitcher`), which
+   it checks before it sends or accepts HID and MIDI:
    - **EP145** enters it itself: picking the SOURCE row runs
      `usecase::pc_control::PcDeckSelector::select`, which calls
      `PcModeSwitcher::setMode(1)` and notifies every `onPcAppliModeChanged`
@@ -142,33 +143,33 @@ On:
 4. `PcLink` dials, runs the identity handshake, registers the
    `IOHIDUserDevice`, then the plugin creates its CoreMIDI device.
 
-Off reverses all four; the FIFO delivers `disconnect`, the device and HID
-unregister. Nothing is visible to macOS while unplugged.
+Switching off reverses all four steps: the FIFO delivers `disconnect`, and the
+MIDI and HID devices unregister. Nothing is visible to macOS while unplugged.
 
 ## Pairing (macOS side)
 
 - **HID** uses `IOHIDUserDevice` (a private IOKit SPI).
 - **MIDI** uses a CoreMIDI driver plugin (`CDJ3KEmuMIDI.plugin`) that publishes
-  a device named for the emulated model, connected to `PcLink` over
-  `<runtime>/midi-driver.sock`; the published device name is per-model.
-- DJ apps pair the MIDI device with its HID sibling by matching
-  **VendorID + ProductID + LocationID**, these must be
-  identical on both the plugin's MIDI device and `PcLink`'s HID device. The
-  LocationID is per instance (`19070976 + instance_id`); the emulator sends it
-  to the plugin in the identity; the plugin does not track which instance it
-  reached.
+  a device named after the emulated model and connects to `PcLink` over
+  `instance-<id>/midi-driver.sock`.
+- DJ apps pair the MIDI device with its HID sibling by matching the VendorID,
+  ProductID and LocationID, which must be identical on the plugin's MIDI device
+  and on `PcLink`'s HID device. The LocationID is per instance
+  (`19070976 + instance_id`). The emulator sends it to the plugin in the
+  identity, so the plugin does not track which instance it reached.
 
 Ordering is set by the app's behaviour: djay opens the HID when it processes a
 MIDI device that *appears* (`kMIDIMsgSetupChanged`) and gives up if the HID is
 absent at that moment. The plugin therefore creates its CoreMIDI device only
-once the link is up, after `PcLink` has registered the HID, and removes it on
-link-close. A running DJ app pairs as soon as PC Link is switched on, with no
+once the link is up, after `PcLink` has registered the HID, and removes it when
+the link closes. A running DJ app pairs as soon as PC Link is switched on, with no
 relaunch.
 
-The plugin ships in the app bundle's `Resources` and installs into
-`~/Library/Audio/MIDI Drivers/` on the first PC Link toggle
-(`pc_link::midi_driver::ensure_driver_installed`); MIDIServer loads it from
-there. (manual install with `make -C tools/midi-driver install`).
+The plugin ships in the app bundle's `Resources`. Each time PC Link is
+switched on, `pc_link::midi_driver::ensure_driver_installed` installs it into
+`~/Library/Audio/MIDI Drivers/` unless the installed plugin already has the
+app's `CDJ3KEmuMIDIVersion`; MIDIServer loads it from there. To install it by
+hand, run `make -C tools/midi-driver install`.
 
 ## Multi-slot
 
@@ -180,15 +181,15 @@ Identity per slot:
 | LocationID | `19070976 + instance_id` | `cdj3k_emu_platform::identity` |
 | SerialNumber | `DJMP{instance_id:06}EH` | the eMMC's U-Boot env, via the gadget |
 
-LocationID is the discriminator. DJ apps match the product name verbatim and
-rekordbox composes `<Product>,<LocationID>,<n>`, so distinct LocationIDs
-separate slots with the name identical on all of them.
+The LocationID tells the slots apart. DJ apps match the product name exactly
+and rekordbox builds `<Product>,<LocationID>,<n>`, so slots with the same name
+stay separate through their LocationIDs.
 
 **HID** lives in the app, one `IOHIDUserDevice` per slot, registered when PC
 Link is switched on and released when it is switched off, because
 `IOHIDUserDevice` needs an entitlement MIDIServer does not have.
 
-**MIDI** is one driver for every slot. The emulator writes an 112-byte identity on
+**MIDI** is one driver for every slot. The emulator writes a 112-byte identity on
 connect and the raw MIDI stream follows it; the plugin publishes a `MIDIDevice`
 carrying the identity's `USBLocationID`, which is what pairs it with that
 instance's HID device.
@@ -199,11 +200,13 @@ connection, and one `MIDIDevice`, per slot. Nothing is shared between
 instances, and each unlinks only its own path. A node that still answers
 `connect` is never removed.
 
-The directory holds two lifetimes. Everything else in it belongs to the QEMU
-process and is rebuilt by the next one, so `cleanup_qemu_files_for_restart` wipes
-it on every respawn. `midi-driver.sock` belongs to `MidiDriverLink` in the app
-and lasts as long as PC Link is on, across respawns, like the `PcLink`
-endpoints, so the restart wipe skips it, alongside `tapbridge.*`.
+The directory holds files with two different lifetimes. Most files belong to
+the QEMU process and are rebuilt by the next one, so
+`cleanup_qemu_files_for_restart` deletes them on every respawn.
+`midi-driver.sock` belongs to `MidiDriverLink` in the app and lasts as long as
+PC Link is on, across respawns, like the `PcLink` endpoints. The restart
+cleanup skips it, along with the other files the app owns (`app_owned` in
+`crates/cdj3k-emu-runtime/src/instance.rs`).
 
 The gadget's `serialnumber` is the slot's `serial_number` U-Boot variable,
 which the eMMC image is written with (`cdj3k_emu_platform::identity::device_serial`),
@@ -223,13 +226,10 @@ struct pc_link_identity {   /* 112 bytes, little-endian, sent once on connect */
 };
 ```
 
-The driver stamps `USBLocationID = identity.location` on each device, its entity
-and its endpoints, and sets the slot index as the destination endpoint's
-refCon, `Send` is handed that refCon, so a packet finds its instance's
+The driver sets `USBLocationID` to `identity.location` on each device, its
+entity and its endpoints, and sets the slot index as the destination endpoint's
+refCon. `Send` receives that refCon, so each packet reaches its instance's
 socket.
-
-`ensure_driver_installed` runs on the first PC Link toggle; it should run at app
-startup, gated on the bundle hash.
 
 ## Where things live
 

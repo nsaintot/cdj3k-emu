@@ -2,8 +2,8 @@
 //!
 //! [`prepare`] does the slow part while the emulation keeps running: the new
 //! build is unpacked, checked and laid down beside the running one, where
-//! nothing runs it. [`apply`] is what is left for the restart, or for a
-//! quit: for an AppImage a single rename.
+//! nothing runs it. [`apply`] does the rest at the restart or at a quit; for
+//! an AppImage, that is a single rename.
 //!
 //! | Kind       | Prepared                                      | Applied                       | Started again by  |
 //! |------------|-----------------------------------------------|-------------------------------|-------------------|
@@ -11,8 +11,8 @@
 //! | `inno`     | nothing: Windows cannot replace a loaded file | Setup, `/SILENT /UPDATE=1`    | Setup, unelevated |
 //!
 //! A deb or an rpm is left to the system's package manager: [`hand_over`]
-//! puts the verified package in the user's downloads folder for it. A macOS
-//! bundle is Sparkle's ([`crate::native`]).
+//! puts the verified package in the user's downloads folder for it. Sparkle
+//! installs a macOS bundle ([`crate::native`]).
 //!
 //! The swap waits for the restart, so a slot the running build opens from the
 //! Instances menu runs the same build.

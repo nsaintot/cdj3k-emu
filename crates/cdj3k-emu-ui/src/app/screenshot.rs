@@ -1,10 +1,10 @@
-//! Headless one-frame capture for layout work and regression diffs.
+//! Captures one frame of the window for layout work and regression diffs.
 //!
 //! When `CDJ3K_SCREENSHOT=<path.png>` is set, the app lets the UI settle for
 //! `CDJ3K_SCREENSHOT_FRAME` frames (default 30) and, when
-//! `CDJ3K_SCREENSHOT_SECS` is set, for that many seconds as well (a booting
-//! guest), requests an egui framebuffer capture, writes it to `<path>` as
-//! RGBA PNG and closes the window. Combine with `--no-spawn` to capture the
+//! `CDJ3K_SCREENSHOT_SECS` is set, for that many seconds as well, which suits
+//! a booting guest. It then requests an egui framebuffer capture, writes it
+//! to `<path>` as an RGBA PNG and closes the window. Combine with `--no-spawn` to capture the
 //! chassis without booting a guest.
 
 use std::sync::Arc;
@@ -19,9 +19,11 @@ pub(super) struct ScreenshotDriver {
     frame: u64,
     started: Instant,
     requested: bool,
-    /// A capture asked for by the input script; written without closing.
+    /// A capture requested by the input script. Writing it does not close
+    /// the window.
     scripted: Option<String>,
-    /// Frames since the scripted capture was requested with no image yet.
+    /// Frames since the scripted capture was requested without an image
+    /// arriving.
     scripted_wait: u32,
 }
 
@@ -46,7 +48,7 @@ impl ScreenshotDriver {
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
     }
 
-    /// Call once per frame after drawing. Drives the capture + exit.
+    /// Call once per frame after drawing. It drives the capture and the exit.
     pub(super) fn tick(&mut self, ctx: &egui::Context) {
         let shot: Option<Arc<egui::ColorImage>> = ctx.input(|i| {
             i.events.iter().find_map(|e| match e {
@@ -58,8 +60,8 @@ impl ScreenshotDriver {
             self.write_capture(ctx, &img);
             return;
         }
-        // A request can go unanswered (no frame was rendered for it); ask
-        // again after a few frames rather than lose the capture.
+        // A request can go unanswered when no frame is rendered for it, so
+        // ask again after a few frames.
         if self.scripted.is_some() {
             self.scripted_wait += 1;
             if self.scripted_wait >= SCRIPTED_RETRY_FRAMES {
@@ -73,8 +75,8 @@ impl ScreenshotDriver {
         }
     }
 
-    /// Write a capture that arrived. A scripted capture comes first; the env
-    /// one-shot closes the window.
+    /// Write a capture that arrived. A scripted capture comes first; the
+    /// capture requested by `CDJ3K_SCREENSHOT` closes the window.
     fn write_capture(&mut self, ctx: &egui::Context, img: &egui::ColorImage) {
         let (path, close) = match self.scripted.take() {
             Some(p) => (p, false),
@@ -85,10 +87,10 @@ impl ScreenshotDriver {
         };
         match write_png(&path, img) {
             Ok(()) => eprintln!(
-                "cdj3k-emu: screenshot {}x{} -> {path}",
+                "cdj3k-emu: Wrote a {}x{} screenshot to {path}.",
                 img.size[0], img.size[1]
             ),
-            Err(e) => eprintln!("cdj3k-emu: screenshot write failed: {e}"),
+            Err(e) => eprintln!("cdj3k-emu: Could not write the screenshot: {e}"),
         }
         if close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -109,8 +111,8 @@ impl ScreenshotDriver {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.0);
         if settle_secs > 0.0 {
-            // A booting guest repaints only when its LCD changes: keep the
-            // clock running rather than waiting for frames.
+            // A booting guest repaints only when its LCD changes, so keep
+            // requesting frames to let the clock advance.
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         if !self.requested

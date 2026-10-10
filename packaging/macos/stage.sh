@@ -10,15 +10,16 @@
 #                    guest under TCG).  Each slice links the QEMU of
 #                    `qemu/build.sh --macos <arch>` (qemu/install-macos-<arch>/)
 #                    and builds for the macOS 15.0 deployment target.
-#                    Without it: a dev .app of this Mac's arch, linking
-#                    qemu/install/ (qemu/build.sh), for this Mac's macOS.
+#                    Without --arch, the script builds a development .app for
+#                    this Mac's architecture and macOS version, linked against
+#                    qemu/install/ (from qemu/build.sh).
 #   --out DIR        where CDJ3K Emulator.app goes (default: dist/macos)
 #   --debug          build the debug profile (default: release)
 #   --no-build       skip cargo build; reuse the last build output
 #   --version V      CFBundleShortVersionString (default: Cargo.toml's version)
 #   --build N        CFBundleVersion (default: 1)
 #
-# Prerequisites, all from the repo's own builds:
+# The prerequisites all come from the repository's own builds:
 #   qemu/install/ or qemu/install-macos-<arch>/       - qemu/build.sh
 #     lib/libcdj3k-emu-qemu.dylib, bin/qemu-img
 #   build/Image, build/docker-out/                    - build.sh
@@ -77,8 +78,8 @@ RESOURCES_DIR="$APP_DIR/Contents/Resources"
 
 # A slice is one arch's cdj3k-emu, libcdj3k-emu-qemu.dylib and qemu-img;
 # the bundle's Contents/MacOS is its single slice, or both merged by lipo.
-# Without --arch it is the native build: qemu/install/ and cargo's default
-# target.
+# Without --arch, the script builds natively, with qemu/install/ and cargo's
+# default target.
 NATIVE=0
 case "$ARCH" in
     "")        NATIVE=1; ARCHS=("$(uname -m)") ;;
@@ -148,9 +149,9 @@ for arch in "${ARCHS[@]}"; do
     qemu=$(qemu_dir "$arch")
     for f in "$binary" "$qemu/lib/libcdj3k-emu-qemu.dylib" "$qemu/bin/qemu-img"; do
         if [[ ! -f "$f" ]]; then
-            echo "ERROR: $arch: not found: $f" >&2
+            echo "ERROR: $f was not found for $arch." >&2
             if [[ "$f" == "$binary" ]]; then
-                echo "       Run without --no-build" >&2
+                echo "       Run without --no-build." >&2
             elif [[ "$NATIVE" -eq 0 ]]; then
                 echo "       Run: bash qemu/build.sh --macos $arch" >&2
             else
@@ -192,7 +193,8 @@ else
 fi
 
 # Nothing in Contents/MacOS may still name a path outside the bundle or the
-# OS: a leftover /opt/homebrew reference is a crash on a clean machine.
+# OS: a leftover /opt/homebrew reference makes the app crash on a machine
+# without Homebrew.
 # (`grep -v` exits 1 when nothing is stray, which `set -e -o pipefail` would
 # otherwise turn into a silent exit of the whole script.)
 STRAY=$(for f in "$MACOS_DIR"/*; do
@@ -210,40 +212,40 @@ fi
 
 # ── Resources: patch scripts, guest modules and tools, PPM assets ────────────
 #
-# Prerequisites: build.sh must have been run first so that:
-#   build/docker-out/modules/*.ko                  - guest kernel modules
-#   tools/*_aarch64, guest/out/deck_shim.so        - pre-built guest tools
+# build.sh must run first. It produces the guest kernel modules in
+# build/docker-out/modules/*.ko and the guest tools in guest/out/*_aarch64 and
+# guest/out/deck_shim.so.
 echo "==> Assembling Contents/Resources"
 
 RES_DIR="$RESOURCES_DIR"
 
-# patch/   - single merged dispatcher + per-step assets
+# patch/ holds the merged dispatcher and the assets of each step.
 #
-# The repo keeps initramfs-patch/patch-rootfs.d/ as ~28 numbered scripts for
-# debuggability; the bundle ships ONE concatenated patch-rootfs.sh so the
-# .app contains a single file instead of the directory tree.
+# The repository keeps initramfs-patch/patch-rootfs.d/ as numbered scripts so
+# that each step is easy to debug; the bundle ships them concatenated into one
+# patch-rootfs.sh.
 RES_PATCH="$RES_DIR/patch"
 "$REPO_ROOT/scripts/make-patch-dispatcher.sh" \
     "$REPO_ROOT/initramfs-patch/patch-rootfs.d" "$RES_PATCH/patch-rootfs.sh"
 
 # cfgd_aarch64 is required: 21-cfgd.sh aborts the whole rootfs patch without
-# it.  Checked here because that abort happens at *provision* time, long after
-# a bundle that skipped the file silently looked like it built cleanly.
+# it.  Check it here, because that abort happens only at provisioning time,
+# after a bundle without the file has built with no error.
 if [[ -f "$REPO_ROOT/guest/out/cfgd_aarch64" ]]; then
     cp "$REPO_ROOT/guest/out/cfgd_aarch64" "$RES_PATCH/"
 else
-    echo "ERROR: guest/out/cfgd_aarch64 not found" >&2
+    echo "ERROR: guest/out/cfgd_aarch64 was not found." >&2
     echo "       Run: ./build.sh" >&2
     exit 1
 fi
 
 # 29-pc-link-bridge.sh installs pc_link_bridge_aarch64 into the rootfs.  It
 # reads PATCH_ASSETS_DIR, falling back to guest/out/, which exists only in a
-# dev checkout.
+# development checkout.
 if [[ -f "$REPO_ROOT/guest/out/pc_link_bridge_aarch64" ]]; then
     cp "$REPO_ROOT/guest/out/pc_link_bridge_aarch64" "$RES_PATCH/"
 else
-    echo "ERROR: guest/out/pc_link_bridge_aarch64 not found" >&2
+    echo "ERROR: guest/out/pc_link_bridge_aarch64 was not found." >&2
     echo "       Run: ./build.sh" >&2
     exit 1
 fi
@@ -254,7 +256,7 @@ if [[ -f "$REPO_ROOT/guest/out/dropbear_aarch64" ]]; then
     cp "$REPO_ROOT/guest/out/dropbear_aarch64" "$REPO_ROOT/guest/out/dropbear_aarch64.LICENSE" \
         "$RES_PATCH/"
 else
-    echo "ERROR: guest/out/dropbear_aarch64 not found" >&2
+    echo "ERROR: guest/out/dropbear_aarch64 was not found." >&2
     echo "       Run: ./build.sh" >&2
     exit 1
 fi
@@ -266,7 +268,7 @@ if [[ -d "$MODS_SRC" ]] && compgen -G "$MODS_SRC/*.ko" > /dev/null; then
     cp "$MODS_SRC"/*.ko "$RES_PATCH/vanilla-modules/"
     echo "     bundled modules: $(ls "$RES_PATCH/vanilla-modules"/*.ko | xargs -n1 basename | tr '\n' ' ')"
 else
-    echo "WARNING: build/docker-out/modules not found - run ./build.sh first"
+    echo "WARNING: build/docker-out/modules was not found. Run ./build.sh first."
 fi
 
 # patch/dummy_drv.so  - Xorg dummy video driver (ABI 24.0) for headless mode
@@ -275,10 +277,10 @@ if [[ -f "$DUMMY_DRV_SRC" ]]; then
     cp "$DUMMY_DRV_SRC" "$RES_PATCH/dummy_drv.so"
     echo "     bundled dummy_drv.so"
 else
-    echo "WARNING: build/docker-out/dummy_drv.so not found - run ./build.sh first"
+    echo "WARNING: build/docker-out/dummy_drv.so was not found. Run ./build.sh first."
 fi
 
-# tools/   - aarch64 guest ELFs + deck_shim.so.  The firmware provisioner
+# tools/ holds the aarch64 guest ELFs and deck_shim.so.  The firmware provisioner
 # installs everything here into the rootfs's /usr/bin (deck_shim.so goes to
 # /home/root).
 RES_TOOLS="$RES_DIR/tools"
@@ -290,38 +292,38 @@ for tool in subucom_live subucom_forwarder; do
         chmod +x "$RES_TOOLS/$tool"
         echo "     bundled $tool"
     else
-        echo "WARNING: guest tool not found: $src  (run: ./build.sh --modules-only)"
+        echo "WARNING: the guest tool $src was not found. Run ./build.sh --modules-only."
     fi
 done
 if [[ -f "$REPO_ROOT/guest/out/deck_shim.so" ]]; then
     cp "$REPO_ROOT/guest/out/deck_shim.so" "$RES_TOOLS/deck_shim.so"
     echo "     bundled deck_shim.so"
 else
-    echo "WARNING: guest/out/deck_shim.so not found - run: make -C guest"
+    echo "WARNING: guest/out/deck_shim.so was not found. Run make -C guest."
 fi
 
 
-# App icon - .icns expected at app/cdj3k-emu/assets/cdj3k-emu.icns
+# App icon
 ICNS_SRC="$REPO_ROOT/app/cdj3k-emu/assets/cdj3k-emu.icns"
 if [[ -f "$ICNS_SRC" ]]; then
     cp "$ICNS_SRC" "$RES_DIR/cdj3k-emu.icns"
     echo "     bundled cdj3k-emu.icns"
 else
-    echo "WARNING: cdj3k-emu.icns not found at $ICNS_SRC - bundle will use the generic app icon"
+    echo "WARNING: cdj3k-emu.icns was not found at $ICNS_SRC; the bundle will use the generic app icon."
 fi
 
-# Image - aarch64 Linux 6.6 LTS kernel (required by firmware wizard)
+# Image is the aarch64 Linux 6.6 LTS kernel, which the firmware wizard needs.
 KERNEL="$REPO_ROOT/build/Image"
 if [[ -f "$KERNEL" ]]; then
     cp "$KERNEL" "$RES_DIR/Image"
     echo "     bundled Image"
 else
-    echo "ERROR: Image not found at $KERNEL"
-    echo "       Build it first: ./build.sh"
+    echo "ERROR: the kernel Image was not found at $KERNEL."
+    echo "       Build it first with ./build.sh."
     exit 1
 fi
 
-# The updater replaces a release bundle from the release's .dmg. A dev build
+# The updater replaces a release bundle from the release's .dmg. A development build
 # carries no marker and is not updated.
 if [[ $NATIVE -eq 0 ]]; then
     echo dmg > "$RES_DIR/package-kind"
@@ -342,7 +344,7 @@ if [[ ! -d "$SPARKLE_DIR/Sparkle.framework" ]]; then
         "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
     got=$(shasum -a 256 "$archive" | cut -d' ' -f1)
     if [[ "$got" != "$SPARKLE_SHA256" ]]; then
-        echo "ERROR: Sparkle-$SPARKLE_VERSION.tar.xz sha256 $got" >&2
+        echo "ERROR: Sparkle-$SPARKLE_VERSION.tar.xz has sha256 $got, but $SPARKLE_SHA256 was expected." >&2
         rm -rf "$SPARKLE_DIR"
         exit 1
     fi
@@ -403,7 +405,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
          appcast's sparkle:version compares against. -->
     <key>SUPublicEDKey</key>
     <string>${SPARKLE_PUBLIC_KEY}</string>
-    <!-- Sparkle's name for the app: the process renames itself per slot. -->
+    <!-- Sparkle shows this name for the app, because the process renames
+         itself for each slot. -->
     <key>SUBundleName</key>
     <string>CDJ3K Emulator</string>
     <key>SUEnableAutomaticChecks</key>
@@ -415,12 +418,13 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>SUVerifyUpdateBeforeExtraction</key>
     <true/>
 
-    <!-- Required for HVF (Hypervisor.framework) entitlement. -->
-    <!-- Sign with a Developer ID cert for distribution; ad-hoc for local use. -->
+    <!-- HVF (Hypervisor.framework) needs this entitlement. -->
+    <!-- Sign with a Developer ID certificate for distribution, or ad-hoc for
+         local use. -->
     <key>com.apple.security.hypervisor</key>
     <true/>
 
-    <!-- Entitlements that matter live in the code signature, not here; this
+    <!-- The entitlements that take effect are in the code signature; this
          key is informational.  The restricted ones (vmnet, virtual HID) come
          from Contents/embedded.provisionprofile - see build.sh.
          Pro DJ Link networking is QEMU's own -netdev vmnet-bridged /
@@ -430,8 +434,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 PLIST
 
 # ── CoreMIDI driver plugin ───────────────────────────────────────────────────
-# Host bundle (not a cargo/qemu artifact), so build it here regardless of
-# --no-build.  Shipped in Resources; pc_link::midi_driver::ensure_driver_installed
+# The plugin is a host bundle that neither cargo nor qemu builds, so this
+# script builds it even with --no-build.  It ships in Resources; pc_link::midi_driver::ensure_driver_installed
 # copies it into ~/Library/Audio/MIDI Drivers on the first PC Link toggle.
 # --deep does not descend into Resources, so build.sh signs it explicitly
 # before sealing the app.

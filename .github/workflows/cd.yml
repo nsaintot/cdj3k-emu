@@ -106,7 +106,7 @@ jobs:
               notarize=true
           fi
           if [[ "$HAVE_CERT" != true ]]; then
-              echo "::warning::no signing certificate in the secrets; macOS is signed ad hoc"
+              echo "::warning::The secrets hold no signing certificate; the macOS build is signed ad hoc."
           fi
           {
               echo "version=$version"
@@ -118,11 +118,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "version $version, sign $HAVE_CERT, notarize $notarize, release $release" >> "$GITHUB_STEP_SUMMARY"
 
-  # Kernel, out-of-tree modules, the shim and the guest tools: build.sh's
-  # Docker stage, native on arm64. No Pioneer firmware is involved. The
-  # finished payload is cached on everything that goes into it; on a miss the
-  # Docker layer cache rebuilds only the stages whose inputs changed, so the
-  # kernel recompiles only for a new LINUX_TAG, patch or config.
+  # This job builds the kernel, the out-of-tree modules, the shim and the guest
+  # tools with the Docker stage of build.sh, natively on arm64. No Pioneer
+  # firmware is involved. The cache key covers every input of the finished
+  # payload. On a miss, the Docker layer cache rebuilds only the stages whose
+  # inputs changed, so the kernel recompiles only for a new LINUX_TAG, patch
+  # or config.
   guest:
     name: Guest payload
     runs-on: ubuntu-24.04-arm
@@ -134,7 +135,7 @@ jobs:
         with:
           path: guest-payload.tar
           key: guest-${{ hashFiles('build.sh', 'docker/Dockerfile', '.dockerignore', 'guest/**', 'dropbear/build.sh') }}
-      # Gives buildx the runtime token the gha cache backend needs.
+      # Give buildx the runtime token that the gha cache backend needs.
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: crazy-max/ghaction-github-runtime@v4
       - name: Build
@@ -178,7 +179,7 @@ jobs:
           path: qemu-linux.tar
           retention-days: 7
 
-  # QEMU and the app for Windows, cross-built with llvm-mingw in
+  # This job cross-builds QEMU and the app for Windows with llvm-mingw in
   # docker/Dockerfile.windows-qemu.
   windows-cross:
     name: Cross-build (Windows ${{ matrix.arch }})
@@ -207,12 +208,12 @@ jobs:
         with:
           path: qemu/install-windows-${{ matrix.qemu }}
           key: qemu-windows-${{ matrix.qemu }}-${{ hashFiles('qemu/build.sh', 'qemu/patches/**', 'docker/Dockerfile.windows-qemu', 'docker/windows-qemu-deps.sh', 'scripts/bundle-dlls.sh') }}
-      # qemu/build.sh uses the image already loaded.
+      # qemu/build.sh uses the image that is already loaded.
       - name: QEMU
         if: steps.cache.outputs.cache-hit != 'true'
         run: ./qemu/build.sh --windows ${{ matrix.qemu }}
-      # cross-build.sh's own outer half rebuilds the image with the local
-      # builder; its inner half runs here in the image loaded above.
+      # Run only the inner half of cross-build.sh, in the image loaded above;
+      # its outer half would rebuild the image with the local builder.
       - name: App
         env:
           CDJ3K_VERSION: ${{ needs.plan.outputs.version }}
@@ -228,7 +229,8 @@ jobs:
           path: windows-cross.tar
           retention-days: 7
 
-  # One QEMU per slice of the universal .app, each against static libraries.
+  # Build one QEMU per slice of the universal .app, each linked against static
+  # libraries.
   qemu-macos:
     name: QEMU (macOS ${{ matrix.arch }})
     strategy:
@@ -300,8 +302,8 @@ jobs:
         run: |
           app="dist/CDJ3K Emulator.app"
           codesign --verify --deep --strict --verbose=2 "$app"
-          # Both slices in every binary, and nothing linked from outside the
-          # bundle and the OS.
+          # Check that every binary has both slices and links nothing from
+          # outside the bundle and the OS.
           bad=0
           for f in "$app"/Contents/MacOS/*; do
               archs=$(lipo -archs "$f")
@@ -362,8 +364,8 @@ jobs:
           docker run --rm -e CDJ3K_VERSION -v "$PWD:/work" cdj3k-emu-linux-pkg \
               "packaging/linux/stage.sh --qemu /work/qemu-linux && packaging/linux/build.sh --version \"\$CDJ3K_VERSION\""
           sudo chown -R "$(id -u):$(id -g)" dist
-      # The deb and the rpm each installed on a clean system of their family,
-      # which also checks their declared dependencies; the AppImage unpacked.
+      # Install the deb and the rpm, each on a clean system of its family,
+      # which also checks the declared dependencies, and unpack the AppImage.
       - name: Smoke test
         run: |
           check=/ci/linux-installed-check.sh
@@ -423,8 +425,8 @@ jobs:
           & packaging\windows\build.ps1 -Arch ${{ matrix.arch }} `
               -QemuDir qemu\install-windows-${{ matrix.qemu }} `
               -Binary dist\windows-bin-${{ matrix.arch }} -Version $env:VERSION
-      # Native on each architecture: every DLL the staged executables load is
-      # in the tree.
+      # The test runs natively on each architecture and checks that every DLL
+      # the staged executables load is in the tree.
       - name: Smoke test
         shell: pwsh
         run: |
@@ -464,10 +466,10 @@ jobs:
           pattern: package-*
           path: dist
           merge-multiple: true
-      # A draft, so nothing is public until it is published by hand; its
-      # notes go into both update feeds, with LF line ends and without the
-      # Downloads section (feed-notes.sh). A rerun reuses the draft and
-      # replaces its files.
+      # The release is a draft, so nothing is public until someone publishes
+      # it by hand. Its notes go into both update feeds, with LF line endings
+      # and without the Downloads section (feed-notes.sh). A rerun reuses the
+      # draft and replaces its files.
       - name: Draft release
         run: |
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
@@ -479,11 +481,11 @@ jobs:
               | .github/scripts/feed-notes.sh > "$RUNNER_TEMP/notes.md"
           gh api markdown -f text="$(cat "$RUNNER_TEMP/notes.md")" -f mode=gfm \
               -f context="$GH_REPO" > "$RUNNER_TEMP/notes.html"
-      # The index Windows and Linux read and the Sparkle appcast macOS reads,
-      # both signed with the update key (sign.sh): the index itself, and the
-      # appcast's .dmg. Its public half is packaging/update-ed25519.pub, which
-      # the app and Info.plist carry. The CD run number is the bundle's
-      # CFBundleVersion.
+      # Write the index that Windows and Linux read and the Sparkle appcast
+      # that macOS reads. The update key (sign.sh) signs the index itself and
+      # the .dmg the appcast points to. The public key is
+      # packaging/update-ed25519.pub, which the app and Info.plist carry. The
+      # CD run number is the bundle's CFBundleVersion.
       - name: Update feeds
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}

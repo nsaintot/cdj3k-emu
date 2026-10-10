@@ -1,16 +1,15 @@
 //! Resolve helper-tool paths relative to the running executable.
 //!
-//! `packaging/macos/stage.sh` drops `qemu-img` and friends into
-//! `<app>.app/Contents/MacOS/` alongside the main binary.  At runtime we
-//! prefer those bundled copies so end users don't need anything on `$PATH`.
+//! Every package puts `qemu-img` and the other helper tools beside the main
+//! binary, for example in `<app>.app/Contents/MacOS/` on macOS. The app
+//! prefers those copies, so users need nothing on `$PATH`.
 
 use std::path::PathBuf;
 
 /// Path to a helper tool bundled next to the current executable, falling
 /// back to the bare tool name (so `Command::new` consults `$PATH`) when no
-/// bundled copy is found.  This keeps dev runs (`cargo run`) working — the
-/// fallback hits a Homebrew install — while shipped `.app` bundles always
-/// use the embedded binary.
+/// bundled copy is found. Development runs (`cargo run`) then use the tool on
+/// `$PATH`, and packaged builds use the bundled binary.
 pub fn tool(name: &str) -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

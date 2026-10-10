@@ -1,6 +1,6 @@
 //! What Linux can put a guest on, decided by sysfs rather than by name.
 //!
-//! Compiled on every host so the classification is tested on every host.
+//! This module is compiled on every host so that its tests run everywhere.
 
 /// Where the kernel lists network interfaces.
 pub const SYS_CLASS_NET: &str = "/sys/class/net";
@@ -19,8 +19,8 @@ pub enum Kind {
 impl Kind {
     /// Classify `<root>/<name>` from the kernel's own entries.
     ///
-    /// Taken from a root rather than a literal so the layout can be built in a
-    /// test without a Linux kernel behind it.
+    /// It takes a root directory so that a test can build the layout without a
+    /// Linux kernel.
     pub fn of(root: &std::path::Path, name: &str) -> Option<Self> {
         let dir = root.join(name);
         if dir.join("tun_flags").exists() {
@@ -35,8 +35,8 @@ impl Kind {
         if dir.join("wireless").exists() || dir.join("phy80211").exists() {
             return None;
         }
-        // A backing device is what separates a NIC from the virtual links
-        // that also report as Ethernet: veths, and macvtaps including our own.
+        // A backing device separates a NIC from the virtual links that also
+        // report as Ethernet: veths, and macvtaps including the app's own.
         if dir.join("device").exists() {
             return Some(Self::Ethernet);
         }
@@ -48,8 +48,8 @@ impl Kind {
 mod tests {
     use super::Kind;
 
-    /// Each kind laid out the way the kernel lays it out in sysfs, under
-    /// names chosen to mislead: nothing here may be decided by the name.
+    /// Each kind is laid out as the kernel lays it out in sysfs, under
+    /// misleading names, so that no result can come from the name.
     #[test]
     fn the_kernel_decides_not_the_name() {
         let root = std::env::temp_dir().join(format!("cdj3k-netkind-{}", std::process::id()));

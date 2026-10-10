@@ -1,5 +1,5 @@
-//! Authorization Services. Shows the native admin dialog, which is
-//! TouchID- and Apple-Watch-eligible.
+//! Elevation through Authorization Services, which shows the native admin
+//! dialog. The user can approve it with Touch ID or an Apple Watch.
 
 use std::io;
 
@@ -62,7 +62,7 @@ pub fn run_elevated(sh_cmd: &str) -> io::Result<()> {
     let cmd = CString::new(sh_cmd).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "shell command contains null byte",
+            "the shell command contains a null byte",
         )
     })?;
     let right_name = CString::new("system.privilege.admin").unwrap();
@@ -98,7 +98,7 @@ pub fn run_elevated(sh_cmd: &str) -> io::Result<()> {
             AuthorizationFree(auth, K_AUTH_FLAG_DEFAULTS);
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "admin elevation cancelled or failed",
+                "the request for admin rights was cancelled or failed",
             ));
         }
 

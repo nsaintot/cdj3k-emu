@@ -1,5 +1,5 @@
-//! Windows: the release's Inno Setup installer, elevated and silent - its
-//! progress window, no questions - at the restart.
+//! On Windows, the release's Inno Setup installer runs at the restart,
+//! elevated and silent: it shows its progress window and asks no questions.
 //!
 //! A loaded executable or DLL cannot be overwritten, so this process never
 //! touches the install directory: it starts Setup and exits. Setup's

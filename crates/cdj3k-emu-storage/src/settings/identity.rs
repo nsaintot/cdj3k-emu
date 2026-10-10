@@ -1,9 +1,9 @@
 //! The two values that identify a slot to the guest: its MAC and the SoC
-//! serial the deck's `genkey_pr` keys `cabinet.img` with. Minting and
-//! validation only - [`super::InstanceSettings`] owns the persistence.
+//! serial the deck's `genkey_pr` keys `cabinet.img` with. This module only
+//! mints and validates them; [`super::InstanceSettings`] stores them.
 
-/// 16 lowercase hex digits with a non-zero last byte, matching what an RK3399
-/// prints for `Serial`.  `genkey_pr` repeats its hash input
+/// Whether `s` has 16 lowercase hex digits and a non-zero last byte, the form
+/// an RK3399 prints for `Serial`. `genkey_pr` repeats its hash input
 /// `strtol(&serial[14..], 16)` times, so a zero there would hash nothing.
 pub(super) fn is_valid_soc_serial(s: &str) -> bool {
     s.len() == 16
@@ -29,10 +29,11 @@ pub(super) fn generate_soc_serial() -> String {
     )
 }
 
-/// Generate a random locally-administered unicast MAC.
-/// Uses `uuid::Uuid::new_v4()` (already a dep) as the entropy source - its bytes
-/// are cryptographically random on macOS/Linux. The first byte is forced to
-/// `02` (LAA bit set, multicast bit clear) so it's a valid host address.
+/// Generate a random locally administered unicast MAC.
+///
+/// The bytes come from a v4 UUID, whose bytes are cryptographically random.
+/// The first byte gets the LAA bit set and the multicast bit cleared, so the
+/// address is a valid host address.
 pub(super) fn generate_mac() -> String {
     let bytes = uuid::Uuid::new_v4().into_bytes();
     let m0 = (bytes[0] & 0xfe) | 0x02; // LAA, unicast

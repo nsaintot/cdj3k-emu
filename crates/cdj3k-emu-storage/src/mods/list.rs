@@ -45,7 +45,7 @@ impl SlotMods {
         for m in text.lines().filter_map(read_line) {
             if mods.iter().any(|kept| kept.name == m.name) {
                 eprintln!(
-                    "cdj3k-emu: {}: a second mod named {}, skipped",
+                    "cdj3k-emu: {}: skipping a second mod named {}",
                     dir.display(),
                     m.name
                 );
@@ -86,8 +86,8 @@ impl SlotMods {
         self.dir.join(INSTALLED).join(name)
     }
 
-    /// An id for the copy of `m` a boot runs: its name, where it comes from,
-    /// and its version. A mod with the same name from another source, or in
+    /// An id for the version of `m` that a boot runs, made of its name, its
+    /// source and its version. A mod with the same name from another source, or in
     /// another version, gets another id, so the last boot's report does not
     /// apply to it.
     pub fn boot_id(&self, m: &SlotMod) -> String {

@@ -16,12 +16,12 @@ mod tls;
 #[path = "windows.rs"]
 mod tls;
 
-/// Far above the index and its signature, which are a few kilobytes.
+/// The size limit for the index and its signature, which are a few kilobytes.
 const SMALL_LIMIT: u64 = 1 << 20;
 const CHUNK: usize = 64 * 1024;
-/// Receiving the index or its signature.
+/// The body timeout for the index or its signature.
 const SMALL_BODY_WAIT: Duration = Duration::from_secs(30);
-/// Receiving a package: a few hundred megabytes at a slow link's rate.
+/// The body timeout for a package of a few hundred megabytes on a slow link.
 const PACKAGE_BODY_WAIT: Duration = Duration::from_secs(30 * 60);
 
 fn agent(body_wait: Duration) -> ureq::Agent {
@@ -49,7 +49,7 @@ fn http_error(url: &str, e: ureq::Error) -> Error {
     }
 }
 
-/// A small file, whole.
+/// Fetch a small file in one piece.
 pub fn get(url: &str) -> Result<Vec<u8>, Error> {
     let mut resp = agent(SMALL_BODY_WAIT)
         .get(url)
@@ -63,7 +63,7 @@ pub fn get(url: &str) -> Result<Vec<u8>, Error> {
 }
 
 /// Fetch `package` into `dir`, checking its size and SHA-256 as it arrives.
-/// `progress` hears the bytes so far and the total; setting `cancel` stops
+/// `progress` receives the bytes downloaded so far and the total; setting `cancel` stops
 /// the download. Returns the finished file, named as the URL names it.
 pub fn download(
     package: &Package,
@@ -86,8 +86,8 @@ pub fn download(
     save(reader, package, &dir.join(name), progress, cancel)
 }
 
-/// Up to `limit` bytes from `url` into `dest`, through a `.part` file renamed
-/// into place once the body is whole.
+/// Fetch up to `limit` bytes from `url` into `dest` through a `.part` file,
+/// which is renamed into place once the body is complete.
 pub fn fetch_to(url: &str, dest: &Path, limit: u64) -> Result<(), Error> {
     let resp = agent(PACKAGE_BODY_WAIT)
         .get(url)
@@ -112,8 +112,8 @@ pub fn fetch_to(url: &str, dest: &Path, limit: u64) -> Result<(), Error> {
     result
 }
 
-/// Copy `reader` to `dest` through a `.part` file of this process's own,
-/// created new, that is renamed into place only once its size and hash match
+/// Copy `reader` to `dest` through a new `.part` file named after this
+/// process. The file is renamed into place only once its size and hash match
 /// `package`.
 fn save(
     mut reader: impl Read,

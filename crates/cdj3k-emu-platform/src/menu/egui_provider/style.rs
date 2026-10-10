@@ -22,8 +22,8 @@ pub(super) const CAPTION_BTN: Vec2 = Vec2::new(46.0, 32.0);
 pub(super) const CAPTION_PAD_LEFT: f32 = 12.0;
 pub(super) const CAPTION_PAD_RIGHT: f32 = 6.0;
 pub(super) const CAPTION_W: f32 = CAPTION_PAD_LEFT + 3.0 * CAPTION_BTN.x + CAPTION_PAD_RIGHT;
-/// The strip width below which the wordmark is dropped: the wordmark, both
-/// pills and every shortcut.
+/// The strip width below which the wordmark is dropped. It is the width that
+/// the wordmark, both pills and every shortcut need together.
 pub(super) const WORDMARK_MIN_STRIP: f32 = 800.0;
 
 /// Width of a notice's hover card.
@@ -31,7 +31,7 @@ pub(super) const CARD_W: f32 = 280.0;
 
 /// Width a panel starts at. It grows to fit its widest row, up to [`PANEL_MAX_W`].
 pub(super) const PANEL_MIN_W: f32 = 224.0;
-/// Past this a device name is truncated rather than shoving the panel wider.
+/// Beyond this width a device name is truncated, and the panel does not grow.
 pub(super) const PANEL_MAX_W: f32 = 420.0;
 pub(super) const PANEL_PAD: f32 = 4.0;
 
@@ -79,8 +79,8 @@ pub(super) const CLOSE_RED: Color32 = Color32::from_rgb(0xC4, 0x2B, 0x1C);
 
 /// The strip's buttons: flat until hovered, with the design's inner padding.
 ///
-/// Set here rather than on each button, because a `Button` given an explicit
-/// fill uses it in every state and so can never light up.
+/// This is set on the style instead of on each button, because a `Button`
+/// given an explicit fill uses it in every state and never lights up.
 pub(super) fn style_strip(ui: &mut Ui) {
     let s = ui.style_mut();
     s.spacing.item_spacing.x = 8.0;
@@ -110,8 +110,8 @@ pub(super) fn style_strip(ui: &mut Ui) {
 /// Dress egui's own menu frame as the design's panel: one hairline border on
 /// a flat ground, no shadow.
 ///
-/// It is built from the context's style rather than the opener's, so this has
-/// to be set there. The setup window overrides the same fields on its own Ui
+/// egui builds the menu frame from the context's style, not the opener's, so
+/// this is set on the context. The setup window overrides the same fields on its own Ui
 /// tree, so its popups keep their palette.
 pub(super) fn style_menus(ctx: &egui::Context) {
     ctx.all_styles_mut(|s| {

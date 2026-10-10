@@ -44,8 +44,8 @@ impl EguiProvider {
                 value,
                 detail,
             } => readout_row(ui, row_w, title, value, detail.as_deref()),
-            // Quit is ours to draw: the platform owns it only where there is a
-            // native menu bar.
+            // This provider draws Quit; the platform draws it only where there
+            // is a native menu bar.
             MenuNode::Predefined(Predefined::Quit) => {
                 if self
                     .row(ui, row_w, QUIT_LABEL, None, true, Some(QUIT_KEYS))
@@ -132,9 +132,9 @@ impl EguiProvider {
 
     /// One painted row: checkmark gutter, label, right-aligned value.
     ///
-    /// Painted rather than built from a button because egui has no way to put
-    /// a trailing column inside one, and the gutter has to hold its width
-    /// whether the row is ticked or not or nothing lines up.
+    /// The row is painted instead of built from a button, because egui cannot
+    /// put a trailing column inside a button. The gutter keeps its width
+    /// whether or not the row is ticked, so the labels line up.
     fn row(
         &self,
         ui: &mut Ui,

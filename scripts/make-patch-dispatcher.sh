@@ -5,8 +5,8 @@
 #
 #   make-patch-dispatcher.sh <patch-rootfs.d dir> <output file>
 #
-# The repo keeps the steps as numbered scripts so a failure names one; a
-# package ships the one file this makes.
+# The repository keeps the steps as numbered scripts so that a failure names
+# the failing step; a package ships the single file this script writes.
 set -euo pipefail
 
 SRC_DIR="${1:?Usage: $0 <patch-rootfs.d dir> <output file>}"
@@ -16,7 +16,7 @@ shopt -s nullglob
 STEPS=("$SRC_DIR"/[0-9]*.sh)
 shopt -u nullglob
 if [[ ${#STEPS[@]} -eq 0 ]]; then
-    echo "ERROR: no numbered steps in $SRC_DIR" >&2
+    echo "ERROR: $SRC_DIR contains no numbered steps." >&2
     exit 1
 fi
 
@@ -25,8 +25,9 @@ mkdir -p "$(dirname "$OUT")"
     cat <<'HDR'
 #!/usr/bin/env bash
 # patch-rootfs.sh - auto-generated bundle dispatcher.
-# Concatenation of every initramfs-patch/patch-rootfs.d/*.sh in numeric order.
-# Source: kept modular in the repo at initramfs-patch/patch-rootfs.d/.
+# It concatenates every initramfs-patch/patch-rootfs.d/*.sh in numeric order.
+# The separate step scripts live in initramfs-patch/patch-rootfs.d/ in the
+# repository.
 set -euo pipefail
 ROOTFS="${1:?Usage: $0 <initramfs-root>}"
 export ROOTFS
@@ -36,7 +37,8 @@ export PATCH_ASSETS_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_UNIT="$(cd "$ROOTFS/etc/systemd/system" 2>/dev/null && ls EP1[0-9][0-9].service 2>/dev/null | head -n1 || true)"
 export APP_UNIT="${APP_UNIT:-EP122.service}"
 export APP_NAME="${APP_UNIT%.service}"
-# The slug the emulator names this player by, from the unit the rootfs carries.
+# Set the slug the emulator uses for this player, based on the unit in the
+# rootfs.
 case "$APP_UNIT" in
     EP145.service) export APP_SLUG="cdj3kx" ;;
     EP166.service) export APP_SLUG="cdj1500x" ;;
@@ -53,7 +55,8 @@ echo "=== Patching initramfs rootfs at: $ROOTFS (app unit: $APP_UNIT) ==="
 HDR
     for step in "${STEPS[@]}"; do
         printf '\necho "--- %s ---"\n(\n' "$(basename "$step")"
-        # Strip per-step shebang and `set -euo pipefail` (already set above).
+        # Strip each step's shebang and its `set -euo pipefail`, which the header
+        # already sets.
         sed -E '1{/^#!/d;}; /^set -euo pipefail$/d' "$step"
         printf ')\n'
     done

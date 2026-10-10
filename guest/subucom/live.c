@@ -1,25 +1,27 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * subucom_live.c - Live real-time display of subucom SPI frames
+ * subucom_live - a live display of the subucom SPI frames.
  *
- * MISO mode (default): reads the sub-CPU device (/dev/subucom_spi1.0, or
- * /dev/subucom_spi3.0 on models on the other bus), shows 64-byte control frames
- *   (buttons, jog wheel, potentiometers) at ~850 Hz.
+ * MISO mode (the default) reads the sub-CPU device (/dev/subucom_spi1.0, or
+ *   /dev/subucom_spi3.0 on the CDJ-1500X) and shows the 64-byte control
+ *   frames (buttons, jog wheel, potentiometers), which arrive at about 850 Hz.
  *
- * MOSI / LED mode (-mosi): reads /dev/subucom_ctrl, shows 64-byte LED frames
- *   written by EP122 at ~100 Hz, with decoded bitfield + pad RGB sections.
+ * MOSI mode (-mosi) reads /dev/subucom_ctrl and shows the 64-byte LED frames
+ *   that EP122 writes at about 100 Hz, with the bitfield and the pad RGB
+ *   sections decoded.
  *
- * Common flags:
- *   -1      one-shot: print frame once and exit (plain hex, no ANSI)
- *   -mosi   switch to MOSI / LED mode
- *   -filter <list>  comma-separated byte indices (0-63); only those bytes
- *                    are shown in hex grid, -1, and -list output
- *   -list   stream each frame to stdout as plain hex (no ANSI/cursor); one
- *            line per read; appends only (use with -1 for single line)
- *   -miso-freq <hz>  target display/output rate in MISO mode (default 10)
+ * Flags:
+ *   -1               Print one frame as plain hex, without ANSI codes, and exit.
+ *   -mosi            Switch to MOSI (LED) mode.
+ *   -filter <list>   Show only these byte indices (0-63, comma-separated) in
+ *                    the hex grid and in the -1 and -list output.
+ *   -list            Print each frame to stdout as one line of plain hex,
+ *                    without ANSI codes or cursor moves; combine it with -1
+ *                    to print a single line.
+ *   -miso-freq <hz>  The display and output rate in MISO mode (default 10).
  *
- * Changed bytes are highlighted in bright yellow (*XX).
- * Zero bytes are dimmed.
+ * Changed bytes are highlighted in bright yellow (*XX), and zero bytes are
+ * dimmed.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,7 +55,7 @@ static int icmp(const void *a, const void *b) {
 static void parse_filter_list(const char *s) {
     g_filter_count = 0;
     if (!s || !*s) {
-        fprintf(stderr, "-filter: empty list\n");
+        fprintf(stderr, "-filter: the list is empty\n");
         exit(1);
     }
     const char *p = s;
@@ -63,11 +65,11 @@ static void parse_filter_list(const char *s) {
         char *end = NULL;
         long v = strtol(p, &end, 0);
         if (end == p) {
-            fprintf(stderr, "-filter: invalid token near \"%s\"\n", p);
+            fprintf(stderr, "-filter: invalid index near \"%s\"\n", p);
             exit(1);
         }
         if (v < 0 || v >= PKT_SIZE) {
-            fprintf(stderr, "-filter: index %ld out of range 0-%d\n",
+            fprintf(stderr, "-filter: index %ld is outside the range 0-%d\n",
                     v, PKT_SIZE - 1);
             exit(1);
         }
@@ -80,7 +82,7 @@ static void parse_filter_list(const char *s) {
         exit(1);
     }
     if (g_filter_count == 0) {
-        fprintf(stderr, "-filter: no indices parsed\n");
+        fprintf(stderr, "-filter: the list holds no index\n");
         exit(1);
     }
     qsort(g_filter_idx, (size_t)g_filter_count, sizeof(int), icmp);
@@ -215,7 +217,7 @@ static void run_miso(int fd, int one_shot, int refresh_us) {
     }
 }
 
-/* Plain streaming: one space-separated hex line per frame, no ANSI. */
+/* Print one line of space-separated hex per frame, without ANSI codes. */
 static void run_miso_list(int fd, int one_shot, int refresh_us) {
     uint8_t buf[PKT_SIZE];
 

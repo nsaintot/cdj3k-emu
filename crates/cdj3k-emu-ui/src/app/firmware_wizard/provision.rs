@@ -1,5 +1,5 @@
-//! Background provisioning: the pipeline a run walks through on its worker
-//! thread, reporting its stage and log to whoever watches it.
+//! The provisioning pipeline that a run follows on its worker thread. It
+//! reports its stage and its log to the window that watches it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -75,7 +75,7 @@ pub(super) fn upd_name_objection(path: &str, model: Model, slot: u32) -> Option<
     }
 }
 
-/// "CDJ3K… or CDJ3000…", the names a deck's update file goes by.
+/// The names a deck's update file can have, such as "CDJ3K… or CDJ3000…".
 fn name_list(model: Model) -> String {
     let names: Vec<String> = model
         .firmware_file_names()
@@ -100,7 +100,7 @@ macro_rules! log {
     };
 }
 
-/// Where a run reports: its stage, its log, and the window to repaint as
+/// Where a run reports its stage and its log, and the window to repaint when
 /// either changes.
 struct Run {
     status: Arc<Mutex<ProvisionStep>>,
@@ -127,12 +127,12 @@ impl Run {
         self.ctx.request_repaint();
     }
 
-    /// A step's value, or the run stopped with its error in the log.
+    /// Returns the step's value. On an error, logs the error and stops the run.
     fn check<T, E: ToString>(&self, result: Result<T, E>) -> Result<T, Stopped> {
         result.map_err(|e| {
             log!(self, "[error] {}", e.to_string());
             self.set(ProvisionStep::Error(
-                "Error while processing: see the console for details".to_string(),
+                "Provisioning failed. See the console for details.".to_string(),
             ));
             Stopped
         })
@@ -168,7 +168,7 @@ pub(super) fn provision(
         ssh,
     };
     if install(&job, &run).is_ok() {
-        log!(run, "[done] all steps completed");
+        log!(run, "[done] All steps completed.");
         run.set(ProvisionStep::Done);
     }
 }
@@ -176,25 +176,30 @@ pub(super) fn provision(
 fn install(job: &Job, run: &Run) -> Result<(), Stopped> {
     log!(
         run,
-        "[slot] target = instance-{} ({})",
+        "[slot] Installing into instance-{} ({}).",
         job.instance,
         job.model
     );
     let staged = run.check(StagedFirmware::new(job.instance))?;
     let paths = staged.paths.clone();
-    log!(run, "[slot] staging dir = {}", paths.dir().display());
+    log!(
+        run,
+        "[slot] The staging directory is {}.",
+        paths.dir().display()
+    );
 
-    // An `.iso` has been unwrapped by hand already and is taken on trust.
+    // An `.iso` is already decrypted, so its name is not checked.
     if job.key.is_some() {
         check_name(job, run)?;
     }
 
-    // 1. Decrypt UPD → ISO in the staging dir (or use the given ISO as is)
+    // 1. Decrypt the UPD into an ISO in the staging directory, or use the given
+    //    ISO as it is.
     run.set(ProvisionStep::Decrypting);
     let tmp_iso = decrypt(job, paths.dir(), run)?;
     let firmware_info = read_firmware_info(&tmp_iso, run);
 
-    // 3. Install vanilla kernel + extract Pioneer initramfs
+    // 2. Install the vanilla kernel and extract the Pioneer initramfs.
     run.set(ProvisionStep::ExtractingKernel);
     let out_dir = paths.dir().to_path_buf();
     run.check(std::fs::create_dir_all(&out_dir))?;
@@ -203,10 +208,14 @@ fn install(job: &Job, run: &Run) -> Result<(), Stopped> {
     let kernel_src = resources_dir.join("Image");
     install_kernel(&kernel_src, &paths.kernel, run)?;
 
-    // 4. Patch initramfs - Pioneer firmware is the rootfs base
-    //    (the app binary and Pioneer libraries live there).
+    // 3. Patch the initramfs. The Pioneer firmware is the base of the rootfs,
+    //    because the app binary and the Pioneer libraries live there.
     run.set(ProvisionStep::PatchingInitramfs);
-    log!(run, "[patch] resources dir: {}", resources_dir.display());
+    log!(
+        run,
+        "[patch] The resources directory is {}.",
+        resources_dir.display()
+    );
     let initramfs_orig = out_dir.join("initramfs-orig.cpio");
     extract_initramfs(&tmp_iso, &out_dir, &initramfs_orig, run)?;
     let patch = Patch {
@@ -216,22 +225,25 @@ fn install(job: &Job, run: &Run) -> Result<(), Stopped> {
         out: &paths.initramfs,
     };
     patch_initramfs(&patch, job.ssh, run)?;
-    log!(run, "[patch] OK → {}", paths.initramfs.display());
+    log!(run, "[patch] Wrote {}.", paths.initramfs.display());
     let _ = std::fs::remove_file(&initramfs_orig);
 
-    // 5. Create the eMMC qcow2
+    // 4. Create the eMMC qcow2 image.
     run.set(ProvisionStep::CreatingEmmc);
     let serial = soc_serial(run)?;
-    log!(run, "[serial] SoC serial = {}", serial);
+    log!(run, "[serial] The SoC serial is {}.", serial);
     let cabinet = stage_cabinet(&tmp_iso, job.model, &serial, run);
     let release = firmware_info.release.clone();
     create_emmc(job, paths.emmc.clone(), firmware_info, cabinet, run)?;
 
-    // 6. Record the staged installation as complete, for the slot's owner to
-    //    swap in.
+    // 5. Record the staged installation as complete, so the window that owns
+    //    the slot can swap it in.
     if let Some(prev) = cdj3k_emu_storage::InstanceSettings::saved_model(job.instance) {
         if prev != job.model {
-            log!(run, "[slot] replaces the {prev} installation once applied");
+            log!(
+                run,
+                "[slot] Once applied, this install replaces the {prev} installation."
+            );
         }
     }
     let _ = std::fs::remove_file(paths.dir().join("firmware.iso.tmp"));
@@ -248,7 +260,7 @@ fn check_name(job: &Job, run: &Run) -> Result<(), Stopped> {
             Err(Stopped)
         }
         None => {
-            log!(run, "[deck] named as a {} update", job.model);
+            log!(run, "[deck] The file is named as a {} update.", job.model);
             Ok(())
         }
     }
@@ -260,20 +272,20 @@ fn decrypt(job: &Job, dir: &Path, run: &Run) -> Result<PathBuf, Stopped> {
     let Some(key) = &job.key else {
         log!(
             run,
-            "[decrypt] skipped - {} is already an ISO 9660 image",
+            "[decrypt] {} is already an ISO 9660 image; skipping decryption.",
             job.upd_path.display()
         );
         return Ok(job.upd_path.clone());
     };
-    log!(run, "[decrypt] opening {}", job.upd_path.display());
+    log!(run, "[decrypt] Opening {}.", job.upd_path.display());
     let tmp_iso = dir.join("firmware.iso.tmp");
-    log!(run, "[decrypt] output → {}", tmp_iso.display());
+    log!(run, "[decrypt] Writing the ISO to {}.", tmp_iso.display());
     run.check(cdj3k_emu_firmware::decrypt_upd(
         &job.upd_path,
         key,
         &tmp_iso,
     ))?;
-    log!(run, "[decrypt] OK - ISO written");
+    log!(run, "[decrypt] Wrote the ISO.");
     Ok(tmp_iso)
 }
 
@@ -294,7 +306,7 @@ fn read_firmware_info(iso: &Path, run: &Run) -> FirmwareInfo {
         Err(e) => {
             log!(
                 run,
-                "[firmware] could not read version info ({e}), defaulting to all-unknown"
+                "[firmware] Could not read the version info ({e}); every field is unknown."
             );
             FirmwareInfo::default()
         }
@@ -304,23 +316,23 @@ fn read_firmware_info(iso: &Path, run: &Run) -> FirmwareInfo {
 fn install_kernel(kernel_src: &Path, kernel_out: &Path, run: &Run) -> Result<(), Stopped> {
     log!(
         run,
-        "[kernel] installing kernel {} → {}",
+        "[kernel] Copying the kernel {} to {}.",
         kernel_src.display(),
         kernel_out.display()
     );
     run.check(
         std::fs::copy(kernel_src, kernel_out)
             .map(|_| ())
-            .map_err(|e| std::io::Error::other(format!("copy Image: {e}"))),
+            .map_err(|e| std::io::Error::other(format!("could not copy Image: {e}"))),
     )?;
-    log!(run, "[kernel] OK");
+    log!(run, "[kernel] Installed the kernel.");
     Ok(())
 }
 
-/// The Pioneer initramfs, unpacked to `initramfs_orig`. A model with
-/// images/boot.img ships it as that image's ramdisk; the others embed it in
-/// their kernel, extracted to a temp file only to unpack it (not used as the
-/// final kernel).
+/// Unpacks the Pioneer initramfs to `initramfs_orig`. A model with
+/// images/boot.img ships it as that image's ramdisk. The others embed it in
+/// their kernel, which is extracted to a temporary file only to unpack the
+/// initramfs; the slot does not boot that kernel.
 fn extract_initramfs(
     iso: &Path,
     out_dir: &Path,
@@ -334,14 +346,14 @@ fn extract_initramfs(
     if from_boot_img {
         log!(
             run,
-            "[initramfs] boot.img ramdisk → {}",
+            "[initramfs] Extracted the boot.img ramdisk to {}.",
             initramfs_orig.display()
         );
     } else {
         let pioneer_kernel_tmp = out_dir.join("Image.pioneer.tmp");
         log!(
             run,
-            "[initramfs] extracting Pioneer kernel (initramfs source) → {}",
+            "[initramfs] Extracting the Pioneer kernel, which holds the initramfs, to {}.",
             pioneer_kernel_tmp.display()
         );
         run.check(
@@ -352,7 +364,7 @@ fn extract_initramfs(
         )?;
         log!(
             run,
-            "[initramfs] extracting from Pioneer kernel → {}",
+            "[initramfs] Extracting the initramfs from the Pioneer kernel to {}.",
             initramfs_orig.display()
         );
         run.check(
@@ -361,7 +373,7 @@ fn extract_initramfs(
         )?;
         let _ = std::fs::remove_file(&pioneer_kernel_tmp);
     }
-    log!(run, "[initramfs] OK");
+    log!(run, "[initramfs] Extracted the initramfs.");
     Ok(())
 }
 
@@ -393,7 +405,7 @@ fn patch_initramfs(patch: &Patch<'_>, ssh: bool, run: &Run) -> Result<(), Stoppe
     run.check(std::fs::File::create(&scratch).and_then(|f| f.set_len(size)))?;
     log!(
         run,
-        "[patch] provisioning guest: {} MiB scratch",
+        "[patch] The provisioning guest gets {} MiB of scratch space.",
         size / (1 << 20)
     );
 
@@ -402,7 +414,7 @@ fn patch_initramfs(patch: &Patch<'_>, ssh: bool, run: &Run) -> Result<(), Stoppe
         ..Default::default()
     };
     if ssh {
-        log!(run, "[patch] root SSH enabled");
+        log!(run, "[patch] Root SSH is enabled.");
     }
     let result = cdj3k_emu_firmware::patch_initramfs_in_guest(
         patch.orig,
@@ -419,10 +431,10 @@ fn patch_initramfs(patch: &Patch<'_>, ssh: bool, run: &Run) -> Result<(), Stoppe
     Ok(())
 }
 
-/// The eMMC is new, so the slot needs the serial `genkey_pr` hashes into the
-/// cabinet passphrase - which the cabinet is keyed for in [`stage_cabinet`].
-/// It is recorded with the install. CDJ3K_SOC_SERIAL pins a particular
-/// deck's, which is what a cabinet lifted off that deck already opens with.
+/// Returns the SoC serial for the new eMMC. `genkey_pr` hashes it into the
+/// cabinet passphrase, [`stage_cabinet`] keys the cabinet for it, and the
+/// install records it. `CDJ3K_SOC_SERIAL` pins the serial of a particular
+/// deck, so that a cabinet taken from that deck opens.
 fn soc_serial(run: &Run) -> Result<String, Stopped> {
     match std::env::var("CDJ3K_SOC_SERIAL") {
         Ok(pinned) => run.check(cdj3k_emu_storage::InstanceSettings::parse_soc_serial(
@@ -432,28 +444,29 @@ fn soc_serial(run: &Run) -> Result<String, Stopped> {
     }
 }
 
-/// cabinet.img carries the Widevine keys and the Device Library Plus key
-/// file.  The deck's updater copies it onto the settings partition, where
-/// apl_start.sh opens it on every boot (`genkey_pr | initoptenv`); here it
-/// is staged in a partition the emulator does not boot from, for guest
-/// patch 14.
-/// The firmware's own image is keyed for the factory passphrase genkey_pb
-/// computes (model + images.tar.gz, or app.hash); a keyslot for this slot's
-/// own serial is added to it.
+/// cabinet.img holds the Widevine keys and the Device Library Plus key file.
+/// The deck's updater copies it onto the settings partition, where
+/// apl_start.sh opens it on every boot (`genkey_pr | initoptenv`). This
+/// function stages it in a partition the emulator does not boot from, for
+/// guest patch 14.
+///
+/// The firmware's own image is keyed for the factory passphrase that
+/// genkey_pb computes from the model and images.tar.gz, or from app.hash. A
+/// keyslot for this slot's serial is added to it.
 fn stage_cabinet(iso: &Path, model: Model, serial: &str, run: &Run) -> Option<Vec<u8>> {
     let mut cabinet = read_cabinet(iso, run);
     if let Some(bytes) = cabinet.as_mut() {
         key_cabinet(bytes, iso, model, serial, run);
     }
     match &cabinet {
-        Some(b) => log!(run, "[cabinet] staging {} MiB", b.len() / 1_048_576),
-        None => log!(run, "[cabinet] nothing to stage"),
+        Some(b) => log!(run, "[cabinet] Staging {} MiB.", b.len() / 1_048_576),
+        None => log!(run, "[cabinet] There is no cabinet to stage."),
     }
     cabinet
 }
 
-/// The firmware's cabinet.img, or the one CDJ3K_CABINET_IMG names - a cabinet
-/// taken off a real deck.
+/// The firmware's cabinet.img, or the file that CDJ3K_CABINET_IMG names, such
+/// as a cabinet taken from a real deck.
 fn read_cabinet(iso: &Path, run: &Run) -> Option<Vec<u8>> {
     let Some(path) = std::env::var_os("CDJ3K_CABINET_IMG") else {
         return cdj3k_emu_firmware::read_cabinet_image(iso);
@@ -463,7 +476,7 @@ fn read_cabinet(iso: &Path, run: &Run) -> Option<Vec<u8>> {
         Ok(bytes) if bytes.starts_with(b"LUKS\xba\xbe") => {
             log!(
                 run,
-                "[cabinet] {} ({} MiB)",
+                "[cabinet] Using {} ({} MiB).",
                 path.display(),
                 bytes.len() / 1_048_576
             );
@@ -472,25 +485,29 @@ fn read_cabinet(iso: &Path, run: &Run) -> Option<Vec<u8>> {
         Ok(_) => {
             log!(
                 run,
-                "[cabinet] {} is not a LUKS container - skipped",
+                "[cabinet] {} is not a LUKS container; skipping it.",
                 path.display()
             );
             None
         }
         Err(e) => {
-            log!(run, "[cabinet] {}: {e} - skipped", path.display());
+            log!(
+                run,
+                "[cabinet] Could not read {}: {e}; skipping it.",
+                path.display()
+            );
             None
         }
     }
 }
 
-/// Give the container a keyslot this slot can open.  The firmware ships it
-/// keyed for the factory passphrase (genkey_pb, from the model and this
-/// ISO's images.tar.gz or app.hash); opening that slot recovers the master
-/// key every cabinet of the model shares, and a slot keyed for this unit's
-/// serial is added from it.  A container no factory slot opens - a foreign
-/// cabinet, or one from another firmware version - is refused and stages
-/// unchanged.
+/// Give the container a keyslot that this slot can open. The firmware ships
+/// it keyed for the factory passphrase, which genkey_pb computes from the
+/// model and this ISO's images.tar.gz or app.hash. Opening that keyslot
+/// recovers the master key that every cabinet of the model shares, and a
+/// keyslot for this unit's serial is added with it. A container that no
+/// factory keyslot opens, such as a cabinet from another source or another
+/// firmware version, is staged unchanged.
 fn key_cabinet(bytes: &mut [u8], iso: &Path, model: Model, serial: &str, run: &Run) {
     let model_env = model.spec().model_env;
     let vendor = cdj3k_emu_firmware::read_cabinet_seed(iso)
@@ -500,22 +517,22 @@ fn key_cabinet(bytes: &mut [u8], iso: &Path, model: Model, serial: &str, run: &R
         cdj3k_emu_firmware::cabinet_passphrase(model_env, serial),
     ) {
         (Some(vendor), Ok(unit)) => match cdj3k_emu_firmware::add_keyslot(bytes, &vendor, &unit) {
-            Ok(slot) => log!(run, "[cabinet] keyed for {serial} in slot {slot}"),
+            Ok(slot) => log!(run, "[cabinet] Added keyslot {slot} for {serial}."),
             Err(e) => log!(
                 run,
-                "[cabinet] not keyed for this slot ({e}) - staging it as it is"
+                "[cabinet] Could not add a keyslot for this slot ({e}); staging the cabinet unchanged."
             ),
         },
         (None, _) => {
             log!(
                 run,
-                "[cabinet] no images.tar.gz or app.hash to key from - staging it as it is"
+                "[cabinet] The firmware has no images.tar.gz or app.hash to derive the key from; staging the cabinet unchanged."
             )
         }
         (_, Err(e)) => {
             log!(
                 run,
-                "[cabinet] no passphrase for this slot ({e}) - staging it as it is"
+                "[cabinet] Could not derive a passphrase for this slot ({e}); staging the cabinet unchanged."
             )
         }
     }
@@ -528,7 +545,7 @@ fn create_emmc(
     cabinet: Option<Vec<u8>>,
     run: &Run,
 ) -> Result<(), Stopped> {
-    log!(run, "[emmc] provisioning → {}", path.display());
+    log!(run, "[emmc] Provisioning {}.", path.display());
     let cfg = cdj3k_emu_storage::EmmcConfig {
         path,
         instance_id: job.instance,
@@ -537,6 +554,6 @@ fn create_emmc(
         cabinet,
     };
     run.check(cdj3k_emu_storage::provision_emmc(&cfg))?;
-    log!(run, "[emmc] OK");
+    log!(run, "[emmc] Provisioned the eMMC.");
     Ok(())
 }

@@ -11,7 +11,8 @@ pub fn quiet(command: &mut Command) {
 
 pub const EXTRA_TOOL_DIRS: &[&str] = &[];
 
-/// Runnability is the extension's, which the caller has resolved.
+/// The file's extension decides whether it runs, and the caller has already
+/// added it, so any existing file counts.
 pub fn is_runnable(path: &std::path::Path) -> bool {
     path.is_file()
 }

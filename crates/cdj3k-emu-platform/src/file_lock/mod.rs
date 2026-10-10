@@ -1,8 +1,8 @@
 //! An exclusive claim on an open file, which keeps two app windows off one
 //! slot's eMMC.
 //!
-//! Every implementation is released by the OS when the handle closes, which
-//! is what lets a slot stay claimable after a crash.
+//! The OS releases every implementation's lock when the handle closes, so a
+//! slot can be claimed again after a crash.
 
 #[cfg(unix)]
 #[path = "unix.rs"]

@@ -1,8 +1,8 @@
 //! Turn the tar the guest handed back into the initramfs the emulator boots.
 //!
-//! The guest packs as tar because busybox's cpio is extract-only. tar carries
-//! everything a cpio header needs — mode, uid/gid, symlink targets, device
-//! nodes — so nothing is lost in the crossing.
+//! The guest packs a tar because busybox's cpio can only extract. tar carries
+//! everything a cpio header needs (the mode, uid and gid, symlink targets and
+//! device nodes), so the conversion loses nothing.
 //!
 //! Usage: <handback.tar> <out.cpio.gz>
 
@@ -24,8 +24,8 @@ fn main() {
     let mut archive = tar::Archive::new(std::fs::File::open(tar_path).expect("open tar"));
     let mut entries: Vec<Entry> = Vec::new();
     let mut skipped = 0usize;
-    // Content of every regular file seen so far, so a hard link becomes a
-    // full copy: this codec has no ino/nlink model to express one.
+    // The content of every regular file seen so far. A hard link becomes a
+    // full copy, because the cpio codec has no inode or link count.
     let mut seen: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
     for e in archive.entries().expect("tar entries") {
@@ -60,7 +60,7 @@ fn main() {
     println!("wrote {out_path}");
 }
 
-/// What a tar entry becomes in the cpio; `None` for one it skips.
+/// Returns the cpio kind for a tar entry, or `None` when the entry is skipped.
 fn entry_kind<R: Read>(
     e: &mut tar::Entry<R>,
     header: &tar::Header,
@@ -87,7 +87,9 @@ fn entry_kind<R: Read>(
                 .unwrap_or_default();
             let data = seen.get(&target);
             if data.is_none() {
-                eprintln!("  hard link {path} -> {target}: target not seen, skipping");
+                eprintln!(
+                    "  Skipping the hard link {path}: its target {target} has not been seen."
+                );
             }
             data.map(|d| Kind::File(d.clone()))
         }

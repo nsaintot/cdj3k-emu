@@ -3,13 +3,13 @@
 //! Compiled everywhere so its parsing is tested everywhere; on a host with no
 //! `pw-dump` the enumeration simply finds nothing.
 //!
-//! Read through `pw-dump`, which every PipeWire installation ships, rather
-//! than by linking libpipewire: the picker needs a list a few times a minute,
-//! not a client connection, and a subprocess cannot take the app down with it.
+//! The list is read through `pw-dump`, which every PipeWire installation
+//! ships. The picker needs it only a few times a minute, and a subprocess that
+//! crashes cannot take the app down.
 //!
-//! The guest plays 96 kHz S32. PipeWire resamples to whatever the sink is
-//! running at, so the rate is reported here for the same reason it is on
-//! macOS — a mismatch is audible and otherwise invisible.
+//! The guest plays 96 kHz S32 and PipeWire resamples it to the sink's rate, so
+//! the rate is reported here as on macOS: a mismatch is audible, and the menu
+//! is the only place it shows.
 
 use super::AudioOutDevice;
 
@@ -26,8 +26,7 @@ pub fn enumerate_output_devices() -> Vec<AudioOutDevice> {
             d
         })
         .collect();
-    // Stable order: the picker is a menu, and a list that reshuffles between
-    // openings is unusable.
+    // Sort by name so that the menu keeps its order between openings.
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out.dedup_by(|a, b| a.uid == b.uid);
     out
@@ -56,9 +55,9 @@ fn default_sink_name() -> Option<String> {
 
 /// Pull the audio sinks out of a `pw-dump` document.
 ///
-/// Scanned rather than parsed as JSON: the three fields wanted are flat
-/// strings. Each object is bounded by its `"id":` line, so a field cannot be
-/// attributed to the wrong node.
+/// The document is scanned line by line instead of parsed as JSON, because
+/// the fields it reads are flat values. Each object starts at its `"id":`
+/// line, so a field cannot be attributed to the wrong node.
 fn parse_sinks(dump: &str) -> Vec<AudioOutDevice> {
     let mut out = Vec::new();
     let mut cur: Option<Partial> = None;
@@ -167,7 +166,7 @@ mod tests {
     fn the_node_name_is_the_id_and_the_description_is_the_label() {
         let sinks = parse_sinks(DUMP);
         let cdj = sinks.iter().find(|s| s.name == "CDJ-3000").unwrap();
-        // out.name= takes the node name, not the description.
+        // QEMU's `out.name=` takes the node name, not the description.
         assert_eq!(cdj.uid, "alsa_output.usb-Pioneer_DJ");
     }
 

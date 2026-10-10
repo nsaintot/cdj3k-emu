@@ -35,9 +35,9 @@ enum Caption {
 impl EguiProvider {
     pub(super) fn bar(&mut self, ui: &mut Ui) {
         let mut open = BTreeSet::new();
-        // Our own layout rather than `egui::menu::bar`, which fixes the band
-        // to `interact_size.y` and pins it to the top of the strip, and which
-        // overwrites the button padding the pills are measured against.
+        // Use a custom layout instead of `egui::menu::bar`, which fixes the
+        // band to `interact_size.y`, pins it to the top of the strip, and
+        // overwrites the button padding that the pills are measured against.
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             style_strip(ui);
             self.hamburger(ui, &mut open);
@@ -99,9 +99,9 @@ impl EguiProvider {
     /// Every menu, as the design's sandwich: the same tree the pills open.
     fn hamburger(&mut self, ui: &mut Ui, open: &mut BTreeSet<String>) {
         let button = plate(self.open.contains(HAMBURGER));
-        // Emulation and Instances have their own pill an inch away, so the
-        // sandwich holds what the strip cannot reach in one click, under the
-        // update row.
+        // Emulation and Instances have their own pills next to it, so the
+        // sandwich holds the update row and the menus the strip cannot reach
+        // in one click.
         let mut roots: Vec<MenuNode> = self.update_row().into_iter().collect();
         if !roots.is_empty() {
             roots.push(MenuNode::Separator);
@@ -147,7 +147,8 @@ impl EguiProvider {
         let was_open = self.open.contains(label);
 
         let mut job = egui::text::LayoutJob::default();
-        // The accent square is painted, so the label leads past where it goes.
+        // The accent square is painted separately, so the label starts after
+        // the space it takes.
         let lead = if matches!(icon, Some(MenuIcon::Emulation)) {
             6.0 + 8.0
         } else {
@@ -204,7 +205,7 @@ impl EguiProvider {
         response.on_hover_cursor(CursorIcon::PointingHand);
     }
 
-    /// One glyph, one click, the menu behind it.
+    /// A glyph button that opens its menu in one click.
     fn icon_button(&mut self, ui: &mut Ui, root: &MenuNode, open: &mut BTreeSet<String>) {
         let MenuNode::Submenu {
             label,
@@ -275,10 +276,11 @@ impl EguiProvider {
         }
     }
 
-    /// Restart, as a verb rather than a menu: the one action worth a click.
+    /// The Restart button, which runs an action directly instead of opening a
+    /// menu.
     ///
-    /// Its state comes from the model — the row is disabled until a deck is
-    /// installed — and only the picture is decided here.
+    /// Its state comes from the model, where the row is disabled until a deck
+    /// is installed; only the picture is decided here.
     fn restart_button(&mut self, ui: &mut Ui) {
         let Some(MenuNode::Item { enabled, .. }) = self.find(&MenuId::Restart) else {
             return;

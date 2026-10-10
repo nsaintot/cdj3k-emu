@@ -1,17 +1,17 @@
 use std::path::PathBuf;
 
 fn main() {
-    // Only link on macOS - the dylib is HVF+Cocoa specific.
+    // Link only on macOS, because the dylib depends on HVF and Cocoa.
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() != "macos" {
         return;
     }
 
-    // Allow override via env for CI / bundle builds.
+    // CI and bundle builds set CDJ3K_EMU_QEMU_LIB_DIR to override the library directory.
     let lib_dir: PathBuf = std::env::var("CDJ3K_EMU_QEMU_LIB_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            // Default: relative to workspace root (qemu/install/lib).
-            // CARGO_MANIFEST_DIR = crates/cdj3k-emu-runtime
+            // By default, use qemu/install/lib under the workspace root.
+            // CARGO_MANIFEST_DIR is crates/cdj3k-emu-runtime.
             let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
             manifest.join("../../qemu/install/lib")
         });

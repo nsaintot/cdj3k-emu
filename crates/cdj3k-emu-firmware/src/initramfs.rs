@@ -1,14 +1,14 @@
 //! Initramfs extraction and in-app patching.
 //!
-//! extract_initramfs - pull the original initramfs.cpio.gz from the decrypted ISO.
-//! patch_initramfs   - inject guest tools, run the bundled
-//!                     patch-rootfs.sh script, repack as a new cpio.gz.
+//! - `extract_initramfs` takes the original initramfs out of the kernel image.
+//! - `patch_initramfs` injects the guest tools, runs the bundled
+//!   `patch-rootfs.sh` script and repacks the result as a new cpio.gz.
 //!
 //! # macOS bsdcpio UID/GID caveat
-//! bsdcpio records the real host UID (e.g. 502) in every cpio header.  The Linux
-//! kernel unpacks with that UID → dropbear rejects /etc/shadow with wrong ownership.
-//! After repacking we scan the raw cpio for "070701" magic and force uid/gid fields
-//! to "00000000" - same approach as initramfs-work/repack.sh but in pure Rust.
+//! bsdcpio records the real host UID (for example 502) in every cpio header.
+//! The Linux kernel unpacks the files with that UID, so dropbear rejects
+//! /etc/shadow because of its owner. After repacking, the code scans the raw
+//! cpio for the `070701` magic and sets the uid and gid fields to `00000000`.
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -27,8 +27,8 @@ pub enum PatchError {
     Io(io::Error),
     Extract(ExtractError),
     MissingResource(String),
-    /// A bundled resource is present but cannot be used as given — a step
-    /// manifest that does not parse, or one that is stale against the rootfs.
+    /// A bundled resource is present but unusable, such as a step manifest
+    /// that does not parse or does not match the rootfs.
     InvalidResource(String),
     CommandFailed(String),
 }
@@ -36,7 +36,7 @@ pub enum PatchError {
 impl std::fmt::Display for PatchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Io(e) => write!(f, "I/O: {e}"),
+            Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Extract(e) => write!(f, "extract: {e}"),
             Self::MissingResource(s) => write!(f, "missing bundled resource: {s}"),
             Self::InvalidResource(s) => write!(f, "invalid bundled resource: {s}"),
@@ -65,10 +65,10 @@ impl From<ExtractError> for PatchError {
 /// - CDJ-3000 RK3399 uses gzip (CONFIG_RD_GZIP).
 /// - G2M Renesas R-Car uses LZ4 legacy (CONFIG_RD_LZ4).
 ///
-/// We scan for every supported magic, try to decompress each hit, and pick
-/// the largest result that begins with a cpio newc/crc magic.  This naturally
-/// rejects the kernel's embedded `.config` blob (small, gzipped) and other
-/// random-byte false positives.
+/// The function scans for every supported magic, decompresses each hit, and
+/// keeps the largest result that begins with a cpio newc or crc magic. This
+/// rejects the kernel's embedded `.config` blob, which is small and gzipped,
+/// and random false positives.
 pub fn extract_initramfs(kernel_path: &Path, out_path: &Path) -> Result<(), ExtractError> {
     let data = std::fs::read(kernel_path)?;
 
@@ -104,7 +104,7 @@ pub fn extract_initramfs(kernel_path: &Path, out_path: &Path) -> Result<(), Extr
     }
 
     Err(ExtractError::FileNotFound(format!(
-        "no embedded CPIO initramfs (gzip or LZ4 legacy) found in {}",
+        "{} has no embedded cpio initramfs (gzip or LZ4 legacy)",
         kernel_path.display()
     )))
 }
@@ -116,9 +116,10 @@ fn scan_offsets(data: &[u8], magic: &[u8]) -> Vec<usize> {
         .collect()
 }
 
-/// LZ4 legacy frame: 4-byte magic, then repeating <u32 LE block_size><block data>.
-/// Each block decompresses to at most 8 MiB.  We stop when the next u32 is not
-/// a plausible block size (>= 8 MiB + slack, or extends past the buffer).
+/// Decompresses an LZ4 legacy frame: a 4-byte magic followed by blocks, each a
+/// little-endian u32 size and that many bytes of data. Each block decompresses
+/// to at most 8 MiB. Decoding stops at a size that is not plausible: zero,
+/// larger than 8 MiB plus slack, or running past the buffer.
 fn decompress_lz4_legacy(input: &[u8]) -> Option<Vec<u8>> {
     const LEGACY_MAGIC: &[u8] = b"\x02\x21\x4c\x18";
     const MAX_BLOCK_DECOMPRESSED: usize = 8 * 1024 * 1024;
@@ -132,7 +133,7 @@ fn decompress_lz4_legacy(input: &[u8]) -> Option<Vec<u8>> {
 
     while cursor + 4 <= input.len() {
         let block_size = u32::from_le_bytes(input[cursor..cursor + 4].try_into().ok()?) as usize;
-        // End-of-stream: another legacy magic, or implausibly large size.
+        // Another legacy magic or an implausibly large size ends the stream.
         if block_size == 0 || block_size > MAX_BLOCK_DECOMPRESSED + 16 {
             break;
         }
@@ -156,7 +157,7 @@ fn decompress_lz4_legacy(input: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Inject modules + tools into the initramfs and apply bundled patches.
+/// Injects the guest tools into the initramfs and applies the bundled patches.
 ///
 /// - `initramfs_gz`   - original `initramfs.cpio.gz` from the ISO
 /// - `resources_dir`  - `Contents/Resources/` inside the .app bundle
@@ -179,7 +180,6 @@ pub fn patch_initramfs(
 
     let mut clock = PhaseClock::start();
 
-    // Create a temp working directory.
     let tmp = tmp_dir("cdj3k-emu-initramfs")?;
     let rootfs = tmp.join("rootfs");
     std::fs::create_dir_all(&rootfs)?;
@@ -198,21 +198,21 @@ pub fn patch_initramfs(
     run_patch_script(&patch_dir, &rootfs)?;
     clock.phase("patch scripts");
 
-    // 4. Repack rootfs → raw cpio.
+    // 4. Repack the rootfs into a raw cpio.
     let raw_cpio = tmp.join("initramfs-patched.cpio");
     repack_cpio(&rootfs, &raw_cpio)?;
     clock.phase("cpio repack");
 
-    // 5. Fix uid/gid in the raw cpio (macOS bsdcpio records host UID).
+    // 5. Reset the uid and gid in the raw cpio, because macOS bsdcpio records
+    //    the host UID.
     let mut cpio_bytes = std::fs::read(&raw_cpio)?;
     fix_cpio_ownership(&mut cpio_bytes);
     clock.phase("ownership fix");
 
-    // 6. Gzip compress → out_path.
+    // 6. Write the gzipped cpio to out_path.
     write_gz(out_path, &cpio_bytes)?;
     clock.phase("gzip");
 
-    // 7. Clean up temp dir.
     let _ = std::fs::remove_dir_all(&tmp);
     clock.phase("cleanup");
     clock.total();
@@ -220,9 +220,9 @@ pub fn patch_initramfs(
     Ok(())
 }
 
-/// Per-phase timings for the provision log.  The rootfs is unpacked to temp
-/// files, repacked and deleted, so the cost tracks file count as well as size
-/// and differs sharply between models.
+/// Per-phase timings for the provision log. The rootfs is unpacked to temp
+/// files, repacked and deleted, so the cost depends on the file count as well
+/// as the size, and differs sharply between models.
 struct PhaseClock {
     started: std::time::Instant,
     mark: std::time::Instant,
@@ -237,7 +237,7 @@ impl PhaseClock {
         }
     }
 
-    /// Log the time since the previous phase ended.
+    /// Logs the time since the previous phase ended.
     fn phase(&mut self, name: &str) {
         eprintln!(
             "[initramfs] {:<16} {:>6.1}s",
@@ -256,8 +256,8 @@ impl PhaseClock {
     }
 }
 
-/// Copy every file of `tools_dir` into the rootfs, executable: `deck_shim.so`
-/// to `/home/root`, the rest to `/usr/bin`.
+/// Copies every file of `tools_dir` into the rootfs as an executable:
+/// `deck_shim.so` to `/home/root` and the rest to `/usr/bin`.
 fn inject_tools(tools_dir: &Path, rootfs: &Path) -> Result<(), PatchError> {
     let bin_dst = rootfs.join("usr/bin");
     std::fs::create_dir_all(&bin_dst)?;
@@ -278,7 +278,7 @@ fn inject_tools(tools_dir: &Path, rootfs: &Path) -> Result<(), PatchError> {
     Ok(())
 }
 
-/// Run the bundled `patch-rootfs.sh` over `rootfs`.
+/// Runs the bundled `patch-rootfs.sh` over `rootfs`.
 fn run_patch_script(patch_dir: &Path, rootfs: &Path) -> Result<(), PatchError> {
     let patch_script = patch_dir.join("patch-rootfs.sh");
     if !patch_script.exists() {
@@ -300,14 +300,14 @@ fn run_patch_script(patch_dir: &Path, rootfs: &Path) -> Result<(), PatchError> {
     Ok(())
 }
 
-/// Gzip `bytes` to `out_path`, creating its directory.
+/// Gzips `bytes` to `out_path`, creating its directory.
 fn write_gz(out_path: &Path, bytes: &[u8]) -> Result<(), PatchError> {
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let out_file = std::fs::File::create(out_path)?;
-    // Level 6 (flate2's default) rather than 9: on the CDJ-3000X rootfs
-    // (196 MiB) both emit 81 MiB, and 9 takes ~1.8x as long.
+    // flate2's default level 6 compresses the 196 MiB CDJ-3000X rootfs to
+    // 81 MiB, as level 9 does, and level 9 takes about 1.8 times as long.
     let mut gz = GzEncoder::new(out_file, Compression::default());
     gz.write_all(bytes)?;
     gz.finish()?;
@@ -318,7 +318,7 @@ fn write_gz(out_path: &Path, bytes: &[u8]) -> Result<(), PatchError> {
 
 fn unpack_cpio_gz(gz_path: &Path, rootfs: &Path) -> Result<(), PatchError> {
     let raw = std::fs::read(gz_path)?;
-    // Accept raw CPIO (starts with "070701") or gzip-compressed CPIO.
+    // Accept a raw cpio (magic `070701` or `070702`) or a gzipped one.
     let cpio_data = if raw.starts_with(b"070701") || raw.starts_with(b"070702") {
         raw
     } else {
@@ -338,7 +338,8 @@ fn unpack_cpio_gz(gz_path: &Path, rootfs: &Path) -> Result<(), PatchError> {
     child.stdin.take().unwrap().write_all(&cpio_data)?;
 
     let status = child.wait()?;
-    // bsdcpio (macOS) exits 1 for non-fatal warnings (device nodes, etc.) - only fail on ≥2.
+    // macOS bsdcpio exits with 1 on non-fatal warnings, such as for device
+    // nodes, so only an exit code of 2 or more is an error.
     if status.code().unwrap_or(2) >= 2 {
         return Err(PatchError::CommandFailed(format!(
             "cpio -id exited with {status}"
@@ -348,10 +349,11 @@ fn unpack_cpio_gz(gz_path: &Path, rootfs: &Path) -> Result<(), PatchError> {
 }
 
 fn repack_cpio(rootfs: &Path, out: &Path) -> Result<(), PatchError> {
-    // find . | sort | cpio -H newc -o  inside rootfs, output to out.
+    // Run `find . | sort | cpio -H newc -o` inside `rootfs` and write the
+    // archive to `out`.
     let find = Command::new("find").arg(".").current_dir(rootfs).output()?;
     if !find.status.success() {
-        return Err(PatchError::CommandFailed("find failed".into()));
+        return Err(PatchError::CommandFailed("find . failed".into()));
     }
 
     // Sort the file list for deterministic output.
@@ -374,8 +376,9 @@ fn repack_cpio(rootfs: &Path, out: &Path) -> Result<(), PatchError> {
     child.stdin.take().unwrap().write_all(sorted.as_bytes())?;
 
     let status = child.wait()?;
-    // bsdcpio (macOS) exits 1 for non-fatal warnings (unreadable setuid files, device
-    // nodes, etc.) but still produces a valid archive - only fail on ≥ 2.
+    // macOS bsdcpio exits with 1 on non-fatal warnings, such as for unreadable
+    // setuid files or device nodes, and still writes a valid archive, so only
+    // an exit code of 2 or more is an error.
     let code = status.code().unwrap_or(1);
     if code >= 2 {
         return Err(PatchError::CommandFailed(format!(
@@ -385,8 +388,7 @@ fn repack_cpio(rootfs: &Path, out: &Path) -> Result<(), PatchError> {
     Ok(())
 }
 
-/// Patch all NEWC cpio entries: force uid and gid fields to "00000000".
-/// Mirrors the Python post-processor in initramfs-work/repack.sh.
+/// Sets the uid and gid fields of every newc cpio entry to `00000000`.
 fn fix_cpio_ownership(data: &mut [u8]) {
     const MAGIC: &[u8] = b"070701";
     const HEADER: usize = 110;
@@ -423,8 +425,8 @@ fn parse_hex8(bytes: &[u8]) -> usize {
 // ── misc ──────────────────────────────────────────────────────────────────────
 
 fn tmp_dir(prefix: &str) -> io::Result<PathBuf> {
-    // Nanosecond resolution + PID makes concurrent collisions vanishingly
-    // unlikely without pulling in the `tempfile` crate just for this one site.
+    // A nanosecond timestamp and the PID make a name collision between
+    // concurrent runs very unlikely, without a dependency on `tempfile`.
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

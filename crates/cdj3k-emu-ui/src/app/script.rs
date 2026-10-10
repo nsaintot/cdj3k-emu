@@ -1,9 +1,9 @@
-//! Scripted panel input for headless checks: `CDJ3K_SCRIPT=<file>` plays
-//! timed actions against the running panel so a model's control mapping can
-//! be exercised and captured without a hand on the UI.
+//! Scripted panel input for unattended checks. `CDJ3K_SCRIPT=<file>` plays
+//! timed actions against the running panel, so a model's control mapping can
+//! be exercised and captured without anyone using the UI.
 //!
-//! One action per line, `<seconds since launch> <action> [args]`; blank
-//! lines and `#` comments are skipped:
+//! The file holds one action per line, `<seconds since launch> <action>
+//! [args]`. Blank lines and `#` comments are skipped:
 //!
 //! ```text
 //! 60   press PLAY            # a miso_frame BTN_* name, held 200 ms
@@ -56,11 +56,16 @@ impl ScriptDriver {
                         match parse_line(line) {
                             Ok(Some(a)) => actions.push(a),
                             Ok(None) => {}
-                            Err(e) => eprintln!("cdj3k-emu: script line {}: {e}", n + 1),
+                            Err(e) => eprintln!("cdj3k-emu: Script line {}: {e}", n + 1),
                         }
                     }
                 }
-                Err(e) => eprintln!("cdj3k-emu: script {}: {e}", path.to_string_lossy()),
+                Err(e) => {
+                    eprintln!(
+                        "cdj3k-emu: Could not read the script {}: {e}",
+                        path.to_string_lossy()
+                    )
+                }
             }
         }
         actions.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -96,7 +101,8 @@ impl ScriptDriver {
                 self.releases.push((now + hold, release));
             }
         }
-        // Keep the clock running: a quiet guest does not repaint on its own.
+        // Keep requesting frames, because a quiet guest does not repaint on
+        // its own.
         ctx.request_repaint_after(Duration::from_millis(50));
     }
 
@@ -120,8 +126,8 @@ impl ScriptDriver {
     }
 }
 
-/// Carry out `action`, logged as at `t`. Returns how long to hold what it
-/// set, and what lets go of it.
+/// Carry out `action` and log it with the time `t`. Returns how long to hold
+/// the control it set, and the release that lets it go.
 fn perform(
     action: Action,
     t: &str,
@@ -132,11 +138,11 @@ fn perform(
     match action {
         Action::Press { btn: name, hold } => {
             let Some(btn) = app.btn_by_name(&name) else {
-                eprintln!("cdj3k-emu: script {t}s press {name}: not a button of this model");
+                eprintln!("cdj3k-emu: script {t} press {name}: this model has no such button");
                 return None;
             };
             eprintln!(
-                "cdj3k-emu: script {t}s press {name} = {}:{:#04x}",
+                "cdj3k-emu: script {t} press {name} (bit {}:{:#04x})",
                 btn.0, btn.1
             );
             app.set_btn_scripted(btn, true);
@@ -144,43 +150,43 @@ fn perform(
         }
         Action::Clear { bit: name, hold } => {
             let Some(bit) = app.btn_by_name(&name) else {
-                eprintln!("cdj3k-emu: script {t}s clear {name}: not a bit of this model");
+                eprintln!("cdj3k-emu: script {t} clear {name}: this model has no such bit");
                 return None;
             };
             eprintln!(
-                "cdj3k-emu: script {t}s clear {name} = {}:{:#04x}",
+                "cdj3k-emu: script {t} clear {name} (bit {}:{:#04x})",
                 bit.0, bit.1
             );
             app.set_bit_cleared(bit, true);
             Some((hold, Release::Cleared(bit)))
         }
         Action::Touch { x, y, hold } => {
-            eprintln!("cdj3k-emu: script {t}s touch {x} {y}");
+            eprintln!("cdj3k-emu: script {t} touch {x} {y}");
             app.script_touch = false;
             app.apply_lcd_touch(touch_capture(Some(Pos2::new(x, y))));
             app.script_touch = true;
             Some((hold, Release::Touch))
         }
         Action::Shot(path) => {
-            eprintln!("cdj3k-emu: script {t}s shot {path}");
+            eprintln!("cdj3k-emu: script {t} shot {path}");
             shot.request_capture(ctx, path);
             None
         }
         Action::Tilt => {
-            eprintln!("cdj3k-emu: script {t}s tilt");
+            eprintln!("cdj3k-emu: script {t} tilt");
             app.tilted = !app.tilted;
             None
         }
         Action::Quit => {
-            eprintln!("cdj3k-emu: script {t}s quit");
+            eprintln!("cdj3k-emu: script {t} quit");
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             None
         }
     }
 }
 
-/// A synthetic LCD touch: the display is the unit square, so fractions map
-/// straight to the frame's normalised coordinates.
+/// A synthetic LCD touch. The display is the unit square, so the fractions
+/// are the frame's normalised coordinates.
 fn touch_capture(pos: Option<Pos2>) -> LcdTouchCapture {
     LcdTouchCapture {
         hovered: true,
@@ -210,7 +216,7 @@ fn parse_line(line: &str) -> Result<Option<(f64, Action)>, String> {
             Some(s) => s
                 .parse::<u64>()
                 .map(Duration::from_millis)
-                .map_err(|_| format!("bad hold {s:?}")),
+                .map_err(|_| format!("the hold time {s:?} is not a whole number of milliseconds")),
         }
     };
     let action = match w.next() {
@@ -226,11 +232,11 @@ fn parse_line(line: &str) -> Result<Option<(f64, Action)>, String> {
             let x: f32 = w
                 .next()
                 .and_then(|s| s.parse().ok())
-                .ok_or("touch needs x y")?;
+                .ok_or("touch needs an x and a y")?;
             let y: f32 = w
                 .next()
                 .and_then(|s| s.parse().ok())
-                .ok_or("touch needs x y")?;
+                .ok_or("touch needs an x and a y")?;
             Action::Touch {
                 x,
                 y,

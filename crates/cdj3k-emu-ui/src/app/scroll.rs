@@ -1,10 +1,11 @@
-//! The wheel and trackpad as the frame's own events report them.
+//! Reads the wheel and trackpad movement from the frame's own events.
 
 use egui::{Event, MouseWheelUnit, Vec2};
 
-/// This frame's wheel movement, unsmoothed and whatever the modifiers: the
-/// deck's jog and rotaries turn by what the hand did, and ctrl+scroll is
-/// theirs too. Lines and pages are counted in points the way egui counts them.
+/// This frame's wheel movement, unsmoothed and regardless of modifiers, so
+/// the deck's jog and rotaries turn by exactly what the hand did, also while
+/// Ctrl is held. Lines and pages are converted to points the way egui
+/// converts them.
 pub(in crate::app) fn raw_delta(ui: &egui::Ui) -> Vec2 {
     let line = ui.ctx().options(|o| o.input_options.line_scroll_speed);
     ui.input(|i| {

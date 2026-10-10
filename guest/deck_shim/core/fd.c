@@ -3,19 +3,19 @@
 /* Active fd table helpers                                            */
 /* ------------------------------------------------------------------ */
 /*
- * Lockless. Reads happen on every intercepted syscall (3+ JUCE threads at
- * 96 kHz audio cadence) so a shared spinlock here serialised the entire
- * audio path and was the dominant contributor to guest-side spinning under
- * load. Slots only change on open()/close(), so we use atomic load/store
- * with acquire/release ordering for lookups, and CAS to claim a free slot.
+ * The sets are lockless because every intercepted syscall reads them (three
+ * or more JUCE threads at the 96 kHz audio cadence), and a shared lock would
+ * serialise the audio path. Slots change only on open() and close(), so
+ * lookups use atomic loads and stores with acquire/release ordering, and a
+ * CAS claims a free slot.
  *
- * Race tolerance:
- *  - fdset_has may miss a concurrent add and return 0 - the wrapper falls
- *    through to the unintercepted libc syscall, which is correct: the fd
- *    isn't fully registered yet.
- *  - fdset_has may see a stale fd while a remove is in flight - the
- *    intercept fires once more for an fd we've just closed; harmless.
- *  - fdset_add uses CAS to ensure two concurrent open()s can't claim the
+ * Tolerated races:
+ *  - fdset_has may miss a concurrent add and return 0. The wrapper then
+ *    falls through to the plain syscall, which is correct because the fd is
+ *    not fully registered yet.
+ *  - fdset_has may see a stale fd while a remove is in flight. The intercept
+ *    then runs once more for an fd that was just closed, which is harmless.
+ *  - fdset_add uses a CAS, so two concurrent open() calls cannot claim the
  *    same slot.
  */
 
@@ -32,7 +32,7 @@ static inline int try_claim(int *slot, int fd) {
                                        __ATOMIC_RELAXED);
 }
 
-/* ---- Generic set operations; model code builds its own sets on these ---- */
+/* ---- Generic set operations, which model code also uses for its own sets ---- */
 
 int fdset_has(int *set, int n, int fd) {
     if (fd < 0) return 0;

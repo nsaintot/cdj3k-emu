@@ -1,6 +1,6 @@
 [package]
 name = "cdj3k-emu-firmware"
-description = "User-supplied firmware unpack: LUKS1/2 container, ISO extraction, initramfs assembly."
+description = "Unpacks user-supplied firmware: decrypts the LUKS1 container, extracts the ISO and assembles the initramfs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-# LUKS1/2 decryption: AES-XTS + PBKDF2/Argon2
+# LUKS1 decryption uses AES-XTS or AES-CBC, with PBKDF2 key derivation.
 aes = "0.8"
 cbc = "0.1"
 xts-mode = "0.5"

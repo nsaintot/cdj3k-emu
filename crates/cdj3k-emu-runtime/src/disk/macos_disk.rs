@@ -1,21 +1,22 @@
-//! Native IOKit + DiskArbitration bindings for the USB manager.  Kept in
-//! one file so all the unsafe FFI lives in one auditable spot.
+//! Native IOKit and DiskArbitration bindings for the USB manager. All the
+//! unsafe FFI is in this file so that it can be audited in one place.
 //!
-//! Three public entry points:
+//! The public entry points:
 //!
-//!   * [`list_removable`] — IOKit IOMedia enumeration.  Yields BSD name,
-//!     size, and a human label derived from the volume name (first
-//!     partition) or the media name (whole-disk fallback).
-//!   * [`unmount_disk`] — DiskArbitration whole-disk unmount.  Synchronous
-//!     wrapper around `DADiskUnmount`.
-//!   * [`mount_disk`] — DiskArbitration whole-disk mount.  Synchronous
-//!     wrapper around `DADiskMount`.
+//!   * [`list_removable`] enumerates IOKit IOMedia entries. It returns the BSD
+//!     name, the size, and a label taken from the volume name of the first
+//!     partition, or from the media name of the whole disk.
+//!   * [`unmount_disk`] unmounts a whole disk through a synchronous wrapper
+//!     around `DADiskUnmount`.
+//!   * [`mount_disk`] mounts a whole disk through a synchronous wrapper around
+//!     `DADiskMount`.
 //!
-//! Synchronous semantics on async DA APIs:  we schedule a fresh `DASession`
-//! on the calling thread's run loop, issue the op with a small context
-//! capturing the dissenter status, then pump the run loop in private-mode
-//! until the callback fires (with a hard timeout).  No global state, no
-//! background threads.
+//! The DiskArbitration APIs are asynchronous. To make each call synchronous,
+//! the code schedules a fresh `DASession` on the calling thread's run loop,
+//! issues the operation with a small context that captures the dissenter
+//! status, and pumps the run loop in the default mode until the callback
+//! fires or a hard timeout elapses. It uses no global state and no background
+//! threads.
 
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
 
@@ -176,14 +177,14 @@ extern "C" {
 
 // ── CF helpers ────────────────────────────────────────────────────────────────
 
-/// Create a CFString from a Rust &str.  Caller must `CFRelease` the result.
+/// Create a CFString from a Rust &str. The caller must `CFRelease` the result.
 unsafe fn cf_string(s: &str) -> CFStringRef {
     let cstr = CString::new(s).expect("CF key must not contain NUL");
     CFStringCreateWithCString(kCFAllocatorDefault, cstr.as_ptr(), kCFStringEncodingUTF8)
 }
 
-/// Convert a CFString to an owned Rust String.  Returns None on type mismatch
-/// or encoding failure.
+/// Convert a CFString to an owned Rust String. Return `None` when the value is
+/// not a string or cannot be decoded.
 unsafe fn cf_string_to_rust(s: CFStringRef) -> Option<String> {
     if s.is_null() {
         return None;
@@ -210,8 +211,8 @@ unsafe fn cf_string_to_rust(s: CFStringRef) -> Option<String> {
     Some(cstr.to_string_lossy().into_owned())
 }
 
-/// Read an IORegistry property by key name.  Caller owns the returned ref
-/// (CFRelease on non-null).
+/// Read an IORegistry property by key name. The caller owns the returned
+/// reference and must `CFRelease` it when it is not null.
 unsafe fn ioreg_property(entry: io_registry_entry_t, key: &str) -> CFTypeRef {
     let cf_key = cf_string(key);
     if cf_key.is_null() {
@@ -262,19 +263,18 @@ unsafe fn ioreg_string(entry: io_registry_entry_t, key: &str) -> Option<String> 
     out
 }
 
-/// Look up DAVolumeName / DAMediaName for a BSD whole-disk name.  Tries
-/// `<bsd>s1` first (most USB sticks have a single partition with a label),
-/// then falls back to the whole disk's media name.
+/// Look up the DAVolumeName or DAMediaName for a BSD whole-disk name. Try
+/// `<bsd>s1` first, because most USB sticks have a single labelled partition,
+/// then fall back to the whole disk's media name.
 unsafe fn disk_friendly_name(session: DASessionRef, bsd_name: &str) -> Option<String> {
-    // Try partition 1 for the volume name.
     let part = format!("{bsd_name}s1");
     if let Some(name) = da_string(session, &part, kDADiskDescriptionVolumeNameKey) {
         if !name.trim().is_empty() {
             return Some(name);
         }
     }
-    // Fall back to the whole disk's media name (typically the hardware label,
-    // e.g. "JetFlash Transcend 32GB Media").
+    // The whole disk's media name is usually the hardware label, such as
+    // "JetFlash Transcend 32GB Media".
     if let Some(name) = da_string(session, bsd_name, kDADiskDescriptionMediaNameKey) {
         if !name.trim().is_empty() {
             return Some(name);
@@ -283,7 +283,7 @@ unsafe fn disk_friendly_name(session: DASessionRef, bsd_name: &str) -> Option<St
     None
 }
 
-/// Pull a CFString-valued key out of a DADisk description dictionary.
+/// Read a CFString value from a DADisk description dictionary.
 unsafe fn da_string(session: DASessionRef, bsd: &str, key: CFStringRef) -> Option<String> {
     let bsd_c = CString::new(bsd).ok()?;
     let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, bsd_c.as_ptr());
@@ -324,8 +324,9 @@ pub fn list_removable() -> Vec<PhysicalDisk> {
             if svc == 0 {
                 break;
             }
-            // Whole-disk + removable filter.  "Whole" excludes partitions;
-            // "Removable" or "Ejectable" picks USB / SD / external drives.
+            // Keep whole disks that are removable. "Whole" excludes
+            // partitions, and "Removable" or "Ejectable" selects USB, SD and
+            // external drives.
             let is_whole = ioreg_bool(svc, "Whole");
             let is_removable = ioreg_bool(svc, "Removable") || ioreg_bool(svc, "Ejectable");
             if is_whole && is_removable {
@@ -356,7 +357,7 @@ pub fn list_removable() -> Vec<PhysicalDisk> {
     out
 }
 
-/// Unmount every volume on the given whole disk.  Returns once the unmount
+/// Unmount every volume on the given whole disk. Return once the unmount
 /// callback fires or the timeout elapses.
 pub fn unmount_disk(bsd_name: &str) -> io::Result<()> {
     sync_disk_op(bsd_name, "unmount", |disk, ctx| unsafe {
@@ -369,8 +370,8 @@ pub fn unmount_disk(bsd_name: &str) -> io::Result<()> {
     })
 }
 
-/// Mount every volume on the given whole disk back at its default mount
-/// point.  Used after we've handed the raw device to QEMU and want it back.
+/// Mount every volume on the given whole disk at its default mount point.
+/// This runs when QEMU gives the raw device back.
 pub fn mount_disk(bsd_name: &str) -> io::Result<()> {
     sync_disk_op(bsd_name, "mount", |disk, ctx| unsafe {
         DADiskMount(
@@ -400,8 +401,8 @@ unsafe extern "C" fn on_da_done(_disk: DADiskRef, dissenter: DADissenterRef, con
     ctx.done = true;
 }
 
-/// Schedule a session, issue the op, pump the current thread's run loop in
-/// the default mode until the callback fires (or until 10 s elapses).
+/// Schedule a session, issue the operation, and pump the current thread's run
+/// loop in the default mode until the callback fires or 10 s elapse.
 fn sync_disk_op<F>(bsd_name: &str, label: &str, issue: F) -> io::Result<()>
 where
     F: FnOnce(DADiskRef, *mut DaCtx),
@@ -429,12 +430,12 @@ where
         };
         issue(disk, &mut ctx as *mut _);
 
-        // Pump run loop in 100 ms slices, total deadline 10 s.
+        // Pump the run loop in 100 ms slices, for at most 10 s.
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ctx.done && Instant::now() < deadline {
             let rc = CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, 1);
             if rc == kCFRunLoopRunFinished {
-                // No sources left to service - bail to avoid a tight loop.
+                // The run loop has no sources left to service; stop to avoid a tight loop.
                 break;
             }
             let _ = (
@@ -449,7 +450,9 @@ where
         CFRelease(session as CFTypeRef);
 
         if !ctx.done {
-            return Err(io::Error::other(format!("{label}: timeout on {bsd_name}")));
+            return Err(io::Error::other(format!(
+                "{label}: timed out on {bsd_name}"
+            )));
         }
         if ctx.status != 0 {
             return Err(io::Error::other(format!(

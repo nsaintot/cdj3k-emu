@@ -1,7 +1,8 @@
-//! Static shape cache - avoids recomputing unchanged geometry every frame.
+//! Shape caches, which keep unchanged geometry from being rebuilt on every
+//! frame.
 //!
 //! # Strategy
-//! The CDJ-UI has three rendering categories:
+//! The panel draws three categories of shapes:
 //!
 //! | Category | Examples | Frequency |
 //! |---|---|---|
@@ -9,10 +10,10 @@
 //! | **Semi-static** | JOG ADJUST gear/indicator, tempo knob | Only on user drag |
 //! | **Static** | All buttons, labels, borders, outer jog rings | Only on resize |
 //!
-//! [`ShapeList`] is a painter-mirroring collector: static draw calls push
-//! into it instead of directly into the egui painter.  The collected
-//! `Vec<Shape>` is stored in [`JogStaticCache`] and replayed each frame via
-//! `painter.extend(...)` - no geometry recomputation until the cache is stale.
+//! [`ShapeList`] mirrors the painter API: static draw calls push into it
+//! instead of into the egui painter. The collected `Vec<Shape>` is stored in a
+//! cache and replayed each frame with `painter.extend(...)`, so the geometry is
+//! recomputed only when the cache is stale.
 //!
 //! # Jog wheel split
 //! The pitchbend grip sits between the outer body fill and the inner LCD disk,
@@ -22,13 +23,13 @@
 //! painter.extend(outer)           - jog outer rings
 //! paint_pitchbend_grip(…)         - always recomputed (dynamic rotation)
 //! painter.extend(inner_mid)       - platter + inner LCD background disk
-//! paint_jog_lcd_stream_texture(…) - jog FB mesh-clipped to inner LCD silhouette (c0 = scale only)
-//! painter.extend(inner_over)      - LCD chrome (stroke, MODE, BEAT SYNC, separators) + JOG ADJUST
-//! paint_jog_inner_lcd_corner_labels - SLIP / VINYL / SYNC / MASTER (stream corner colors)
+//! paint_jog_lcd_stream_texture(…) - jog framebuffer, clipped to the inner LCD silhouette
+//! painter.extend(inner_over)      - LCD chrome (stroke, MODE, BEAT SYNC, separators), JOG ADJUST
+//! paint_jog_inner_lcd_corner_labels - SLIP, VINYL, SYNC, MASTER in the stream's corner colors
 //! ```
 //!
-//! The `inner_over` list is keyed on `jog_adjust` because the gear/indicator rotate
-//! with it; every other section is keyed on the `UiScale` triple alone.
+//! The `inner_over` list is keyed on `jog_adjust` because the gear and indicator
+//! rotate with it. Every other section is keyed on the `UiScale` triple alone.
 
 use std::collections::HashMap;
 
@@ -36,13 +37,12 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Shape, Stroke};
 
 // ── ShapeList ─────────────────────────────────────────────────────────────────
 
-/// Collects [`egui::Shape`]s for deferred/cached rendering, mirroring the
-/// [`egui::Painter`] draw API for purely *static* (non-interactive) calls.
+/// Collects [`egui::Shape`]s for cached rendering. It mirrors the
+/// [`egui::Painter`] draw API for static, non-interactive calls.
 #[derive(Default)]
 pub struct ShapeList(Vec<Shape>);
 
 impl ShapeList {
-    /// Consume the list and return the inner `Vec<Shape>`.
     pub fn into_shapes(self) -> Vec<Shape> {
         self.0
     }
@@ -79,8 +79,8 @@ impl ShapeList {
         self.0.push(shape);
     }
 
-    /// Lay out `text` through the egui font system and collect the resulting
-    /// [`Shape::galley`].  Requires a [`egui::Context`] for font access.
+    /// Lays out `text` with the egui font system and collects the resulting
+    /// [`Shape::galley`]. It needs an [`egui::Context`] for the fonts.
     pub fn text(
         &mut self,
         ctx: &egui::Context,
@@ -95,9 +95,9 @@ impl ShapeList {
         self.0.push(Shape::galley(top_left, galley, color));
     }
 
-    /// Fit a single-line caption to the ink box it occupies on a drawing:
-    /// the glyphs' height sets the font size, the box's width the spacing
-    /// between letters, and the ink lands on the box's top-left corner.
+    /// Fits a single-line caption to a given ink box. The box's height sets
+    /// the font size, its width sets the letter spacing, and the ink starts at
+    /// the box's top-left corner.
     pub fn text_in_ink_box(
         &mut self,
         ctx: &egui::Context,
@@ -129,11 +129,11 @@ impl ShapeList {
         self.0.push(Shape::galley(top_left, galley, color));
     }
 
-    /// Center `text` on its visible ink bounds (not the line box) at `center`,
-    /// then snap to the device pixel grid. Use for single-glyph labels (icons,
-    /// arrows, dots) where line-box centering drifts visibly with font metrics
-    /// and rasterizer rounding. For multi-char labels, prefer [`Self::text`]
-    /// with [`Align2::CENTER_CENTER`].
+    /// Centers the visible ink of `text` at `center` and snaps it to the
+    /// device pixel grid. Use it for single-glyph labels such as icons, arrows
+    /// and dots, where centering on the line box drifts visibly with the font
+    /// metrics. For longer labels, use [`Self::text`] with
+    /// [`Align2::CENTER_CENTER`].
     pub fn text_centered_ink(
         &mut self,
         ctx: &egui::Context,
@@ -152,11 +152,11 @@ impl ShapeList {
 
 // ── Jog wheel static cache ────────────────────────────────────────────────────
 
-/// Cache validity key for the jog wheel section.
+/// The cache key for the jog wheel section.
 ///
-/// The layout triple (`ox`, `oy`, `scale`) covers window resize/reposition.
-/// `jog_adjust_step` covers the JOG ADJUST gear/indicator rotation, which is
-/// encoded discretely (13 detent positions → steps 0–12) to avoid float noise.
+/// The layout triple (`ox`, `oy`, `scale`) changes when the window is resized
+/// or moved. `jog_adjust_step` is the rotation of the JOG ADJUST gear and
+/// indicator, stored as one of 13 steps, 0 to 12, to avoid float noise.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JogCacheKey {
     pub layout: (i32, i32, i32),
@@ -176,31 +176,34 @@ impl JogCacheKey {
     }
 }
 
-/// Cached jog wheel geometry, split around the always-dynamic pitchbend grip.
+/// Cached jog wheel geometry, split around the pitchbend grip, which is
+/// redrawn on every frame.
 ///
 /// Draw order every frame:
-/// 1. `painter.extend(outer)` - silver/body outer disks, cosmetic ring border
-/// 2. `paint_pitchbend_grip(angle)` - always recomputed
-/// 3. `painter.extend(inner_mid)` - touch platter, border, inner LCD background disk
-/// 4. jog stream texture (dynamic) - textured mesh clipped to inner LCD silhouette
-/// 5. `painter.extend(inner_over)` - inner LCD outline, MODE / BEAT SYNC, JOG ADJUST
-/// 6. `paint_jog_inner_lcd_corner_labels` - SLIP / VINYL / SYNC / MASTER
+/// 1. `painter.extend(outer)`: the silver and body outer disks and the ring border.
+/// 2. `paint_pitchbend_grip(angle)`, which is always recomputed.
+/// 3. `painter.extend(inner_mid)`: the touch platter, its border and the inner LCD background disk.
+/// 4. The jog stream texture, a mesh clipped to the inner LCD silhouette.
+/// 5. `painter.extend(inner_over)`: the inner LCD outline, MODE, BEAT SYNC and JOG ADJUST.
+/// 6. `paint_jog_inner_lcd_corner_labels`: SLIP, VINYL, SYNC and MASTER.
 pub struct JogStaticCache {
     pub key: JogCacheKey,
-    /// Shapes drawn *before* the pitchbend grip layer.
+    /// Shapes drawn before the pitchbend grip.
     pub outer: Vec<Shape>,
-    /// After grip: platter + border + inner LCD filled disk (below stream texture).
+    /// Shapes drawn after the grip and below the stream texture: the platter,
+    /// its border and the inner LCD's filled disk.
     pub inner_mid: Vec<Shape>,
-    /// After jog LCD texture: decorative LCD chrome + JOG ADJUST assembly.
+    /// Shapes drawn after the jog LCD texture: the LCD chrome and the JOG
+    /// ADJUST assembly.
     pub inner_over: Vec<Shape>,
 }
 
 // ── Generic ShapeCache<K> ─────────────────────────────────────────────────────
 
-/// Generic shape cache: stores a `Vec<Shape>` that is rebuilt only when `key` changes.
+/// A shape cache that rebuilds its `Vec<Shape>` only when `key` changes.
 ///
-/// Use this for elements that change on a known set of parameters (e.g. LED bytes,
-/// a slider value, a corner-label color set) but don't need per-widget ID tracking.
+/// Use it for elements that depend on a known set of values, such as LED bytes,
+/// a slider value or a set of corner-label colors, and need no per-widget ID.
 pub struct ShapeCache<K: PartialEq + Clone> {
     key: Option<K>,
     shapes: Vec<Shape>,
@@ -216,7 +219,7 @@ impl<K: PartialEq + Clone> Default for ShapeCache<K> {
 }
 
 impl<K: PartialEq + Clone> ShapeCache<K> {
-    /// Return the cached shapes, rebuilding if `key` changed.
+    /// Returns the cached shapes, rebuilt first if `key` changed.
     pub fn get_or_build(&mut self, key: K, build: impl FnOnce(&mut ShapeList)) -> &[Shape] {
         if self.key.as_ref() != Some(&key) {
             let mut list = ShapeList::default();
@@ -230,20 +233,23 @@ impl<K: PartialEq + Clone> ShapeCache<K> {
 
 // ── BtnShapeCache ─────────────────────────────────────────────────────────────
 
-/// Per-widget cache key: quantized screen rect + packed visual state + pressed flag.
+/// The per-widget cache key: the quantized screen rect, the packed visual state
+/// and the pressed flag.
 ///
-/// The rect is quantized to ×100 integer to avoid float noise while remaining sensitive
-/// to sub-pixel layout changes caused by window resize. `state` packs up to 4 bytes of
-/// relevant MOSI LED / color data (use `Color32::to_array()` bytes or raw LED byte).
+/// The rect is multiplied by 100 and rounded, which removes float noise but
+/// still catches sub-pixel layout changes from a window resize. `state` packs up
+/// to 4 bytes of MOSI LED or color data, such as the bytes of
+/// `Color32::to_array()` or a raw LED byte.
 #[derive(PartialEq, Eq, Clone)]
 pub struct BtnCacheKey {
-    /// Quantized [min_x, min_y, max_x, max_y] in screen pixels × 100.
+    /// [min_x, min_y, max_x, max_y] in screen pixels, multiplied by 100 and rounded.
     rect: [i32; 4],
     /// Packed visual state: up to 4 MOSI bytes or a `Color32` RGBA.
     pub state: u32,
     /// Whether the button is visually pressed (pointer down or latched).
     pub pressed: bool,
-    /// Quantized pixels_per_point × 100 - invalidates on screen DPI change.
+    /// pixels_per_point multiplied by 100 and rounded, so that a DPI change
+    /// invalidates the key.
     ppp: i32,
 }
 
@@ -259,18 +265,20 @@ impl BtnCacheKey {
     }
 }
 
-/// Cache for interactive buttons. Each button is identified by its egui [`Id`]
-/// (unique per call site), so all buttons in the entire UI share one cache map.
+/// The cache for interactive buttons. Each button is identified by its egui
+/// [`Id`](egui::Id), which is unique per call site, so every button in the UI shares one
+/// cache map.
 ///
-/// Shapes are rebuilt only when the key changes - i.e., when layout, LED color,
-/// or pressed state changes for that specific button.
+/// A button's shapes are rebuilt only when its key changes: its layout, its LED
+/// color or its pressed state.
 #[derive(Default)]
 pub struct BtnShapeCache {
     map: HashMap<egui::Id, (BtnCacheKey, Vec<Shape>)>,
 }
 
 impl BtnShapeCache {
-    /// Return shapes for `id`, rebuilding if `key` changed since last call (or on first call).
+    /// Returns the shapes for `id`, built on the first call and rebuilt when
+    /// `key` changes.
     pub fn get_or_build(
         &mut self,
         id: egui::Id,
@@ -288,8 +296,9 @@ impl BtnShapeCache {
 
 // ── StaticShapeCache ──────────────────────────────────────────────────────────
 
-/// Shape cache for purely static regions (chassis, labels, separators).
-/// Keyed by the quantized `(ox, oy, scale, ppp)` triple - rebuilt on resize or DPI change.
+/// A shape cache for static regions such as the chassis, labels and
+/// separators. It is keyed on the quantized `(ox, oy, scale, ppp)` tuple and is
+/// rebuilt on a resize or a DPI change.
 #[derive(Default)]
 pub struct StaticShapeCache {
     key: Option<(i32, i32, i32, i32)>,
@@ -297,7 +306,7 @@ pub struct StaticShapeCache {
 }
 
 impl StaticShapeCache {
-    /// Return the cached shapes, rebuilding if the layout or DPI changed.
+    /// Returns the cached shapes, rebuilt first if the layout or DPI changed.
     pub fn get_or_build(
         &mut self,
         ox: f32,
@@ -317,8 +326,8 @@ impl StaticShapeCache {
         &self.shapes
     }
 
-    /// Paint the cached shapes with `p`, rebuilt first if the layout or DPI
-    /// changed; returns how many it painted.
+    /// Paints the cached shapes with `p`, rebuilt first if the layout or DPI
+    /// changed, and returns the number of shapes painted.
     pub(in crate::app) fn paint(
         &mut self,
         p: &egui::Painter,
@@ -335,7 +344,8 @@ impl StaticShapeCache {
 
 // ── ShapeCaches ───────────────────────────────────────────────────────────────
 
-/// Layout, the two knobs' angles and their pressed states.
+/// The cache key for two knobs: the layout, the knobs' angles and their
+/// pressed states.
 pub(in crate::app) type KnobCacheKey = (i32, i32, i32, [u32; 2], [bool; 2]);
 
 /// Every shape cache the panel draws through. A model change drops them all.

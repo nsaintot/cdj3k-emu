@@ -1,6 +1,6 @@
 //! The frame every setup step shares: the identity strip and title block at
-//! the top, the action bar at the foot, and the size factor `k` both are
-//! measured with.
+//! the top, the action bar at the foot, and the size factor `k` that scales
+//! them both.
 
 use cdj3k_emu_panel::Model;
 use cdj3k_emu_platform::app_meta::{APP_DISPLAY_NAME, VERSION};
@@ -10,26 +10,28 @@ use super::paint::{hairline, text_width, tracked};
 use super::slot_menu::draw_slot_switch;
 use crate::app::theme::{self, Palette};
 
-/// Window width the pixel sizes are authored against; `k == 1.0` here.
+/// The window width at which `k` is 1.0 and the pixel sizes apply as they
+/// are written.
 const REF_WIDTH: f32 = 760.0;
 const K_MIN: f32 = 0.70;
 const K_MAX: f32 = 1.40;
 
 // ── Identity strip ────────────────────────────────────────────────────────────
-/// Between the wordmark, the slot and the deck.
+/// The gap between the wordmark, the slot and the deck.
 pub(super) const STRIP_GAP: f32 = 12.0;
 /// The short upright rule that separates them.
 const STRIP_RULE_H: f32 = 12.0;
 /// The square of deck colour before a model's name.
 pub(super) const STRIP_SWATCH: f32 = 6.0;
-/// Between that square and the name, and between the state dot and its word.
+/// The gap between that square and the name, and between the state dot and
+/// its word.
 pub(super) const STRIP_MARK_GAP: f32 = 6.0;
 const STRIP_STATE_DOT: f32 = 7.0;
 
 // ── Title block ───────────────────────────────────────────────────────────────
 const TITLE_TOP_GAP: f32 = 20.0;
 const TITLE_SUB_GAP: f32 = 8.0;
-/// Below the subtitle, where a step's own content starts.
+/// The gap below the subtitle, where a step's own content starts.
 const HEADER_BODY_GAP: f32 = 16.0;
 
 /// The upright rule that sets the slot's own action apart from the window's
@@ -48,10 +50,10 @@ pub(in crate::app) struct Header<'a> {
     pub release: Option<&'a str>,
     pub title: &'a str,
     pub sub: &'a str,
-    /// Whether the slot chip opens its menu. The window follows the slot it
-    /// is pointed at, so a step in the middle of a job keeps its own.
+    /// Whether the slot chip opens its menu. A step in the middle of a job
+    /// turns it off so that the window stays on its slot.
     pub switchable: bool,
-    /// `sub` is a warning.
+    /// Whether `sub` is a warning.
     pub warn: bool,
 }
 
@@ -64,9 +66,9 @@ pub(in crate::app) struct HeaderOut {
 }
 
 /// Paint the window's ground, its identity strip and its title block, and
-/// return the area a step's own content gets - the action bar included. Every
-/// step draws this, so the window reads as one thing as the job moves from
-/// choosing a deck to installing its firmware.
+/// return the area for the step's own content, including the action bar.
+/// Every step draws this, so the window looks the same from choosing a deck
+/// to installing its firmware.
 pub(in crate::app) fn draw_header(ui: &egui::Ui, head: &Header<'_>) -> HeaderOut {
     let area = ui.max_rect();
     let k = k_of(area);
@@ -85,8 +87,8 @@ pub(in crate::app) fn draw_header(ui: &egui::Ui, head: &Header<'_>) -> HeaderOut
     }
 }
 
-/// The identity strip, left to right: the wordmark, the slot chip, the deck
-/// and its release, and at the right end the state word. Returns a slot
+/// Draws the identity strip, left to right: the wordmark, the slot chip, the
+/// deck and its release, and at the right end the state word. Returns a slot
 /// picked from the chip's menu.
 fn draw_strip(ui: &egui::Ui, strip: Rect, head: &Header<'_>, pal: &Palette, k: f32) -> Option<u32> {
     let p = ui.painter();
@@ -122,8 +124,8 @@ fn draw_strip(ui: &egui::Ui, strip: Rect, head: &Header<'_>, pal: &Palette, k: f
     switch_to
 }
 
-/// The deck's colour, its name, and the firmware release it was installed
-/// from, quieter than the deck it is on.
+/// Draws the deck's colour, its name, and the firmware release it was
+/// installed from, in a fainter colour than the name.
 fn strip_deck(
     p: &egui::Painter,
     at: Pos2,
@@ -161,7 +163,7 @@ fn strip_deck(
     }
 }
 
-/// The state word at the strip's right end, behind a dot.
+/// Draws the state word at the strip's right end, after a dot.
 fn strip_state(
     p: &egui::Painter,
     right: f32,
@@ -185,7 +187,7 @@ fn strip_state(
     );
 }
 
-/// The title and the subtitle under the strip, whose foot is at `top`.
+/// Draws the title and the subtitle under the strip, whose foot is at `top`.
 /// Returns where a step's own content starts.
 fn draw_title(
     p: &egui::Painter,
@@ -226,8 +228,8 @@ pub(in crate::app) fn footer_split(area: Rect, k: f32) -> (Rect, Rect) {
     )
 }
 
-/// Paint the action bar - a plate under a hairline, the build at its quiet
-/// end - and return the area the step's own buttons get.
+/// Paint the action bar, a plate under a hairline with the app version at its
+/// left end, and return the area for the step's buttons.
 pub(in crate::app) fn draw_footer(ui: &egui::Ui, bar: Rect, pal: &Palette, k: f32) -> Rect {
     let p = ui.painter();
     p.rect_filled(bar, 0.0, pal.plate);
@@ -248,20 +250,20 @@ pub(in crate::app) fn draw_footer(ui: &egui::Ui, bar: Rect, pal: &Palette, k: f3
     )
 }
 
-/// The size every action button in the bar takes, so a row of them lines up
-/// whatever the labels say.
+/// The size of every action button in the bar, so a row of them lines up
+/// whatever the labels are.
 pub(in crate::app) fn button_size(k: f32) -> [f32; 2] {
     [theme::BUTTON_SIZE[0] * k, theme::BUTTON_SIZE[1] * k]
 }
 
-/// The window's size factor: every pixel size is authored against
-/// [`REF_WIDTH`].
+/// The window's size factor. Every pixel size is written for a window
+/// [`REF_WIDTH`] wide.
 pub(in crate::app) fn k_of(area: Rect) -> f32 {
     (area.width() / REF_WIDTH).clamp(K_MIN, K_MAX)
 }
 
-/// A step with nothing to do but wait: the emulation stopping before its
-/// installation may be touched.
+/// Draws a waiting step, shown while the emulation stops before its
+/// installation can be changed.
 pub(in crate::app) fn draw_busy(
     ui: &mut egui::Ui,
     head: &Header<'_>,
@@ -289,8 +291,8 @@ pub(in crate::app) fn draw_busy(
 }
 
 /// The upright rule in the action bar, between the window's own action and
-/// the slot's. It takes its own place in the row rather than being painted
-/// into the gap, so the spacing either side of it is the bar's.
+/// the slot's. It takes its own place in the row, so the bar's item spacing
+/// applies on both sides.
 pub(in crate::app) fn footer_rule(ui: &mut egui::Ui, pal: &Palette, k: f32) {
     let (rect, _) = ui.allocate_exact_size(
         Vec2::new(theme::HAIRLINE * k, FOOTER_RULE_H * k),

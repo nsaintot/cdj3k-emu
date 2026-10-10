@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * jog_drm.c - libdrm-style API surface (drmGetVersion, drmModeGet*Connector,
- * drmModeGetEncoder, and the matching free helpers). Pure plumbing - these
- * fabricate DRM objects matching what the app's jog assembly expects.
- *
- * Statics _get_connector_real / _get_encoder_real (if present) live here too
- * since they're only called from within this TU.
+ * jog_drm.c - the libdrm API hooks (drmGetVersion, drmModeGet*Connector,
+ * drmModeGetEncoder and the matching free helpers). They query the kernel and
+ * adjust the results to what the app's jog code expects: every connector is
+ * reported as connected, the jog DSI-2 connector gets the synthesised mode,
+ * and the jog encoder gets the second CRTC.
  */
 
 #include "deck_shim.h"
@@ -20,7 +19,7 @@ drm_api_version_t *drmGetVersion(int fd) {
     v->name     = (char *)calloc(9,  1); if (v->name) { memcpy(v->name, "rockchip", 8); v->name_len = 8; }
     v->date     = (char *)calloc(11, 1); if (v->date) { memcpy(v->date, "2023-01-01", 10); v->date_len = 10; }
     v->desc     = (char *)calloc(7,  1); if (v->desc) { memcpy(v->desc, "RK DRM", 6);  v->desc_len = 6; }
-    DBG("drmGetVersion(fd=%d) → rockchip v1.4.0\n", fd);
+    DBG("drmGetVersion(fd=%d): reporting rockchip v1.4.0\n", fd);
     return v;
 }
 
@@ -31,7 +30,7 @@ void drmFreeVersion(drm_api_version_t *v) {
 }
 
 /* ------------------------------------------------------------------ */
-/* drmModeGetConnector / drmModeGetConnectorCurrent                   */
+/* drmModeGetConnector and drmModeGetConnectorCurrent                 */
 /* ------------------------------------------------------------------ */
 
 #define DRM_API_MODE_CONNECTED    1
@@ -101,12 +100,12 @@ static drm_api_connector_t *_get_connector_real(int fd, uint32_t id) {
             c->modes      = syn;
             c->count_modes = 1;
             fprintf(stderr,
-                    "[deck_shim] drmModeGetConnector(id=%u): synthesized "
-                    "1280x240 preferred mode for jog DSI-2\n", id);
+                    "[deck_shim] drmModeGetConnector(id=%u): added a synthesised "
+                    "1280x240 preferred mode for the jog DSI-2 connector\n", id);
         }
     }
 
-    DBG("drmModeGetConnector(fd=%d, id=%u) type=%u type_id=%u → forced connected\n",
+    DBG("drmModeGetConnector(fd=%d, id=%u) type=%u type_id=%u: reporting the connector as connected\n",
         fd, id, c->connector_type, c->connector_type_id);
     return c;
 }
@@ -175,7 +174,7 @@ drm_api_encoder_t *drmModeGetEncoder(int fd, uint32_t encoder_id) {
                     e->crtc_id = crtc_ids[1];
                 } else {
                     fprintf(stderr,
-                            "[deck_shim] drmModeGetEncoder: GETRESOURCES phase2 failed: %s\n",
+                            "[deck_shim] drmModeGetEncoder: the second GETRESOURCES call failed: %s\n",
                             strerror(errno));
                 }
                 free((void *)(uintptr_t)res.fb_id_ptr);
@@ -185,7 +184,7 @@ drm_api_encoder_t *drmModeGetEncoder(int fd, uint32_t encoder_id) {
             }
         } else if (e->crtc_id == 0) {
             fprintf(stderr,
-                    "[deck_shim] drmModeGetEncoder: GETRESOURCES phase1 failed or <2 CRTCs: %s\n",
+                    "[deck_shim] drmModeGetEncoder: the first GETRESOURCES call failed or returned fewer than 2 CRTCs: %s\n",
                     strerror(errno));
         }
     }

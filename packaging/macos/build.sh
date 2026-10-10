@@ -10,8 +10,9 @@
 #                    (default: dist/macos)
 #   --out DIR        where the signed .app and the .dmg go (default: dist)
 #   --sign IDENTITY  codesign identity (overrides CODESIGN_IDENTITY env var)
-#                    Use "Apple Development" to pick your only dev cert automatically.
-#                    Falls back to ad-hoc (-) when omitted - TCC/FDA will not work.
+#                    "Apple Development" picks your only development certificate.
+#                    Without an identity the bundle is signed ad-hoc (-), and TCC
+#                    and Full Disk Access do not work.
 #   --profile PATH   Apple provisioning profile authorising the restricted
 #                    entitlements (vmnet, virtual HID).  Default:
 #                    ./cdj3k-emu.provisionprofile; PROVISION_PROFILE env var
@@ -42,8 +43,8 @@ source "$REPO_ROOT/packaging/macos/lib.sh"
 # ── Options ──────────────────────────────────────────────────────────────────
 STAGE_DIR="$REPO_ROOT/dist/macos"
 OUT_DIR="$REPO_ROOT/dist"
-# Real identity (e.g. "Apple Development") enables TCC/FDA tracking.
-# Falls back to ad-hoc ("-") when not set.
+# A real identity, such as "Apple Development", lets TCC track the app for
+# Full Disk Access. Without one, the bundle is signed ad-hoc ("-").
 SIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 MAKE_DMG=0
 DMG_VERSION=""
@@ -73,9 +74,9 @@ if [[ -n "$NOTARY_KEYCHAIN" ]]; then
     NOTARY_AUTH+=(--keychain "$NOTARY_KEYCHAIN")
 fi
 
-# Notarization is an Apple-side check of a Developer ID signature: it is
-# meaningless (and refused by notarytool) for ad-hoc or Apple Development
-# signatures, so fail here rather than after the whole bundle is assembled.
+# Notarization checks a Developer ID signature, and notarytool refuses ad-hoc
+# and Apple Development signatures, so the identity is checked before the
+# bundle is assembled.
 if [[ "$NOTARIZE" -eq 1 ]]; then
     if [[ "$SIGN_IDENTITY" != *"Developer ID Application"* ]]; then
         echo "ERROR: --notarize needs --sign \"Developer ID Application: ...\"" >&2
@@ -83,7 +84,7 @@ if [[ "$NOTARIZE" -eq 1 ]]; then
         exit 1
     fi
     if ! xcrun notarytool history "${NOTARY_AUTH[@]}" >/dev/null 2>&1; then
-        echo "ERROR: no notarytool credentials under keychain profile '$NOTARY_PROFILE'." >&2
+        echo "ERROR: the keychain profile '$NOTARY_PROFILE' holds no notarytool credentials." >&2
         echo "       Store them once (needs an app-specific password from appleid.apple.com):" >&2
         echo "         xcrun notarytool store-credentials $NOTARY_PROFILE \\" >&2
         echo "             --apple-id <APPLE_ID> --team-id <TEAM_ID>" >&2
@@ -94,7 +95,7 @@ fi
 # ── The staged .app ──────────────────────────────────────────────────────────
 STAGED_APP="$STAGE_DIR/CDJ3K Emulator.app"
 [[ -d "$STAGED_APP/Contents/MacOS" ]] || {
-    echo "ERROR: $STAGED_APP is not a staged .app - run packaging/macos/stage.sh" >&2
+    echo "ERROR: $STAGED_APP is not a staged .app. Run packaging/macos/stage.sh." >&2
     exit 1
 }
 mkdir -p "$OUT_DIR"
@@ -105,8 +106,8 @@ rm -rf "$APP_DIR"
 cp -R "$STAGED_APP" "$APP_DIR"
 
 # ── Codesign ─────────────────────────────────────────────────────────────────
-# cdj3k-emu calls Hypervisor.framework via libcdj3k-emu-qemu.dylib - the entitlement
-# must be on the process binary (cdj3k-emu), not the dylib.
+# cdj3k-emu calls Hypervisor.framework through libcdj3k-emu-qemu.dylib; the
+# entitlement must be on the process binary (cdj3k-emu), not on the dylib.
 #
 # With a real identity (Apple Development / Developer ID):
 #   --options runtime enables the hardened runtime required for notarization
@@ -116,27 +117,28 @@ cp -R "$STAGED_APP" "$APP_DIR"
 #   without one, and it is what keeps the signature valid after the
 #   certificate expires.
 #
-# With ad-hoc (-): HVF works locally but TCC cannot identify the app -
-#   it will never appear in the FDA list and physical USB passthrough
-#   will be denied by macOS even if the user is in the operator group.
+# With an ad-hoc signature (-), HVF works locally but TCC cannot identify the
+#   app: it never appears in the FDA list, and macOS denies physical USB
+#   passthrough even if the user is in the operator group.
 
 # Restricted entitlements (vmnet, virtual HID) only take effect when an
 # Apple-issued provisioning profile authorising them sits at
 # Contents/embedded.provisionprofile.  AMFI kills the process at launch if the
 # signature carries a restricted key the profile does not grant, so the keys
-# below are read back out of the profile: the signature is a subset of the
-# grant by construction.
+# below are read from the profile, and the signature never claims a key that
+# the profile does not grant.
 PROFILE_ENT=""
 if [[ -f "$PROVISION_PROFILE" ]]; then
     echo "==> Provisioning profile: $PROVISION_PROFILE"
     PROFILE_PLIST=$(mktemp -t provisionprofile)
     TMP_CLEANUP+=("$PROFILE_PLIST")
     if ! security cms -D -i "$PROVISION_PROFILE" -o "$PROFILE_PLIST" 2>/dev/null; then
-        echo "ERROR: could not decode provisioning profile: $PROVISION_PROFILE" >&2
+        echo "ERROR: could not decode the provisioning profile $PROVISION_PROFILE." >&2
         exit 1
     fi
     # The profile's App ID must match CFBundleIdentifier or the signature is
-    # rejected; catching it here beats a launch-time AMFI kill with no message.
+    # rejected. Check it here, because otherwise AMFI kills the app at launch
+    # without a message.
     PROFILE_APPID=$(/usr/libexec/PlistBuddy -c \
         "Print :Entitlements:com.apple.application-identifier" "$PROFILE_PLIST" 2>/dev/null || echo "")
     if [[ "$PROFILE_APPID" != *".com.cdj3k.emu" ]]; then
@@ -160,7 +162,7 @@ if [[ -f "$PROVISION_PROFILE" ]]; then
     cp "$PROVISION_PROFILE" "$APP_DIR/Contents/embedded.provisionprofile"
 else
     echo "==> No provisioning profile at $PROVISION_PROFILE"
-    echo "     signing with the free entitlements only - vmnet and virtual HID"
+    echo "     signing with the free entitlements only; vmnet and virtual HID"
     echo "     will be unavailable.  Pass --profile PATH to include them."
 fi
 
@@ -168,7 +170,8 @@ HVF_ENT=$(mktemp -t cdj3k-entitlements)
 TMP_CLEANUP+=("$HVF_ENT")
 # allow-jit: the bundled QEMU imports pthread_jit_write_protect_np for its TCG
 # backend (CDJ3K_EMU_TCG=1 selects it over HVF).  Under the hardened runtime
-# that API needs the entitlement or the JIT mapping fails.  Free - no profile.
+# that API needs the entitlement or the JIT mapping fails.  The entitlement is
+# free and needs no profile.
 cat > "$HVF_ENT" <<ENT
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -188,12 +191,13 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
     # Nested code in Resources is sealed as data by --deep, not re-signed.
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
         "$RESOURCES_DIR/CDJ3KEmuMIDI.plugin"
-    # Sparkle inside out: its helpers, then the framework.
+    # Sign Sparkle from the inside out: its helpers first, then the framework.
     SPARKLE="$APP_DIR/Contents/Frameworks/Sparkle.framework"
     for code in "$SPARKLE/Versions/B/Autoupdate" "$SPARKLE/Versions/B/Updater.app" "$SPARKLE"; do
         codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$code"
     done
-    # Deep-sign all nested binaries first (no entitlements on helpers/dylibs).
+    # Deep-sign all nested binaries first, without entitlements on helpers and
+    # dylibs.
     codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_DIR"
     # --deep strips entitlements; the main binary is signed again here.
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
@@ -203,17 +207,17 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
     echo "     TCC/FDA: grant Full Disk Access to CDJ3K Emulator in"
     echo "              System Settings → Privacy & Security → Full Disk Access"
 else
-    echo "==> Codesigning bundle (ad-hoc - TCC/FDA will not work)"
+    echo "==> Codesigning bundle (ad-hoc; TCC and Full Disk Access will not work)"
     echo "     Pass --sign \"Apple Development\" or set CODESIGN_IDENTITY to enable FDA."
     codesign --force --deep --sign - "$APP_DIR"
-    # --deep strips entitlements; CDJ3K Emulator is signed again after it.
+    # --deep strips entitlements, so the main binary is signed again after it.
     codesign --force --sign - --entitlements "$HVF_ENT" "$MACOS_DIR/cdj3k-emu"
 fi
 
 rm "$HVF_ENT"
 
 # ── Notarization (optional) ──────────────────────────────────────────────────
-# Submit, wait for Apple's verdict, staple the ticket.  The .app is notarized
+# Submit the file, wait for Apple's verdict and staple the ticket.  The .app is notarized
 # on its own (zipped: notarytool takes zip/dmg/pkg) so the copy inside the DMG
 # already carries a stapled ticket; the DMG is then signed and notarized as a
 # second artefact below.  `spctl` afterwards is the same check Gatekeeper runs
@@ -258,7 +262,8 @@ if [[ "$MAKE_DMG" -eq 1 ]]; then
         VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
             "$APP_DIR/Contents/Info.plist" 2>/dev/null || echo "0.0.0")
     fi
-    # The slices the app carries: both are the universal build.
+    # Name the DMG after the slices the binary carries; a binary with both
+    # arm64 and x86_64 is the universal build.
     ARCHS=$(lipo -archs "$MACOS_DIR/cdj3k-emu")
     case "$ARCHS" in
         *arm64*x86_64*|*x86_64*arm64*) DMG_ARCH=universal ;;

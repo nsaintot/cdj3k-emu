@@ -10,45 +10,48 @@ use super::super::draw_cache::ShapeList;
 use super::super::{CdjApp, UiScale, COL_BTN_TEXT};
 use super::*;
 
-// --- Pitchbend band - ring of grip ovals ---
+// --- Pitchbend band: a ring of grip ovals ---
 /// Number of grip ovals evenly spaced around the pitchbend band.
 pub(super) const JOG_GRIP_OVAL_COUNT: usize = 24;
-/// Oval radial half-length as a fraction of the pitchbend band width.
+/// The oval's radial half-length as a fraction of the pitchbend band width.
 pub(super) const JOG_GRIP_OVAL_RADIAL_FRAC: f32 = 0.32;
-/// Oval tangential half-width as a fraction of the per-slot arc length.
+/// The oval's tangential half-width as a fraction of one slot's arc length.
 pub(super) const JOG_GRIP_OVAL_TANGENT_FRAC: f32 = 0.32;
-/// Polygon resolution used to approximate each oval.
+/// Number of polygon segments that approximate each oval.
 pub(super) const JOG_GRIP_POLYGON_SEGMENTS: usize = 32;
-/// Outline stroke width for each oval (reference units).
+/// Outline stroke width of each oval, in reference units.
 pub(super) const JOG_GRIP_OVAL_STROKE_REF: f32 = 6.0;
 
-// --- 3-dot decoration between consecutive grip ovals ---
+// --- The three dots between consecutive grip ovals ---
 /// Number of decorative dots between each pair of consecutive ovals.
 pub(super) const JOG_GRIP_DOT_COUNT: usize = 3;
-/// Filled dot radius (reference units).
+/// Radius of each filled dot, in reference units.
 pub(super) const JOG_GRIP_DOT_RADIUS_REF: f32 = 10.0;
-/// Total radial spread of the dot cluster (outer-most to inner-most), reference units.
+/// Total radial spread of the dot cluster from the outermost to the innermost dot, in
+/// reference units.
 pub(super) const JOG_GRIP_DOT_RADIAL_SPREAD_REF: f32 = 80.0;
-/// Total tangential shift of the dot cluster (outer -> inner = left -> right), reference units.
+/// Total tangential shift of the dot cluster in reference units; the dots step from left to
+/// right as they go from the outer edge to the inner edge.
 pub(super) const JOG_GRIP_DOT_TANGENT_SPREAD_REF: f32 = -32.0;
 
 // ── Jog ring arc lights ───────────────────────────────────────────────────────
-/// Half-angle of each glow arc (degrees from its center).
+/// Half-angle of each glow arc, in degrees from its center.
 pub(super) const JOG_RING_LIGHT_HALF_ANGLE_DEG: f32 = 25.0;
-/// Polyline sample count per arc light.
+/// Number of polyline samples per arc light.
 pub(super) const JOG_RING_LIGHT_ARC_SEGMENTS: usize = 15;
-/// Core stroke width at the touch radius (reference units).
+/// Core stroke width at the touch radius, in reference units.
 pub(super) const JOG_RING_LIGHT_CORE_STROKE_REF: f32 = 10.0;
 /// Number of outward glow layers.
 pub(super) const JOG_RING_LIGHT_GLOW_LAYERS: usize = 25;
-/// Total radial spread of the outer glow (reference units).
+/// Total radial spread of the outer glow, in reference units.
 pub(super) const JOG_RING_LIGHT_GLOW_SPREAD_REF: f32 = 30.0;
-/// Total radial spread of the inner (platter) glow (reference units).
+/// Total radial spread of the inner (platter) glow, in reference units.
 pub(super) const JOG_RING_LIGHT_INNER_SPREAD_REF: f32 = 100.0;
 
 impl CdjApp {
-    /// Draw pitchbend grip - cached by layout + quantized rotation angle.
-    /// Quantize to 4096 steps/rev (~0.088° resolution): zero rebuilds when jog is idle.
+    /// Draws the pitchbend grip, cached by layout and by the rotation angle
+    /// quantized to 4096 steps per revolution (about 0.088°). An idle jog causes
+    /// no rebuilds.
     pub(super) fn paint_grip(
         &mut self,
         p: &egui::Painter,
@@ -86,7 +89,7 @@ impl CdjApp {
         p.extend(grip_shapes.iter().cloned());
     }
 
-    /// Jog ring arc lights - cached per LED state.
+    /// Draws the jog ring arc lights, cached per LED state.
     pub(super) fn paint_ring_lights(
         &mut self,
         p: &egui::Painter,
@@ -94,7 +97,7 @@ impl CdjApp {
         center: Pos2,
         r_touch: f32,
     ) {
-        // The ring's level and its red, as the player's codec reads them.
+        // Read the ring's brightness level and its red light from the MOSI frame.
         let mosi = self.mosi();
         let brt = mosi.step(Lamp::JogRing).level();
         let white_alpha: f32 = match brt {
@@ -135,7 +138,8 @@ impl CdjApp {
         }
     }
 
-    /// SLIP / VINYL / SYNC / MASTER - colors from last jog frame corner samples (above chrome).
+    /// Draws the SLIP, VINYL, SYNC and MASTER labels above the chrome, in the
+    /// colors sampled from the corners of the last jog frame.
     pub(super) fn paint_jog_inner_lcd_corner_labels(
         &mut self,
         p: &Painter,
@@ -199,14 +203,13 @@ fn collect_jog_corner_labels(
 }
 
 /// Paints the pitchbend band grip pattern: `JOG_GRIP_OVAL_COUNT` outlined ovals
-/// evenly spaced on the band mean radius, with `JOG_GRIP_DOT_COUNT` dots stepping
-/// diagonally (outer → inner == left → right) between each consecutive pair.
+/// evenly spaced on the band's mean radius, with `JOG_GRIP_DOT_COUNT` dots between
+/// each pair that step diagonally from the outer left to the inner right.
 ///
-/// `rotation_rad` is added to every element's base angle so the whole pattern
-/// rotates as a rigid ring. Positive values rotate the pattern clockwise on
-/// screen (matching `jog_angle`'s clockwise-from-top convention, since screen
-/// y points down and `angle = i·slot` is measured via `(cos, sin)` in screen
-/// space).
+/// `rotation_rad` is added to every element's base angle, so the pattern rotates
+/// as a rigid ring. A positive value rotates it clockwise on screen, like
+/// `jog_angle`, because screen y points down and each angle is measured with
+/// `(cos, sin)` in screen space.
 fn collect_pitchbend_grip(
     out: &mut ShapeList,
     center: Pos2,
@@ -268,8 +271,8 @@ fn collect_pitchbend_grip(
     }
 }
 
-/// The four arc lights around the touch platter's edge, at `alpha`: a core
-/// stroke and its outer and inner (platter) glow layers.
+/// Collects the four arc lights around the touch platter's edge at `alpha`. Each
+/// light is a core stroke with outer and inner (platter) glow layers.
 fn collect_jog_ring_lights(
     out: &mut ShapeList,
     center: Pos2,

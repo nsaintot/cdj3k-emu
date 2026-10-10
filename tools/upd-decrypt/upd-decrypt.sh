@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Host wrapper: builds the cdj3k-upd-decrypt Docker image (once) and runs it.
+# This host wrapper builds the cdj3k-upd-decrypt Docker image once and runs it.
 #
 # Usage:
 #   ./upd-decrypt.sh <input.UPD> <output.img> [keyfile]
 #
-# Default keyfile is the bundled aes256.key in this folder.
-# Requires Docker. Works on macOS and Linux.
+# The default keyfile is the bundled aes256.key in this folder.
+# The wrapper requires Docker and works on macOS and Linux.
 #
 # WARNING: This wrapper runs the helper container with `--privileged` because
-# the decrypt pipeline needs `losetup` + `cryptsetup` inside the container.
+# the decrypt pipeline needs `losetup` and `cryptsetup` inside the container.
 # A privileged container has near-host kernel access; only feed it .UPD files
-# you actually trust.  This tool is a dev/research helper, not part of the
-# shipping app — the in-app firmware wizard does its own decryption in pure
-# Rust (no Docker, no privileged execution) from within a user-owned sandbox.
+# you actually trust.  This tool is a development and research helper.  The
+# app's firmware wizard decrypts updates itself, in Rust, without Docker or
+# privileges.
 
 set -euo pipefail
 
@@ -32,17 +32,16 @@ INPUT=$1
 OUTPUT=$2
 KEYFILE=${3:-${HERE}/aes256.key}
 
-[[ -f $INPUT  ]] || { echo "input not found: $INPUT" >&2; exit 1; }
-[[ -f $KEYFILE ]] || { echo "keyfile not found: $KEYFILE" >&2; exit 1; }
-command -v docker >/dev/null || { echo "docker not installed" >&2; exit 1; }
+[[ -f $INPUT  ]] || { echo "The input $INPUT was not found." >&2; exit 1; }
+[[ -f $KEYFILE ]] || { echo "The keyfile $KEYFILE was not found." >&2; exit 1; }
+command -v docker >/dev/null || { echo "docker is not installed." >&2; exit 1; }
 
-# Build image if it doesn't already exist.
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "[+] building $IMAGE..."
   docker build -t "$IMAGE" "$HERE"
 fi
 
-# Resolve absolute paths for bind mounts.
+# Resolve absolute paths for the bind mounts.
 ABS_INPUT=$(cd "$(dirname "$INPUT")"   && pwd)/$(basename "$INPUT")
 ABS_KEY=$(cd "$(dirname "$KEYFILE")"   && pwd)/$(basename "$KEYFILE")
 mkdir -p "$(dirname "$OUTPUT")"

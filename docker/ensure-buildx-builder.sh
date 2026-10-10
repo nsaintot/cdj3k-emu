@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Print a buildx builder name that supports --cache-to type=local.
 #
-# OrbStack/Docker's default "docker" driver cannot export local cache
-# ("Cache export is not supported for the docker driver"). A
-# docker-container driver builder can. Creates the builder on first use.
+# The default "docker" driver cannot export a local cache ("Cache export is
+# not supported for the docker driver"). A builder with the docker-container
+# driver can; the script creates it on first use.
 set -euo pipefail
 
 BUILDER="${CDJ3K_BUILDX_BUILDER:-cdj3k-emu}"

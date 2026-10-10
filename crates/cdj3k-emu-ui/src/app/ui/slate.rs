@@ -1,16 +1,16 @@
-//! Device slates - one per emulated player.
+//! Device slates, one per emulated player.
 //!
 //! A slate is the full panel renderer for one model: its reference canvas, the
-//! section zones ([`cdj3k::layout`]), the chassis silhouette and the section
+//! section zones (such as `cdj3k::layout`), the chassis silhouette and the section
 //! renderers (screen/top band, left transport column, right modes column).
-//! Every slate draws with the SHARED toolkit at the `ui` root (colours,
-//! [`UiScale`](super::UiScale), the button/rotary primitives, the shape caches
-//! and the jog-wheel assembly in `ui::draw_jog`), so control chrome is identical
-//! across models - only the panel composition differs.
+//! Every slate draws with the shared toolkit at the `ui` root (colours,
+//! [`UiScale`], the button and rotary primitives, the shape
+//! caches and the jog-wheel assembly in `ui::draw_jog`), so the control chrome
+//! is identical across models and only the panel composition differs.
 //!
-//! [`for_model`] is the one place here that names a player: a slate is a
-//! [`Slate`] constant, so adding one is a module and an arm there, not a new
-//! branch in every caller.
+//! [`for_model`] is the only place here that names a player. A slate is a
+//! [`Slate`] constant, so adding a player takes a new module and one match arm
+//! in [`for_model`].
 
 pub(in crate::app) mod card;
 pub(in crate::app) mod cdj1500x;
@@ -35,7 +35,7 @@ pub(in crate::app) struct Slate {
     /// The deck's colour wherever the setup window names it.
     pub accent: Color32,
     pub card: Card,
-    /// Chassis, LCD overlay, then every section.
+    /// Draws the chassis, the LCD overlay, then every section.
     pub draw_panel: fn(&mut CdjApp, &mut egui::Ui),
 }
 
@@ -62,7 +62,7 @@ pub(in crate::app) struct FlatPanel {
     pub right: Section,
 }
 
-/// Draw the whole panel: chassis, LCD overlay, then every section.
+/// Draws the whole panel: the chassis, the LCD overlay, then every section.
 pub(in crate::app) fn draw_flat_panel(app: &mut CdjApp, ui: &mut egui::Ui, panel: &FlatPanel) {
     let (ref_w, ref_h) = panel.canvas;
     // `max_rect`, not `clip_rect`: the clip rect is a painting bound and
@@ -72,12 +72,13 @@ pub(in crate::app) fn draw_flat_panel(app: &mut CdjApp, ui: &mut egui::Ui, panel
     let p = ui.painter().clone();
     let ppp = ui.ctx().pixels_per_point();
 
-    // Chassis - fully static, rebuilt only on resize.
+    // The chassis is static and is rebuilt only on a resize.
     app.frame_shape_count += app
         .caches
         .chassis_bg
         .paint(&p, &layout, ppp, |list| (panel.chassis)(list, &layout));
-    // LCD overlay on top of all sections - fully static, rebuilt only on resize.
+    // The LCD overlay sits on top of all sections; it is static and is rebuilt
+    // only on a resize.
     app.frame_shape_count += app
         .caches
         .chassis_lcd_overlay
@@ -104,8 +105,8 @@ pub(in crate::app) fn draw_flat_panel(app: &mut CdjApp, ui: &mut egui::Ui, panel
     debug_align_squares(&p, &layout, ref_w, ref_h);
 }
 
-/// What a riser card's glyph is drawn from, in the slate's reference units:
-/// the zones the panel itself draws from, so the two cannot drift apart.
+/// The zones a riser card's glyph is built from, in the slate's reference
+/// units. The panel draws from the same zones, so the glyph always matches it.
 pub(in crate::app) struct RiserZones {
     pub canvas: (f32, f32),
     /// The block the screen stands in.

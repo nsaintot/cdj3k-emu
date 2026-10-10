@@ -1,8 +1,9 @@
 ; SPDX-License-Identifier: MIT OR Apache-2.0
-; cdj3k-emu.iss - the Windows installer. Inno Setup 6.6 or newer.
+; cdj3k-emu.iss - the Windows installer script. It needs Inno Setup 6.6 or
+; newer.
 ;
-; One installer per architecture, built by build.ps1 from a tree stage.ps1
-; made. Defines passed to ISCC:
+; build.ps1 builds one installer per architecture from the tree that stage.ps1
+; makes, and passes these defines to ISCC:
 ;
 ;   /DAppVersion=0.2.0       Cargo.toml's workspace version
 ;   /DArch=x64|arm64         x64 installs on x64 Windows only, arm64 on arm64
@@ -12,8 +13,9 @@
 ; build.ps1 defines Sign and registers the SignTool "cdj3k" when
 ; CDJ3K_SIGN_CERT_SHA1 is set.
 ;
-; Per-machine under {autopf}\cdj3k-emu, as administrator (driver store,
-; firewall rules). {app}\installer\setup-helper.ps1 does the privileged steps.
+; The installer installs per machine under {autopf}\cdj3k-emu and runs as
+; administrator, because it writes to the driver store and adds firewall rules.
+; {app}\installer\setup-helper.ps1 does the privileged steps.
 
 #ifndef AppVersion
   #error AppVersion is not defined; build with build.ps1
@@ -31,7 +33,7 @@
 ; AppName is what Windows shows; DirName names the install directory.
 #define AppName "CDJ3K Emulator"
 #define DirName "cdj3k-emu"
-; app_meta::BUNDLE_ID: the per-user data directory under %LOCALAPPDATA%.
+; The per-user data directory under %LOCALAPPDATA%; it matches app_meta::BUNDLE_ID.
 #define DataDirName "com.cdj3k.emu"
 #define QemuExe "qemu-system-aarch64.exe"
 
@@ -88,7 +90,8 @@ Source: "{#StageDir}\bin\*"; DestDir: "{app}\bin"; Excludes: "cdj3k-emu.exe,{#Qe
 Source: "{#StageDir}\share\*"; DestDir: "{app}\share"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#StageDir}\cdj3k-emu.ico"; DestDir: "{app}"; Flags: ignoreversion
-; Last, so every file is in place when its AfterInstall runs the helper.
+; This entry is last so that every other file is in place when its
+; AfterInstall runs the helper.
 Source: "{#StageDir}\installer\setup-helper.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion; AfterInstall: RunHelperSteps
 
 [Icons]
@@ -116,7 +119,7 @@ Type: filesandordirs; Name: "{app}\installer"
 [Code]
 var
   RestartPending: Boolean;
-  // Uninstall: the user ticked "delete my data" in the confirmation dialog.
+  // True when the user ticked "delete my data" in the uninstall confirmation.
   DeleteData: Boolean;
 
 // The app's updater runs Setup as
@@ -148,15 +151,15 @@ begin
     Log('Update: the app still holds its mutex after 60 s');
 end;
 
-// The launch at the end: offered on the finished page of an interactive
-// install, and run unattended by an update that asks for it.
+// Whether to launch the app at the end. An interactive install offers it on
+// the finished page; an update launches it unattended when it passes /UPDATE=1.
 function LaunchAtEnd(): Boolean;
 begin
   Result := (not WizardSilent()) or (UpdateParam() = '1');
 end;
 
 // Run one setup-helper.ps1 action with the native PowerShell; ExitCode is its
-// exit code. False when PowerShell itself could not start.
+// exit code. It returns False when PowerShell itself could not start.
 function RunHelper(const Action, Extra: String; var ExitCode: Integer): Boolean;
 var
   Params: String;
@@ -170,7 +173,7 @@ begin
     Log('setup-helper exit code ' + IntToStr(ExitCode));
 end;
 
-// 0 is done, 3010 is done with a restart pending.
+// Exit code 0 means success; 3010 means success with a restart pending.
 function HelperSucceeded(const Action, Extra: String; const Failure: String): Boolean;
 var
   Code: Integer;
@@ -233,8 +236,9 @@ begin
       Result := True;
 end;
 
-// The uninstall confirmation, with the choice to delete the user's data
-// (app_meta::BUNDLE_ID under %LOCALAPPDATA%). False when the user cancels.
+// Show the uninstall confirmation, with the choice to delete the user's data
+// (app_meta::BUNDLE_ID under %LOCALAPPDATA%). It returns False when the user
+// cancels.
 function ConfirmUninstall(): Boolean;
 var
   Form: TSetupForm;

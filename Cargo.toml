@@ -11,7 +11,8 @@ members = [
   "crates/cdj3k-emu-firmware",
   "crates/cdj3k-emu-update",
 ]
-# Patched dependencies, not members: see [patch.crates-io].
+# winit/src is a patched dependency and not a workspace member; see
+# [patch.crates-io].
 exclude = ["winit/src"]
 
 # Dependencies are optimised in dev builds; the workspace crates stay at
@@ -32,16 +33,14 @@ edition = "2021"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/nsaintot/cdj3k-emu"
-# All workspace members are internal-only — they share types across crate
-# boundaries but aren't designed for crates.io consumption.  Keep them out
-# of any accidental `cargo publish` run.
+# The workspace crates are internal and are not published to crates.io.
 publish = false
 
-# winit with one addition: a Wayland aspect ratio, fitted while a configure is
-# handled (`winit::platform::wayland::set_surface_aspect_ratio`). xdg-shell has
-# no aspect hint, and fitting any later draws a frame at the wrong size first.
-# winit/fetch.sh makes winit/src from the crates.io release and
-# winit/patches/; run it before any cargo command.
+# The patched winit adds one feature: it applies a Wayland aspect ratio while
+# it handles a configure event (`winit::platform::wayland::set_surface_aspect_ratio`).
+# xdg-shell has no aspect hint, and applying the ratio any later draws one
+# frame at the wrong size first. winit/fetch.sh builds winit/src from the
+# crates.io release and winit/patches/; run it before any cargo command.
 [patch.crates-io]
 winit = { path = "winit/src" }
 

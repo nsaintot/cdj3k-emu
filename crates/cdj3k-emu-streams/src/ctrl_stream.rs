@@ -1,9 +1,9 @@
-//! CtrlStream - bidirectional connection to the `ctrl.sock` virtio-serial port.
+//! CtrlStream, the two-way connection to the `ctrl.sock` virtio-serial port.
 //!
-//! Connects to `{socket_dir}/ctrl.sock` (created by QEMU as a Unix socket server).
-//! A background thread owns the UnixStream and reads 64-byte MOSI LED frames,
-//! storing the latest in `state`.  The write half is cloned and shared so
-//! `inject()` can send MISO frames from any thread.
+//! It connects to `{socket_dir}/ctrl.sock`, a Unix socket server that QEMU
+//! creates. A background thread owns the UnixStream, reads 64-byte MOSI LED
+//! frames and stores the latest in `state`. The write half is cloned and
+//! shared, so `inject()` can send MISO frames from any thread.
 
 use cdj3k_emu_platform::local_socket::LocalStream as UnixStream;
 use std::io::{Read, Write};
@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use cdj3k_emu_panel::miso_frame::MISO_SIZE;
 
-/// Backoff before retrying `connect()` after `ctrl.sock` is gone or refuses.
+/// The wait before retrying `connect()` when `ctrl.sock` is missing or refuses
+/// the connection.
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
@@ -32,16 +33,17 @@ pub struct CtrlStream {
     state: Arc<Mutex<Option<LedState>>>,
     writer: Arc<Mutex<Option<UnixStream>>>,
     sock_path: PathBuf,
-    /// Always reflects the most recently-received MOSI frame, regardless of
-    /// the repaint-gating that controls `state`. Lets observers (e.g. the
-    /// deferred debug viewport) display live wire bytes without being coupled
-    /// to the main viewport's update cycle.
+    /// The most recently received MOSI frame, updated whether or not the
+    /// repaint gate updates `state`. Observers such as the deferred debug
+    /// viewport read live wire bytes from it without depending on the main
+    /// viewport's update cycle.
     latest_mosi: Arc<Mutex<[u8; 64]>>,
 }
 
 impl CtrlStream {
-    /// Spawn the reader/writer thread and return a handle.
-    /// `socket_dir` is e.g. `/tmp/cdj3k-0`; the socket is `{socket_dir}/ctrl.sock`.
+    /// Spawn the reader and writer thread and return a handle.
+    /// `socket_dir` is a directory such as `/tmp/cdj3k-0`; the socket is
+    /// `{socket_dir}/ctrl.sock`.
     pub fn new(socket_dir: &str, gate: crate::RepaintGate) -> Self {
         let sock_path = PathBuf::from(socket_dir.trim_end_matches('/')).join("ctrl.sock");
         let state: Arc<Mutex<Option<LedState>>> = Arc::new(Mutex::new(None));
@@ -66,14 +68,14 @@ impl CtrlStream {
         }
     }
 
-    /// Snapshot the most recently received MOSI frame. Always returns the
-    /// latest wire bytes - does not interact with the take()/repaint flow.
+    /// Returns a copy of the most recently received MOSI frame. It does not
+    /// affect the `take()` and repaint flow.
     pub fn peek_latest_mosi(&self) -> [u8; 64] {
         *self.latest_mosi.lock().unwrap()
     }
 
-    /// Shared handle to the live MOSI buffer for callers (e.g. deferred
-    /// viewports) that need to read it from a context that can't borrow `&self`.
+    /// A shared handle to the live MOSI buffer, for callers such as deferred
+    /// viewports that cannot borrow `&self`.
     pub fn latest_mosi_arc(&self) -> Arc<Mutex<[u8; 64]>> {
         Arc::clone(&self.latest_mosi)
     }
@@ -91,7 +93,8 @@ impl CtrlStream {
         self.state.lock().unwrap().take()
     }
 
-    /// Send one MISO frame to the guest.  Returns false if not connected.
+    /// Send one MISO frame to the guest. Returns false if the socket is not
+    /// connected.
     pub fn inject(&self, frame: &[u8; MISO_SIZE]) -> bool {
         puffin::profile_function!();
         let Ok(mut guard) = self.writer.lock() else {
@@ -104,7 +107,7 @@ impl CtrlStream {
         match w.write_all(frame) {
             Ok(()) => true,
             Err(e) => {
-                eprintln!("[ctrl] inject: write failed: {e}");
+                eprintln!("[ctrl] Writing a MISO frame failed: {e}");
                 *guard = None;
                 false
             }
@@ -119,28 +122,28 @@ fn stream_loop(
     latest_mosi: Arc<Mutex<[u8; 64]>>,
     gate: crate::RepaintGate,
 ) {
-    // Rate-limit connect-failure logging: the socket is absent until QEMU is
-    // spawned and after a guest restart.  Log the first failure, then every
-    // 10th attempt thereafter, so stderr doesn't grow at RECONNECT_DELAY⁻¹
-    // for the entire pre-spawn or post-crash window.
+    // Limit the connect-failure log. The socket is absent until QEMU starts
+    // and after a guest restart, so log the first failure and then every 10th
+    // attempt; otherwise stderr gets a line every RECONNECT_DELAY for as long
+    // as the socket is absent.
     let mut failed_attempts: u32 = 0;
     loop {
         match UnixStream::connect(&sock_path) {
             Ok(stream) => {
-                eprintln!("[ctrl] connected to {}", sock_path.display());
+                eprintln!("[ctrl] Connected to {}.", sock_path.display());
                 failed_attempts = 0;
                 if let Ok(write_half) = stream.try_clone() {
                     *writer.lock().unwrap() = Some(write_half);
                     read_loop(stream, &state, &latest_mosi, &gate);
                     *writer.lock().unwrap() = None;
                 }
-                eprintln!("[ctrl] disconnected - reconnecting");
+                eprintln!("[ctrl] The control socket closed; reconnecting.");
             }
             Err(e) => {
                 failed_attempts = failed_attempts.saturating_add(1);
                 if failed_attempts == 1 || failed_attempts.is_multiple_of(10) {
                     eprintln!(
-                        "[ctrl] connect {}: {} (attempt {failed_attempts}, retrying in {:?})",
+                        "[ctrl] Connecting to {} failed: {} (attempt {failed_attempts}); retrying in {:?}.",
                         sock_path.display(),
                         e,
                         RECONNECT_DELAY
@@ -160,14 +163,14 @@ fn read_loop(
 ) {
     let mut buf = [0u8; 64];
     let mut frames: u64 = 0;
-    // Last MOSI frame for which we requested a repaint. The wire heartbeats
-    // ~100 Hz with mostly-identical bytes when no LED state changed; gating
-    // here keeps the main viewport asleep instead of waking it 100×/s for
-    // visually-identical frames. `latest_mosi` is updated unconditionally so
-    // the debug viewport's live peek still sees every frame.
+    // The last MOSI frame that requested a repaint. The guest sends about 100
+    // frames a second, and they are identical while no LED changes; comparing
+    // them here keeps the main viewport asleep through those frames.
+    // `latest_mosi` is updated for every frame, so the debug viewport's live
+    // peek still sees all of them.
     let mut last_repaint_mosi: Option<[u8; 64]> = None;
-    // `CDJ3K_MOSI_DUMP=<file>`: append every changed frame as one hex line
-    // (`<unix ms> <frame#> <64 bytes>`), for mapping a model's LED layout
+    // With `CDJ3K_MOSI_DUMP=<file>`, append every changed frame as one hex line
+    // (`<unix ms> <frame number> <64 bytes>`), to map a model's LED layout
     // against scripted presses offline.
     let mut dump = std::env::var_os("CDJ3K_MOSI_DUMP").and_then(|p| {
         std::fs::OpenOptions::new()
@@ -189,20 +192,20 @@ fn read_loop(
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(e) => {
-                    eprintln!("[ctrl] read error: {}", e);
+                    eprintln!("[ctrl] Reading from the control socket failed: {}", e);
                     break 'frame false;
                 }
             }
         };
         if !ok {
-            eprintln!("[ctrl] stream ended after {} frames", frames);
+            eprintln!("[ctrl] The stream ended after {} frames.", frames);
             break;
         }
         puffin::profile_scope!("ctrl_rx_frame");
         frames += 1;
-        // Live peek - always.
+        // Update the live peek for every frame.
         *latest_mosi.lock().unwrap() = buf;
-        // Repaint trigger - only when bytes actually changed.
+        // Request a repaint only when the bytes changed.
         let changed = last_repaint_mosi != Some(buf);
         if changed {
             *state.lock().unwrap() = Some(LedState { frame: buf });

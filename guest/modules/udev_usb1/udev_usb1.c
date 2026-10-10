@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * udev_usb1 - Pioneer media event channels.
+ * udev_usb1 - Pioneer's media event channels.
  *
  * The deck reads media events from proc files:
  *   /proc/udev_usb1  'mount <mnt> <fs> protect:0'
- *   /proc/udev_sd1   SD equivalent
+ *   /proc/udev_sd1   the same for the SD card
  *   /proc/udev_nfs   'mount <mnt> nfs', written by FuseFilsine
  *
- * Node names vary per model; this module creates the union.
+ * Node names vary per model; this module creates the nodes of every model.
  *
  * Each node holds its own message: the deck classifies media by the node an
  * event arrives on.
  *
- * The deck polls the nodes one per pass - open, fcntl F_SETFL O_NONBLOCK,
- * read, close - so read() returns EAGAIN on an empty node.
+ * The deck polls one node per pass (open, fcntl F_SETFL O_NONBLOCK, read,
+ * close), so read() returns EAGAIN on an empty node.
  */
 
 #include <linux/module.h>
@@ -143,7 +143,7 @@ static int __init udev_usb1_init(void)
 			udev_chans_remove();
 			return -ENOMEM;
 		}
-		pr_info("udev_usb1: /proc/%s ready\n", chans[i].name);
+		pr_info("udev_usb1: /proc/%s is ready\n", chans[i].name);
 	}
 	return 0;
 }

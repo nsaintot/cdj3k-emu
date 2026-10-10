@@ -1,10 +1,10 @@
 //! Removable-disk enumeration and mounting on Linux.
 //!
-//! Drives the `lsblk` and `udisksctl` CLIs; `udisks2` asks polkit whether the
-//! user may unmount a device. `lsblk --pairs` needs no JSON parser.
+//! This module runs the `lsblk` and `udisksctl` CLIs. `udisks2` asks polkit
+//! whether the user may unmount a device. `lsblk --pairs` needs no JSON parser.
 //!
-//! Compiled on every host so its parsing is tested everywhere; only Linux
-//! calls into it. On a host with no `lsblk` the enumeration finds nothing.
+//! The module is compiled on every host so that its parsing is tested
+//! everywhere, but only Linux calls into it. On a host with no `lsblk` the enumeration finds nothing.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
 use std::collections::BTreeMap;
@@ -13,7 +13,7 @@ use std::process::Command;
 
 use super::{human_size, PhysicalDisk};
 
-/// Whole disks the user could plausibly hand to the deck.
+/// List the whole disks that the user could plausibly give to the deck.
 pub fn list_removable() -> Vec<PhysicalDisk> {
     let Some(out) = lsblk(&["-d", "-o", "NAME,PATH,SIZE,RM,HOTPLUG,TYPE,MODEL,VENDOR"]) else {
         return Vec::new();
@@ -54,8 +54,9 @@ pub fn list_removable() -> Vec<PhysicalDisk> {
 /// `udisksctl` asks polkit, which grants this for removable media without a
 /// password on a normal desktop.
 ///
-/// A partition something still has open fails with `ResourceBusy`, naming the
-/// programs holding it so the user knows what to close.
+/// If a program still has a file open on a partition, the unmount fails with
+/// `ResourceBusy` and names the programs that hold it, so the user knows what
+/// to close.
 pub fn unmount_disk(name: &str) -> io::Result<()> {
     for (part, mountpoint) in mounted_partitions(name) {
         if let Err(e) = udisksctl("unmount", &part) {
@@ -79,8 +80,9 @@ pub fn unmount_disk(name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Names of this user's processes with a file or working directory under
-/// `mountpoint`, as `/proc/<pid>/comm` has them, each once.
+/// Return the names of this user's processes that have a file or working
+/// directory under `mountpoint`, as `/proc/<pid>/comm` gives them, without
+/// duplicates.
 pub(super) fn holders_of(mountpoint: &std::path::Path) -> Vec<String> {
     let mut names = Vec::new();
     let Ok(procs) = std::fs::read_dir("/proc") else {
@@ -120,8 +122,8 @@ pub(super) fn holders_of(mountpoint: &std::path::Path) -> Vec<String> {
 
 /// Hand the disk back to the desktop.
 ///
-/// Best effort: the user may have unplugged it, and a partition that will not
-/// mount does not fail the eject the guest already did.
+/// This is best effort: the user may have unplugged the disk, and the guest
+/// has already ejected it, so a partition that does not mount is not an error.
 pub fn mount_disk(name: &str) -> io::Result<()> {
     for part in partitions(name) {
         let _ = udisksctl("mount", &part);
@@ -138,14 +140,14 @@ fn udisksctl(verb: &str, dev: &str) -> io::Result<()> {
         .map_err(|e| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("udisksctl not available ({e}); install udisks2"),
+                format!("udisksctl is not available ({e}); install udisks2"),
             )
         })?;
     if out.status.success() {
         return Ok(());
     }
     let err = String::from_utf8_lossy(&out.stderr);
-    // Unmounting something already unmounted is the state we wanted.
+    // A partition that is already unmounted counts as success.
     if err.contains("NotMounted") || err.contains("not mounted") {
         return Ok(());
     }
@@ -155,7 +157,7 @@ fn udisksctl(verb: &str, dev: &str) -> io::Result<()> {
     )))
 }
 
-/// Partition device paths of one disk, in order.
+/// Return the partition device paths of one disk, in order.
 fn partitions(disk: &str) -> Vec<String> {
     lsblk(&["-o", "PATH,TYPE", &format!("/dev/{disk}")])
         .unwrap_or_default()
@@ -165,7 +167,8 @@ fn partitions(disk: &str) -> Vec<String> {
         .collect()
 }
 
-/// Mounted partitions of one disk, as (device path, mount point).
+/// Return the mounted partitions of one disk as (device path, mount point)
+/// pairs.
 fn mounted_partitions(disk: &str) -> Vec<(String, String)> {
     lsblk(&["-o", "PATH,TYPE,MOUNTPOINT", &format!("/dev/{disk}")])
         .unwrap_or_default()
@@ -198,10 +201,10 @@ fn lsblk(args: &[&str]) -> Option<Vec<BTreeMap<String, String>>> {
     )
 }
 
-/// `NAME="sda" SIZE="512" MODEL="Some Disk"` → a map.
+/// Parse a row such as `NAME="sda" SIZE="512" MODEL="Some Disk"` into a map.
 ///
-/// Values are double-quoted and may contain spaces, so this reads the quoting
-/// rather than splitting on whitespace.
+/// Values are double-quoted and may contain spaces, so the parser follows the
+/// quotes.
 fn parse_pairs(line: &str) -> BTreeMap<String, String> {
     let mut out = BTreeMap::new();
     let mut rest = line.trim();
@@ -215,8 +218,8 @@ fn parse_pairs(line: &str) -> BTreeMap<String, String> {
     out
 }
 
-/// The most recognisable name for a disk: what is written on it, else what
-/// the drive calls itself.
+/// Return the most recognisable name for a disk: its filesystem label, or else
+/// the name that the drive reports for itself.
 fn human_name(row: &BTreeMap<String, String>, fallback: &str) -> String {
     for key in ["LABEL", "MODEL", "VENDOR"] {
         if let Some(v) = row.get(key).map(|s| s.trim()).filter(|s| !s.is_empty()) {

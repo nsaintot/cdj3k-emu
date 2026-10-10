@@ -24,7 +24,8 @@ pub(super) fn app_path() -> PathBuf {
 }
 
 /// Every key a slot's `settings.txt` may hold: the union of what
-/// [`InstanceSettings`] and [`PanelSettings`] write, since both share the file.
+/// [`super::InstanceSettings`] and [`super::PanelSettings`] write, since both
+/// share the file.
 ///
 /// [`write_kv`] drops whatever is missing here, so a field added to either
 /// struct has to be listed or it will not survive its own save. The

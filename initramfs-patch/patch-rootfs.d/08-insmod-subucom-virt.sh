@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Patch 08: insmod-subucom-virt.service - load subucom_virt.ko before pre-setting
+# Patch 08: insmod-subucom-virt.service loads subucom_virt.ko before pre-setting.
 #
-# pre-setting.sh runs subucom_read which opens the sub-CPU device to read the
+# pre-setting.sh runs subucom_read, which opens the sub-CPU device to read the
 # testmode byte and write /tmp/testmode.  Without /tmp/testmode, apl_start.sh
 # prints "can't read /tmp/testmode" and exits without launching the app.
 #
@@ -19,7 +19,7 @@ mkdir -p "$SERVICE_DIR"
 
 cat > "$SERVICE_DIR/insmod-subucom-virt.service" << SVCEOF
 [Unit]
-Description=Load subucom_virt.ko - the virtual sub-CPU device for QEMU
+Description=Load subucom_virt.ko, the virtual sub-CPU device for QEMU
 DefaultDependencies=no
 Before=pre-setting.service
 Before=${APP_UNIT}

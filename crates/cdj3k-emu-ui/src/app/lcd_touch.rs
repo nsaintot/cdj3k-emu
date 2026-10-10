@@ -1,11 +1,11 @@
-//! Main LCD touch input handling - capture from any viewport (main or popout)
-//! and apply to the per-frame MISO state (touch coords, navigation rotary,
-//! ctrl-latched touch).
+//! Touch input on the main LCD. It is captured from any viewport, main or
+//! popout, and applied to the MISO state of each frame: the touch coordinates,
+//! the navigation rotary and the Ctrl-latched touch.
 
 use super::CdjApp;
 use cdj3k_emu_panel::Btn;
 
-/// Raw LCD touch input captured from a viewport frame, applied via
+/// Raw LCD touch input captured from a viewport frame and applied by
 /// [`CdjApp::apply_lcd_touch`].
 pub(crate) struct LcdTouchCapture {
     pub hovered: bool,
@@ -19,7 +19,7 @@ pub(crate) struct LcdTouchCapture {
 }
 
 impl CdjApp {
-    /// Apply raw LCD touch input captured from any viewport (main or popout).
+    /// Apply raw LCD touch input captured from any viewport, main or popout.
     pub(crate) fn apply_lcd_touch(&mut self, cap: LcdTouchCapture) {
         use super::ui::{NAV_DETENT_COUNT, NAV_SCROLL_PX_PER_TICK};
 
@@ -50,8 +50,8 @@ impl CdjApp {
         if cap.is_down {
             self.handle_lcd_press(&cap);
         } else if self.lcd_touch_ctrl_latched {
-            // Mouse released while Ctrl is still held: keep the latched touch
-            // alive until Ctrl is released.
+            // The mouse was released while Ctrl is held: keep the latched touch
+            // until Ctrl is released.
             if !cap.ctrl {
                 self.clear_lcd_touch();
             }

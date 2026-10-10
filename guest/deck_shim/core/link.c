@@ -1,37 +1,35 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 /*
- * link.c - sendto/sendmsg interceptor that aligns master-mode
- * Pro DJ Link broadcasts with our actually-audible playback.
+ * link.c - a sendto and sendmsg hook that aligns the master's Pro DJ Link
+ * broadcasts with its audible playback.
  *
- * Strategy: delay-send ALL Pro DJ Link broadcasts (any packet on port
- * 50001 / 50002 with magic header "Qspt1WmJOL") by audio_latency_ms.
- * Every outbound packet arrives at the slave at our audible-event
- * moment. Position display, beat sync, phase lock, BPM, sync flags -
- * all timing references are consistent because they share the same
- * delay applied to the same packet stream.
+ * The shim delays every Pro DJ Link broadcast (any packet to port 50001 or
+ * 50002 with the magic header "Qspt1WmJOL") by audio_latency_ms, so each
+ * packet reaches the slave when its audio becomes audible here. The position
+ * display, beat sync, phase lock, BPM and sync flags stay consistent with
+ * each other because the same delay applies to the whole packet stream.
  *
- * No payload modification - we just hold the packet in a queue until
- * its scheduled send time, then forward it via raw sendto. The packet's
- * ARRIVAL TIME is the implicit reference Pioneer slaves use, so the
- * packet has to actually land on the wire at our audible moment, not
- * at JUCE's pre-pipeline tick.
+ * The payload is not modified: the packet waits in a queue until its send
+ * time, then goes out through a raw sendto. Pioneer slaves use the packet's
+ * arrival time as the timing reference, so the packet must reach the wire
+ * when its audio becomes audible.
  *
- * Tradeoff: slave's display position cosmetically lags JUCE by
- * audio_latency_ms. But it MATCHES audible, which is what matters for
- * synchronization between decks.
+ * The slave's displayed position lags JUCE by audio_latency_ms, but it
+ * matches the audible output, and decks synchronise on that.
  *
- * Toggle (shared with clock.c - single switch for the whole audio-sync
- * compensation pipeline):
+ * The switch, shared with clock.c, turns all audio-sync compensation on or
+ * off:
  *   /sys/module/virtio_snd/parameters/audio_sync_enabled
- *     0 = full no-op. sendto/sendmsg pass through unmodified, slave
- *         clock shift (clock.c) is also inert. Audio plays raw, no Pro DJ Link
- *         sync compensation.
- *     1 = both hooks active. Slave clock shift on OptFstUdpServer +
- *         delay-send on Pro DJ Link broadcasts.
+ *     0: both hooks are off. sendto and sendmsg pass through unchanged,
+ *        clock.c does not shift the clock, and there is no Pro DJ Link sync
+ *        compensation.
+ *     1: both hooks are on. clock.c shifts the OptFstUdpServer clock, and
+ *        this file delays the Pro DJ Link broadcasts.
  *
- * delay_ms source (refreshed once per wall-clock second on hot path):
- *   /sys/module/virtio_snd/parameters/link_pos_offset_ms (manual; if >0)
- *   /sys/module/virtio_snd/parameters/audio_latency_ms   (auto fallback)
+ * The delay comes from these parameters, read at most once per wall-clock
+ * second on the hot path:
+ *   /sys/module/virtio_snd/parameters/link_pos_offset_ms (manual, if positive)
+ *   /sys/module/virtio_snd/parameters/audio_latency_ms   (otherwise)
  */
 
 #include "deck_shim.h"
@@ -48,8 +46,8 @@
 #endif
 
 #define PORT_BCAST_LO    50001       /* ABS_POS, BEAT, MIXER_VOLUMES */
-#define PORT_BCAST_HI    50002       /* PLAYER_STATUS, etc. */
-#define LINK_QUEUE_SIZE  512         /* ABS_POS at 3ms cadence × ~100ms delay = ~33 in flight; +headroom */
+#define PORT_BCAST_HI    50002       /* PLAYER_STATUS and others */
+#define LINK_QUEUE_SIZE  512         /* ABS_POS goes out every 3 ms, so a 100 ms delay keeps about 33 packets in flight; the rest is headroom. */
 #define LINK_PKT_MAX     1500
 
 static const unsigned char g_djpl_magic[10] = {
@@ -63,11 +61,10 @@ typedef struct {
     int                     sockfd;
     int                     flags;
     size_t                  len;
-    /* Set by the close() hook when the app calls close(sockfd) while this
-     * packet is still pending. The worker then performs the real close
-     * after sendto, so the app's socket-per-packet pattern survives the
-     * delay. The app's close() returned 0 to it immediately - the actual
-     * kernel close just happens later from our side. */
+    /* The close() hook sets this when the app calls close(sockfd) while this
+     * packet is still pending. The worker then closes the fd after sendto,
+     * so the app's socket-per-packet pattern survives the delay. The app's
+     * close() has already returned 0. */
     int                     app_wants_close;
     unsigned char           buf[LINK_PKT_MAX];
 } pending_send_t;
@@ -88,13 +85,13 @@ static int              g_link_debug;
 
 static void refresh_delay_ms(void)
 {
-    /* Master-mode toggle. Until enabled, the shim is fully transparent. */
+    /* The master-mode switch. While it is off, packets pass through. */
     long enabled = shim_read_sysfs_long(VSND_LATENCY_ENABLED_PATH);
     if (enabled < 0) enabled = 0;
     __atomic_store_n(&g_enabled_atomic, enabled, __ATOMIC_RELAXED);
     if (g_link_debug && g_last_logged_enabled != enabled) {
         g_last_logged_enabled = enabled;
-        fprintf(stderr, "[deck_link] enabled = %ld\n", enabled);
+        fprintf(stderr, "[deck_link] audio_sync_enabled is %ld.\n", enabled);
         fflush(stderr);
     }
 
@@ -112,7 +109,7 @@ static void refresh_delay_ms(void)
     __atomic_store_n(&g_delay_ms_atomic, ms, __ATOMIC_RELAXED);
     if (g_link_debug && g_last_logged_delay != ms) {
         g_last_logged_delay = ms;
-        fprintf(stderr, "[deck_link] delay = %ld ms (%s)\n",
+        fprintf(stderr, "[deck_link] The delay is now %ld ms (%s).\n",
                 ms, manual > 0 ? "manual" : "auto");
         fflush(stderr);
     }
@@ -130,52 +127,48 @@ static void *link_worker_fn(void *arg)
         while (g_q_head == g_q_tail)
             pthread_cond_wait(&g_q_cond, &g_q_mutex);
 
-        /* Hold a stable reference to the head-of-queue entry. We do NOT
-         * advance g_q_tail yet - keeping the entry "active" lets the
-         * close() hook find and mark it (app_wants_close) right up
-         * until we finish processing. The producer's queue-full check
-         * uses (head - tail), so leaving tail unmoved correctly counts
-         * this slot as in-use; a producer will use a different slot. */
+        /* Take the oldest entry. g_q_tail does not advance yet, so the
+         * entry stays active and the close() hook can still mark it
+         * (app_wants_close) until processing ends. The producer's
+         * queue-full check uses (head - tail), so the slot still counts as
+         * in use and a producer picks a different one. */
         pending_send_t *p = &g_q[g_q_tail % LINK_QUEUE_SIZE];
         struct timespec deadline = p->deadline;
         pthread_mutex_unlock(&g_q_mutex);
 
-        /* Wait until the packet's scheduled send time. While sleeping,
-         * close() hook may set p->app_wants_close - we read it after
-         * sendto under the lock (same lock that close() acquires). */
+        /* Wait until the packet's send time. While the worker sleeps, the
+         * close() hook may set p->app_wants_close; the worker reads it after
+         * sendto, under the same lock that close() takes. */
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL);
 
-        /* Forward via raw syscall to avoid recursing into our own sendto.
-         * Read packet body fields without lock - producers can't overwrite
-         * this slot because tail hasn't advanced (slot still counts as
-         * in-use); close() hook only writes app_wants_close, never
-         * any of the fields we read here. */
+        /* Send through a raw syscall, so the call does not recurse into the
+         * sendto hook. The packet fields are read without the lock:
+         * producers cannot overwrite this slot because the tail has not
+         * advanced, and the close() hook writes only app_wants_close. */
         syscall(SYS_sendto, (long)p->sockfd, (long)p->buf,
                 (long)p->len, (long)p->flags,
                 (long)&p->dest, (long)p->addrlen);
 
-        /* Atomic critical section: read close-flag, snapshot fd, advance
-         * tail. Holding the lock across these three steps prevents a
-         * close() hook from setting the flag *after* we read it but
-         * *before* we advance tail (which would orphan the close). */
+        /* Read the close flag, copy the fd and advance the tail under one
+         * lock. Otherwise a close() hook could set the flag after it is read
+         * but before the tail advances, and the close would be lost. */
         pthread_mutex_lock(&g_q_mutex);
         int close_now = p->app_wants_close;
         int fd        = p->sockfd;
         g_q_tail++;
         pthread_mutex_unlock(&g_q_mutex);
 
-        /* Real close, if the app already called close() while the packet
-         * was queued. Done outside the queue lock. */
+        /* Close the fd outside the queue lock if the app called close()
+         * while the packet was queued. */
         if (close_now)
             syscall(SYS_close, (long)fd);
 
-        /* Periodic delay-value refresh. */
         if (deadline.tv_sec - last_refresh_s >= VSND_LATENCY_REFRESH_S) {
             last_refresh_s = deadline.tv_sec;
             refresh_delay_ms();
         }
     }
-    return NULL;   /* unreachable; silences -Wreturn-type */
+    return NULL;   /* Unreachable; this silences -Wreturn-type. */
 }
 
 static void __attribute__((constructor)) shim_link_init(void)
@@ -195,7 +188,7 @@ static void ensure_worker_started(void)
         __atomic_store_n(&g_worker_started, 0, __ATOMIC_RELEASE);
         if (g_link_debug) {
             fprintf(stderr, "[deck_link] pthread_create failed; "
-                            "delay-send disabled for beats\n");
+                            "Pro DJ Link packets are sent without delay.\n");
             fflush(stderr);
         }
     }
@@ -229,7 +222,7 @@ static int try_enqueue(int sockfd, const void *buf, size_t len, int flags,
 
     pthread_mutex_lock(&g_q_mutex);
     if (g_q_head - g_q_tail >= LINK_QUEUE_SIZE) {
-        /* Queue full - fall back to immediate send rather than drop. */
+        /* The queue is full: send the packet immediately. */
         pthread_mutex_unlock(&g_q_mutex);
         return 0;
     }
@@ -258,7 +251,7 @@ static int try_enqueue(int sockfd, const void *buf, size_t len, int flags,
     return 1;
 }
 
-/* ---------- core dispatch (used by both sendto and sendmsg) ---------- */
+/* ---------- dispatch, shared by sendto and sendmsg ---------- */
 
 static int is_djpl_port(uint16_t port)
 {
@@ -266,11 +259,13 @@ static int is_djpl_port(uint16_t port)
 }
 
 /* Returns:
- *   0  caller should send NOW unchanged (packet not Pro DJ Link, or
- *      shim disabled, or queue full / worker unavailable).
- *   1  enqueued for delayed send - caller should report success.
- * Filter: any packet on Pro DJ Link ports (50001/50002) with the magic
- * header gets queued and held until master's audible event time. */
+ *   0  The caller sends the packet immediately and unchanged. This happens
+ *      when the packet is not Pro DJ Link, the shim is disabled, the queue
+ *      is full or the worker is unavailable.
+ *   1  The packet is queued for a delayed send, and the caller reports
+ *      success.
+ * A packet to a Pro DJ Link port (50001 or 50002) with the magic header is
+ * held until its audio becomes audible on this deck. */
 static int try_handle_packet(int sockfd, const void *buf, size_t len, int flags,
                              const struct sockaddr *dest_addr, socklen_t addrlen,
                              uint16_t port)
@@ -285,8 +280,8 @@ static int try_handle_packet(int sockfd, const void *buf, size_t len, int flags,
 
 /* ---------- intercepted libc symbols ---------- */
 
-/* Refresh sysfs values lazily on the hot path: at most once per wall-clock
- * second, using __thread state. Cheap when nothing changed. */
+/* Refresh the sysfs values on the hot path at most once per wall-clock
+ * second per thread. */
 static void link_lazy_refresh(void)
 {
     static __thread long last_refresh_s;
@@ -306,7 +301,7 @@ ssize_t sendto(int sockfd, const void *buf, size_t len, int flags,
         link_lazy_refresh();
         if (try_handle_packet(sockfd, buf, len, flags,
                               dest_addr, addrlen, port))
-            return (ssize_t)len;   /* enqueued - report success */
+            return (ssize_t)len;   /* Queued; report success. */
     }
     long r = syscall(SYS_sendto, (long)sockfd, (long)buf, (long)len,
                      (long)flags, (long)dest_addr, (long)addrlen);
@@ -335,26 +330,25 @@ ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags)
     return (ssize_t)r;
 }
 
-/* Called from the existing close() hook in syscalls.c.
+/* The close() hook in syscalls.c calls this.
  *
- * The app's socket-per-packet pattern means it calls close() on the
- * sending FD microseconds after sendto returns. If we've queued the
- * packet for delayed send, the FD must stay open until the worker
- * actually fires the sendto.
+ * The app opens one socket per packet and closes it microseconds after
+ * sendto returns. A queued packet needs its fd open until the worker sends
+ * it.
  *
- * Returns 1 if the FD has a pending packet - caller should NOT call
- * sys_close; the kernel close will happen from our worker later.
- * Returns 0 if no match - caller should sys_close as normal.
+ * Returns 1 if the fd has a pending packet; the caller must not call
+ * sys_close, because the worker closes the fd later. Returns 0 otherwise,
+ * and the caller closes the fd as usual.
  *
- * Race notes:
- *   - The queue entry remains in the active range until the worker has
- *     done sendto and atomically read app_wants_close + bumped tail
- *     under g_q_mutex. So a close() that races with worker either wins
- *     (flag set before worker reads it) or loses (tail already advanced
- *     past, scan misses, falls through to real close).
- *   - If our scan misses but worker happens to close shortly after,
- *     caller's sys_close fails with EBADF - harmless, we've already
- *     told the app close succeeded above. */
+ * Races:
+ *   - The queue entry stays in the active range until the worker has sent
+ *     it, then read app_wants_close and advanced the tail under g_q_mutex.
+ *     A close() that races with the worker either wins, when it sets the
+ *     flag before the worker reads it, or loses, when the tail has already
+ *     moved past the entry and the caller closes the fd itself.
+ *   - If the scan misses and the worker closes the fd shortly after, the
+ *     caller's sys_close fails with EBADF. This is harmless because the app
+ *     has already been told the close succeeded. */
 int shim_link_intercept_close(int fd)
 {
     pthread_mutex_lock(&g_q_mutex);

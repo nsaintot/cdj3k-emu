@@ -1,7 +1,7 @@
 ---
-# Light defensive checks for the guest C side. Modernize/cppcoreguidelines
-# are deliberately out - the shim and forwarders are written in plain C99
-# against musl/glibc, not C++-style code.
+# Light defensive checks for the guest C code. The modernize and
+# cppcoreguidelines checks are off because the shim and the forwarders are
+# plain C99 built against musl and glibc.
 Checks: >
   bugprone-*,
   clang-analyzer-*,

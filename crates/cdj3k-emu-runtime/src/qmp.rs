@@ -49,13 +49,12 @@ impl QmpClient {
         // Read the QMP greeting banner.
         client.read_line()?;
 
-        // Negotiate capabilities.
         client.execute("qmp_capabilities", &serde_json::json!({}))?;
 
         Ok(client)
     }
 
-    /// Poll until QMP becomes available or timeout expires.
+    /// Retry the connection until QMP answers or `timeout` expires.
     pub fn connect_with_retry(port: u16, timeout: Duration) -> Result<Self, QmpError> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -69,7 +68,7 @@ impl QmpClient {
         }
     }
 
-    /// Execute a QMP command.  Returns the "return" field on success.
+    /// Execute a QMP command and return its "return" field.
     pub fn execute(&mut self, cmd: &str, args: &Value) -> Result<Value, QmpError> {
         let msg = if args.as_object().map(|m| m.is_empty()).unwrap_or(true) {
             serde_json::json!({ "execute": cmd })
@@ -84,7 +83,7 @@ impl QmpClient {
         read_reply(&mut self.reader)
     }
 
-    /// Hot-add a raw block device file as a named blockdev node.
+    /// Add a raw block device file as a named blockdev node while QEMU runs.
     pub fn blockdev_add(&mut self, node_name: &str, path: &str) -> Result<Value, QmpError> {
         self.execute(
             "blockdev-add",
@@ -96,12 +95,12 @@ impl QmpClient {
         )
     }
 
-    /// Hot-remove a device by QMP id.
+    /// Remove a device by its QMP ID while QEMU runs.
     pub fn device_del(&mut self, id: &str) -> Result<Value, QmpError> {
         self.execute("device_del", &serde_json::json!({ "id": id }))
     }
 
-    /// Remove a blockdev node (call after device_del settles).
+    /// Remove a blockdev node. Call this after device_del has completed.
     pub fn blockdev_del(&mut self, node_name: &str) -> Result<Value, QmpError> {
         self.execute(
             "blockdev-del",
@@ -109,9 +108,9 @@ impl QmpClient {
         )
     }
 
-    /// Swap the medium behind a named drive (id= from -drive if=none).
-    /// Triggers virtio_blk_change_media → virtio_notify_config on the QEMU side,
-    /// which fires virtblk_config_changed → revalidate_disk in the Pioneer guest.
+    /// Swap the medium behind a named drive, the id= of a -drive if=none. In
+    /// QEMU, virtio_blk_change_media calls virtio_notify_config, which makes
+    /// the Pioneer guest call virtblk_config_changed and then revalidate_disk.
     ///
     /// `format: None` leaves the driver chain to the filename, for a `json:`
     /// filename that spells it out.
@@ -130,12 +129,14 @@ impl QmpClient {
 
     /// Return the current backing filename for a named drive.
     ///
-    /// - `Ok(Some(path))` - drive found, medium path is `path`
-    /// - `Ok(None)`       - drive found but no inserted medium
-    /// - `Err(())`        - QMP call failed or drive not found; caller should keep existing state
+    /// - `Ok(Some(path))`: the drive exists and its medium is `path`.
+    /// - `Ok(None)`: the drive exists but has no medium.
+    /// - `Err(())`: the QMP call failed or the drive does not exist; the caller
+    ///   should keep its current state.
     ///
-    /// Tries `inserted.image.filename` first, falling back to `inserted.file`
-    /// when it's a plain path string instead of a node object.
+    /// It reads `inserted.image.filename` first, and falls back to
+    /// `inserted.file` when that is a plain path string instead of a node
+    /// object.
     #[allow(clippy::result_unit_err)]
     pub fn query_block_medium(&mut self, drive_id: &str) -> Result<Option<String>, ()> {
         let ret = self
@@ -157,7 +158,8 @@ impl QmpClient {
                 .map(|s| s.to_string());
             return Ok(filename);
         }
-        Err(()) // drive not found in list
+        // The drive is not in the list.
+        Err(())
     }
 
     /// Release an fdset handed over with [`add_fd`], closing QEMU's copy of the
@@ -167,18 +169,20 @@ impl QmpClient {
         Ok(())
     }
 
-    /// Send ACPI power button event - guest systemd handles graceful shutdown.
-    /// Errors are swallowed: if QMP is already gone the caller's next
-    /// `wait_or_kill` will SIGKILL the child anyway, and surfacing the error
-    /// would just race with the QEMU socket closing on us mid-shutdown.
+    /// Send an ACPI power-button event, so that systemd in the guest shuts
+    /// down gracefully. Errors are ignored: if QMP is already gone, the
+    /// caller's next `wait_or_kill` sends SIGKILL to the child anyway, and
+    /// the error would only race with QEMU closing the socket during
+    /// shutdown.
     pub fn system_powerdown(&mut self) -> Result<(), QmpError> {
         let _ = self.execute("system_powerdown", &serde_json::json!({}));
         Ok(())
     }
 
-    /// Send QMP "quit" - triggers clean QEMU shutdown.
+    /// Send QMP "quit", which shuts QEMU down cleanly.
     pub fn quit(&mut self) -> Result<(), QmpError> {
-        // Ignore errors: QEMU may close the socket before we read the response.
+        // Ignore errors, because QEMU may close the socket before the reply is
+        // read.
         let _ = self.execute("quit", &serde_json::json!({}));
         Ok(())
     }
@@ -196,7 +200,8 @@ fn read_line(reader: &mut impl BufRead) -> Result<String, QmpError> {
     Ok(line)
 }
 
-/// Read lines until a command's reply, skipping events. Returns its `return`.
+/// Read lines until a command's reply, skipping events, and return its
+/// `return` field.
 fn read_reply(reader: &mut impl BufRead) -> Result<Value, QmpError> {
     loop {
         let resp_str = read_line(reader)?;

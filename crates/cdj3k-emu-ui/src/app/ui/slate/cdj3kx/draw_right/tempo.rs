@@ -33,17 +33,20 @@ pub(super) const MASTER_TEMPO_OUTER_STROKE: f32 = 8.0;
 pub(super) const TEMPO_SLIDER_V_TOP: f32 = 0.692;
 pub(super) const TEMPO_SLIDER_V_BOT: f32 = 0.928;
 
-/// Number of tick positions: − [gap] 22 dots [gap] 0 [gap] 22 dots [gap] +
+/// Number of tick positions: the − sign, a gap, 22 dots, a gap, the 0, a gap,
+/// 22 dots, a gap and the + sign. Each gap takes one position.
 pub(super) const TEMPO_TICK_COUNT: usize = 51;
 
 /// Horizontal fraction of the MODES column (0 = col.left(), 1 = col.right()).
 pub(super) const TEMPO_TICK_X_U: f32 = 0.225;
 
-/// Slider *content* bounds (tick marks, segments, knob, track bar) as a fraction of col width.
+/// Bounds of the slider content (tick marks, segments, knob and track bar) as
+/// fractions of the column width.
 pub(super) const TEMPO_SLIDER_LEFT_U: f32 = 0.285;
 pub(super) const TEMPO_SLIDER_RIGHT_U: f32 = 0.725;
 
-/// Backdrop expands this many reference units beyond the slider content on each side.
+/// How far the backdrop extends beyond the slider content on each side, in
+/// reference units.
 pub(super) const TEMPO_BACKDROP_PAD_X: f32 = 5.0;
 pub(super) const TEMPO_BACKDROP_PAD_Y: f32 = 140.0;
 
@@ -52,13 +55,14 @@ pub(super) const TEMPO_BACKDROP_INNER_STROKE: f32 = 5.0;
 pub(super) const TEMPO_BACKDROP_GAP: f32 = 0.0;
 pub(super) const TEMPO_BACKDROP_OUTER_STROKE: f32 = 3.0;
 
-/// Double track bar (physical potentiometer range).
+/// Width and gap of the two track bars, which mark the range of the physical
+/// potentiometer.
 pub(super) const TEMPO_TRACK_BAR_W: f32 = 5.0;
 pub(super) const TEMPO_TRACK_BAR_GAP: f32 = 12.0;
 /// Inset from backdrop top/bottom where the track bar starts/ends (ref units).
 pub(super) const TEMPO_TRACK_BAR_INSET: f32 = 110.0;
 
-/// Snap-to-center zone: if the dragged value is within this distance of 0.5, snap to 0.5.
+/// A dragged value within this distance of 0.5 snaps to 0.5.
 pub(super) const TEMPO_CENTER_SNAP_ZONE: f32 = 0.02;
 
 /// Knob dimensions in reference units.
@@ -75,7 +79,7 @@ pub(super) const TEMPO_TICK_DOT_R: f32 = 2.0;
 
 // ── Tempo reset button ────────────────────────────────────────────────────────
 /// Horizontal center of the TEMPO RESET button as a fraction of the MODES column width.
-// Center at 43 ref from col.left; outer ring radius ≈ 35 → left margin = 8, fits in 117 available.
+/// The value puts the center about 34 ref units left of the column's left edge.
 pub(super) const TEMPO_RESET_BTN_X_U: f32 = -0.065;
 pub(super) const TEMPO_RESET_BTN_R: f32 = 28.0;
 pub(super) const TEMPO_RESET_BTN_INNER_STROKE: f32 = 10.0;
@@ -87,8 +91,9 @@ pub(super) const TEMPO_RESET_LED_STROKE: f32 = 12.0;
 pub(super) const TEMPO_RESET_LABEL_FONT_SIZE: f32 = 28.0;
 pub(super) const TEMPO_RESET_LABEL_GAP: f32 = 68.0;
 
-/// The slider's content area (tick and segment positions, knob, drag
-/// mapping) and its backdrop, the content padded on all sides; screen space.
+/// Returns the slider's content area (tick and segment positions, knob, drag
+/// mapping) and its backdrop, which is the content area padded on all sides.
+/// Both are in screen space.
 pub(super) fn tempo_slider_rects(layout: &UiScale) -> (Rect, Rect) {
     let col = MODES_COL_REF;
     let col_w = col.width();
@@ -100,13 +105,11 @@ pub(super) fn tempo_slider_rects(layout: &UiScale) -> (Rect, Rect) {
     let slider_left = col.left() + col_w * TEMPO_SLIDER_LEFT_U;
     let slider_right = col.left() + col_w * TEMPO_SLIDER_RIGHT_U;
 
-    // Slider content area in screen space (tick/segment positions, knob, drag mapping).
     let slider = Rect::from_min_max(
         layout.sp(slider_left, slider_top),
         layout.sp(slider_right, slider_bot),
     );
 
-    // Backdrop = slider content + padding on all sides.
     let backdrop = Rect::from_min_max(
         layout.sp(
             slider_left - TEMPO_BACKDROP_PAD_X,
@@ -205,7 +208,8 @@ pub(super) fn draw_tempo_slider(
     draw_tempo_reset(app, ui, p, layout, slider);
 }
 
-/// Knob - drawn on top of cached backdrop/segments, sized relative to slider content area.
+/// Paints the knob over the cached backdrop and segments, sized relative to the
+/// slider content area.
 fn paint_tempo_knob(p: &egui::Painter, layout: &UiScale, slider: Rect, tempo: f32) {
     let track_cx = slider.center().x;
     let knob_cy = slider.top() + slider.height() * tempo;
@@ -224,7 +228,6 @@ fn paint_tempo_knob(p: &egui::Painter, layout: &UiScale, slider: Rect, tempo: f3
         Vec2::new(knob_inner_w, knob_inner_h),
     );
 
-    // Outer rect (color A).
     p.rect_filled(knob_outer, knob_rounding, COL_SILVER);
     p.rect_stroke(
         knob_outer,
@@ -232,9 +235,8 @@ fn paint_tempo_knob(p: &egui::Painter, layout: &UiScale, slider: Rect, tempo: f3
         Stroke::new(layout.sc(2.0), COL_SILVER),
         egui::StrokeKind::Middle,
     );
-    // Inner rect (color B).
     p.rect_filled(knob_inner, knob_rounding * 0.5, COL_BTN);
-    // Center horizontal line.
+    // The horizontal line across the knob's center.
     let line_half_w = slider.width() * TEMPO_KNOB_LINE_W_FRAC * 0.5;
     p.line_segment(
         [
@@ -245,7 +247,8 @@ fn paint_tempo_knob(p: &egui::Painter, layout: &UiScale, slider: Rect, tempo: f3
     );
 }
 
-/// Drag interaction: backdrop is the hit area; tempo maps to slider content range.
+/// Handles dragging. The backdrop is the hit area, and the tempo maps to the
+/// range of the slider content.
 fn tempo_drag(app: &mut CdjApp, ui: &mut egui::Ui, slider: Rect, backdrop: Rect) {
     let drag = ui.interact(backdrop, ui.id().with("tempo_slider"), Sense::drag());
     if drag.dragged() {
@@ -265,8 +268,8 @@ fn tempo_drag(app: &mut CdjApp, ui: &mut egui::Ui, slider: Rect, backdrop: Rect)
     }
 }
 
-/// Tempo reset button, vertically aligned with the "0" tick (center of
-/// slider), and its LED.
+/// Draws the TEMPO RESET button, level with the "0" tick at the center of the
+/// slider, and its LED.
 fn draw_tempo_reset(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -311,7 +314,8 @@ fn draw_tempo_reset(
         Btn::TempoReset,
     );
 
-    // LED indicator - between button right edge and tick column, at the 0 position.
+    // Draw the LED between the button's right edge and the tick column, level
+    // with the 0 tick.
     let tick_x_screen = layout.sp(col.left() + col_w * TEMPO_TICK_X_U, col.top()).x;
     let led_x0 = reset_cx + reset_r + layout.sc(TEMPO_RESET_LED_GAP_L);
     let led_x1 = tick_x_screen - layout.sc(TEMPO_RESET_LED_GAP_R);

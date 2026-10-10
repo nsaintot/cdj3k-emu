@@ -5,11 +5,11 @@
 #   packaging/windows/cross-build.sh x64|arm64
 #
 # Builds <arch>-pc-windows-gnullvm in the image of docker/Dockerfile.windows-qemu,
-# the llvm-mingw toolchain QEMU's Windows build uses, and collects the DLLs the
-# executable loads beside it.
+# which has the llvm-mingw toolchain that QEMU's Windows build uses, and collects
+# the DLLs that the executable loads beside it.
 #
-# Output: dist/windows-bin-<arch>/ (cdj3k-emu.exe, libunwind.dll), the -Binary
-# directory stage.ps1 takes.
+# The output goes to dist/windows-bin-<arch>/ (cdj3k-emu.exe, libunwind.dll),
+# the directory that stage.ps1 takes as -Binary.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,7 +24,7 @@ ARCH="$1"
 
 if [ -z "${CDJ3K_WINDOWS_CROSS_INNER:-}" ]; then
     IMAGE="${CDJ3K_WINDOWS_QEMU_IMAGE:-cdj3k-emu-windows-qemu}"
-    command -v docker >/dev/null || { echo "ERROR: docker not found" >&2; exit 1; }
+    command -v docker >/dev/null || { echo "ERROR: docker was not found." >&2; exit 1; }
     echo "==> Image ${IMAGE}"
     docker build -q -f "${REPO_ROOT}/docker/Dockerfile.windows-qemu" -t "${IMAGE}" "${REPO_ROOT}" >/dev/null
     bash "${REPO_ROOT}/winit/fetch.sh"

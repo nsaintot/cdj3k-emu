@@ -5,34 +5,35 @@ use std::path::PathBuf;
 use cdj3k_emu_panel::Model;
 
 pub struct Cli {
-    /// Slot 1 is the default for a fresh launch. Slots 2..=4 are reachable
-    /// via `--instance N` (the "Instances" menu launches us with `open -n`).
+    /// Slot 1 is the default for a fresh launch. `--instance N` selects slots
+    /// 2 to 4; the Instances menu launches the app with `open -n` and this option.
     pub instance: u32,
-    /// `--model <slug>` / `CDJ3K_MODEL`: skip the picker and boot this
-    /// model right away (headless captures, dev loops, launch scripts).
+    /// `--model <slug>` / `CDJ3K_MODEL`: skip the picker and boot this model
+    /// at once. Headless captures, development loops and launch scripts use it.
     pub initial_model: Option<Model>,
     pub kernel: Option<PathBuf>,
     pub initramfs: Option<PathBuf>,
     pub no_emmc: bool,
-    /// Default off: serial log grows unbounded and is only useful for debugging
-    /// boot/kernel panics. Enabled via `--serial-log` or `CDJ3K_SERIAL_LOG=1`.
+    /// Off by default, because the serial log grows without limit and only helps
+    /// to debug boot failures and kernel panics. `--serial-log` or
+    /// `CDJ3K_SERIAL_LOG=1` turns it on.
     pub serial_log: bool,
-    /// Default off: enables puffin scopes + binds a localhost TCP listener
-    /// for puffin_viewer.  Off in shipping builds; enable with `--profile`
-    /// or `CDJ3K_PROFILE=1` for performance investigations.
+    /// Off by default. `--profile` or `CDJ3K_PROFILE=1` enables the puffin
+    /// scopes and binds a localhost TCP listener for puffin_viewer.
     pub profile: bool,
-    /// `--service-mode` boots straight into the sub-CPU test mode (the
-    /// "Service Mode" menu item, which otherwise needs a restart).
+    /// `--service-mode` boots straight into the sub-CPU test mode. The
+    /// Service Mode menu item does the same through a restart.
     pub service_mode: bool,
     /// `--provision <.UPD|.iso> [--key <file>]`: run the Install Firmware
     /// pipeline for `--instance` / `--model` without a window, then exit.
     pub provision_path: Option<PathBuf>,
     pub key_path: Option<PathBuf>,
-    /// `--no-spawn` / `CDJ3K_NO_SPAWN=1`: chassis only - no runtime worker, no
-    /// QEMU, no boot shade. For layout work and `CDJ3K_SCREENSHOT` captures.
+    /// `--no-spawn` / `CDJ3K_NO_SPAWN=1`: show the chassis without the runtime
+    /// worker, QEMU or the boot shade. It is meant for layout work and
+    /// `CDJ3K_SCREENSHOT` captures.
     pub no_spawn: bool,
-    /// `--after-update`: started by the updater while the build it replaced is
-    /// still exiting, so the slot is waited for rather than found taken.
+    /// `--after-update`: the updater passes this flag while the replaced build
+    /// is still exiting, so the app waits for the slot to be released.
     pub after_update: bool,
     /// `--mod <folder>` (repeatable) adds a mod folder for this launch only.
     pub extra_mods: Vec<PathBuf>,
@@ -108,7 +109,7 @@ impl Cli {
         match Model::parse(slug) {
             Some(m) => self.initial_model = Some(m),
             None => eprintln!(
-                "cdj3k-emu: unknown --model {:?} ({}) - showing the picker",
+                "cdj3k-emu: unknown --model {:?}; the known models are {}; showing the picker",
                 slug,
                 Model::ALL.map(|m| m.spec().slug).join(" | ")
             ),
@@ -116,7 +117,7 @@ impl Cli {
     }
 }
 
-/// Set unless empty or `0`.
+/// Whether the variable is set to a value other than an empty string or `0`.
 fn env_flag(name: &str) -> bool {
     std::env::var_os(name)
         .map(|v| v != "0" && !v.is_empty())

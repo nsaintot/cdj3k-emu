@@ -1,4 +1,4 @@
-//! Spawn-a-new-instance helper and the menu's alert dialogs.
+//! Launching another instance, and the menu's alert dialogs.
 
 use crate::menu_state;
 
@@ -14,8 +14,8 @@ pub(super) fn launch_instance(target: u32) {
         Ok(p) => p,
         Err(_) => return,
     };
-    // Walk up to the .app bundle root.
-    // Layout: <App>.app/Contents/MacOS/cdj3k-emu -> <App>.app
+    // Walk up from <App>.app/Contents/MacOS/cdj3k-emu to the <App>.app bundle
+    // root.
     let app_root = exe
         .parent()
         .and_then(|p| p.parent())
@@ -32,7 +32,7 @@ pub(super) fn launch_instance(target: u32) {
                 .spawn(),
         );
     } else {
-        // Dev mode: re-exec the binary directly.
+        // Outside a bundle, as in a development build, run the binary again.
         reap(
             std::process::Command::new(&exe)
                 .arg("--instance")
@@ -52,9 +52,9 @@ fn reap(child: std::io::Result<std::process::Child>) {
     }
 }
 
-/// Show a non-blocking error popup for a network setup failure
-/// (vmnet / tapbridge).  Single OK button - user picks a different
-/// interface from the menu to retry.
+/// Show an error dialog for a network setup failure (vmnet or tapbridge). It
+/// has a single OK button; the user retries by picking another interface from
+/// the menu.
 pub(super) fn show_net_error_alert(message: &str) {
     let _ = rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Error)
@@ -64,7 +64,7 @@ pub(super) fn show_net_error_alert(message: &str) {
         .show();
 }
 
-/// The physical disk could not be handed to the deck.
+/// Warn that the physical disk could not be attached to the deck.
 pub(super) fn show_usb_error_alert(message: &str) {
     let _ = rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Warning)
@@ -74,7 +74,7 @@ pub(super) fn show_usb_error_alert(message: &str) {
         .show();
 }
 
-/// Shows a two-button alert and reports whether the first button was chosen.
+/// Show a two-button alert and report whether the first button was chosen.
 /// With `OkCancelCustom`, every rfd backend returns the chosen button's label
 /// as `MessageDialogResult::Custom`, not `Ok`.
 fn confirm(title: &str, description: &str, ok: &str, cancel: &str) -> bool {
@@ -89,10 +89,10 @@ fn confirm(title: &str, description: &str, ok: &str, cancel: &str) -> bool {
     matches!(result, rfd::MessageDialogResult::Custom(ref label) if label == ok)
 }
 
-/// Offered after the driver plugin is replaced under a running `MIDIServer`.
-/// The new binary loads when that process next starts, so the choice is
-/// whether to end it now.  Ending it drops every MIDI app's connection, and
-/// those apps do not reconnect on their own, so it is the user's call.
+/// Offer to restart `MIDIServer` after the driver plugin is replaced while it
+/// runs. The new binary loads when that process next starts. Ending it drops
+/// every MIDI app's connection, and those apps do not reconnect on their own,
+/// so the user decides.
 pub(super) fn show_midi_driver_alert() {
     if confirm(
         "MIDI driver updated",

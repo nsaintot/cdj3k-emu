@@ -1,11 +1,9 @@
 //! The setup window's palette, metrics and widget style.
 //!
-//! One language, "Panel": a paper ground, graphite ink, hairline edges and
-//! flat plates. Colour is a signal - the only hues on screen belong to a deck
-//! or to the state of a run. Every step of the window takes its colours from
-//! the [`Palette`] the system theme picks, and every widget drawn under the
-//! window is styled once by [`apply_setup_style`] rather than tinted call by
-//! call.
+//! The window uses a paper ground, graphite ink, hairline edges and flat
+//! plates. The only hues on screen mark a deck or the state of a run. Every
+//! step takes its colours from the [`Palette`] that the system theme picks,
+//! and [`apply_setup_style`] styles every widget in the window once.
 
 use egui::{Color32, Context, CornerRadius, Stroke, Vec2};
 
@@ -16,7 +14,7 @@ pub(in crate::app) struct Palette {
     /// Cards, bars and the raised parts of a control.
     pub plate: Color32,
     pub plate_hover: Color32,
-    /// Sunk areas: the log.
+    /// Sunk areas, such as the log.
     pub field: Color32,
     pub line: Color32,
     /// The edge of anything the user can click or type into.
@@ -25,23 +23,24 @@ pub(in crate::app) struct Palette {
     pub muted: Color32,
     /// Field labels and hints.
     pub dim: Color32,
-    /// The quietest text the window uses: the era line, the build number.
+    /// The faintest text in the window, such as the era line and the build
+    /// number.
     pub faint: Color32,
     pub warn: Color32,
     pub ok: Color32,
     pub danger: Color32,
-    /// A link out of the app: the docs, a template.
+    /// A link that opens outside the app, such as the docs or a template.
     pub link: Color32,
-    /// A filled control under the pointer: the ink and the danger, lifted.
+    /// The hover colours of the filled ink and danger controls.
     pub ink_hover: Color32,
     pub danger_hover: Color32,
     /// Text on a filled ink or danger control.
     pub on_ink: Color32,
-    /// A control that is offering nothing: its fill, its edge, its label.
+    /// The fill, edge and label colours of a disabled control.
     pub off: Color32,
     pub off_line: Color32,
     pub off_text: Color32,
-    /// The deck miniature: its outline, and the finer parts inside it.
+    /// The deck miniature's outline, and the finer parts inside it.
     pub glyph: Color32,
     pub glyph_detail: Color32,
 }
@@ -107,27 +106,30 @@ pub(in crate::app) fn palette(ctx: &Context) -> &'static Palette {
 }
 
 // ── Metrics ───────────────────────────────────────────────────────────────────
-// Authored against the window's own width; every user multiplies by `k`.
+// The sizes are written for the reference window width; callers multiply them
+// by `k`.
 
-/// Controls and plates. Nothing in the window is softer than this.
+/// The corner radius of controls and plates.
 pub(in crate::app) const ROUND: f32 = 3.0;
-/// Chips, which are small enough that the control radius reads as a pill.
+/// The corner radius of chips, which are small enough that the control radius
+/// would make them look like pills.
 pub(in crate::app) const ROUND_CHIP: f32 = 2.0;
-/// Every edge in the window is one of these.
+/// The width of every edge in the window.
 pub(in crate::app) const HAIRLINE: f32 = 1.0;
 
-/// The identity strip at the top, and the action bar at the foot.
+/// The heights of the identity strip at the top and the action bar at the
+/// foot.
 pub(in crate::app) const TOPBAR_H: f32 = 44.0;
 pub(in crate::app) const FOOTER_H: f32 = 56.0;
 /// The page margin every step lines up on.
 pub(in crate::app) const GUTTER: f32 = 24.0;
 
-/// Text fields, combos and the button beside them.
+/// The height of text fields, combos and the button beside them.
 pub(in crate::app) const FIELD_H: f32 = 34.0;
-/// The size every action button in the footer takes, so a row of them lines
-/// up whatever the labels say.
+/// The size of every action button in the footer, so a row of them lines up
+/// whatever the labels are.
 pub(in crate::app) const BUTTON_SIZE: [f32; 2] = [104.0, 36.0];
-/// A card's foot pill, which is the one thing that card does.
+/// The height of a card's foot pill, which names the card's action.
 pub(in crate::app) const PILL_H: f32 = 36.0;
 /// A glyph beside a button's label: its side as a share of the button's
 /// height, and the space it keeps from the label.
@@ -138,7 +140,7 @@ const ICON_GAP: f32 = 7.0;
 
 /// The screen's own title.
 pub(in crate::app) const TITLE_FONT: f32 = 24.0;
-/// The line under it that says what the step is for.
+/// The line under the title that says what the step is for.
 pub(in crate::app) const SUB_FONT: f32 = 13.0;
 pub(in crate::app) const BODY_FONT: f32 = 13.0;
 pub(in crate::app) const BUTTON_FONT: f32 = 12.5;
@@ -146,12 +148,12 @@ pub(in crate::app) const HINT_FONT: f32 = 11.0;
 /// Field labels and the identity strip: small, wide-tracked capitals.
 pub(in crate::app) const MICRO_FONT: f32 = 10.0;
 pub(in crate::app) const MICRO_TRACK: f32 = 1.4;
-/// The wordmark, which is tracked wider still.
+/// The wordmark's tracking, which is wider still.
 pub(in crate::app) const WORDMARK_TRACK: f32 = 1.8;
 
-/// The one thing a step is for: ink, with the paper showing through the text.
-/// An `egui::Button` given a fixed fill keeps it in every state, so the fill
-/// goes on the widget style instead and the hover survives.
+/// The step's main action: an ink button with paper-coloured text. An
+/// `egui::Button` with a fixed fill keeps that fill in every state, so the
+/// fill is set on the widget style and the hover colour still applies.
 pub(in crate::app) fn primary(
     ui: &mut egui::Ui,
     size: [f32; 2],
@@ -161,7 +163,7 @@ pub(in crate::app) fn primary(
     filled(ui, size, label, pal.on_ink, pal.ink, pal.ink_hover)
 }
 
-/// The one thing a step is for, when doing it destroys an installation.
+/// The step's main action when it destroys an installation.
 pub(in crate::app) fn destructive(
     ui: &mut egui::Ui,
     size: [f32; 2],
@@ -171,10 +173,9 @@ pub(in crate::app) fn destructive(
     filled(ui, size, label, pal.on_ink, pal.danger, pal.danger_hover)
 }
 
-/// Destructive, but not what the step is for: an outline that fills as the
-/// pointer lands, so it never competes with the step's own action. The button
-/// is drawn rather than built from an `egui::Button`, so the caller's glyph
-/// and the label sit as one centred group.
+/// A destructive button that is not the step's main action: an outline that
+/// fills on hover, so it never competes with the main action. It is drawn by
+/// hand so that the caller's glyph and the label are centred as one group.
 pub(in crate::app) fn destructive_line(
     ui: &mut egui::Ui,
     size: [f32; 2],
@@ -198,9 +199,8 @@ pub(in crate::app) fn destructive_line(
         egui::StrokeKind::Middle,
     );
 
-    // Glyph and label are laid out as one block and centred together, so the
-    // button reads as a single thing whatever the slot number does to the
-    // label's width.
+    // Lay out the glyph and the label as one block and centre them together,
+    // whatever the label's width.
     let galley = p.layout_no_wrap(
         label.to_owned(),
         egui::FontId::proportional(BUTTON_FONT),
@@ -224,9 +224,9 @@ pub(in crate::app) fn destructive_line(
     pointer(resp)
 }
 
-/// The step's one action, when it cannot be taken yet. A filled button that is
-/// merely dimmed still reads as the loudest thing on the step, so this goes
-/// quiet instead - and takes no pointer, having nothing to offer it.
+/// The step's main action while it is unavailable. It uses the disabled
+/// colours, because a dimmed filled button would still be the most prominent
+/// control, and it shows no pointing-hand cursor.
 pub(in crate::app) fn primary_off(
     ui: &mut egui::Ui,
     size: [f32; 2],
@@ -283,8 +283,8 @@ fn filled(
     pointer(resp.expect("the scope always runs"))
 }
 
-/// Anything offered beside it. Left to the window's own widget style, so it
-/// lifts on hover like the rest.
+/// A secondary action beside the main one. It uses the window's widget style,
+/// so it lightens on hover like the other controls.
 pub(in crate::app) fn secondary(
     ui: &mut egui::Ui,
     size: [f32; 2],
@@ -303,7 +303,7 @@ pub(in crate::app) fn secondary(
     )
 }
 
-/// Anything the pointer can act on says so.
+/// Show the pointing-hand cursor over an enabled control.
 pub(in crate::app) fn pointer(resp: egui::Response) -> egui::Response {
     if resp.enabled() {
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -331,14 +331,13 @@ pub(in crate::app) fn apply_setup_style(ui: &mut egui::Ui, pal: &Palette) {
     v.menu_corner_radius = CornerRadius::from(ROUND);
     v.window_shadow = egui::epaint::Shadow::NONE;
     v.popup_shadow = egui::epaint::Shadow::NONE;
-    // The row a list already holds: a sunk band, not a highlight. egui's own
-    // selection blue is the one colour in this window that belongs to nothing.
+    // Show a list's selected row as a sunk band, because egui's default
+    // selection blue matches no colour in the window.
     v.selection.bg_fill = pal.field;
     v.selection.stroke = Stroke::new(HAIRLINE, pal.ink);
-    // egui draws a disabled widget from `noninteractive`: a control with
-    // nothing to offer goes quiet rather than dimming the window behind it.
-    // Every label in the window names its own colour, so this is the disabled
-    // look and nothing else.
+    // egui draws a disabled widget from `noninteractive`, so these settings
+    // give a disabled control the disabled colours. Every label sets its own
+    // colour, so this style affects only disabled controls.
     let n = &mut v.widgets.noninteractive;
     n.bg_fill = pal.off;
     n.weak_bg_fill = pal.off;
@@ -346,8 +345,8 @@ pub(in crate::app) fn apply_setup_style(ui: &mut egui::Ui, pal: &Palette) {
     n.fg_stroke = Stroke::new(HAIRLINE, pal.off_text);
     n.corner_radius = CornerRadius::from(ROUND);
 
-    // Rest, hover, press: the plate lifts and the edge darkens, which is the
-    // same move the cards make. Nothing grows, and nothing casts a shadow.
+    // On hover and press the plate lightens and the edge darkens, as on the
+    // cards. Widgets do not expand or cast a shadow.
     for (w, fill, edge, fg) in [
         (&mut v.widgets.inactive, pal.plate, pal.line_strong, pal.ink),
         (&mut v.widgets.hovered, pal.plate_hover, pal.ink, pal.ink),

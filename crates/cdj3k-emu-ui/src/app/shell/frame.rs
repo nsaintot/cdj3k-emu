@@ -21,7 +21,7 @@ impl eframe::App for CdjShell {
         }
     }
 
-    /// eframe calls this before every [`ui`](Self::ui), and also while the
+    /// eframe calls this before every [`ui`](eframe::App::ui), and also while the
     /// window is minimized or covered, when it does not call `ui`. It closes
     /// the window, relaunches the emulation, sends the requested power-off
     /// frame, serves the window socket and applies finished installs, so these
@@ -48,9 +48,9 @@ impl eframe::App for CdjShell {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = &ui.ctx().clone();
         MENU_SETUP.call_once(cdj3k_emu_platform::menu::setup_menu);
-        // Hosts with no native menu bar draw one here, above the deck; a
-        // no-op on macOS. The startup picker carries its own wordmark and slot
-        // switcher, so it gets only the shortcuts.
+        // Hosts with no native menu bar draw one here, above the deck; on
+        // macOS this does nothing. The startup picker has its own wordmark and
+        // slot switcher, so it gets only the shortcuts.
         if matches!(self.screen, Screen::Panel) {
             cdj3k_emu_platform::menu::draw_in_window(ui);
         } else {
@@ -73,9 +73,9 @@ impl eframe::App for CdjShell {
         if self.setup.is_some() || matches!(self.screen, Screen::Picker) {
             ctx.request_repaint_after(Duration::from_secs(1));
         }
-        // One window for switching an emulation and installing its firmware.
-        // Exempt from the shade gate: the install step must be reachable while
-        // QEMU is not running.
+        // One window switches the emulation and installs its firmware. It is
+        // exempt from the shade gate, because the install step must be
+        // reachable while QEMU is not running.
         let action = self.show_setup_window(ctx);
         self.apply_picker_action(action);
         if let Some((slot, model)) = self.wizard.take_boot_request() {
@@ -105,15 +105,15 @@ impl eframe::App for CdjShell {
 }
 
 impl CdjShell {
-    /// Graceful close: instead of blocking inside `on_exit` for the full
-    /// runtime-stop budget (which freezes the window for 1-2 s), defer the
-    /// actual close until the worker has finished.
+    /// Defer the actual close until the worker has finished. Blocking inside
+    /// `on_exit` for the full runtime-stop budget would freeze the window for
+    /// 1-2 s.
     fn hold_close_request(&mut self, ctx: &egui::Context) {
         if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
         if self.wizard.is_running() && !self.shutdown_in_progress {
-            // An install under way finishes first; its window says so.
+            // An install under way finishes first, and its window says so.
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         } else if !self.shutdown_in_progress {
             self.shutdown_in_progress = true;
@@ -125,9 +125,9 @@ impl CdjShell {
         }
     }
 
-    /// Once the worker is gone after a close, close the window. A prepared
-    /// update installs now; Sparkle ends the process itself, and past
-    /// [`QUIT_HAND_OFF_WAIT`] the window closes anyway.
+    /// Close the window once the worker has exited after a close request. A
+    /// prepared update installs now; Sparkle ends the process itself, and
+    /// after [`QUIT_HAND_OFF_WAIT`] the window closes anyway.
     fn finish_shutdown(&mut self, ctx: &egui::Context) {
         if !self.shutdown_in_progress {
             return;
@@ -151,7 +151,7 @@ impl CdjShell {
         if self.worker_stopping && cdj3k_emu_runtime::reap_finished_worker() {
             self.worker_stopping = false;
         }
-        // The worker retired itself to restart onto a finished install.
+        // The worker exited by itself to restart onto a finished install.
         if cdj3k_emu_runtime::worker_is_finished()
             && std::mem::take(&mut menu_state::lock().relaunch_requested)
         {
@@ -166,7 +166,7 @@ impl CdjShell {
         }
     }
 
-    /// The delete or launch that was waiting for the worker to stop.
+    /// Run the delete or launch that was waiting for the worker to stop.
     fn run_pending(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
         if std::mem::take(&mut self.pending_delete) {
             // A restart that was stopping the emulation does not boot an
@@ -209,7 +209,7 @@ impl CdjShell {
         }
     }
 
-    /// With no runtime worker to save it, Enable Mods is saved here.
+    /// Save Enable Mods here while no runtime worker runs to save it.
     fn save_mods_toggle(&self) {
         if !cdj3k_emu_runtime::worker_is_finished() {
             return;
@@ -227,9 +227,9 @@ impl CdjShell {
         }
     }
 
-    /// Manage Emulation from the menu opens the setup window on this slot.
-    /// Not over the startup picker, which already shows the same cards. A
-    /// run under way keeps the window, as does a slot being emptied.
+    /// Manage Emulation from the menu opens the setup window on this slot. It
+    /// does not open over the startup picker, which already shows the same
+    /// cards, or while an install is running or the slot is being emptied.
     fn open_manage_on_request(&mut self, asked: bool) {
         if asked
             && matches!(self.screen, Screen::Panel)
@@ -241,8 +241,8 @@ impl CdjShell {
         }
     }
 
-    /// Any way out of the Mods view drops its pick, download and pending
-    /// replace, so none of them lands in another slot.
+    /// Leaving the Mods view by any route drops its pick, download and
+    /// pending replace, so none of them lands in another slot.
     fn drop_left_mods(&mut self) {
         if !matches!(self.setup, Some(SetupStep::Mods))
             && (self.mods.is_some()
@@ -254,8 +254,8 @@ impl CdjShell {
         }
     }
 
-    /// The startup picker, for a slot with nothing to show. The setup window
-    /// handles every later choice.
+    /// Draws the startup picker for a slot with nothing to show. The setup
+    /// window handles every later choice.
     fn draw_startup_picker(
         &mut self,
         ui: &mut egui::Ui,

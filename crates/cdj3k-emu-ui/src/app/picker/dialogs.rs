@@ -1,5 +1,6 @@
-//! The questions shown in place of the card row before a slot's installation
-//! goes: replacing it with another deck, or emptying it.
+//! The confirmations shown in place of the card row before a slot's
+//! installation is removed: replacing it with another deck, or emptying the
+//! slot.
 
 use cdj3k_emu_panel::Model;
 use egui::{Align2, FontId, Pos2, Rect, Stroke, Vec2};
@@ -13,19 +14,20 @@ use super::{PickerAction, PickerView};
 use crate::app::theme::{self, Palette};
 
 const CONFIRM_W: f32 = 560.0;
-/// Room either side of the label on the confirmation's wide button.
+/// The room on both sides of the label on the confirmation's wide button.
 const CONFIRM_BTN_PAD: f32 = 36.0;
-/// The deck-to-deck line above the plate, and the arrow in it.
+/// The line above the plate that shows the current and the new deck, and the
+/// arrow between them.
 const SWAP_H: f32 = 14.0;
 const SWAP_GAP: f32 = 18.0;
 const SWAP_ARROW_W: f32 = 22.0;
 const SWAP_FONT: f32 = 11.0;
-/// The plate naming what an install takes with it.
+/// The plate that lists what an install deletes.
 const LOSS_PAD: f32 = 16.0;
 const LOSS_HEAD_H: f32 = 32.0;
 const LOSS_ROW_H: f32 = 34.0;
 const LOSS_FONT: f32 = 13.0;
-/// The dash before each thing on it.
+/// The dash before each item on the plate.
 const LOSS_DASH_W: f32 = 8.0;
 const LOSS_DASH_GAP: f32 = 12.0;
 /// The line under the plate that names the mods the new model would not run.
@@ -33,13 +35,14 @@ const REPLACE_MODS_GAP: f32 = 14.0;
 const REPLACE_MODS_GLYPH: f32 = 14.0;
 const REPLACE_MODS_FONT: f32 = 12.5;
 
-/// A step that asks before the slot's installation goes.
+/// A step that asks for confirmation before the slot's installation is
+/// removed.
 struct Confirmation<'a> {
     head: Header<'a>,
-    /// The deck-to-deck line above the plate: what the slot holds, then what
-    /// takes its place.
+    /// The decks shown above the plate: the one the slot holds, then the one
+    /// that replaces it.
     swap: Option<(Option<Model>, Model)>,
-    /// What goes, one row each on the plate.
+    /// What is deleted, one row per item on the plate.
     losses: [String; 3],
     /// The slot's mods the new deck would not run, named under the plate.
     incompatible: Option<(Model, &'a [String])>,
@@ -48,8 +51,9 @@ struct Confirmation<'a> {
     decline: PickerAction,
 }
 
-/// The card row replaced by the question the replacement asks: the slot's
-/// installation, its eMMC and everything the guest wrote to it all go.
+/// Draws the replace confirmation in place of the card row. It warns that the
+/// slot's installation, its eMMC and everything the guest wrote to it are
+/// deleted.
 pub(super) fn draw_confirm(
     ui: &mut egui::Ui,
     view: &PickerView<'_>,
@@ -90,8 +94,8 @@ pub(super) fn draw_confirm(
     draw_confirmation(ui, confirmation, k, pal)
 }
 
-/// Emptying the slot: the same plate the replacement shows, for a step that
-/// puts nothing in its place.
+/// Draws the delete confirmation, with the same plate as the replace
+/// confirmation but with nothing installed in the slot's place.
 pub(in crate::app) fn draw_delete_confirm(
     ui: &mut egui::Ui,
     view: &PickerView<'_>,
@@ -138,8 +142,8 @@ fn confirm_header<'a>(view: &PickerView<'a>, title: &'a str, sub: &'a str) -> He
     }
 }
 
-/// The header; the swap line, the loss plate and the incompatible mods
-/// centred in the step's space; and the accept and decline buttons in its
+/// Draws the header, then the deck line, the plate and the incompatible mods
+/// centred in the step's space, then the accept and decline buttons in the
 /// action bar.
 fn draw_confirmation(
     ui: &mut egui::Ui,
@@ -186,7 +190,8 @@ fn draw_confirmation(
     confirm_buttons(ui, inner, &c.accept_label, c.accept, c.decline, pal, k)
 }
 
-/// The two decks, in the order the slot sees them, from `at`.
+/// Draws the current deck and the new deck from `at`, with an arrow between
+/// them.
 fn swap_line(p: &egui::Painter, decks: [Option<Model>; 2], at: Pos2, pal: &Palette, k: f32) {
     let swap_font = FontId::proportional(SWAP_FONT * k);
     let cy = at.y + SWAP_H * k * 0.5;
@@ -225,8 +230,8 @@ fn swap_line(p: &egui::Painter, decks: [Option<Model>; 2], at: Pos2, pal: &Palet
     }
 }
 
-/// The plate naming what goes: a warning band, then one dashed row each.
-/// Returns where it is.
+/// Draws the plate that lists what is deleted: a warning band, then one
+/// dashed row per item. Returns the plate's rect.
 fn loss_plate(
     p: &egui::Painter,
     min: Pos2,
@@ -282,8 +287,8 @@ fn loss_plate(
     plate
 }
 
-/// "2 of this slot's mods are incompatible with the CDJ-3000 (a, b).", laid
-/// out to the plate's width.
+/// Lays out a line such as "2 of this slot's mods are incompatible with the
+/// CDJ-3000 (a, b)." to the plate's width.
 fn incompatible_line(
     ui: &egui::Ui,
     model: Model,
@@ -319,7 +324,7 @@ fn incompatible_line(
     ui.painter().layout_job(job)
 }
 
-/// The incompatible mods line under `plate`, behind a cube.
+/// Draws the incompatible mods line under `plate`, after a cube glyph.
 fn incompatible_note(
     p: &egui::Painter,
     plate: Rect,
@@ -344,7 +349,7 @@ fn incompatible_note(
     );
 }
 
-/// The wide destructive button that goes ahead, and "Keep it" beside it.
+/// Draws the wide destructive button that confirms, and "Keep it" beside it.
 fn confirm_buttons(
     ui: &mut egui::Ui,
     inner: Rect,

@@ -5,20 +5,22 @@
  * PcDeckSelector::select, which calls PcModeSwitcher::setMode itself.  EP122
  * has no such path.
  *
- * EP122 gates every HID/MIDI report to the host behind
+ * EP122 sends HID and MIDI reports to the host only through
  * connection_with_hostapp::PcModeSwitcher: the HID send path and
- * SendManager::midiSend only run once PC mode is active, and it is normally
- * set by a host-driven cert handshake that can't be reproduced against
- * our virtual device. The getter is `mutex_lock; w0 = *(this+8); mutex_unlock; return w0`;
- * its load of the flag becomes `mov w20,#1`, so it reports PC mode on.
+ * SendManager::midiSend run only once PC mode is active. The host normally
+ * sets PC mode through a certificate handshake that the virtual device cannot
+ * complete. The getter is `mutex_lock; w0 = *(this+8); mutex_unlock; return w0`;
+ * the bridge replaces its load of the flag with `mov w20,#1`, so it reports PC
+ * mode as on.
  *
- * Only EP122's main thread is stopped while the text is poked.  One
- * instruction changes and it does not touch the stack, so a thread that is
- * inside the getter when the page flips runs either the old or the new word
- * with the same frame.
+ * Only EP122's main thread is stopped while the text is patched. One
+ * instruction changes, and it does not touch the stack, so a thread that is
+ * inside the getter when the word changes runs either the old or the new
+ * instruction with the same frame.
  *
- * It is located by matching the instruction words of its body, with the two
- * PC-relative `bl` masked.  rk3399 builds 3.13 to 3.22 each match once.
+ * The getter is found by matching the instruction words of its body, with the
+ * two PC-relative `bl` masked. The rk3399 builds 3.13 to 3.22 each match
+ * once.
  * See docs/pc-link.md. */
 
 #define _GNU_SOURCE
@@ -40,7 +42,7 @@
 #define EP122_PCMODE_ORIG   0xb9400a94u /* ldr w20, [x20, #8] */
 #define EP122_PCMODE_PATCH  0x52800034u /* mov w20, #1        */
 
-// PTRACE_POKETEXT writes 8 bytes from the aligned doubleword containing the target word; this avoids partial updates.
+// PTRACE_POKETEXT writes 8 bytes, so poke the aligned doubleword that contains the target word and keep its other 4 bytes.
 struct poke_site { unsigned long addr; unsigned shift; };
 
 static struct poke_site poke_site(unsigned long getter)
@@ -59,8 +61,8 @@ static unsigned long site_with(struct poke_site ps, unsigned long dw, uint32_t w
     return (dw & ~(0xffffffffUL << ps.shift)) | ((unsigned long)w << ps.shift);
 }
 
-/* Body of the getter, one aarch64 word per entry.  The two `bl` (mutex lock
- * and unlock) are compared on their opcode bits only. */
+/* The body of the getter, one aarch64 word per entry. The two `bl` (mutex
+ * lock and unlock) are compared on their opcode bits only. */
 static const uint32_t PCMODE_SIG[] = {
     0xa9be7bfd, /* stp  x29, x30, [sp, #-0x20]! */
     0x910003fd, /* mov  x29, sp                 */
@@ -85,8 +87,8 @@ static const uint32_t PCMODE_MASK[] = {
 };
 #define PCMODE_SIG_WORDS (sizeof PCMODE_SIG / sizeof PCMODE_SIG[0])
 
-/* Scan the executable segment of EP122's binary for the getter.  Returns its
- * virtual address, or 0 on no match or more than one. */
+/* Scan the executable segment of EP122's binary for the getter. Returns its
+ * virtual address, or 0 when nothing or more than one place matches. */
 static unsigned long find_pcmode_getter(pid_t pid)
 {
     char path[64];
@@ -137,7 +139,7 @@ static unsigned long find_pcmode_getter(pid_t pid)
     fclose(f);
 
     if (matches != 1) {
-        fprintf(stderr, "pc-link-bridge: PC-mode getter %s; not patching\n",
+        fprintf(stderr, "pc-link-bridge: the PC-mode getter was %s; not patching it\n",
                 matches ? "matched more than once" : "not found");
         return 0;
     }
@@ -164,19 +166,19 @@ static pid_t find_pid(const char *comm)
     return found;
 }
 
-/* The app process to patch: APP_NAME (set on the unit by patch 29) when it
- * is one that needs forcing, else NULL. */
+/* Return APP_NAME, which patch 29 sets on the unit, when that app needs PC
+ * mode forced; otherwise return NULL. */
 static const char *app_to_force(void)
 {
     static const char *const k_forced[] = { "EP122" };
     const char *app = getenv("APP_NAME");
     if (!app || !*app) {
-        fprintf(stderr, "pc-link-bridge: APP_NAME unset; PC mode not forced\n");
+        fprintf(stderr, "pc-link-bridge: APP_NAME is not set, so PC mode is not forced\n");
         return NULL;
     }
     for (size_t i = 0; i < sizeof k_forced / sizeof k_forced[0]; i++)
         if (strcmp(app, k_forced[i]) == 0) return app;
-    fprintf(stderr, "pc-link-bridge: %s selects PC mode from SOURCE; nothing to force\n", app);
+    fprintf(stderr, "pc-link-bridge: %s selects PC mode from SOURCE, so there is nothing to force\n", app);
     return NULL;
 }
 
@@ -191,14 +193,14 @@ void force_pc_mode(void)
     }
     if (g_stop) return;
     if (pid < 0) {
-        fprintf(stderr, "pc-link-bridge: %s not found; PC mode not forced\n", app);
+        fprintf(stderr, "pc-link-bridge: %s is not running, so PC mode is not forced\n", app);
         return;
     }
     unsigned long getter = find_pcmode_getter(pid);
     if (!getter) return;
     struct poke_site ps = poke_site(getter);
     if (ptrace(PTRACE_ATTACH, pid, 0, 0) != 0) {
-        fprintf(stderr, "pc-link-bridge: ptrace attach %d failed: %s\n", pid, strerror(errno));
+        fprintf(stderr, "pc-link-bridge: ptrace attach to %d failed: %s\n", pid, strerror(errno));
         return;
     }
     int st;
@@ -208,9 +210,9 @@ void force_pc_mode(void)
     if (cur == -1 && errno) {
         fprintf(stderr, "pc-link-bridge: PC-mode peek failed: %s\n", strerror(errno));
     } else if (site_word(ps, (unsigned long)cur) == EP122_PCMODE_PATCH) {
-        fprintf(stderr, "pc-link-bridge: PC mode already forced\n");
+        fprintf(stderr, "pc-link-bridge: PC mode is already forced\n");
     } else if (site_word(ps, (unsigned long)cur) != EP122_PCMODE_ORIG) {
-        fprintf(stderr, "pc-link-bridge: PC-mode getter mismatch (0x%x); firmware differs, not patching\n",
+        fprintf(stderr, "pc-link-bridge: the PC-mode getter does not match (0x%x); the firmware differs, so it is not patched\n",
                 site_word(ps, (unsigned long)cur));
     } else if (ptrace(PTRACE_POKETEXT, pid, (void *)ps.addr,
                       (void *)site_with(ps, (unsigned long)cur, EP122_PCMODE_PATCH)) != 0) {
@@ -222,9 +224,9 @@ void force_pc_mode(void)
     ptrace(PTRACE_DETACH, pid, 0, 0);
 }
 
-/* Undo force_pc_mode() when the bridge stops (PC Link toggled off), so the deck
- * returns to standalone behaviour, the "unplugged cable" model.  Only reverts
- * bytes we ourselves patched. */
+/* Undo force_pc_mode() when the bridge stops because PC Link was toggled
+ * off, so the deck behaves as if the cable were unplugged. The word is
+ * restored only when it holds the patched instruction. */
 void unforce_pc_mode(void)
 {
     const char *app = app_to_force();
@@ -242,7 +244,7 @@ void unforce_pc_mode(void)
     if (!(cur == -1 && errno) && site_word(ps, (unsigned long)cur) == EP122_PCMODE_PATCH) {
         if (ptrace(PTRACE_POKETEXT, pid, (void *)ps.addr,
                    (void *)site_with(ps, (unsigned long)cur, EP122_PCMODE_ORIG)) == 0)
-            fprintf(stderr, "pc-link-bridge: restored PC-mode getter on %s pid %d\n", app, pid);
+            fprintf(stderr, "pc-link-bridge: restored the PC-mode getter on %s pid %d\n", app, pid);
     }
     ptrace(PTRACE_DETACH, pid, 0, 0);
 }

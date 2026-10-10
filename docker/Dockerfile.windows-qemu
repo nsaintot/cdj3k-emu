@@ -1,6 +1,6 @@
-# Cross-builds the patched QEMU, and the app, for Windows (x86_64 and aarch64)
-# on a Linux host with llvm-mingw (clang, UCRT), one toolchain for both targets;
-# docker/windows-qemu-deps.sh builds the libraries for each.
+# Cross-builds the patched QEMU and the app for Windows (x86_64 and aarch64) on
+# a Linux host with llvm-mingw (clang, UCRT), one toolchain for both targets.
+# docker/windows-qemu-deps.sh builds the libraries for each target.
 #
 # The image holds the toolchain and the libraries; the builds run through
 # `qemu/build.sh --windows <arch>` and `packaging/windows/cross-build.sh <arch>`,
@@ -15,13 +15,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir meson==1.5.2 packaging tomli
 
-# sha256 per host architecture of the llvm-mingw-<version>-ucrt-ubuntu-22.04
-# tarball.
+# The sha256 of the llvm-mingw-<version>-ucrt-ubuntu-22.04 tarball for each
+# host architecture.
 RUN set -eux; \
     case "$(uname -m)" in \
         x86_64)  host=x86_64;  sum=bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21 ;; \
         aarch64) host=aarch64; sum=07d21263c56bfe9a713db6fdb3f7434bf4c121a005e40397d3b4c0170fb06769 ;; \
-        *) echo "unsupported build host $(uname -m)"; exit 1 ;; \
+        *) echo "The build host architecture $(uname -m) is not supported."; exit 1 ;; \
     esac; \
     f="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-${host}.tar.xz"; \
     curl -fsSL -o "/tmp/$f" "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/$f"; \
@@ -36,8 +36,9 @@ COPY docker/windows-qemu-deps.sh /usr/local/bin/windows-qemu-deps.sh
 RUN windows-qemu-deps.sh x86_64
 RUN windows-qemu-deps.sh aarch64
 
-# Rust for the app's <arch>-pc-windows-gnullvm targets, which link with
-# llvm-mingw. Read-only at run time: the build sets its own CARGO_HOME.
+# Install Rust for the app's <arch>-pc-windows-gnullvm targets, which link
+# with llvm-mingw. The install is read-only at run time because the build sets
+# its own CARGO_HOME.
 ARG RUST_VERSION=1.99.0
 ENV RUSTUP_HOME=/opt/rustup PATH=/opt/cargo/bin:$PATH
 RUN curl -fsSL https://sh.rustup.rs | env CARGO_HOME=/opt/cargo sh -s -- -y \

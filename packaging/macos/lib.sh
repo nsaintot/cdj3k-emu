@@ -6,8 +6,8 @@
 # EXIT trap removes them all, including when `set -e` stops the script early.
 TMP_CLEANUP=()
 cleanup_tmp() {
-    # The `+` expansion: bash 3.2 under `set -u` rejects "${TMP_CLEANUP[@]}"
-    # while the array is empty.
+    # The `+` expansion is needed because bash 3.2 under `set -u` rejects
+    # "${TMP_CLEANUP[@]}" while the array is empty.
     for p in ${TMP_CLEANUP[@]+"${TMP_CLEANUP[@]}"}; do
         [[ -n "$p" && -e "$p" ]] && rm -rf "$p"
     done

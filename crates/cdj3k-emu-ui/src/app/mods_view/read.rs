@@ -50,9 +50,9 @@ pub(in crate::app) fn restart_pending(slot: u32) -> bool {
 }
 
 impl ModsPage {
-    /// Read the slot again. `own` is this window's slot and `running` whether
-    /// its emulation is up; `elsewhere` whether the viewed slot's emulation
-    /// runs in another window.
+    /// Read the slot again. `own` is this window's slot, `running` is whether
+    /// its emulation is up, and `elsewhere` is whether the viewed slot's
+    /// emulation runs in another window.
     pub(in crate::app) fn refresh(&mut self, own: u32, running: bool, elsewhere: bool) {
         let current = (self.slot == own && running)
             .then(slot_mods::current_boot)
@@ -223,9 +223,9 @@ impl RowSource<'_> {
         }
     }
 
-    /// The row's status: why the slot's firmware stops the mod, else how it
-    /// ran on the last boot. `env` is the number of variables its `mod.toml`
-    /// declares.
+    /// Returns the row's status: why the slot's firmware stops the mod or, if
+    /// it does not, how the mod ran on the last boot. `env` is the number of
+    /// variables its `mod.toml` declares.
     fn status(
         &self,
         list: &slot_mods::SlotMods,
@@ -266,8 +266,9 @@ fn last_report(slot: u32) -> ModsReport {
         .unwrap_or_default()
 }
 
-/// `env` is the number of variables the mod's `mod.toml` declares; a mod
-/// without a loader.sh can pass only those.
+/// Returns the status for a mod's outcome on the last boot. `env` is the
+/// number of variables the mod's `mod.toml` declares; a mod without a
+/// loader.sh can pass only those.
 fn outcome_status(o: &ModOutcome, env: usize) -> RowStatus {
     match o.script {
         Script::Exit(0) => RowStatus::Loaded,
@@ -277,8 +278,8 @@ fn outcome_status(o: &ModOutcome, env: usize) -> RowStatus {
     }
 }
 
-/// `env loaded`, `2 libraries + env loaded`: what a mod without a loader.sh
-/// passed to the app.
+/// Describes what a mod without a loader.sh passed to the app, such as
+/// `env loaded` or `2 libraries + env loaded`.
 fn declared_detail(libs: u32, env: usize) -> String {
     let libs = match libs {
         0 => None,
@@ -293,8 +294,8 @@ fn declared_detail(libs: u32, env: usize) -> String {
     }
 }
 
-/// `3.22/CDJ-3000 → ≤3.20/CDJ-3000`: the slot's firmware, then what the mod
-/// declares.
+/// Formats the slot's firmware, then the firmware the mod declares, such as
+/// `3.22/CDJ-3000 → ≤3.20/CDJ-3000`.
 fn incompatible_detail(compat: &Compat, model: Model, release: Option<&str>) -> String {
     let current = match release {
         Some(r) => format!("{r}/{}", model.title()),
@@ -332,8 +333,8 @@ fn pretty_range(range: &str) -> String {
         .join(", ")
 }
 
-/// `text` on one line: each run of whitespace or control characters becomes
-/// one space.
+/// Returns `text` on one line: each run of whitespace or control characters
+/// becomes one space.
 pub(super) fn one_line(text: &str) -> String {
     text.split(|c: char| c.is_whitespace() || c.is_control())
         .filter(|w| !w.is_empty())
@@ -341,7 +342,7 @@ pub(super) fn one_line(text: &str) -> String {
         .join(" ")
 }
 
-/// `path` with the home directory written as `~`.
+/// Returns `path` with the home directory written as `~`.
 fn home_relative(path: &Path) -> String {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
     match home.and_then(|h| path.strip_prefix(h).ok().map(Path::to_path_buf)) {

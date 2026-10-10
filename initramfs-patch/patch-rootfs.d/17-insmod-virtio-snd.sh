@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Patch 17: insmod-virtio-snd.service - load virtio_snd.ko before the app unit
+# Patch 17: insmod-virtio-snd.service loads virtio_snd.ko before the app unit.
 #
 # virtio_snd.ko is the minimal virtio-sound PCM playback driver that pairs with
 # QEMU's -device virtio-sound-device,audiodev=<backend>.  It registers as ALSA
@@ -23,7 +23,7 @@ chmod 755 "$ROOTFS/usr/sbin/cdj3k-insmod-snd"
 
 cat > "$SERVICE_DIR/insmod-virtio-snd.service" << SVCEOF
 [Unit]
-Description=Load virtio_snd.ko - virtio-sound PCM playback (host audio via QEMU)
+Description=Load virtio_snd.ko, the virtio-sound PCM playback driver (host audio through QEMU)
 DefaultDependencies=no
 Before=${APP_UNIT}
 Before=multi-user.target

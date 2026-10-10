@@ -41,8 +41,9 @@ pub(super) const PERF_V_USB_SIGN: f32 = 0.0795;
 pub(super) const PERF_U_USB_MOUNT: f32 = 0.322;
 pub(super) const PERF_V_USB_MOUNT: f32 = 0.040;
 
-/// USB MOUNT: outer glow + [`mount_rect`] = **casing** (bezel). Inside that, a nested
-/// double-bordered rect = **receptacle opening**; inside that, the **tongue** bar.
+/// The USB MOUNT: `mount_rect` and its outer glow form the casing (bezel).
+/// Inside the casing, a double-bordered rect forms the receptacle opening, and
+/// the tongue bar sits inside that.
 pub(super) const PERF_USB_MOUNT_W: f32 = 196.0;
 pub(super) const PERF_USB_MOUNT_H: f32 = 180.0;
 pub(super) const PERF_USB_MOUNT_ROUNDING: f32 = 8.0;
@@ -78,13 +79,14 @@ pub(super) const PERF_USB_CONNECTOR_ROUNDING: f32 = 2.0;
 pub(super) const PERF_USB_CONNECTOR_INNER_STROKE: f32 = 2.5;
 pub(super) const PERF_USB_CONNECTOR_OUTER_STROKE: f32 = 5.0;
 pub(super) const PERF_USB_CONNECTOR_BORDER_GAP: f32 = 3.0;
-/// Tongue inside receptacle opening (ref units); width cap, height, top inset from cavity.
+/// The tongue inside the receptacle opening, in ref units: its width cap, its
+/// height and its inset from the top of the cavity.
 pub(super) const PERF_USB_MOUNT_TONGUE_W_FRAC: f32 = 0.88;
 pub(super) const PERF_USB_MOUNT_TONGUE_H: f32 = 21.0;
 pub(super) const PERF_USB_MOUNT_TONGUE_TOP_PAD: f32 = 4.0;
 pub(super) const PERF_USB_MOUNT_TONGUE_ROUNDING: f32 = 2.0;
 
-/// "5V <dc> 1A" under the USB casing: centre, font, and the drawn DC mark
+/// `5V <dc> 1A` under the USB casing: centre, font, and the drawn DC mark
 /// (half-gap to the text, bar width, stroke, half-separation of the bars).
 pub(super) const PERF_U_USB_RATING: f32 = 0.323;
 pub(super) const PERF_V_USB_RATING: f32 = 0.0698;
@@ -94,11 +96,12 @@ pub(super) const PERF_USB_DC_W: f32 = 30.0;
 pub(super) const PERF_USB_DC_STROKE: f32 = 3.0;
 pub(super) const PERF_USB_DC_SPLIT: f32 = 4.0;
 
-// ── SD slot - under the USB casing. Decorative: drawn with its cover closed.
+// ── SD slot under the USB casing. It is decorative and drawn with its cover closed.
 /// Centre of the SD casing.
 pub(super) const PERF_U_SD: f32 = 0.464;
 pub(super) const PERF_V_SD: f32 = 0.130;
-/// Casing silhouette; top corners barely radiused, bottom ones well rounded.
+/// Casing silhouette. The top corners are barely rounded and the bottom ones
+/// are well rounded.
 pub(super) const PERF_SD_W: f32 = 367.0;
 pub(super) const PERF_SD_H: f32 = 223.0;
 pub(super) const PERF_SD_TOP_R: f32 = 6.0;
@@ -107,7 +110,7 @@ pub(super) const PERF_SD_BOTTOM_R: f32 = 22.0;
 pub(super) const PERF_SD_RIM_STROKE: f32 = 5.0;
 pub(super) const PERF_SD_WALL_INSET: f32 = 13.0;
 pub(super) const PERF_SD_WALL_STROKE: f32 = 5.0;
-/// Cover: fills the cavity down to the hinge, with rounded lower corners.
+/// The cover fills the cavity down to the hinge and has rounded lower corners.
 pub(super) const PERF_SD_COVER_PAD: f32 = 3.0;
 pub(super) const PERF_SD_COVER_BOT_DY: f32 = 51.0;
 pub(super) const PERF_SD_COVER_R: f32 = 16.0;
@@ -126,7 +129,7 @@ pub(super) const PERF_SD_GLYPH_NOTCH_FRAC: f32 = 0.3;
 pub(super) const PERF_U_SD_LABEL: f32 = 0.493;
 pub(super) const PERF_SD_LABEL_FONT_SIZE: f32 = 36.0;
 
-/// USB MOUNT glow rectangle (LED-tinted, USB-A cavity graphic).
+/// Draws the USB MOUNT: the LED-tinted glow, the casing and the USB-A cavity.
 pub(super) fn draw_usb_mount(
     app: &mut CdjApp,
     ui: &mut egui::Ui,
@@ -164,7 +167,7 @@ pub(super) fn draw_usb_mount(
 
     paint_usb_receptacle(p, layout, mount_center);
 
-    // Reserve interactive area for future open-mount click handler.
+    // Reserve the mount's hit area; no click handler uses it yet.
     let _resp = ui.interact(
         mount_rect,
         ui.id().with("usb_mount_open"),
@@ -172,9 +175,9 @@ pub(super) fn draw_usb_mount(
     );
 }
 
-/// Soft diffuse glow halo (only when LED is lit), tinted by the USB
-/// LED color. More layers + smooth falloff = wider, softer spread.
-/// Alpha is gamma-lifted so whites read as bright on screen.
+/// Paints a soft glow halo, tinted by the USB LED color, while the LED is
+/// lit. More layers and a smooth falloff give a wider, softer spread. The
+/// alpha is gamma-lifted so that whites read as bright on screen.
 fn paint_usb_glow(
     p: &egui::Painter,
     layout: &UiScale,
@@ -186,7 +189,7 @@ fn paint_usb_glow(
     let max_expand = layout.sc(PERF_USB_MOUNT_GLOW_SPREAD);
     const N: usize = 12;
     for layer in 0..N {
-        // t = 1.0 at the rect edge, → 0.0 at the outermost layer.
+        // t is 1.0 at the rect edge and 0.0 at the outermost layer.
         let t = 1.0 - layer as f32 / (N - 1) as f32;
         // Quadratic ease-out for softer outer falloff.
         let falloff = t * t;
@@ -251,8 +254,8 @@ fn paint_usb_housing(
     }
 }
 
-/// Receptacle opening: its own double border (not the casing border), and
-/// the tongue inside it.
+/// Paints the receptacle opening, with its own double border, and the tongue
+/// inside it.
 fn paint_usb_receptacle(p: &egui::Painter, layout: &UiScale, mount_center: Pos2) {
     let connector_size = Vec2::new(
         layout.sc(PERF_USB_CONNECTOR_W),
@@ -282,7 +285,7 @@ fn paint_usb_receptacle(p: &egui::Painter, layout: &UiScale, mount_center: Pos2)
         connector_border,
     );
 
-    // Tongue: inside receptacle cavity, top-centered.
+    // The tongue sits inside the receptacle cavity, centered at the top.
     let cavity_inset = layout.sc(PERF_USB_CONNECTOR_INNER_STROKE) * 0.5 + layout.sc(3.0);
     let cavity = connector_rect.shrink(cavity_inset);
     let tongue_top = cavity.top() + layout.sc(PERF_USB_MOUNT_TONGUE_TOP_PAD);
@@ -306,7 +309,7 @@ fn paint_usb_receptacle(p: &egui::Painter, layout: &UiScale, mount_center: Pos2)
     );
 }
 
-/// SD slot: casing, closed cover, light bar.
+/// Draws the SD slot: its casing, its closed cover and its light bar.
 pub(super) fn draw_sd_slot(app: &CdjApp, p: &egui::Painter, layout: &UiScale) {
     let (r, g, b) = app.mosi().rgb(Lamp::Slot1).unwrap_or_default();
     let lit = app.mosi().led_color(mosi_frame::LedPart::Slot, r, g, b);
@@ -367,7 +370,8 @@ pub(super) fn draw_sd_slot(app: &CdjApp, p: &egui::Painter, layout: &UiScale) {
         egui::StrokeKind::Middle,
     );
 
-    // A diffuser: dim while the slot is idle, the lamp colour when driven.
+    // The bar is a diffuser: it is silver while the slot is idle and takes the
+    // lamp colour while the lamp is driven.
     let led = Rect::from_center_size(
         centre + Vec2::new(0.0, layout.sc(PERF_SD_LED_DY)),
         Vec2::new(layout.sc(PERF_SD_LED_W), layout.sc(PERF_SD_LED_H)),
@@ -376,7 +380,7 @@ pub(super) fn draw_sd_slot(app: &CdjApp, p: &egui::Painter, layout: &UiScale) {
     p.rect_filled(led, led.height() * 0.5, led_col);
 }
 
-/// USB STOP button - top of transport column.
+/// Draws the USB STOP button at the top of the transport column.
 pub(super) fn draw_usb_stop(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let usb_stop_center =
         layout.sp_in_rect(PERF_TRANSPORT_COL_REF, PERF_U_USB_STOP, PERF_V_USB_STOP_BTN);
@@ -409,7 +413,7 @@ pub(super) fn draw_usb_stop(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScal
     );
 }
 
-/// `a` toward `b` by `t` (0..1), per sRGB channel.
+/// Mixes `a` toward `b` by `t` (0..1), per sRGB channel.
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let ch = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;

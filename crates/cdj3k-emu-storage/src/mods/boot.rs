@@ -106,7 +106,7 @@ pub fn prepare_boot(
     }
     incompatible.extend(extra_incompatible);
     for (name, _) in chosen.iter().skip(MAX_MODS) {
-        eprintln!("cdj3k-emu: mod {name} skipped: a boot runs at most {MAX_MODS} mods");
+        eprintln!("cdj3k-emu: skipping mod {name}; a boot runs at most {MAX_MODS} mods");
     }
     chosen.truncate(MAX_MODS);
     let (packed, unreadable) = pack(&chosen);
@@ -216,7 +216,7 @@ pub fn pack(mods: &[(String, PathBuf)]) -> (Vec<Packed>, Vec<(String, Compat)>) 
         match read {
             Ok(p) => packed.push(p),
             Err(e) => {
-                eprintln!("cdj3k-emu: mod {name} skipped: {e}");
+                eprintln!("cdj3k-emu: skipping mod {name}: {e}");
                 failed.push((name.clone(), Compat::Invalid(e)));
             }
         }
@@ -304,7 +304,7 @@ fn walk(
             entries.push(Entry::file(&target, data, mode));
         } else {
             return Err(io::Error::other(format!(
-                "{}: not a file or a folder",
+                "{} is not a file or a folder",
                 path.display()
             )));
         }

@@ -103,8 +103,8 @@ pub(super) fn draw_url(
                     .hint_text("https://…/mod.tgz")
                     .font(font),
             );
-            // Enter submits: the field is the dialog's only input, so it
-            // keeps the focus and the key is read from the frame's input.
+            // Enter submits the URL. The field is the dialog's only input, so
+            // it keeps the focus and the key is read from the frame's input.
             if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 submit.set(true);
             }

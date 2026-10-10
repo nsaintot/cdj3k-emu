@@ -34,14 +34,14 @@ int wait_open(const char *path, int extra_flags)
     }
 }
 
-/* Find the rawmidi char device for the gadget as seen from the guest's own USB
- * host side.
+/* Find the gadget's rawmidi char device as the guest's own USB host side sees
+ * it.
  *
- * Two ALSA cards expose the same gadget.  The f_midi card is the *gadget*
- * side and the app owns it: its ALSA sequencer client subscribes to f_midi,
- * which holds the rawmidi output substream, so opening that one returns
- * EBUSY.  The snd-usb-audio card is the *host* side of the dummy_hcd bus -
- * the MIDI counterpart of /dev/hidraw0 - and nothing else claims it.
+ * Two ALSA cards expose the same gadget. The f_midi card is the gadget side,
+ * and the app owns it: its ALSA sequencer client subscribes to f_midi, which
+ * holds the rawmidi output substream, so opening that card returns EBUSY. The
+ * snd-usb-audio card is the host side of the dummy_hcd bus, the MIDI
+ * counterpart of /dev/hidraw0, and nothing else claims it.
  *
  * /proc/asound/cards names the driver after the card index:
  *   2 [CDJ3000        ]: USB-Audio - CDJ-3000
@@ -64,7 +64,7 @@ static int find_usb_midi_card(void)
 }
 
 /* Wait up to `timeout_ms` for that card, then open its first rawmidi device.
- * Returns the fd, or -1 to run HID-only. */
+ * Returns the fd, or -1 to run with HID only. */
 int open_usb_midi(int timeout_ms)
 {
     for (int waited = 0; waited <= timeout_ms; waited += 200) {
@@ -75,30 +75,30 @@ int open_usb_midi(int timeout_ms)
             snprintf(path, sizeof path, "/dev/snd/midiC%dD0", card);
             int fd = open(path, O_RDWR | O_CLOEXEC | O_NONBLOCK);
             if (fd >= 0) {
-                fprintf(stderr, "pc-link-bridge: MIDI on %s (card %d)\n", path, card);
+                fprintf(stderr, "pc-link-bridge: MIDI is on %s (card %d)\n", path, card);
                 return fd;
             }
             /* The card registers before devtmpfs creates its rawmidi node,
-             * so a missing node is worth waiting out.  Anything else (EBUSY,
-             * EACCES) will not clear within the budget and would only delay
-             * the HID pump, which starts once this returns. */
+             * so wait for a missing node. Other errors, such as EBUSY or
+             * EACCES, do not clear within the timeout and would only delay
+             * the HID forwarding, which starts once this returns. */
             if (errno != ENOENT && errno != ENODEV) {
                 fprintf(stderr, "pc-link-bridge: open(%s) failed: %s\n",
                         path, strerror(errno));
                 return -1;
             }
             if (waited == 0)
-                fprintf(stderr, "pc-link-bridge: %s not there yet - waiting\n", path);
+                fprintf(stderr, "pc-link-bridge: %s does not exist yet; waiting for it\n", path);
         }
         msleep(200);
     }
-    fprintf(stderr, "pc-link-bridge: no USB-Audio card after %d ms"
-                    " - continuing HID-only\n", timeout_ms);
+    fprintf(stderr, "pc-link-bridge: no USB-Audio card appeared within %d ms;"
+                    " continuing with HID only\n", timeout_ms);
     return -1;
 }
 
-/* Write exactly `len` bytes (handles short writes + EAGAIN spin-waits).
- * Returns 0 on success, -1 on hard error or stop. */
+/* Write exactly `len` bytes, retrying after short writes and waiting out
+ * EAGAIN. Returns 0 on success, or -1 on an error or a stop request. */
 static int write_all(int fd, const void *buf, size_t len)
 {
     const uint8_t *p = buf;
@@ -112,7 +112,7 @@ static int write_all(int fd, const void *buf, size_t len)
         }
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
             if (g_stop) return -1;
-            /* short pause so we don't pin a CPU on a slow consumer */
+            /* Pause briefly so a slow consumer does not pin a CPU. */
             msleep(1);
             continue;
         }
@@ -121,8 +121,8 @@ static int write_all(int fd, const void *buf, size_t len)
     return 0;
 }
 
-/* Read at most `cap` bytes from a non-blocking fd. Returns bytes read, 0 if
- * nothing available, -1 on error. */
+/* Read at most `cap` bytes from a non-blocking fd. Returns the byte count, 0
+ * when nothing is available, or -1 on error. */
 ssize_t read_some(int fd, void *buf, size_t cap)
 {
     ssize_t n = read(fd, buf, cap);
@@ -131,7 +131,7 @@ ssize_t read_some(int fd, void *buf, size_t cap)
     return -1;
 }
 
-/* Frame and send a payload out the virtio-serial port. */
+/* Frame a payload and send it out of the virtio-serial port. */
 int send_frame(int vport, uint8_t type, const uint8_t *payload, size_t len)
 {
     if (len > MAX_PAYLOAD) len = MAX_PAYLOAD;
@@ -144,8 +144,8 @@ int send_frame(int vport, uint8_t type, const uint8_t *payload, size_t len)
     return 0;
 }
 
-/* Read exactly `len` bytes from a blocking fd (handles short reads). Returns
- * 0 on success, -1 on EOF/error. */
+/* Read exactly `len` bytes from a blocking fd, across short reads. Returns 0
+ * on success, or -1 on EOF or error. */
 static int read_exact(int fd, void *buf, size_t len)
 {
     uint8_t *p = buf;
@@ -154,22 +154,22 @@ static int read_exact(int fd, void *buf, size_t len)
         if (g_stop) return -1;
         ssize_t n = read(fd, p, left);
         if (n > 0) { p += n; left -= (size_t)n; continue; }
-        if (n == 0) return -1;  /* EOF (host closed) */
+        if (n == 0) return -1;  /* EOF: the host closed the port. */
         if (errno == EINTR) continue;
         return -1;
     }
     return 0;
 }
 
-/* Receive one full frame from the virtio-serial port and dispatch it to
- * the right gadget-side fd.  Returns 0 on success, -1 on EOF/error. */
+/* Receive one full frame from the virtio-serial port and pass it to the
+ * matching gadget-side fd. Returns 0 on success, or -1 on EOF or error. */
 int recv_and_dispatch(int vport, int hidraw_fd, int midi_fd)
 {
     uint8_t hdr[3];
     if (read_exact(vport, hdr, sizeof hdr) < 0) return -1;
     uint16_t len = ((uint16_t)hdr[1] << 8) | hdr[2];
     if (len > MAX_PAYLOAD) {
-        fprintf(stderr, "pc-link-bridge: oversized frame len=%u type=0x%02x — draining\n",
+        fprintf(stderr, "pc-link-bridge: the frame is too large (len=%u type=0x%02x); draining it\n",
                 (unsigned)len, hdr[0]);
         /* Drain the bad frame so the stream stays aligned. */
         uint8_t scratch[1024];
@@ -188,7 +188,7 @@ int recv_and_dispatch(int vport, int hidraw_fd, int midi_fd)
         int n = gadget_identity(id, sizeof id);
         if (n < 0) return 0;
         if (send_frame(vport, FRAME_IDENTITY, (const uint8_t *)id, (size_t)n) < 0) return -1;
-        fprintf(stderr, "pc-link-bridge: identity sent (%d bytes)\n", n);
+        fprintf(stderr, "pc-link-bridge: sent the identity (%d bytes)\n", n);
         return 0;
     }
 
@@ -198,12 +198,12 @@ int recv_and_dispatch(int vport, int hidraw_fd, int midi_fd)
         case FRAME_HID:  dst_fd = hidraw_fd; what = "HID";  break;
         case FRAME_MIDI: dst_fd = midi_fd;   what = "MIDI"; break;
         default:
-            fprintf(stderr, "pc-link-bridge: unknown frame type 0x%02x — dropping\n",
+            fprintf(stderr, "pc-link-bridge: dropping a frame of unknown type 0x%02x\n",
                     hdr[0]);
             return 0;
     }
-    /* Silently drop frames for endpoints we couldn't open (e.g. MIDI when
-     * the app holds the raw char device exclusive). */
+    /* Drop frames for an endpoint that could not be opened, such as MIDI
+     * when the app holds the raw char device exclusively. */
     if (dst_fd < 0) return 0;
     if (len == 0) return 0;
 
