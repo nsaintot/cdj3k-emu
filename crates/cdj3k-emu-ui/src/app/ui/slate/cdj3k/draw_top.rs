@@ -11,7 +11,7 @@ use egui::{Color32, FontId, Pos2, Rect, Shape, Stroke};
 use super::{layout, ButtonType, CdjApp, UiScale};
 
 /// Reference rect for the full menu-bar column (top-central panel).
-const MENUBAR_COL_REF: Rect = Rect::from_min_max(
+pub(super) const MENUBAR_COL_REF: Rect = Rect::from_min_max(
     Pos2::new(layout::TOP_CENTRAL_REF_LEFT, layout::TOP_CENTRAL_REF_TOP),
     Pos2::new(layout::TOP_CENTRAL_REF_RIGHT, layout::TOP_CENTRAL_REF_BOT),
 );
@@ -133,16 +133,15 @@ const BROWSER_BTNS: &[(&str, Btn, Lamp, Color32)] = &[
     ("MENU", Btn::Menu, Lamp::Menu, COL_BTN_WHITE),
 ];
 
-/// Collect fully-static elements of the top section into `list` (rebuilt only on resize).
-///
-/// Includes: "✿ rekordbox" label, "- UTILITY" label, "HOT CUE" label + flanking
-/// segments, "CUE/LOOP CALL" / "DELETE" / "MEMORY" labels, and the three separator
-/// lines of the cue-control row.
+/// `c` with its channels scaled by `factor`.
 fn dim_color(c: Color32, factor: f32) -> Color32 {
     let scale = |v: u8| (v as f32 * factor).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgb(scale(c.r()), scale(c.g()), scale(c.b()))
 }
 
+/// Collect fully-static elements of the top section into `list` (rebuilt
+/// only on resize): the "— UTILITY" label, the "HOT CUE" legend and the
+/// cue-control row's legends and separators.
 fn collect_top_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     list.text(
         ctx,
@@ -152,47 +151,54 @@ fn collect_top_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSca
         FontId::proportional(layout.sc(BROWSER_UTILITY_LABEL_FONT_SIZE)),
         COL_SILVER,
     );
-    // "HOT CUE" label + flanking segments
-    {
-        let label_pos = layout.sp_in_rect(MID_CENTRAL_PANEL_REF, 0.5, HOT_CUE_LABEL_V);
-        list.text(
-            ctx,
-            label_pos,
-            egui::Align2::CENTER_CENTER,
-            "HOT CUE",
-            FontId::proportional(layout.sc(HOT_CUE_LABEL_FONT_SIZE)),
-            COL_BTN_TEXT,
+    collect_hot_cue_legend(list, ctx, layout);
+    collect_cue_control_legends(list, ctx, layout);
+}
+
+/// "HOT CUE" label + flanking segments.
+fn collect_hot_cue_legend(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
+    let label_pos = layout.sp_in_rect(MID_CENTRAL_PANEL_REF, 0.5, HOT_CUE_LABEL_V);
+    list.text(
+        ctx,
+        label_pos,
+        egui::Align2::CENTER_CENTER,
+        "HOT CUE",
+        FontId::proportional(layout.sc(HOT_CUE_LABEL_FONT_SIZE)),
+        COL_BTN_TEXT,
+    );
+    let seg_stroke = Stroke::new(layout.sc(HOT_CUE_LABEL_SEG_STROKE), COL_BTN_TEXT);
+    let y = label_pos.y;
+    let x_left_start = layout
+        .sp(
+            MID_CENTRAL_PANEL_REF.left() + HOT_CUE_LABEL_SEG_GAP_EDGE,
+            0.0,
+        )
+        .x;
+    let x_left_end = label_pos.x - layout.sc(HOT_CUE_LABEL_SEG_GAP_CENTER);
+    let x_right_start = label_pos.x + layout.sc(HOT_CUE_LABEL_SEG_GAP_CENTER);
+    let x_right_end = layout
+        .sp(
+            MID_CENTRAL_PANEL_REF.right() - HOT_CUE_LABEL_SEG_GAP_EDGE,
+            0.0,
+        )
+        .x;
+    if x_left_end > x_left_start {
+        list.line_segment(
+            [Pos2::new(x_left_start, y), Pos2::new(x_left_end, y)],
+            seg_stroke,
         );
-        let seg_stroke = Stroke::new(layout.sc(HOT_CUE_LABEL_SEG_STROKE), COL_BTN_TEXT);
-        let y = label_pos.y;
-        let x_left_start = layout
-            .sp(
-                MID_CENTRAL_PANEL_REF.left() + HOT_CUE_LABEL_SEG_GAP_EDGE,
-                0.0,
-            )
-            .x;
-        let x_left_end = label_pos.x - layout.sc(HOT_CUE_LABEL_SEG_GAP_CENTER);
-        let x_right_start = label_pos.x + layout.sc(HOT_CUE_LABEL_SEG_GAP_CENTER);
-        let x_right_end = layout
-            .sp(
-                MID_CENTRAL_PANEL_REF.right() - HOT_CUE_LABEL_SEG_GAP_EDGE,
-                0.0,
-            )
-            .x;
-        if x_left_end > x_left_start {
-            list.line_segment(
-                [Pos2::new(x_left_start, y), Pos2::new(x_left_end, y)],
-                seg_stroke,
-            );
-        }
-        if x_right_end > x_right_start {
-            list.line_segment(
-                [Pos2::new(x_right_start, y), Pos2::new(x_right_end, y)],
-                seg_stroke,
-            );
-        }
     }
-    // Cue-control row: labels and separator lines
+    if x_right_end > x_right_start {
+        list.line_segment(
+            [Pos2::new(x_right_start, y), Pos2::new(x_right_end, y)],
+            seg_stroke,
+        );
+    }
+}
+
+/// Cue-control row: "CUE/LOOP CALL" / "DELETE" / "MEMORY" labels and the
+/// three separator lines.
+fn collect_cue_control_legends(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     list.text(
         ctx,
         layout.sp_in_rect(MID_CENTRAL_PANEL_REF, 0.735, CUE_CONTROL_CALL_LABEL_V),
@@ -218,20 +224,13 @@ fn collect_top_statics(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSca
         COL_BTN_TEXT,
     );
     let line_stroke_w = layout.sc(CUE_CONTROL_LINE_THICKNESS);
-    // Three separator line segments
-    {
-        let start = layout.sp_in_rect(MID_CENTRAL_PANEL_REF, 0.725, CUE_CONTROL_V);
-        let end = Pos2::new(start.x + layout.sc(CUE_CONTROL_LINE_1_LENGTH), start.y);
-        list.line_segment([start, end], Stroke::new(line_stroke_w, COL_BTN_TEXT));
-    }
-    {
-        let start = layout.sp_in_rect(MID_CENTRAL_PANEL_REF, 0.8, CUE_CONTROL_V);
-        let end = Pos2::new(start.x + layout.sc(CUE_CONTROL_LINE_2_LENGTH), start.y);
-        list.line_segment([start, end], Stroke::new(line_stroke_w, COL_BTN_TEXT));
-    }
-    {
-        let start = layout.sp_in_rect(MID_CENTRAL_PANEL_REF, 0.905, CUE_CONTROL_V);
-        let end = Pos2::new(start.x + layout.sc(CUE_CONTROL_LINE_3_LENGTH), start.y);
+    for (u, length) in [
+        (0.725, CUE_CONTROL_LINE_1_LENGTH),
+        (0.8, CUE_CONTROL_LINE_2_LENGTH),
+        (0.905, CUE_CONTROL_LINE_3_LENGTH),
+    ] {
+        let start = layout.sp_in_rect(MID_CENTRAL_PANEL_REF, u, CUE_CONTROL_V);
+        let end = Pos2::new(start.x + layout.sc(length), start.y);
         list.line_segment([start, end], Stroke::new(line_stroke_w, COL_BTN_TEXT));
     }
 }
@@ -244,301 +243,301 @@ pub(super) fn draw_top_section(
 ) {
     puffin::profile_function!();
     // ── Static labels and chrome (rebuilt only on resize) ─────────────────
-    let (ox, oy, scale) = layout.cache_key();
     let ctx = ui.ctx().clone();
     let ppp = ui.ctx().pixels_per_point();
-    let static_shapes = app
-        .top_statics_cache
-        .get_or_build(ox, oy, scale, ppp, |list| {
-            collect_top_statics(list, &ctx, layout);
-        });
-    app.frame_shape_count += static_shapes.len() as u64;
-    p.extend(static_shapes.iter().cloned());
+    app.frame_shape_count += app.caches.top_statics.paint(p, layout, ppp, |list| {
+        collect_top_statics(list, &ctx, layout);
+    });
 
-    // --- ON AIR LED bar - inverted trapezoid above the nav button row ---
-    {
-        let (r, g, b) = app.mosi().rgb(Lamp::OnAir).unwrap_or_default();
-        if let Some(bar_color) = app.mosi().led_color(mosi_frame::LedPart::OnAir, r, g, b) {
-            let panel_cx = (MENUBAR_COL_REF.left() + MENUBAR_COL_REF.right()) * 0.5;
-            let bar_top_y = MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * ON_AIR_BAR_V_TOP;
-            let bar_bot_y = MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * ON_AIR_BAR_V_BOT;
-            let top_hw = MENUBAR_COL_REF.width() * ON_AIR_BAR_TOP_WIDTH_FRAC * 0.5;
-            let bot_hw = top_hw * ON_AIR_BAR_TAPER;
+    draw_on_air_bar(app, p, layout);
+    draw_browser_buttons(app, ui, layout);
+    draw_lcd(app, ui, p, layout);
+    draw_hot_cues(app, ui, layout);
+    draw_cue_call(app, ui, layout);
+    draw_delete_memory(app, ui, layout);
+}
 
-            let tl = layout.sp(panel_cx - top_hw, bar_top_y);
-            let tr = layout.sp(panel_cx + top_hw, bar_top_y);
-            let br = layout.sp(panel_cx + bot_hw, bar_bot_y);
-            let bl = layout.sp(panel_cx - bot_hw, bar_bot_y);
+/// ON AIR LED bar - inverted trapezoid above the nav button row.
+fn draw_on_air_bar(app: &CdjApp, p: &egui::Painter, layout: &UiScale) {
+    let (r, g, b) = app.mosi().rgb(Lamp::OnAir).unwrap_or_default();
+    if let Some(bar_color) = app.mosi().led_color(mosi_frame::LedPart::OnAir, r, g, b) {
+        let panel_cx = (MENUBAR_COL_REF.left() + MENUBAR_COL_REF.right()) * 0.5;
+        let bar_top_y = MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * ON_AIR_BAR_V_TOP;
+        let bar_bot_y = MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * ON_AIR_BAR_V_BOT;
+        let top_hw = MENUBAR_COL_REF.width() * ON_AIR_BAR_TOP_WIDTH_FRAC * 0.5;
+        let bot_hw = top_hw * ON_AIR_BAR_TAPER;
 
-            // Glow layers (outermost → innermost, then main fill on top).
-            let max_expand = layout.sc(ON_AIR_BAR_GLOW_SPREAD_REF);
-            for layer in 0..4usize {
-                let t = 1.0 - layer as f32 / 3.0; // 1.0 → 0.0
-                let expand = t * max_expand;
-                let glow_alpha = t * 0.28;
-                if glow_alpha < 0.005 {
-                    continue;
-                }
-                let g_tl = Pos2::new(tl.x - expand, tl.y - expand);
-                let g_tr = Pos2::new(tr.x + expand, tr.y - expand);
-                let g_br = Pos2::new(br.x + expand, br.y + expand);
-                let g_bl = Pos2::new(bl.x - expand, bl.y + expand);
-                p.add(Shape::convex_polygon(
-                    vec![g_tl, g_tr, g_br, g_bl],
-                    bar_color.gamma_multiply(glow_alpha),
-                    Stroke::NONE,
-                ));
+        let tl = layout.sp(panel_cx - top_hw, bar_top_y);
+        let tr = layout.sp(panel_cx + top_hw, bar_top_y);
+        let br = layout.sp(panel_cx + bot_hw, bar_bot_y);
+        let bl = layout.sp(panel_cx - bot_hw, bar_bot_y);
+
+        // Glow layers (outermost → innermost, then main fill on top).
+        let max_expand = layout.sc(ON_AIR_BAR_GLOW_SPREAD_REF);
+        for layer in 0..4usize {
+            let t = 1.0 - layer as f32 / 3.0; // 1.0 → 0.0
+            let expand = t * max_expand;
+            let glow_alpha = t * 0.28;
+            if glow_alpha < 0.005 {
+                continue;
             }
-            // Main fill
+            let g_tl = Pos2::new(tl.x - expand, tl.y - expand);
+            let g_tr = Pos2::new(tr.x + expand, tr.y - expand);
+            let g_br = Pos2::new(br.x + expand, br.y + expand);
+            let g_bl = Pos2::new(bl.x - expand, bl.y + expand);
             p.add(Shape::convex_polygon(
-                vec![tl, tr, br, bl],
-                bar_color,
+                vec![g_tl, g_tr, g_br, g_bl],
+                bar_color.gamma_multiply(glow_alpha),
                 Stroke::NONE,
             ));
         }
+        // Main fill
+        p.add(Shape::convex_polygon(
+            vec![tl, tr, br, bl],
+            bar_color,
+            Stroke::NONE,
+        ));
     }
+}
 
-    // --- Nav button row, centered on the midpoint of MENUBAR_COL_REF ---
-    {
-        let n = BROWSER_BTNS.len() as f32;
-        let btn_w = NAV_BTN_WIDTH_REF;
-        let btn_h = NAV_BTN_WIDTH_REF / NAV_BTN_ASPECT;
-        let gap = NAV_BTN_GAP_REF;
-        let total_w = n * btn_w + (n - 1.0) * gap;
-        let center_x = (MENUBAR_COL_REF.left() + MENUBAR_COL_REF.right()) * 0.5;
-        let first_left = center_x - total_w * 0.5;
-        let btn_top =
-            MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * BROWSER_V_NAV_BTNS - btn_h * 0.5;
+/// Nav button row, centered on the midpoint of MENUBAR_COL_REF.
+fn draw_browser_buttons(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
+    let n = BROWSER_BTNS.len() as f32;
+    let btn_w = NAV_BTN_WIDTH_REF;
+    let btn_h = NAV_BTN_WIDTH_REF / NAV_BTN_ASPECT;
+    let gap = NAV_BTN_GAP_REF;
+    let total_w = n * btn_w + (n - 1.0) * gap;
+    let center_x = (MENUBAR_COL_REF.left() + MENUBAR_COL_REF.right()) * 0.5;
+    let first_left = center_x - total_w * 0.5;
+    let btn_top =
+        MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * BROWSER_V_NAV_BTNS - btn_h * 0.5;
 
-        let nav_border = DoubleBorderSpec::from_strokes(
-            StrokeSpec {
-                width: layout.sc(NAV_BTN_INNER_STROKE),
-                color: COL_SILVER,
-            },
-            StrokeSpec {
-                width: layout.sc(NAV_BTN_OUTER_STROKE),
-                color: COL_BLACK,
-            },
-        );
+    let nav_border = DoubleBorderSpec::from_strokes(
+        StrokeSpec {
+            width: layout.sc(NAV_BTN_INNER_STROKE),
+            color: COL_SILVER,
+        },
+        StrokeSpec {
+            width: layout.sc(NAV_BTN_OUTER_STROKE),
+            color: COL_BLACK,
+        },
+    );
 
-        for (i, (label, btn, led, color)) in BROWSER_BTNS.iter().enumerate() {
-            let btn_left = first_left + i as f32 * (btn_w + gap);
-            let rect = layout.ar2rect(btn_left, btn_top, NAV_BTN_ASPECT, btn_w);
-            let color = match app.mosi().step(*led) {
-                mosi_frame::StepLed::Full => *color,
-                mosi_frame::StepLed::Medium => dim_color(*color, 0.7),
-                mosi_frame::StepLed::Off => COL_BTN_TEXT,
-            };
-            app.btn(
-                ui,
-                layout,
-                ButtonType::Basic,
-                rect,
-                label,
-                layout.sc(NAV_BTN_FONT_SIZE),
-                Some(color),
-                Some(COL_BLACK),
-                None,
-                None,
-                None,
-                Some(nav_border),
-                egui::FontFamily::Name(cdj3k_emu_platform::fonts::NIMBUS_SANS_BOLD.into()),
-                (*label, "nav"),
-                *btn,
-            );
-        }
-    }
-
-    // --- LCD screen, centered on MENUBAR_COL_REF ---
-    {
-        // View > Extend Screen grows the panel until it fills the band between
-        // the horizontal decoration lines that frame it, taken from the chassis
-        // so the two cannot drift apart. Width follows from the aspect.
-        let extended = cdj3k_emu_platform::menu_state::lock().screen_extended;
-        let (lcd_w, lcd_h, lcd_top) = if extended {
-            let (band_top, band_bot) = super::draw_chassis::lcd_decor_band();
-            let h = band_bot - band_top;
-            (h * LCD_ASPECT, h, band_top)
-        } else {
-            let w = MENUBAR_COL_REF.width() * LCD_WIDTH_FRAC;
-            (
-                w,
-                w / LCD_ASPECT,
-                MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * LCD_V_TOP,
-            )
+    for (i, (label, btn, led, color)) in BROWSER_BTNS.iter().enumerate() {
+        let btn_left = first_left + i as f32 * (btn_w + gap);
+        let rect = layout.ar2rect(btn_left, btn_top, NAV_BTN_ASPECT, btn_w);
+        let color = match app.mosi().step(*led) {
+            mosi_frame::StepLed::Full => *color,
+            mosi_frame::StepLed::Medium => dim_color(*color, 0.7),
+            mosi_frame::StepLed::Off => COL_BTN_TEXT,
         };
-        let center_x = (MENUBAR_COL_REF.left() + MENUBAR_COL_REF.right()) * 0.5;
-        let lcd_left = center_x - lcd_w * 0.5;
-
-        let bezel = Rect::from_min_size(Pos2::new(lcd_left, lcd_top), egui::vec2(lcd_w, lcd_h));
-        crate::app::ui::draw_lcd::draw_main_lcd(app, ui, p, layout, bezel);
+        app.btn(
+            ui,
+            layout,
+            ButtonType::Basic,
+            rect,
+            label,
+            layout.sc(NAV_BTN_FONT_SIZE),
+            Some(color),
+            Some(COL_BLACK),
+            None,
+            None,
+            None,
+            Some(nav_border),
+            egui::FontFamily::Name(cdj3k_emu_platform::fonts::NIMBUS_SANS_BOLD.into()),
+            (*label, "nav"),
+            *btn,
+        );
     }
+}
 
-    // --- Hot cue row, centered on MID_CENTRAL_PANEL_REF ---
-    {
-        let n = HOT_CUE_BTNS.len() as f32;
-        let btn_w = HOT_CUE_BTN_WIDTH_REF;
-        let btn_h = btn_w / HOT_CUE_BTN_ASPECT;
-        let gap = HOT_CUE_BTN_GAP_REF;
-        let total_w = n * btn_w + (n - 1.0) * gap;
-        let center_x = (MID_CENTRAL_PANEL_REF.left() + MID_CENTRAL_PANEL_REF.right()) * 0.5;
-        let first_left = center_x - total_w * 0.5;
-        let btn_top = MID_CENTRAL_PANEL_REF.top()
-            + MID_CENTRAL_PANEL_REF.height() * HOT_CUE_BTN_V_CENTER
-            - btn_h * 0.5;
+/// LCD screen, centered on MENUBAR_COL_REF.
+fn draw_lcd(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, layout: &UiScale) {
+    // View > Extend Screen grows the panel until it fills the band between
+    // the horizontal decoration lines that frame it, taken from the chassis
+    // so the two cannot drift apart. Width follows from the aspect.
+    let extended = cdj3k_emu_platform::menu_state::lock().screen_extended;
+    let (lcd_w, lcd_h, lcd_top) = if extended {
+        let (band_top, band_bot) = super::draw_chassis::lcd_decor_band();
+        let h = band_bot - band_top;
+        (h * LCD_ASPECT, h, band_top)
+    } else {
+        let w = MENUBAR_COL_REF.width() * LCD_WIDTH_FRAC;
+        (
+            w,
+            w / LCD_ASPECT,
+            MENUBAR_COL_REF.top() + MENUBAR_COL_REF.height() * LCD_V_TOP,
+        )
+    };
+    let center_x = (MENUBAR_COL_REF.left() + MENUBAR_COL_REF.right()) * 0.5;
+    let lcd_left = center_x - lcd_w * 0.5;
 
-        // "HOT CUE" label + flanking segments are in top_statics_cache (drawn above).
+    let bezel = Rect::from_min_size(Pos2::new(lcd_left, lcd_top), egui::vec2(lcd_w, lcd_h));
+    crate::app::ui::draw_lcd::draw_main_lcd(app, ui, p, layout, bezel);
+}
 
-        let hotcue_border = DoubleBorderSpec::from_strokes_with_gap(
-            StrokeSpec {
-                width: layout.sc(HOT_CUE_BTN_INNER_STROKE),
-                color: COL_BLACK,
-            },
-            StrokeSpec {
-                width: layout.sc(HOT_CUE_BTN_OUTER_STROKE),
-                color: COL_SILVER,
-            },
-            layout.sc(2.0),
+/// Hot cue row, centered on MID_CENTRAL_PANEL_REF.
+fn draw_hot_cues(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
+    let n = HOT_CUE_BTNS.len() as f32;
+    let btn_w = HOT_CUE_BTN_WIDTH_REF;
+    let btn_h = btn_w / HOT_CUE_BTN_ASPECT;
+    let gap = HOT_CUE_BTN_GAP_REF;
+    let total_w = n * btn_w + (n - 1.0) * gap;
+    let center_x = (MID_CENTRAL_PANEL_REF.left() + MID_CENTRAL_PANEL_REF.right()) * 0.5;
+    let first_left = center_x - total_w * 0.5;
+    let btn_top = MID_CENTRAL_PANEL_REF.top()
+        + MID_CENTRAL_PANEL_REF.height() * HOT_CUE_BTN_V_CENTER
+        - btn_h * 0.5;
+
+    let hotcue_border = DoubleBorderSpec::from_strokes_with_gap(
+        StrokeSpec {
+            width: layout.sc(HOT_CUE_BTN_INNER_STROKE),
+            color: COL_BLACK,
+        },
+        StrokeSpec {
+            width: layout.sc(HOT_CUE_BTN_OUTER_STROKE),
+            color: COL_SILVER,
+        },
+        layout.sc(2.0),
+    );
+
+    for (i, (label, btn)) in HOT_CUE_BTNS.iter().enumerate() {
+        let btn_left = first_left + i as f32 * (btn_w + gap);
+        let rect = layout.ar2rect(btn_left, btn_top, HOT_CUE_BTN_ASPECT, btn_w);
+        let (r, g, b) = app.mosi().rgb(Lamp::HOT_CUES[i]).unwrap_or_default();
+        let accent = app
+            .mosi()
+            .led_color(mosi_frame::LedPart::Pad, r, g, b)
+            .unwrap_or(COL_SILVER);
+        app.btn(
+            ui,
+            layout,
+            ButtonType::HotCue,
+            rect,
+            label,
+            layout.sc(HOT_CUE_BTN_FONT_SIZE),
+            Some(accent),
+            None,
+            None,
+            None,
+            None,
+            Some(hotcue_border),
+            egui::FontFamily::Proportional,
+            (*label, "hotcue"),
+            *btn,
         );
-
-        for (i, (label, btn)) in HOT_CUE_BTNS.iter().enumerate() {
-            let btn_left = first_left + i as f32 * (btn_w + gap);
-            let rect = layout.ar2rect(btn_left, btn_top, HOT_CUE_BTN_ASPECT, btn_w);
-            let (r, g, b) = app.mosi().rgb(Lamp::HOT_CUES[i]).unwrap_or_default();
-            let accent = app
-                .mosi()
-                .led_color(mosi_frame::LedPart::Pad, r, g, b)
-                .unwrap_or(COL_SILVER);
-            app.btn(
-                ui,
-                layout,
-                ButtonType::HotCue,
-                rect,
-                label,
-                layout.sc(HOT_CUE_BTN_FONT_SIZE),
-                Some(accent),
-                None,
-                None,
-                None,
-                None,
-                Some(hotcue_border),
-                egui::FontFamily::Proportional,
-                (*label, "hotcue"),
-                *btn,
-            );
-        }
     }
-    {
-        let call_prev_btn = layout.sp_in_rect(
-            MID_CENTRAL_PANEL_REF,
-            0.735 - CUE_CONTROL_CALL_BTNS_GAP,
-            CUE_CONTROL_V,
-        );
-        let call_next_btn = layout.sp_in_rect(
-            MID_CENTRAL_PANEL_REF,
-            0.735 + CUE_CONTROL_CALL_BTNS_GAP,
-            CUE_CONTROL_V,
-        );
-        let call_led = app.mosi().lit(Lamp::TrackSearch);
-        let call_border = DoubleBorderSpec::from_strokes_with_gap(
-            StrokeSpec {
-                width: layout.sc(CUE_CONTROL_CALL_BTNS_INNER_STROKE),
-                color: COL_SILVER,
-            },
-            StrokeSpec {
-                width: layout.sc(CUE_CONTROL_CALL_BTNS_OUTER_STROKE),
-                color: COL_BTN,
-            },
-            layout.sc(5.0),
-        );
+}
+
+/// CUE/LOOP CALL ◀ and ▶.
+fn draw_cue_call(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
+    let call_prev_btn = layout.sp_in_rect(
+        MID_CENTRAL_PANEL_REF,
+        0.735 - CUE_CONTROL_CALL_BTNS_GAP,
+        CUE_CONTROL_V,
+    );
+    let call_next_btn = layout.sp_in_rect(
+        MID_CENTRAL_PANEL_REF,
+        0.735 + CUE_CONTROL_CALL_BTNS_GAP,
+        CUE_CONTROL_V,
+    );
+    let call_led = app.mosi().lit(Lamp::TrackSearch);
+    let call_border = cue_call_border(layout);
+    for (center, label, id, btn) in [
+        (call_prev_btn, "◀", "call_prev", Btn::CallPrev),
+        (call_next_btn, "▶", "call_next", Btn::CallNext),
+    ] {
         app.circle_btn(
             ui,
             layout,
-            call_prev_btn,
+            center,
             layout.sc(CUE_CONTROL_CALL_BTNS_SIZE),
             Some(COL_BLACK),
             None,
-            "◀",
+            label,
             Some(if call_led { COL_AMBER } else { COL_BTN_TEXT }),
             None,
             layout.sc(CUE_CONTROL_CALL_BTNS_FONT_SIZE),
             None,
             Some(call_border),
-            "call_prev",
-            Btn::CallPrev,
-        );
-        app.circle_btn(
-            ui,
-            layout,
-            call_next_btn,
-            layout.sc(CUE_CONTROL_CALL_BTNS_SIZE),
-            Some(COL_BLACK),
-            None,
-            "▶",
-            Some(if call_led { COL_AMBER } else { COL_BTN_TEXT }),
-            None,
-            layout.sc(CUE_CONTROL_CALL_BTNS_FONT_SIZE),
-            None,
-            Some(call_border),
-            "call_next",
-            Btn::CallNext,
-        );
-
-        let delete_btn = layout.sp_in_rect(
-            MID_CENTRAL_PANEL_REF,
-            0.904 - CUE_CONTROL_DELMEM_BTN_GAP,
-            CUE_CONTROL_V,
-        );
-
-        let memory_btn = layout.sp_in_rect(
-            MID_CENTRAL_PANEL_REF,
-            0.904 + CUE_CONTROL_DELMEM_BTN_GAP,
-            CUE_CONTROL_V,
-        );
-
-        let delete_border = DoubleBorderSpec::from_strokes_with_gap(
-            StrokeSpec {
-                width: layout.sc(CUE_CONTROL_DEL_BTNS_INNER_STROKE),
-                color: COL_SILVER,
-            },
-            StrokeSpec {
-                width: layout.sc(CUE_CONTROL_DEL_BTNS_OUTER_STROKE),
-                color: COL_BTN,
-            },
-            layout.sc(20.0),
-        );
-        app.circle_btn(
-            ui,
-            layout,
-            delete_btn,
-            layout.sc(CUE_CONTROL_DEL_BTN_SIZE),
-            Some(COL_BLACK),
-            None,
-            "",
-            None,
-            None,
-            layout.sc(CUE_CONTROL_CALL_BTNS_FONT_SIZE),
-            None,
-            Some(delete_border),
-            "delete",
-            Btn::Delete,
-        );
-
-        app.circle_btn(
-            ui,
-            layout,
-            memory_btn,
-            layout.sc(CUE_CONTROL_MEM_BTN_SIZE),
-            Some(COL_BLACK),
-            None,
-            "",
-            None,
-            None,
-            layout.sc(CUE_CONTROL_CALL_BTNS_FONT_SIZE),
-            None,
-            Some(call_border),
-            "memory",
-            Btn::Memory,
+            id,
+            btn,
         );
     }
+}
+
+/// DELETE and MEMORY.
+fn draw_delete_memory(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
+    let call_border = cue_call_border(layout);
+    let delete_btn = layout.sp_in_rect(
+        MID_CENTRAL_PANEL_REF,
+        0.904 - CUE_CONTROL_DELMEM_BTN_GAP,
+        CUE_CONTROL_V,
+    );
+
+    let memory_btn = layout.sp_in_rect(
+        MID_CENTRAL_PANEL_REF,
+        0.904 + CUE_CONTROL_DELMEM_BTN_GAP,
+        CUE_CONTROL_V,
+    );
+
+    let delete_border = DoubleBorderSpec::from_strokes_with_gap(
+        StrokeSpec {
+            width: layout.sc(CUE_CONTROL_DEL_BTNS_INNER_STROKE),
+            color: COL_SILVER,
+        },
+        StrokeSpec {
+            width: layout.sc(CUE_CONTROL_DEL_BTNS_OUTER_STROKE),
+            color: COL_BTN,
+        },
+        layout.sc(20.0),
+    );
+    app.circle_btn(
+        ui,
+        layout,
+        delete_btn,
+        layout.sc(CUE_CONTROL_DEL_BTN_SIZE),
+        Some(COL_BLACK),
+        None,
+        "",
+        None,
+        None,
+        layout.sc(CUE_CONTROL_CALL_BTNS_FONT_SIZE),
+        None,
+        Some(delete_border),
+        "delete",
+        Btn::Delete,
+    );
+
+    app.circle_btn(
+        ui,
+        layout,
+        memory_btn,
+        layout.sc(CUE_CONTROL_MEM_BTN_SIZE),
+        Some(COL_BLACK),
+        None,
+        "",
+        None,
+        None,
+        layout.sc(CUE_CONTROL_CALL_BTNS_FONT_SIZE),
+        None,
+        Some(call_border),
+        "memory",
+        Btn::Memory,
+    );
+}
+
+/// Border of the CUE/LOOP CALL buttons, and of MEMORY.
+fn cue_call_border(layout: &UiScale) -> DoubleBorderSpec {
+    DoubleBorderSpec::from_strokes_with_gap(
+        StrokeSpec {
+            width: layout.sc(CUE_CONTROL_CALL_BTNS_INNER_STROKE),
+            color: COL_SILVER,
+        },
+        StrokeSpec {
+            width: layout.sc(CUE_CONTROL_CALL_BTNS_OUTER_STROKE),
+            color: COL_BTN,
+        },
+        layout.sc(5.0),
+    )
 }

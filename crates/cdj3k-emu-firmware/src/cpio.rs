@@ -145,6 +145,31 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Entry>, CpioError> {
         if at >= bytes.len() {
             return Err(CpioError::MissingTrailer);
         }
+        let record = Record::parse(bytes, at)?;
+        if record.name == TRAILER {
+            return Ok(entries);
+        }
+        at = record.end;
+        entries.push(record.into_entry()?);
+    }
+}
+
+/// One record as it sits in the archive, bounds-checked.
+struct Record<'a> {
+    raw_mode: u32,
+    uid: u32,
+    gid: u32,
+    mtime: u32,
+    rdevmajor: u32,
+    rdevminor: u32,
+    name: String,
+    data: &'a [u8],
+    /// Offset of the next record, before NUL padding.
+    end: usize,
+}
+
+impl<'a> Record<'a> {
+    fn parse(bytes: &'a [u8], at: usize) -> Result<Self, CpioError> {
         if bytes.len() - at < HEADER_LEN {
             return Err(CpioError::Truncated { at });
         }
@@ -153,6 +178,7 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Entry>, CpioError> {
             return Err(CpioError::BadMagic { at });
         }
 
+        // Field `i` of the thirteen 8-hex-digit fields after the magic.
         let f = |i: usize, name: &'static str| -> Result<u32, CpioError> {
             let off = at + 6 + i * 8;
             let s = std::str::from_utf8(&bytes[off..off + 8])
@@ -189,38 +215,44 @@ pub fn read(bytes: &[u8]) -> Result<Vec<Entry>, CpioError> {
         if data_end > bytes.len() {
             return Err(CpioError::Truncated { at });
         }
-        let data = &bytes[data_at..data_end];
 
-        if name == TRAILER {
-            return Ok(entries);
-        }
-
-        let kind = match raw_mode & S_IFMT {
-            S_IFREG => Kind::File(data.to_vec()),
-            S_IFDIR => Kind::Dir,
-            S_IFLNK => Kind::Symlink(String::from_utf8_lossy(data).into_owned()),
-            S_IFCHR => Kind::CharDev {
-                major: rdevmajor,
-                minor: rdevminor,
-            },
-            _ => {
-                return Err(CpioError::UnsupportedMode {
-                    path: name,
-                    mode: raw_mode,
-                })
-            }
-        };
-
-        entries.push(Entry {
-            path: PathBuf::from("/").join(name.trim_start_matches('/')),
-            kind,
-            mode: raw_mode & 0o7777,
+        Ok(Record {
+            raw_mode,
             uid,
             gid,
             mtime,
-        });
+            rdevmajor,
+            rdevminor,
+            name,
+            data: &bytes[data_at..data_end],
+            end: pad4(data_end - at) + at,
+        })
+    }
 
-        at = pad4(data_end - at) + at;
+    fn into_entry(self) -> Result<Entry, CpioError> {
+        let kind = match self.raw_mode & S_IFMT {
+            S_IFREG => Kind::File(self.data.to_vec()),
+            S_IFDIR => Kind::Dir,
+            S_IFLNK => Kind::Symlink(String::from_utf8_lossy(self.data).into_owned()),
+            S_IFCHR => Kind::CharDev {
+                major: self.rdevmajor,
+                minor: self.rdevminor,
+            },
+            _ => {
+                return Err(CpioError::UnsupportedMode {
+                    path: self.name,
+                    mode: self.raw_mode,
+                })
+            }
+        };
+        Ok(Entry {
+            path: PathBuf::from("/").join(self.name.trim_start_matches('/')),
+            kind,
+            mode: self.raw_mode & 0o7777,
+            uid: self.uid,
+            gid: self.gid,
+            mtime: self.mtime,
+        })
     }
 }
 
@@ -471,5 +503,64 @@ mod tests {
             read(&bytes),
             Err(CpioError::Truncated { .. }) | Err(CpioError::MissingTrailer)
         ));
+    }
+
+    #[test]
+    fn each_truncation_reports_the_record_it_cut() {
+        let bytes = write(&sample());
+        for cut in [HEADER_LEN - 1, HEADER_LEN + 2] {
+            assert!(
+                matches!(read(&bytes[..cut]), Err(CpioError::Truncated { at: 0 })),
+                "cut at {cut}"
+            );
+        }
+        assert!(matches!(read(&[]), Err(CpioError::MissingTrailer)));
+        assert!(matches!(read(&[0; 8]), Err(CpioError::MissingTrailer)));
+    }
+
+    #[test]
+    fn a_foreign_magic_is_reported_where_it_starts() {
+        let mut bytes = write(&sample());
+        bytes[5] = b'7';
+        assert!(matches!(read(&bytes), Err(CpioError::BadMagic { at: 0 })));
+    }
+
+    #[test]
+    fn a_non_hex_field_names_itself() {
+        let mut bytes = write(&sample());
+        bytes[6 + 3 * 8] = b'g';
+        assert!(matches!(
+            read(&bytes),
+            Err(CpioError::BadField {
+                at: 0,
+                field: "gid"
+            })
+        ));
+    }
+
+    #[test]
+    fn a_block_device_is_refused_by_name() {
+        let mut bytes = write(&[Entry::file("/dev/sda", vec![], 0o600)]);
+        // S_IFBLK | 0o600.
+        bytes[6 + 8..6 + 16].copy_from_slice(b"00006180");
+        match read(&bytes) {
+            Err(CpioError::UnsupportedMode { path, mode }) => {
+                assert_eq!(path, "dev/sda");
+                assert_eq!(mode, 0o060600);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_char_device_keeps_its_numbers() {
+        let console = Entry {
+            kind: Kind::CharDev { major: 5, minor: 1 },
+            ..Entry::dir("/dev/console", 0o600)
+        };
+        assert_eq!(
+            read(&write(std::slice::from_ref(&console))).unwrap(),
+            vec![console]
+        );
     }
 }

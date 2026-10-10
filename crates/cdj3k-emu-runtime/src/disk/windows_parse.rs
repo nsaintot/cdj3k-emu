@@ -140,18 +140,6 @@ pub fn display_name(volume_label: &str, d: &Descriptor, n: u32) -> String {
     name.unwrap_or_else(|| drive_name(n))
 }
 
-/// Sizes as a disk vendor writes them: powers of ten.
-pub fn human_size(bytes: u64) -> String {
-    const GB: f64 = 1_000_000_000.0;
-    const MB: f64 = 1_000_000.0;
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else {
-        format!("{:.0} MB", b / MB)
-    }
-}
-
 /// What a busy volume reads as.
 pub fn busy_message(mount: &str, holders: &[String]) -> String {
     let by = if holders.is_empty() {
@@ -414,12 +402,6 @@ mod tests {
             ..d
         };
         assert_eq!(display_name("", &bare, 2), "PhysicalDrive2");
-    }
-
-    #[test]
-    fn sizes_read_the_way_the_vendor_writes_them() {
-        assert_eq!(human_size(32_000_000_000), "32.0 GB");
-        assert_eq!(human_size(512_000_000), "512 MB");
     }
 
     #[test]

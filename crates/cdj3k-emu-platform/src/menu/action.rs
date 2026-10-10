@@ -26,9 +26,35 @@ pub enum ActionEffect {
 /// acquisition; `menu_state::lock()` is not reentrant.
 pub fn apply(s: &mut menu_state::AppState, id: &MenuId) -> ActionEffect {
     match id {
-        MenuId::ManageEmulation => {
-            s.manage_emulation_requested = true;
+        MenuId::ManageEmulation
+        | MenuId::ModsEnabled
+        | MenuId::Restart
+        | MenuId::ServiceMode
+        | MenuId::Haptic
+        | MenuId::PcLink
+        | MenuId::CheckForUpdate => emulation(s, id),
+        MenuId::ScreenExtended | MenuId::JogScreen | MenuId::MainScreen | MenuId::DebugScreen => {
+            view(s, id)
         }
+        MenuId::Audio | MenuId::Alc => audio(s, id),
+        MenuId::AudioDeviceDefault => select_audio_device(s, None),
+        MenuId::AudioDevice(uid) => select_audio_device(s, Some(uid)),
+        MenuId::NetNat => select_interface(s, menu_state::NET_SEL_NONE),
+        MenuId::NetVmnetHost => select_interface(s, menu_state::NET_SEL_VMNET_HOST),
+        MenuId::NetInterface(n) => select_interface(s, *n),
+        MenuId::EjectCurrentMedia => s.usb_eject_req = true,
+        MenuId::PhysicalDisk(i) => select_physical_disk(s, *i),
+        MenuId::CreateVirtualUsb => return ActionEffect::PickImageToCreate,
+        MenuId::MountVirtualUsb => return ActionEffect::PickImageToMount,
+        MenuId::Instance(n) => return ActionEffect::LaunchInstance(*n),
+    }
+    ActionEffect::None
+}
+
+/// The Emulation menu's actions.
+fn emulation(s: &mut menu_state::AppState, id: &MenuId) {
+    match id {
+        MenuId::ManageEmulation => s.manage_emulation_requested = true,
         MenuId::ModsEnabled => {
             s.mods_enabled = !s.mods_enabled;
             s.mods_toggle_requested = true;
@@ -37,31 +63,15 @@ pub fn apply(s: &mut menu_state::AppState, id: &MenuId) -> ActionEffect {
                 s.restart_requested = true;
             }
         }
-        MenuId::CheckForUpdate => {
-            s.update_check_requested = true;
-        }
+        MenuId::CheckForUpdate => s.update_check_requested = true,
         MenuId::Restart => {
             s.shade_forced = true;
             s.restart_requested = true;
-        }
-        MenuId::ScreenExtended => {
-            s.screen_extended = !s.screen_extended;
         }
         MenuId::ServiceMode => {
             s.service_mode = !s.service_mode;
             s.shade_forced = true;
             s.restart_requested = true;
-        }
-        MenuId::Audio => {
-            s.audio_enabled = !s.audio_enabled;
-            s.shade_forced = true;
-            s.audio_toggle_requested = true;
-        }
-        MenuId::Alc => {
-            // Runtime worker consumes this and pushes
-            // `set audio_sync_enabled <0|1>` to the guest cfg daemon.
-            s.alc_enabled = !s.alc_enabled;
-            s.alc_toggle_requested = true;
         }
         MenuId::Haptic => {
             // Pure host-side toggle. The jog physics layer reads the flag at
@@ -77,58 +87,64 @@ pub fn apply(s: &mut menu_state::AppState, id: &MenuId) -> ActionEffect {
             s.pc_link_enabled = !s.pc_link_enabled;
             s.pc_link_toggle_requested = true;
         }
+        _ => {}
+    }
+}
+
+/// The View menu's toggles.
+fn view(s: &mut menu_state::AppState, id: &MenuId) {
+    match id {
+        MenuId::ScreenExtended => s.screen_extended = !s.screen_extended,
         MenuId::JogScreen => s.jog_screen_popped = !s.jog_screen_popped,
         MenuId::MainScreen => s.main_screen_popped = !s.main_screen_popped,
         MenuId::DebugScreen => s.debug_screen_popped = !s.debug_screen_popped,
-        MenuId::NetNat => {
-            if s.selected_interface != menu_state::NET_SEL_NONE {
-                s.shade_forced = true;
-            }
-            s.selected_interface = menu_state::NET_SEL_NONE;
-        }
-        MenuId::NetVmnetHost => {
-            if s.selected_interface != menu_state::NET_SEL_VMNET_HOST {
-                s.shade_forced = true;
-            }
-            s.selected_interface = menu_state::NET_SEL_VMNET_HOST;
-        }
-        MenuId::NetInterface(n) => {
-            if s.selected_interface != *n {
-                s.shade_forced = true;
-            }
-            s.selected_interface = *n;
-        }
-        MenuId::CreateVirtualUsb => return ActionEffect::PickImageToCreate,
-        MenuId::MountVirtualUsb => return ActionEffect::PickImageToMount,
-        MenuId::EjectCurrentMedia => {
-            s.usb_eject_req = true;
-        }
-        MenuId::AudioDeviceDefault => {
-            if s.audio_device_uid.is_some() {
-                s.audio_device_uid = None;
-                s.audio_device_toggle_requested = true;
-                s.shade_forced = true;
-            }
-        }
-        MenuId::AudioDevice(uid) => {
-            if s.audio_device_uid.as_deref() != Some(uid.as_str()) {
-                s.audio_device_uid = Some(uid.clone());
-                s.audio_device_toggle_requested = true;
-                s.shade_forced = true;
-            }
-        }
-        MenuId::PhysicalDisk(i) => {
-            // Click-to-switch only. Re-selecting the mounted disk is a no-op
-            // (the runtime worker filters it), and ejecting goes exclusively
-            // through Eject Current Media.
-            let idx = *i as i32;
-            if s.usb_phys_mounted_idx != idx {
-                s.usb_phys_toggle_idx = idx;
-            }
-        }
-        MenuId::Instance(n) => return ActionEffect::LaunchInstance(*n),
+        _ => {}
     }
-    ActionEffect::None
+}
+
+/// The Audio menu's toggles.
+fn audio(s: &mut menu_state::AppState, id: &MenuId) {
+    match id {
+        MenuId::Audio => {
+            s.audio_enabled = !s.audio_enabled;
+            s.shade_forced = true;
+            s.audio_toggle_requested = true;
+        }
+        MenuId::Alc => {
+            // Runtime worker consumes this and pushes
+            // `set audio_sync_enabled <0|1>` to the guest cfg daemon.
+            s.alc_enabled = !s.alc_enabled;
+            s.alc_toggle_requested = true;
+        }
+        _ => {}
+    }
+}
+
+/// Pin output to one device, or follow the system default with `None`.
+fn select_audio_device(s: &mut menu_state::AppState, uid: Option<&String>) {
+    if s.audio_device_uid.as_ref() != uid {
+        s.audio_device_uid = uid.cloned();
+        s.audio_device_toggle_requested = true;
+        s.shade_forced = true;
+    }
+}
+
+/// Select a network; a different one from the current forces the shade.
+fn select_interface(s: &mut menu_state::AppState, selection: u32) {
+    if s.selected_interface != selection {
+        s.shade_forced = true;
+    }
+    s.selected_interface = selection;
+}
+
+/// Click-to-switch only. Re-selecting the mounted disk is a no-op (the runtime
+/// worker filters it), and ejecting goes exclusively through Eject Current
+/// Media.
+fn select_physical_disk(s: &mut menu_state::AppState, index: usize) {
+    let idx = index as i32;
+    if s.usb_phys_mounted_idx != idx {
+        s.usb_phys_toggle_idx = idx;
+    }
 }
 
 #[cfg(test)]

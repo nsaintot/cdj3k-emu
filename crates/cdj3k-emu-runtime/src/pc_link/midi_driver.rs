@@ -258,7 +258,7 @@ fn midi_server_running() -> bool {
 /// Accepts the driver plugin and pumps MIDI both ways.
 pub struct MidiDriverLink {
     /// Write half of the connected driver, if one has attached.
-    client: Arc<Mutex<Option<UnixStream>>>,
+    client: Client,
     outbox: Arc<Outbox>,
     stop: Arc<AtomicBool>,
     path: PathBuf,
@@ -279,7 +279,7 @@ impl MidiDriverLink {
         let identity = Identity::new(instance_id, gadget);
         let listener = bind_clearing_stale(&path)?;
 
-        let client: Arc<Mutex<Option<UnixStream>>> = Arc::new(Mutex::new(None));
+        let client: Client = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let outbox = Arc::new(Outbox::default());
 
@@ -288,76 +288,14 @@ impl MidiDriverLink {
         let write_stop = stop.clone();
         let write_thread = thread::Builder::new()
             .name("pc-link-midi-writer".into())
-            .spawn(move || {
-                while let Some(msg) = write_outbox.pop(&write_stop) {
-                    let mut guard = write_client.lock().unwrap();
-                    if let Some(stream) = guard.as_mut() {
-                        if stream.write_all(&msg).is_err() {
-                            // A failed write leaves a partial message on the
-                            // wire, so the link is dropped.  Shutdown, not just a
-                            // drop: read_loop holds a clone of the fd, and
-                            // only a shutdown ends its read().
-                            let _ = stream.shutdown(std::net::Shutdown::Both);
-                            *guard = None;
-                        }
-                    }
-                }
-            })
+            .spawn(move || write_loop(&write_client, &write_outbox, &write_stop))
             .expect("spawn pc-link-midi-writer");
 
         let accept_client = client.clone();
         let accept_stop = stop.clone();
         let accept_thread = thread::Builder::new()
             .name("pc-link-midi-driver".into())
-            .spawn(move || {
-                let _ = listener.set_nonblocking(true);
-                loop {
-                    if accept_stop.load(Ordering::Acquire) {
-                        return;
-                    }
-                    let mut stream = match listener.accept() {
-                        Ok((s, _)) => s,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            thread::sleep(ACCEPT_POLL);
-                            continue;
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                        Err(_) => {
-                            thread::sleep(ACCEPT_ERROR_BACKOFF);
-                            continue;
-                        }
-                    };
-                    // accept() may hand back the listener's non-blocking flag.
-                    let _ = stream.set_nonblocking(false);
-                    let reader = match stream.try_clone() {
-                        Ok(r) => r,
-                        Err(_) => continue,
-                    };
-                    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
-                    // Identity first, then the raw MIDI stream.
-                    if stream.write_all(identity.as_bytes()).is_err() {
-                        continue;
-                    }
-                    {
-                        // Checked under the lock `drop` takes after setting
-                        // `stop`: either `drop` finds this stream and shuts it
-                        // down, or this sees `stop` and never reads.
-                        let mut guard = accept_client.lock().unwrap();
-                        if accept_stop.load(Ordering::Acquire) {
-                            let _ = stream.shutdown(std::net::Shutdown::Both);
-                            return;
-                        }
-                        *guard = Some(stream);
-                    }
-                    eprintln!("pc-link: MIDI driver attached");
-
-                    // One driver at a time: read until it goes away, then
-                    // loop back and wait for it to reconnect.
-                    read_loop(reader, &tx, &accept_stop);
-                    *accept_client.lock().unwrap() = None;
-                    eprintln!("pc-link: MIDI driver detached");
-                }
-            })
+            .spawn(move || accept_loop(listener, identity, &accept_client, &tx, &accept_stop))
             .expect("spawn pc-link-midi-driver");
 
         Ok(Self {
@@ -379,6 +317,98 @@ impl MidiDriverLink {
         }
         self.outbox.push(bytes);
     }
+}
+
+/// The attached driver's write half, shared by the accept and writer threads.
+type Client = Arc<Mutex<Option<UnixStream>>>;
+
+/// Write queued guest MIDI to the attached driver until `stop` is set and the
+/// queue is drained.
+fn write_loop(client: &Client, outbox: &Outbox, stop: &AtomicBool) {
+    while let Some(msg) = outbox.pop(stop) {
+        let mut guard = client.lock().unwrap();
+        if let Some(stream) = guard.as_mut() {
+            if stream.write_all(&msg).is_err() {
+                // A failed write leaves a partial message on the
+                // wire, so the link is dropped.  Shutdown, not just a
+                // drop: read_loop holds a clone of the fd, and
+                // only a shutdown ends its read().
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                *guard = None;
+            }
+        }
+    }
+}
+
+/// Serve one driver at a time until `stop` is set: greet it with `identity`,
+/// publish its write half in `client`, and forward what it sends to `tx`.
+fn accept_loop(
+    listener: UnixListener,
+    identity: Identity,
+    client: &Client,
+    tx: &Sender<OutFrame>,
+    stop: &AtomicBool,
+) {
+    let _ = listener.set_nonblocking(true);
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        let Some(stream) = accept_driver(&listener) else {
+            continue;
+        };
+        let Some((stream, reader)) = greet(stream, &identity) else {
+            continue;
+        };
+        {
+            // Checked under the lock `drop` takes after setting
+            // `stop`: either `drop` finds this stream and shuts it
+            // down, or this sees `stop` and never reads.
+            let mut guard = client.lock().unwrap();
+            if stop.load(Ordering::Acquire) {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return;
+            }
+            *guard = Some(stream);
+        }
+        eprintln!("pc-link: MIDI driver attached");
+
+        // One driver at a time: read until it goes away, then
+        // loop back and wait for it to reconnect.
+        read_loop(reader, tx, stop);
+        *client.lock().unwrap() = None;
+        eprintln!("pc-link: MIDI driver detached");
+    }
+}
+
+/// The next driver connection, or `None` after a pause when there is none
+/// yet or the accept failed.
+fn accept_driver(listener: &UnixListener) -> Option<UnixStream> {
+    match listener.accept() {
+        Ok((s, _)) => Some(s),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            thread::sleep(ACCEPT_POLL);
+            None
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => None,
+        Err(_) => {
+            thread::sleep(ACCEPT_ERROR_BACKOFF);
+            None
+        }
+    }
+}
+
+/// Make a new driver connection blocking, with a write timeout, and send it
+/// `identity`. Returns the stream and a read half, or `None` when the driver
+/// cannot be served.
+fn greet(mut stream: UnixStream, identity: &Identity) -> Option<(UnixStream, UnixStream)> {
+    // accept() may hand back the listener's non-blocking flag.
+    let _ = stream.set_nonblocking(false);
+    let reader = stream.try_clone().ok()?;
+    let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+    // Identity first, then the raw MIDI stream.
+    stream.write_all(identity.as_bytes()).ok()?;
+    Some((stream, reader))
 }
 
 fn read_loop(mut reader: UnixStream, tx: &Sender<OutFrame>, stop: &AtomicBool) {

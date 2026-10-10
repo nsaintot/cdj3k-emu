@@ -39,20 +39,13 @@ pub(super) fn open_raw(disk: &PhysicalDisk, _qmp_fd_socket: &Path) -> Result<Raw
             .write(true)
             .open(&disk.bsd_path)
     };
-    let denied = |e: &std::io::Error| e.kind() == std::io::ErrorKind::PermissionDenied;
     if let Err(e) = probe() {
-        if !denied(&e) {
+        if e.kind() != std::io::ErrorKind::PermissionDenied {
             return Err(UsbError::Io(e));
         }
         unlock_device_write(&disk.bsd_path)
             .map_err(|_| UsbError::PermissionDenied(disk.bsd_path.clone()))?;
-        probe().map_err(|e| {
-            if denied(&e) {
-                UsbError::PermissionDenied(disk.bsd_path.clone())
-            } else {
-                UsbError::Io(e)
-            }
-        })?;
+        probe().map_err(|e| UsbError::opening(&disk.bsd_path, e))?;
     }
     Ok(RawMedium {
         filename: disk.bsd_path.clone(),

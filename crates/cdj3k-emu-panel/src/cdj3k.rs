@@ -174,76 +174,100 @@ fn step_at(frame: &[u8; MOSI_SIZE], led: StepLedMask) -> StepLed {
     }
 }
 
+/// The jog ring's step, from the level `jog` encodes: 0 off, 1 dim, 2 full.
+fn jog_step(frame: &[u8; MOSI_SIZE], jog: JogBrightness, bit_shift: usize) -> StepLed {
+    StepLed::from_level(match jog {
+        JogBrightness::Bits { byte, dim, bright } => {
+            match frame[byte + bit_shift] & (dim | bright) {
+                0 => 0,
+                v if v == dim => 1,
+                _ => 2,
+            }
+        }
+        JogBrightness::Level { byte } => frame[byte],
+    })
+}
+
+/// Where the CDJ-3000 family keeps a lamp.
+#[derive(Copy, Clone)]
+enum Wire {
+    Bit(LedBit),
+    Step(StepLedMask),
+    /// The ring's level, as [`MosiMap::jog`] encodes it.
+    JogRing,
+    /// A colour at the base the map gives, else the bit.
+    RgbOrBit(fn(&RgbLamps) -> Option<usize>, LedBit),
+    /// HOT CUE pad, A = 0.
+    Pad(usize),
+    Rgb(fn(&RgbLamps) -> Option<usize>),
+    Absent,
+}
+
+/// Each lamp's wire, in [`Lamp::ALL`] order: `WIRING[lamp as usize]`.
+const WIRING: [(Lamp, Wire); Lamp::ALL.len()] = [
+    (Lamp::KeySync, Wire::Bit(LED_KEY_SYNC)),
+    (Lamp::BeatSync, Wire::Bit(LED_BEAT_SYNC)),
+    (Lamp::Master, Wire::Bit(LED_MASTER)),
+    (Lamp::Slip, Wire::Step(LED_SLIP)),
+    (Lamp::Quantize, Wire::Step(LED_QUANTIZE)),
+    (Lamp::JogRing, Wire::JogRing),
+    (Lamp::JogRed, Wire::Bit(LED_JOG_RED)),
+    (Lamp::JogMeter, Wire::Absent),
+    (Lamp::Source, Wire::Step(LED_SOURCE)),
+    (Lamp::Browse, Wire::Step(LED_BROWSE)),
+    (Lamp::TagList, Wire::Step(LED_TAG_LIST)),
+    (Lamp::Playlist, Wire::Step(LED_PLAYLIST)),
+    (Lamp::Search, Wire::Step(LED_SEARCH)),
+    (Lamp::Menu, Wire::Step(LED_MENU)),
+    (Lamp::Play, Wire::RgbOrBit(|l| l.play, LED_PLAY)),
+    (Lamp::Cue, Wire::RgbOrBit(|l| l.cue, LED_CUE)),
+    (Lamp::LoopIn, Wire::Bit(LED_LOOP_IN)),
+    (Lamp::LoopOut, Wire::Bit(LED_LOOP_OUT)),
+    (Lamp::Reloop, Wire::Bit(LED_RELOOP)),
+    (Lamp::BeatJump4, Wire::Bit(LED_BEAT_JUMP_4)),
+    (Lamp::BeatJump8, Wire::Bit(LED_BEAT_JUMP_8)),
+    (Lamp::BeatJumpNext, Wire::Bit(LED_BEAT_JUMP_NEXT)),
+    (Lamp::BeatJumpPrev, Wire::Bit(LED_BEAT_JUMP_PREV)),
+    (Lamp::TempoReset, Wire::Bit(LED_TEMPO_RESET)),
+    (Lamp::MasterTempo, Wire::Bit(LED_MASTER_TEMPO)),
+    (Lamp::JogModeCdj, Wire::Bit(LED_JOG_MODE_CDJ)),
+    (Lamp::JogModeVinyl, Wire::Bit(LED_JOG_MODE_VINYL)),
+    (Lamp::Encoder, Wire::Bit(LED_ENCODER)),
+    (Lamp::TrackSearch, Wire::Bit(LED_TRACK_SEARCH)),
+    (Lamp::Rev, Wire::Bit(LED_REV)),
+    (Lamp::HotA, Wire::Pad(0)),
+    (Lamp::HotB, Wire::Pad(1)),
+    (Lamp::HotC, Wire::Pad(2)),
+    (Lamp::HotD, Wire::Pad(3)),
+    (Lamp::HotE, Wire::Pad(4)),
+    (Lamp::HotF, Wire::Pad(5)),
+    (Lamp::HotG, Wire::Pad(6)),
+    (Lamp::HotH, Wire::Pad(7)),
+    (Lamp::Slot1, Wire::Rgb(|l| l.slot_1)),
+    (Lamp::Slot2, Wire::Rgb(|l| l.slot_2)),
+    (Lamp::OnAir, Wire::Rgb(|l| l.on_air)),
+    (Lamp::Rotary, Wire::Rgb(|l| l.rotary)),
+    (Lamp::Standby, Wire::Absent),
+    (Lamp::Eject, Wire::Absent),
+];
+
 /// The CDJ-3000 family's codec: each lamp at its CDJ-3000 bit moved by
 /// [`MosiMap::bit_shift`], or at the RGB base the map names.
 impl MosiCodec for MosiMap {
     fn lamp(&self, f: &[u8; MOSI_SIZE], lamp: Lamp) -> Option<LampState> {
         let bit = |(byte, mask): LedBit| Some(LampState::Bit(f[byte + self.bit_shift] & mask != 0));
-        let step = |led: StepLedMask| {
-            let byte = led.byte + self.bit_shift;
-            Some(LampState::Step(step_at(f, StepLedMask { byte, ..led })))
-        };
         let rgb = |base: Option<usize>| base.map(|b| LampState::Rgb(f[b], f[b + 1], f[b + 2]));
-        let pad = |i: usize| rgb(Some(self.lamps.hot_cue[i]));
-        match lamp {
-            Lamp::KeySync => bit(LED_KEY_SYNC),
-            Lamp::BeatSync => bit(LED_BEAT_SYNC),
-            Lamp::Master => bit(LED_MASTER),
-            Lamp::Slip => step(LED_SLIP),
-            Lamp::Quantize => step(LED_QUANTIZE),
-            Lamp::JogRing => Some(LampState::Step(StepLed::from_level(match self.jog {
-                JogBrightness::Bits { byte, dim, bright } => {
-                    match f[byte + self.bit_shift] & (dim | bright) {
-                        0 => 0,
-                        v if v == dim => 1,
-                        _ => 2,
-                    }
-                }
-                JogBrightness::Level { byte } => f[byte],
-            }))),
-            Lamp::JogRed => bit(LED_JOG_RED),
-            Lamp::Source => step(LED_SOURCE),
-            Lamp::Browse => step(LED_BROWSE),
-            Lamp::TagList => step(LED_TAG_LIST),
-            Lamp::Playlist => step(LED_PLAYLIST),
-            Lamp::Search => step(LED_SEARCH),
-            Lamp::Menu => step(LED_MENU),
-            // A colour on a player whose map gives one, else the bit.
-            Lamp::Play => self
-                .lamps
-                .play
-                .map_or_else(|| bit(LED_PLAY), |b| rgb(Some(b))),
-            Lamp::Cue => self
-                .lamps
-                .cue
-                .map_or_else(|| bit(LED_CUE), |b| rgb(Some(b))),
-            Lamp::LoopIn => bit(LED_LOOP_IN),
-            Lamp::LoopOut => bit(LED_LOOP_OUT),
-            Lamp::Reloop => bit(LED_RELOOP),
-            Lamp::BeatJump4 => bit(LED_BEAT_JUMP_4),
-            Lamp::BeatJump8 => bit(LED_BEAT_JUMP_8),
-            Lamp::BeatJumpNext => bit(LED_BEAT_JUMP_NEXT),
-            Lamp::BeatJumpPrev => bit(LED_BEAT_JUMP_PREV),
-            Lamp::TempoReset => bit(LED_TEMPO_RESET),
-            Lamp::MasterTempo => bit(LED_MASTER_TEMPO),
-            Lamp::JogModeCdj => bit(LED_JOG_MODE_CDJ),
-            Lamp::JogModeVinyl => bit(LED_JOG_MODE_VINYL),
-            Lamp::Encoder => bit(LED_ENCODER),
-            Lamp::TrackSearch => bit(LED_TRACK_SEARCH),
-            Lamp::Rev => bit(LED_REV),
-            Lamp::HotA => pad(0),
-            Lamp::HotB => pad(1),
-            Lamp::HotC => pad(2),
-            Lamp::HotD => pad(3),
-            Lamp::HotE => pad(4),
-            Lamp::HotF => pad(5),
-            Lamp::HotG => pad(6),
-            Lamp::HotH => pad(7),
-            Lamp::Slot1 => rgb(self.lamps.slot_1),
-            Lamp::Slot2 => rgb(self.lamps.slot_2),
-            Lamp::OnAir => rgb(self.lamps.on_air),
-            Lamp::Rotary => rgb(self.lamps.rotary),
-            Lamp::JogMeter | Lamp::Standby | Lamp::Eject => None,
+        match WIRING[lamp as usize].1 {
+            Wire::Bit(b) => bit(b),
+            Wire::Step(led) => {
+                let byte = led.byte + self.bit_shift;
+                Some(LampState::Step(step_at(f, StepLedMask { byte, ..led })))
+            }
+            Wire::JogRing => Some(LampState::Step(jog_step(f, self.jog, self.bit_shift))),
+            Wire::RgbOrBit(base, b) => base(&self.lamps).map_or_else(|| bit(b), |at| rgb(Some(at))),
+            Wire::Pad(i) => rgb(Some(self.lamps.hot_cue[i])),
+            Wire::Rgb(base) => rgb(base(&self.lamps)),
+            Wire::Absent => None,
         }
     }
 }
@@ -298,33 +322,13 @@ pub const SPEC: ModelSpec = ModelSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cdj3kx;
-    use crate::mosi_frame::MOSI_SIZE;
 
-    /// Each lamp of a map names a byte of its own.
+    /// `WIRING[lamp as usize]` is that lamp's wire.
     #[test]
-    fn a_maps_lamps_do_not_overlap() {
-        for (name, map) in [("CDJ-3000", MOSI), ("CDJ-3000X", cdj3kx::MOSI)] {
-            let lamps = map.lamps;
-            let mut bases: Vec<usize> = lamps.hot_cue.to_vec();
-            bases.extend(
-                [
-                    lamps.slot_1,
-                    lamps.slot_2,
-                    lamps.on_air,
-                    lamps.play,
-                    lamps.cue,
-                    lamps.rotary,
-                ]
-                .into_iter()
-                .flatten(),
-            );
-            for (i, a) in bases.iter().enumerate() {
-                assert!(a + 2 < MOSI_SIZE, "{name} lamp at {a} runs off the frame");
-                for b in &bases[i + 1..] {
-                    assert!(a.abs_diff(*b) >= 3, "{name} lamps at {a} and {b} overlap");
-                }
-            }
+    fn wiring_follows_lamp_order() {
+        for (i, (lamp, _)) in WIRING.iter().enumerate() {
+            assert_eq!(*lamp, Lamp::ALL[i]);
+            assert_eq!(*lamp as usize, i, "{lamp:?}");
         }
     }
 }

@@ -2,6 +2,19 @@
 
 use super::*;
 
+const MODAL_W: f32 = 460.0;
+/// Where the dialogs sit: their top, as a fraction of the window height.
+const MODAL_TOP: f32 = 0.287;
+const MODAL_PAD_X: f32 = 22.0;
+const MODAL_PAD_TOP: f32 = 20.0;
+const MODAL_TEXT_GAP: f32 = 8.0;
+const MODAL_BODY_BOTTOM: f32 = 16.0;
+const MODAL_BAR_PAD: f32 = 12.0;
+const MODAL_TITLE_FONT: f32 = 18.0;
+const URL_FONT: f32 = 12.0;
+const URL_MARGIN: f32 = 11.0;
+const MODAL_SCRIM: Color32 = Color32::from_rgba_premultiplied(8, 8, 9, 87);
+
 pub(super) fn draw_replace(
     ui: &mut egui::Ui,
     name: &str,
@@ -148,8 +161,32 @@ pub(super) fn modal_with(
     extra: impl FnOnce(&mut egui::Ui),
     buttons: impl FnOnce(&mut egui::Ui),
 ) {
+    let (extra_rect, bar) = modal_card(ui, title, text, extra_h, pal, k);
+    if let Some(r) = extra_rect {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+            theme::apply_setup_style(ui, pal);
+            extra(ui);
+        });
+    }
+    ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
+        theme::apply_setup_style(ui, pal);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), buttons);
+    });
+}
+
+/// The scrim over the whole window and the card on it: the title, the
+/// paragraph and the rule over the button bar. While the modal is up,
+/// nothing behind it receives clicks. Returns the room for the extra
+/// content, if `extra_h` asks for any, and the button bar.
+fn modal_card(
+    ui: &egui::Ui,
+    title: &str,
+    text: &str,
+    extra_h: f32,
+    pal: &Palette,
+    k: f32,
+) -> (Option<Rect>, Rect) {
     let area = ui.max_rect();
-    // While the modal is up, nothing behind it receives clicks.
     ui.interact(
         area,
         ui.id().with("mods_modal_block"),
@@ -204,18 +241,9 @@ pub(super) fn modal_with(
         pal.line,
         k,
     );
-    if let Some(r) = extra_rect {
-        ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
-            theme::apply_setup_style(ui, pal);
-            extra(ui);
-        });
-    }
     let bar = Rect::from_min_max(
         Pos2::new(card.left() + MODAL_PAD_X * k, bar_top),
         Pos2::new(card.right() - MODAL_PAD_X * k, card.bottom()),
     );
-    ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
-        theme::apply_setup_style(ui, pal);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), buttons);
-    });
+    (extra_rect, bar)
 }

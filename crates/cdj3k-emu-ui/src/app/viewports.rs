@@ -10,6 +10,7 @@ use cdj3k_emu_streams::jog_stream::{JOG_FB_H, JOG_FB_W};
 
 use super::lcd_touch::LcdTouchCapture;
 use super::ui;
+use super::ui::draw_lcd::capture_lcd_touch;
 use super::CdjApp;
 use super::MIN_FRAME_INTERVAL;
 
@@ -51,7 +52,7 @@ impl CdjApp {
         if !self.jog_screen_popped {
             return;
         }
-        let tex_id = self.jog_tex_id;
+        let tex_id = self.textures.jog_id;
         let close = Arc::new(AtomicBool::new(false));
         let close_inner = close.clone();
         ctx.show_viewport_immediate(
@@ -88,9 +89,9 @@ impl CdjApp {
         }
         // Deferred viewport: own update cycle, can't borrow `&self`. Reads
         // from shared Arcs populated each main update.
-        let snapshot = Arc::clone(&self.debug_snapshot);
-        let vp_state = Arc::clone(&self.debug_viewport_state);
-        let wants_close = Arc::clone(&self.debug_wants_close);
+        let snapshot = Arc::clone(&self.debug.snapshot);
+        let vp_state = Arc::clone(&self.debug.viewport_state);
+        let wants_close = Arc::clone(&self.debug.wants_close);
         // Live MOSI peek bypasses the snapshot path so debug shows real-time
         // wire bytes even when the main viewport's repaint filter is quiet.
         let live_mosi = self.ctrl_stream.latest_mosi_arc();
@@ -134,7 +135,7 @@ impl CdjApp {
             },
         );
 
-        if self.debug_wants_close.swap(false, Ordering::Relaxed) {
+        if self.debug.wants_close.swap(false, Ordering::Relaxed) {
             self.debug_screen_popped = false;
         }
     }
@@ -143,7 +144,7 @@ impl CdjApp {
         if !self.main_screen_popped {
             return;
         }
-        let tex_id = self.display_tex_id;
+        let tex_id = self.textures.main_id;
         let connected = self.display_stream.is_connected();
         // The popout opens at the framebuffer's native size and keeps its aspect.
         let (fb_w, fb_h) = self.model.main_lcd();
@@ -179,7 +180,7 @@ impl CdjApp {
                                 )
                             };
                             let rect = paint_aspect_fit_image(ui, tex_id, main_aspect, tint);
-                            popout_touch = Some(capture_lcd_touch(ui, rect));
+                            popout_touch = Some(capture_lcd_touch(ui, rect, "lcd_touch_popout"));
                         }
                     });
             },
@@ -237,29 +238,6 @@ fn paint_aspect_fit_image(
         tint,
     );
     rect
-}
-
-fn capture_lcd_touch(ui: &mut egui::Ui, display_rect: egui::Rect) -> LcdTouchCapture {
-    let lcd_resp = ui.interact(
-        display_rect,
-        ui.id().with("lcd_touch_popout"),
-        egui::Sense::click_and_drag(),
-    );
-    LcdTouchCapture {
-        hovered: lcd_resp.hovered(),
-        scroll_y: crate::app::scroll::raw_delta(ui).y,
-        pointer_moved: ui.input(|i| i.pointer.delta().length_sq() > 0.0),
-        is_down: lcd_resp.is_pointer_button_down_on(),
-        ctrl: ui.input(|i| i.modifiers.ctrl),
-        right_down: ui.input(|i| {
-            i.pointer.button_down(egui::PointerButton::Secondary)
-                && i.pointer
-                    .hover_pos()
-                    .is_some_and(|p| display_rect.contains(p))
-        }),
-        interact_pos: lcd_resp.interact_pointer_pos(),
-        display_rect,
-    }
 }
 
 fn update_local_fps(vp_state: &Arc<Mutex<DebugViewportState>>) -> f32 {

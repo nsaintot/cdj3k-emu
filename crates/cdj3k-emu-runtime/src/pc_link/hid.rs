@@ -243,6 +243,54 @@ extern "C" fn set_report_cb(
     K_IO_RETURN_SUCCESS
 }
 
+/// The properties dictionary `IOHIDUserDeviceCreateWithProperties` builds the
+/// device from: `gadget`'s identity and report descriptor, at the instance's
+/// LocationID.
+fn device_properties(instance_id: u32, gadget: &GadgetIdentity) -> CFRef {
+    let (usage_page, usage) = gadget.primary_usage().unwrap_or(DEFAULT_PRIMARY_USAGE);
+    let location_id = cdj3k_emu_platform::identity::usb_location_id(instance_id);
+    let properties = unsafe {
+        CFDictionaryCreateMutable(
+            std::ptr::null(),
+            0,
+            &kCFTypeDictionaryKeyCallBacks as *const c_void,
+            &kCFTypeDictionaryValueCallBacks as *const c_void,
+        )
+    };
+    assert!(
+        !properties.is_null(),
+        "CFDictionaryCreateMutable returned NULL"
+    );
+    let properties = CFRef(properties as CFTypeRef);
+    let dict = properties.get() as CFMutableDictionaryRef;
+
+    // IOHIDKeys.h names; IOHIDUserDevice reads them straight out of the
+    // properties dictionary to build the IOHIDDevice's registry entry.
+    // IOHIDUserDevice overwrites Transport with "Virtual" in the registry
+    // entry regardless of what is passed here; the rest come through
+    // unchanged.
+    let props: [(&str, CFRef); 11] = [
+        ("ReportDescriptor", cf_data(&gadget.report_descriptor)),
+        ("Transport", cf_string("USB")),
+        ("Manufacturer", cf_string(&gadget.manufacturer)),
+        ("Product", cf_string(&gadget.product)),
+        ("SerialNumber", cf_string(&gadget.serial)),
+        ("VendorID", cf_number(gadget.vendor_id as i32)),
+        ("ProductID", cf_number(gadget.product_id as i32)),
+        ("VersionNumber", cf_number(gadget.bcd_device as i32)),
+        ("PrimaryUsagePage", cf_number(usage_page as i32)),
+        ("PrimaryUsage", cf_number(usage as i32)),
+        ("LocationID", cf_number(location_id)),
+    ];
+    for (name, value) in &props {
+        let key = cf_string(name);
+        // SAFETY: `dict` is the live dictionary above; it retains key and
+        // value.
+        unsafe { CFDictionarySetValue(dict, key.get(), value.get()) };
+    }
+    properties
+}
+
 impl HidBackend {
     /// Register the virtual HID device with the guest gadget's identity.
     /// `tx` is where output reports from Mac-side clients are enqueued for
@@ -252,62 +300,19 @@ impl HidBackend {
         instance_id: u32,
         gadget: &GadgetIdentity,
     ) -> Result<Self, HidError> {
-        let (usage_page, usage) = gadget.primary_usage().unwrap_or(DEFAULT_PRIMARY_USAGE);
-        let location_id = cdj3k_emu_platform::identity::usb_location_id(instance_id);
-        let properties = unsafe {
-            CFDictionaryCreateMutable(
-                std::ptr::null(),
-                0,
-                &kCFTypeDictionaryKeyCallBacks as *const c_void,
-                &kCFTypeDictionaryValueCallBacks as *const c_void,
-            )
-        };
-        assert!(
-            !properties.is_null(),
-            "CFDictionaryCreateMutable returned NULL"
-        );
-        let properties = CFRef(properties as CFTypeRef);
-        let dict = properties.get() as CFMutableDictionaryRef;
-
-        let descriptor = cf_data(&gadget.report_descriptor);
-        // IOHIDKeys.h names; IOHIDUserDevice reads them straight out of the
-        // properties dictionary to build the IOHIDDevice's registry entry.
-        // IOHIDUserDevice overwrites Transport with "Virtual" in the registry
-        // entry regardless of what is passed here; the rest come through
-        // unchanged.
-        let string_props: [(&str, CFRef); 4] = [
-            ("Transport", cf_string("USB")),
-            ("Manufacturer", cf_string(&gadget.manufacturer)),
-            ("Product", cf_string(&gadget.product)),
-            ("SerialNumber", cf_string(&gadget.serial)),
-        ];
-        let number_props: [(&str, CFRef); 6] = [
-            ("VendorID", cf_number(gadget.vendor_id as i32)),
-            ("ProductID", cf_number(gadget.product_id as i32)),
-            ("VersionNumber", cf_number(gadget.bcd_device as i32)),
-            ("PrimaryUsagePage", cf_number(usage_page as i32)),
-            ("PrimaryUsage", cf_number(usage as i32)),
-            ("LocationID", cf_number(location_id)),
-        ];
-
-        let descriptor_key = cf_string("ReportDescriptor");
-        unsafe {
-            CFDictionarySetValue(dict, descriptor_key.get(), descriptor.get());
-            for (name, value) in &string_props {
-                let key = cf_string(name);
-                CFDictionarySetValue(dict, key.get(), value.get());
-            }
-            for (name, value) in &number_props {
-                let key = cf_string(name);
-                CFDictionarySetValue(dict, key.get(), value.get());
-            }
-        }
+        let properties = device_properties(instance_id, gadget);
 
         // Options 0: the device starts at create time.  Scheduling below only
         // attaches the callback delivery; a set-report that lands in the gap
         // is dropped, which costs nothing; the guest is idle until the host
         // has a device to talk to anyway.
-        let device = unsafe { IOHIDUserDeviceCreateWithProperties(std::ptr::null(), dict, 0) };
+        let device = unsafe {
+            IOHIDUserDeviceCreateWithProperties(
+                std::ptr::null(),
+                properties.get() as CFMutableDictionaryRef,
+                0,
+            )
+        };
         if device.is_null() {
             return Err(HidError::Create);
         }

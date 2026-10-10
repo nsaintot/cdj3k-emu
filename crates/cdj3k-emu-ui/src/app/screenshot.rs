@@ -55,24 +55,7 @@ impl ScreenshotDriver {
             })
         });
         if let Some(img) = shot {
-            // A scripted capture comes first; the env one-shot closes the window.
-            let (path, close) = match self.scripted.take() {
-                Some(p) => (p, false),
-                None => match self.path.clone() {
-                    Some(p) => (p, true),
-                    None => return,
-                },
-            };
-            match write_png(&path, &img) {
-                Ok(()) => eprintln!(
-                    "cdj3k-emu: screenshot {}x{} -> {path}",
-                    img.size[0], img.size[1]
-                ),
-                Err(e) => eprintln!("cdj3k-emu: screenshot write failed: {e}"),
-            }
-            if close {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+            self.write_capture(ctx, &img);
             return;
         }
         // A request can go unanswered (no frame was rendered for it); ask
@@ -85,9 +68,36 @@ impl ScreenshotDriver {
             }
             ctx.request_repaint();
         }
-        if self.path.is_none() {
-            return;
+        if self.path.is_some() {
+            self.settle_env_capture(ctx);
         }
+    }
+
+    /// Write a capture that arrived. A scripted capture comes first; the env
+    /// one-shot closes the window.
+    fn write_capture(&mut self, ctx: &egui::Context, img: &egui::ColorImage) {
+        let (path, close) = match self.scripted.take() {
+            Some(p) => (p, false),
+            None => match self.path.clone() {
+                Some(p) => (p, true),
+                None => return,
+            },
+        };
+        match write_png(&path, img) {
+            Ok(()) => eprintln!(
+                "cdj3k-emu: screenshot {}x{} -> {path}",
+                img.size[0], img.size[1]
+            ),
+            Err(e) => eprintln!("cdj3k-emu: screenshot write failed: {e}"),
+        }
+        if close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
+    /// Count the env capture's settle frames and seconds, and request it once
+    /// both have passed.
+    fn settle_env_capture(&mut self, ctx: &egui::Context) {
         self.frame += 1;
 
         let settle: u64 = std::env::var("CDJ3K_SCREENSHOT_FRAME")

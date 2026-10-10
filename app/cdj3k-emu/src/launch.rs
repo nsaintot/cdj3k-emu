@@ -7,8 +7,12 @@ use std::path::PathBuf;
 
 use cdj3k_emu_panel::Model;
 use cdj3k_emu_platform::menu_state;
+use cdj3k_emu_runtime::{QemuConfig, QemuInstance};
+use cdj3k_emu_storage::mods::BootMods;
 use cdj3k_emu_storage::FirmwarePaths;
 use cdj3k_emu_ui::{LaunchOutcome, RuntimeHost};
+
+use crate::runtime_worker::{self, PrebuiltNet};
 
 /// Boot options fixed for the process (CLI flags), applied to every launch.
 pub struct Host {
@@ -100,80 +104,17 @@ impl Host {
     /// Build the QEMU config, pre-build the network backend, spawn QEMU and
     /// the runtime worker. Requires no live worker.
     fn spawn(&self, model: Model) {
-        use cdj3k_emu_runtime::{QemuConfig, QemuInstance};
-
-        use crate::runtime_worker;
-
-        let instance = self.instance;
         let r = self.resolve();
-        let inst_settings = cdj3k_emu_storage::InstanceSettings::load_or_init(instance);
+        let inst_settings = cdj3k_emu_storage::InstanceSettings::load_or_init(self.instance);
 
         let mods = ModsLaunch {
             base: r.initramfs.clone(),
             extra: self.extra_mods.clone(),
             no_mods: self.no_mods,
         };
-        let boot = mods.boot(instance, model);
-        let mut config = QemuConfig::new(r.kernel.clone(), boot.initramfs.clone());
-        config.instance_id = instance;
-        config.model = model;
-        config.ssh_port = 2222 + instance as u16;
-        config.qmp_port = 4445 + instance as u16;
-        config.gdb_port = 1235 + instance as u16;
-        config.emmc_img = (!self.no_emmc).then(|| r.emmc.clone());
-        config.audio = inst_settings.audio_enabled;
-        config.audio_device_uid = inst_settings.audio_device_uid.clone();
-        config.service_mode = menu_state::lock().service_mode;
-        config.mac = Some(inst_settings.mac.clone());
-        config.soc_serial = Some(inst_settings.soc_serial);
-        config.serial_log = self.serial_log;
-
-        // ── Pre-build network backend ────────────────────────────────────────
-        // If a network interface is selected, select the vmnet mode or set up
-        // the TAP bridge before the very first QEMU spawn so the initial
-        // process already has the right -netdev and we don't have to restart
-        // immediately.  prev_net_idx in the worker is seeded from this value
-        // so the first poll iteration is a no-op for network setup.
-        let mut prebuilt_net = runtime_worker::PrebuiltNet {
-            keep: cdj3k_emu_runtime::NetKeepAlive::Nothing,
-            initial_net_idx: menu_state::NET_SEL_NONE,
-        };
-        let (initial_net_idx, iface_name) = {
-            let s = menu_state::lock();
-            let idx = s.selected_interface;
-            let name = match idx {
-                menu_state::NET_SEL_NONE | menu_state::NET_SEL_VMNET_HOST => None,
-                n => s.net_ifaces.get(n as usize).map(|i| i.name.clone()),
-            };
-            (idx, name)
-        };
-        let attempt = if initial_net_idx == menu_state::NET_SEL_VMNET_HOST {
-            Some((
-                "host-only".to_string(),
-                cdj3k_emu_runtime::net_attach_host_only(),
-            ))
-        } else {
-            iface_name.map(|name| {
-                let r = cdj3k_emu_runtime::net_attach(&name, &inst_settings.mac, instance);
-                (name, r)
-            })
-        };
-        if let Some((name, result)) = attempt {
-            match result {
-                Ok(a) => {
-                    eprintln!("cdj3k-emu: bridged on {name}");
-                    config.net_vmnet = a.vmnet.clone();
-                    config.net_tap_iface = a.tap_iface.clone();
-                    config.net_tap_fd = a.tap_fd;
-                    prebuilt_net.keep = a.keep;
-                    prebuilt_net.initial_net_idx = initial_net_idx;
-                }
-                Err(e) => {
-                    eprintln!("cdj3k-emu: cannot bridge on {name}: {e}");
-                    menu_state::lock().selected_interface = menu_state::NET_SEL_NONE;
-                }
-            }
-        }
+        let boot = mods.boot(self.instance, model);
+        let mut config = self.qemu_config(model, &r, &inst_settings, &boot);
+        let prebuilt_net = prebuild_net(&mut config, &inst_settings.mac, self.instance);
 
         match QemuInstance::spawn(config.clone()) {
             Ok(inst) => {
@@ -187,6 +128,75 @@ impl Host {
             }
         }
     }
+
+    fn qemu_config(
+        &self,
+        model: Model,
+        r: &Resolved,
+        inst_settings: &cdj3k_emu_storage::InstanceSettings,
+        boot: &BootMods,
+    ) -> QemuConfig {
+        let instance = self.instance;
+        let mut config = QemuConfig::new(r.kernel.clone(), boot.initramfs.clone());
+        config.instance_id = instance;
+        config.model = model;
+        config.ssh_port = 2222 + instance as u16;
+        config.qmp_port = 4445 + instance as u16;
+        config.gdb_port = 1235 + instance as u16;
+        config.emmc_img = (!self.no_emmc).then(|| r.emmc.clone());
+        config.audio = inst_settings.audio_enabled;
+        config.audio_device_uid = inst_settings.audio_device_uid.clone();
+        config.service_mode = menu_state::lock().service_mode;
+        config.mac = Some(inst_settings.mac.clone());
+        config.soc_serial = Some(inst_settings.soc_serial.clone());
+        config.serial_log = self.serial_log;
+        config
+    }
+}
+
+/// If a network interface is selected, select the vmnet mode or set up the
+/// TAP bridge before the very first QEMU spawn, so the initial process already
+/// has the right `-netdev` and needs no immediate restart.  The worker seeds
+/// `prev_net_idx` from the result, so its first poll iteration leaves the
+/// network alone.
+fn prebuild_net(config: &mut QemuConfig, mac: &str, instance: u32) -> PrebuiltNet {
+    let mut prebuilt_net = PrebuiltNet {
+        keep: cdj3k_emu_runtime::NetKeepAlive::Nothing,
+        initial_net_idx: menu_state::NET_SEL_NONE,
+    };
+    let (initial_net_idx, iface_name) = {
+        let s = menu_state::lock();
+        let idx = s.selected_interface;
+        let name = match idx {
+            menu_state::NET_SEL_NONE | menu_state::NET_SEL_VMNET_HOST => None,
+            n => s.net_ifaces.get(n as usize).map(|i| i.name.clone()),
+        };
+        (idx, name)
+    };
+    let attempt = if initial_net_idx == menu_state::NET_SEL_VMNET_HOST {
+        Some((
+            "host-only".to_string(),
+            cdj3k_emu_runtime::net_attach_host_only(),
+        ))
+    } else {
+        iface_name.map(|name| {
+            let r = cdj3k_emu_runtime::net_attach(&name, mac, instance);
+            (name, r)
+        })
+    };
+    if let Some((name, result)) = attempt {
+        match result {
+            Ok(a) => {
+                prebuilt_net.keep = runtime_worker::adopt_attachment(config, &name, a);
+                prebuilt_net.initial_net_idx = initial_net_idx;
+            }
+            Err(e) => {
+                eprintln!("cdj3k-emu: cannot bridge on {name}: {e}");
+                menu_state::lock().selected_interface = menu_state::NET_SEL_NONE;
+            }
+        }
+    }
+    prebuilt_net
 }
 
 /// The inputs for adding mods to a boot. The runtime worker rebuilds the
@@ -206,7 +216,7 @@ impl ModsLaunch {
     /// The next boot's mods and initramfs: the base with the mods appended,
     /// or the base alone when no mod runs or the mods cannot be prepared.
     /// The caller records it with `set_current_boot` once QEMU has started.
-    pub fn boot(&self, instance: u32, model: Model) -> cdj3k_emu_storage::mods::BootMods {
+    pub fn boot(&self, instance: u32, model: Model) -> BootMods {
         // Record the request count before reading the mods, so that a mods
         // restart requested during the read causes another restart.
         {
@@ -240,7 +250,7 @@ impl ModsLaunch {
             }
             Err(e) => {
                 eprintln!("cdj3k-emu: preparing the mods failed, booting without them: {e}");
-                cdj3k_emu_storage::mods::BootMods {
+                BootMods {
                     initramfs: self.base.clone(),
                     run: Vec::new(),
                     slot_run: Vec::new(),

@@ -1,13 +1,13 @@
 //! Cached static jog wheel geometry - outer rings + inner disk + JOG ADJUST
 //! gear/indicator. Consumed by the jog static cache.
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Shape, Stroke, Vec2};
+use egui::{Align2, Color32, FontFamily, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 
 use super::super::draw_cache::ShapeList;
 use super::super::{
     draw_rotary_control_collect, paint_double_circle_ring_collect, DoubleBorderSpec,
     RotaryControlSpec, RotaryGearSpec, RotaryIndicatorSpec, RotaryTickSpec, StrokeSpec, UiScale,
-    COL_BTN_TEXT, COL_JOG_BODY, COL_SILVER, COL_WHITE,
+    COL_BTN_TEXT, COL_DARK, COL_JOG_BODY, COL_LCD_BG, COL_SILVER, COL_WHITE,
 };
 use super::*;
 
@@ -234,49 +234,69 @@ pub(super) fn build_jog_adjust_static(
     draw_rotary_control_collect(
         out,
         center,
-        RotaryControlSpec {
-            gear: RotaryGearSpec {
-                base_radius: r_base,
-                tooth_count: JOG_ADJUST_TOOTH_COUNT,
-                tooth_amplitude: tooth_amp,
-                tooth_top_fraction: JOG_ADJUST_TOOTH_TOP_FRAC,
-                valley_segments: JOG_ADJUST_VALLEY_SEGMENTS,
-                rotation_rad: indicator_angle - std::f32::consts::FRAC_PI_2,
-                fill: JOG_ADJUST_FILL_COLOR,
-                stroke: StrokeSpec {
-                    width: s(JOG_ADJUST_STROKE_REF),
-                    color: COL_BTN_TEXT,
-                },
-            },
-            indicator: RotaryIndicatorSpec {
-                length: r_base * JOG_ADJUST_INDICATOR_LENGTH_FRAC,
-                width: s(JOG_ADJUST_INDICATOR_WIDTH_REF),
-                angle_cw_from_top_rad: indicator_angle,
-                stroke: StrokeSpec {
-                    width: s(JOG_ADJUST_INDICATOR_STROKE_REF),
-                    color: COL_BTN_TEXT,
-                },
-            },
-            ticks: RotaryTickSpec {
-                count: JOG_ADJUST_TICK_COUNT,
-                arc_start_cw_rad: JOG_ADJUST_TICK_ARC_START_CW_RAD,
-                arc_span_rad: JOG_ADJUST_TICK_ARC_SPAN_RAD,
-                ring_offset: s(JOG_ADJUST_TICK_RING_OFFSET_REF),
-                dot_radius: s(JOG_ADJUST_TICK_DOT_RADIUS_REF),
-                center_dot_radius: s(JOG_ADJUST_TICK_CENTER_DOT_RADIUS_REF),
-                endcap_length: s(JOG_ADJUST_TICK_ENDCAP_LENGTH_REF),
-                endcap_stroke: StrokeSpec {
-                    width: s(JOG_ADJUST_TICK_ENDCAP_STROKE_REF),
-                    color: COL_BTN_TEXT,
-                },
-            },
-            color: COL_BTN_TEXT,
-            draw_indicator: true,
-            draw_ticks: true,
-        },
+        jog_adjust_spec(&s, r_base, tooth_amp, indicator_angle),
     );
+    collect_jog_adjust_labels(out, ctx, center, &s, r_outer, chrome);
+}
 
-    // Labels.
+/// The knob's gear, indicator and tick ring, sized by `s`.
+fn jog_adjust_spec(
+    s: &impl Fn(f32) -> f32,
+    r_base: f32,
+    tooth_amp: f32,
+    indicator_angle: f32,
+) -> RotaryControlSpec {
+    RotaryControlSpec {
+        gear: RotaryGearSpec {
+            base_radius: r_base,
+            tooth_count: JOG_ADJUST_TOOTH_COUNT,
+            tooth_amplitude: tooth_amp,
+            tooth_top_fraction: JOG_ADJUST_TOOTH_TOP_FRAC,
+            valley_segments: JOG_ADJUST_VALLEY_SEGMENTS,
+            rotation_rad: indicator_angle - std::f32::consts::FRAC_PI_2,
+            fill: JOG_ADJUST_FILL_COLOR,
+            stroke: StrokeSpec {
+                width: s(JOG_ADJUST_STROKE_REF),
+                color: COL_BTN_TEXT,
+            },
+        },
+        indicator: RotaryIndicatorSpec {
+            length: r_base * JOG_ADJUST_INDICATOR_LENGTH_FRAC,
+            width: s(JOG_ADJUST_INDICATOR_WIDTH_REF),
+            angle_cw_from_top_rad: indicator_angle,
+            stroke: StrokeSpec {
+                width: s(JOG_ADJUST_INDICATOR_STROKE_REF),
+                color: COL_BTN_TEXT,
+            },
+        },
+        ticks: RotaryTickSpec {
+            count: JOG_ADJUST_TICK_COUNT,
+            arc_start_cw_rad: JOG_ADJUST_TICK_ARC_START_CW_RAD,
+            arc_span_rad: JOG_ADJUST_TICK_ARC_SPAN_RAD,
+            ring_offset: s(JOG_ADJUST_TICK_RING_OFFSET_REF),
+            dot_radius: s(JOG_ADJUST_TICK_DOT_RADIUS_REF),
+            center_dot_radius: s(JOG_ADJUST_TICK_CENTER_DOT_RADIUS_REF),
+            endcap_length: s(JOG_ADJUST_TICK_ENDCAP_LENGTH_REF),
+            endcap_stroke: StrokeSpec {
+                width: s(JOG_ADJUST_TICK_ENDCAP_STROKE_REF),
+                color: COL_BTN_TEXT,
+            },
+        },
+        color: COL_BTN_TEXT,
+        draw_indicator: true,
+        draw_ticks: true,
+    }
+}
+
+/// The title above the knob and LIGHT / HEAVY under it.
+fn collect_jog_adjust_labels(
+    out: &mut ShapeList,
+    ctx: &egui::Context,
+    center: Pos2,
+    s: &impl Fn(f32) -> f32,
+    r_outer: f32,
+    chrome: JogChrome,
+) {
     let top_label_pos = center + Vec2::new(0.0, -(r_outer + s(JOG_ADJUST_TOP_LABEL_GAP_REF)));
     out.text(
         ctx,
@@ -305,5 +325,190 @@ pub(super) fn build_jog_adjust_static(
         "HEAVY",
         side_font,
         COL_BTN_TEXT,
+    );
+}
+
+/// Inner LCD disk (background only; the stream texture is painted over it).
+pub(super) fn build_jog_inner_lcd_background(
+    out: &mut ShapeList,
+    center: egui::Pos2,
+    layout: &UiScale,
+) {
+    let r_inner_lcd = layout.sc(JOG_INNER_LCD_C1_RADIUS);
+    out.circle_filled(center, r_inner_lcd, COL_LCD_BG);
+}
+
+/// The inner LCD's chrome over the stream: its c1/c2 silhouette, the c3
+/// separator arcs and the MODE / BEAT SYNC labels.
+pub(super) fn build_jog_inner_lcd_foreground(
+    out: &mut ShapeList,
+    ctx: &egui::Context,
+    center: egui::Pos2,
+    layout: &UiScale,
+) {
+    let r_inner_lcd = layout.sc(JOG_INNER_LCD_C1_RADIUS);
+    let stroke = Stroke::new(layout.sc(7.0), COL_BTN);
+    let join_overlap = layout.sc(JOG_INNER_LCD_JOIN_OVERLAP_REF);
+
+    // c1: already-known inner LCD cutout circle.
+    let c1 = r_inner_lcd;
+    // Rectangle centered at O with corners on c1 (diagonals cross at O).
+    let mut rect_half_w = c1 * JOG_INNER_LCD_RECT_HALF_WIDTH_FRAC;
+    let mut rect_half_h = (c1 * c1 - rect_half_w * rect_half_w).sqrt();
+    // Keep the rectangle "length" horizontal (major axis on X).
+    if rect_half_h > rect_half_w {
+        std::mem::swap(&mut rect_half_w, &mut rect_half_h);
+    }
+    // c2: smaller concentric circle used for side bulges.
+    let c2 = c1 * JOG_INNER_LCD_C2_RADIUS_FRAC;
+
+    // c1 arcs between the rectangle side-width points (left + right side arcs).
+    collect_clipped_circle_arcs(out, center, c1, stroke, &|x, _y| {
+        x.abs() >= rect_half_w - 1.0e-3
+    });
+    // c2 arcs outside the rectangle (left/right + corner bridge arcs).
+    collect_clipped_circle_arcs(out, center, c2, stroke, &|x, y| {
+        x.abs() >= rect_half_w - 1.0e-3 || y.abs() >= rect_half_h - 1.0e-3
+    });
+
+    // Rectangle segments between c1 and c2 intersections.
+    let top_y = rect_half_h;
+    let bot_y = -rect_half_h;
+    let right_x = rect_half_w;
+    let left_x = -rect_half_w;
+
+    let c2_x_at_top = (c2 * c2 - top_y * top_y).max(0.0).sqrt();
+    let segs = [
+        (
+            center + Vec2::new(c2_x_at_top - join_overlap, top_y),
+            center + Vec2::new(right_x + join_overlap, top_y),
+        ),
+        (
+            center + Vec2::new(left_x - join_overlap, top_y),
+            center + Vec2::new(-c2_x_at_top + join_overlap, top_y),
+        ),
+        (
+            center + Vec2::new(c2_x_at_top - join_overlap, bot_y),
+            center + Vec2::new(right_x + join_overlap, bot_y),
+        ),
+        (
+            center + Vec2::new(left_x - join_overlap, bot_y),
+            center + Vec2::new(-c2_x_at_top + join_overlap, bot_y),
+        ),
+    ];
+    for (a, b) in segs {
+        out.line_segment([a, b], stroke);
+    }
+
+    collect_inner_lcd_ring(out, ctx, center, layout, c1);
+}
+
+/// The circle of `radius` about `center`, sampled at 256 points, stroked
+/// only where `keep(x, y)` holds (offsets from the centre): each contiguous
+/// run in cyclic order, a run crossing 0/2π included.
+fn collect_clipped_circle_arcs(
+    out: &mut ShapeList,
+    center: Pos2,
+    radius: f32,
+    stroke: Stroke,
+    keep: &dyn Fn(f32, f32) -> bool,
+) {
+    let line_segments = 256usize;
+    let mut pts: Vec<Pos2> = Vec::with_capacity(line_segments);
+    let mut mask: Vec<bool> = Vec::with_capacity(line_segments);
+    for i in 0..line_segments {
+        let t = i as f32 / line_segments as f32;
+        let a = t * TAU;
+        let (sin_a, cos_a) = a.sin_cos();
+        let x = radius * cos_a;
+        let y = radius * sin_a;
+        pts.push(center + Vec2::new(x, y));
+        mask.push(keep(x, y));
+    }
+
+    // Emit contiguous runs in cyclic order, including a run crossing 0/2π.
+    let mut i = 0usize;
+    while i < line_segments {
+        while i < line_segments && !mask[i] {
+            i += 1;
+        }
+        if i >= line_segments {
+            break;
+        }
+        let start = i;
+        while i < line_segments && mask[i] {
+            i += 1;
+        }
+        let end = i; // exclusive
+
+        let mut run: Vec<Pos2> = pts[start..end].to_vec();
+        if start == 0 && end < line_segments && mask[line_segments - 1] {
+            let mut tail_start = line_segments - 1;
+            while tail_start > 0 && mask[tail_start - 1] {
+                tail_start -= 1;
+            }
+            let mut merged: Vec<Pos2> = pts[tail_start..line_segments].to_vec();
+            merged.extend(run);
+            run = merged;
+        }
+        if run.len() >= 2 {
+            out.add(Shape::line(run, stroke));
+        }
+    }
+}
+
+/// c3: label ring - separator arcs between adjacent labels in each half,
+/// and the MODE / BEAT SYNC labels; SLIP / VINYL and SYNC / MASTER are
+/// painted dynamically over the stream.
+fn collect_inner_lcd_ring(
+    out: &mut ShapeList,
+    ctx: &egui::Context,
+    center: Pos2,
+    layout: &UiScale,
+    c1: f32,
+) {
+    let c3 = c1 * JOG_INNER_LCD_C3_RADIUS_FRAC;
+    let c3_stroke = Stroke::new(layout.sc(JOG_INNER_LCD_C3_ARC_STROKE_REF), COL_SILVER);
+    let arc_seg = JOG_INNER_LCD_C3_ARC_SEGMENTS;
+
+    geometry::inner_lcd_add_c3_arc_span(out, center, c3, 325.0, 349.0, c3_stroke, arc_seg);
+    geometry::inner_lcd_add_c3_arc_span(out, center, c3, 11.0, 35.0, c3_stroke, arc_seg);
+    geometry::inner_lcd_add_c3_arc_span(out, center, c3, 150.0, 162.0, c3_stroke, arc_seg);
+    geometry::inner_lcd_add_c3_arc_span(out, center, c3, 200.0, 212.0, c3_stroke, arc_seg);
+
+    let label_font = FontId::new(
+        layout.sc(JOG_INNER_LCD_LABEL_FONT_REF),
+        FontFamily::Name(cdj3k_emu_platform::fonts::NIMBUS_SANS_BOLD.into()),
+    );
+    let cutout_outline_px = layout.sc(JOG_INNER_LCD_CUTOUT_OUTLINE_REF);
+
+    // Top group - SLIP / VINYL painted dynamically over the stream (see `paint_jog_inner_lcd_corner_labels`).
+    geometry::inner_lcd_push_curved_label(
+        out,
+        ctx,
+        center,
+        c3,
+        0.0,
+        "MODE",
+        label_font.clone(),
+        COL_SILVER,
+        false,
+        cutout_outline_px,
+        false,
+    );
+
+    // Bottom group - SYNC / MASTER painted dynamically.
+    geometry::inner_lcd_push_curved_label(
+        out,
+        ctx,
+        center,
+        c3,
+        180.0,
+        "BEAT SYNC",
+        label_font,
+        COL_SILVER,
+        false,
+        cutout_outline_px,
+        JOG_INNER_LCD_INVERT_BOTTOM_CORNER_LABELS,
     );
 }

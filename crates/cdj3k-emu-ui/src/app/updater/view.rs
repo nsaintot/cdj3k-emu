@@ -75,26 +75,8 @@ fn page(phase: &Phase) -> Page {
             format!("v{} is downloaded", offer.version),
             "Install it with your package manager.".into(),
         ),
-        Phase::Restarting(Step::Closing) => (
-            Some("RESTARTING"),
-            "Closing other windows".into(),
-            "Their emulations stop first.".into(),
-        ),
-        Phase::Restarting(Step::Stopping) => (
-            Some("RESTARTING"),
-            "Stopping the emulation".into(),
-            String::new(),
-        ),
-        Phase::Restarting(Step::Installing(offer)) => (
-            Some("INSTALLING"),
-            format!("Installing v{}", offer.version),
-            install_note(offer.kind).into(),
-        ),
-        Phase::Restarting(Step::HandedOff) | Phase::Exiting => (
-            Some("RESTARTING"),
-            "Restarting".into(),
-            "The emulator restarts on the new version.".into(),
-        ),
+        Phase::Restarting(step) => restart_page(step),
+        Phase::Exiting => restart_page(&Step::HandedOff),
         Phase::Failed { .. } => (
             None,
             "Update failed".into(),
@@ -102,6 +84,32 @@ fn page(phase: &Phase) -> Page {
         ),
     };
     Page { state, title, sub }
+}
+
+/// Header text for a step of the restart.
+fn restart_page(step: &Step) -> (Option<&'static str>, String, String) {
+    match step {
+        Step::Closing => (
+            Some("RESTARTING"),
+            "Closing other windows".into(),
+            "Their emulations stop first.".into(),
+        ),
+        Step::Stopping => (
+            Some("RESTARTING"),
+            "Stopping the emulation".into(),
+            String::new(),
+        ),
+        Step::Installing(offer) => (
+            Some("INSTALLING"),
+            format!("Installing v{}", offer.version),
+            install_note(offer.kind).into(),
+        ),
+        Step::HandedOff => (
+            Some("RESTARTING"),
+            "Restarting".into(),
+            "The emulator restarts on the new version.".into(),
+        ),
+    }
 }
 
 /// This build's version, package format and architecture, e.g.
@@ -225,7 +233,6 @@ fn draw_content(
     pal: &Palette,
     k: f32,
 ) -> Option<Action> {
-    let mut action = None;
     match phase {
         Phase::Checking | Phase::Preparing(_) | Phase::Restarting(_) | Phase::Exiting => {
             ui.vertical_centered(|ui| {
@@ -233,36 +240,13 @@ fn draw_content(
                 ui.spinner();
             });
         }
-        Phase::Available(offer) => {
-            version_rows(ui, offer, pal, k);
-            notes_box(ui, &offer.release_notes, pal, k);
-            release_page_link(ui, &offer.notes, pal, k);
-            if offer.kind.installs_itself() {
-                ui.add_space(6.0 * k);
-                let label = "Automatically download and install updates in the future";
-                if checkbox(ui, auto_install, label, k) {
-                    action = Some(Action::AutoInstall(*auto_install));
-                }
-            }
-        }
+        Phase::Available(offer) => return offer_content(ui, offer, auto_install, pal, k),
         Phase::Ready(offer) => {
             version_rows(ui, offer, pal, k);
             notes_box(ui, &offer.release_notes, pal, k);
             release_page_link(ui, &offer.notes, pal, k);
         }
-        Phase::Downloaded { offer, path } => {
-            version_rows(ui, offer, pal, k);
-            if let Some(cmd) = package_command(offer.kind, path) {
-                ui.add_space(6.0 * k);
-                ui.label(
-                    RichText::new("Install with:")
-                        .size(theme::BODY_FONT * k)
-                        .color(pal.muted),
-                );
-                command_box(ui, &cmd, pal, k);
-            }
-            notes_box(ui, &offer.release_notes, pal, k);
-        }
+        Phase::Downloaded { offer, path } => downloaded_content(ui, offer, path, pal, k),
         Phase::Current {
             latest,
             notes,
@@ -275,34 +259,76 @@ fn draw_content(
             }
             ui.add_space(10.0 * k);
             if checkbox(ui, auto_check, "Check for updates automatically", k) {
-                action = Some(Action::AutoCheck(*auto_check));
+                return Some(Action::AutoCheck(*auto_check));
             }
         }
-        Phase::Downloading { done, total, .. } => {
-            ui.add_space(16.0 * k);
-            progress_bar(ui, *done, *total, pal, k);
-            ui.add_space(8.0 * k);
-            ui.label(
-                RichText::new(format!("{} of {}", megabytes(*done), megabytes(*total)))
-                    .size(theme::BODY_FONT * k)
-                    .color(pal.muted),
-            );
-        }
-        Phase::Failed { message, .. } => {
-            let mut chars = message.chars();
-            let message: String = chars
-                .next()
-                .map(|c| c.to_uppercase().chain(chars).collect())
-                .unwrap_or_default();
-            ui.label(
-                RichText::new(message)
-                    .size(theme::BODY_FONT * k)
-                    .color(pal.danger),
-            );
-        }
+        Phase::Downloading { done, total, .. } => download_progress(ui, *done, *total, pal, k),
+        Phase::Failed { message, .. } => failure(ui, message, pal, k),
         Phase::Unmanaged | Phase::NoPackage { .. } => {}
     }
-    action
+    None
+}
+
+/// An offer: what it is, its notes, and the automatic-install choice where
+/// the package installs itself.
+fn offer_content(
+    ui: &mut egui::Ui,
+    offer: &Offer,
+    auto_install: &mut bool,
+    pal: &Palette,
+    k: f32,
+) -> Option<Action> {
+    version_rows(ui, offer, pal, k);
+    notes_box(ui, &offer.release_notes, pal, k);
+    release_page_link(ui, &offer.notes, pal, k);
+    if offer.kind.installs_itself() {
+        ui.add_space(6.0 * k);
+        let label = "Automatically download and install updates in the future";
+        if checkbox(ui, auto_install, label, k) {
+            return Some(Action::AutoInstall(*auto_install));
+        }
+    }
+    None
+}
+
+/// A downloaded deb or rpm, and the command that installs it.
+fn downloaded_content(ui: &mut egui::Ui, offer: &Offer, path: &Path, pal: &Palette, k: f32) {
+    version_rows(ui, offer, pal, k);
+    if let Some(cmd) = package_command(offer.kind, path) {
+        ui.add_space(6.0 * k);
+        ui.label(
+            RichText::new("Install with:")
+                .size(theme::BODY_FONT * k)
+                .color(pal.muted),
+        );
+        command_box(ui, &cmd, pal, k);
+    }
+    notes_box(ui, &offer.release_notes, pal, k);
+}
+
+fn download_progress(ui: &mut egui::Ui, done: u64, total: u64, pal: &Palette, k: f32) {
+    ui.add_space(16.0 * k);
+    progress_bar(ui, done, total, pal, k);
+    ui.add_space(8.0 * k);
+    ui.label(
+        RichText::new(format!("{} of {}", megabytes(done), megabytes(total)))
+            .size(theme::BODY_FONT * k)
+            .color(pal.muted),
+    );
+}
+
+/// The failure, its first letter capitalised.
+fn failure(ui: &mut egui::Ui, message: &str, pal: &Palette, k: f32) {
+    let mut chars = message.chars();
+    let message: String = chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default();
+    ui.label(
+        RichText::new(message)
+            .size(theme::BODY_FONT * k)
+            .color(pal.danger),
+    );
 }
 
 /// A checkbox; true when it changed.
@@ -335,84 +361,96 @@ fn release_page_link(ui: &mut egui::Ui, url: &str, pal: &Palette, k: f32) {
     }
 }
 
+/// The action bar's two button sizes, and the palette they draw in.
+struct Bar<'a> {
+    size: [f32; 2],
+    wide: [f32; 2],
+    pal: &'a Palette,
+}
+
+impl Bar<'_> {
+    fn size(&self, wide: bool) -> [f32; 2] {
+        if wide {
+            self.wide
+        } else {
+            self.size
+        }
+    }
+
+    fn primary(&self, ui: &mut egui::Ui, wide: bool, label: &str) -> bool {
+        theme::primary(ui, self.size(wide), label, self.pal).clicked()
+    }
+
+    fn secondary(&self, ui: &mut egui::Ui, wide: bool, label: &str) -> bool {
+        theme::secondary(ui, self.size(wide), label, self.pal).clicked()
+    }
+
+    /// A secondary button that closes the window.
+    fn dismiss(&self, ui: &mut egui::Ui, label: &str) -> Option<Action> {
+        self.secondary(ui, false, label).then_some(Action::Dismiss)
+    }
+}
+
 fn draw_buttons(ui: &mut egui::Ui, phase: &Phase, pal: &Palette, k: f32) -> Option<Action> {
     let size = button_size(k);
-    let wide = [size[0] * 1.6, size[1]];
-    let primary = |ui: &mut egui::Ui, wide_: bool, label: &str| {
-        theme::primary(ui, if wide_ { wide } else { size }, label, pal).clicked()
+    let bar = Bar {
+        size,
+        wide: [size[0] * 1.6, size[1]],
+        pal,
     };
-    let secondary = |ui: &mut egui::Ui, wide_: bool, label: &str| {
-        theme::secondary(ui, if wide_ { wide } else { size }, label, pal).clicked()
-    };
-    let mut action = None;
     match phase {
-        Phase::Available(offer) => {
-            let label = if offer.kind.installs_itself() {
-                "Update"
-            } else {
-                "Download"
-            };
-            if primary(ui, false, label) {
-                action = Some(Action::Update(offer.clone()));
-            }
-            if secondary(ui, true, "Remind Me Later") {
-                action = Some(Action::RemindLater);
-            }
-            if secondary(ui, true, "Skip This Version") {
-                action = Some(Action::Skip(offer.version.clone()));
-            }
-        }
+        Phase::Available(offer) => offer_buttons(ui, &bar, offer),
         Phase::Downloading { .. } => {
-            if secondary(ui, false, "Cancel") {
-                action = Some(Action::Cancel);
-            }
-            if secondary(ui, false, "Hide") {
-                action = Some(Action::Dismiss);
-            }
+            let cancel = bar.secondary(ui, false, "Cancel").then_some(Action::Cancel);
+            bar.dismiss(ui, "Hide").or(cancel)
         }
-        Phase::Preparing(_) => {
-            if secondary(ui, false, "Hide") {
-                action = Some(Action::Dismiss);
-            }
-        }
+        Phase::Preparing(_) => bar.dismiss(ui, "Hide"),
         Phase::Downloaded { path, .. } => {
-            if primary(ui, true, "Show in Folder") {
+            if bar.primary(ui, true, "Show in Folder") {
                 cdj3k_emu_platform::desktop::reveal_in_file_manager(path);
             }
-            if secondary(ui, false, "Close") {
-                action = Some(Action::Dismiss);
-            }
+            bar.dismiss(ui, "Close")
         }
         Phase::Ready(offer) => {
-            if primary(ui, true, "Restart Now") {
-                action = Some(Action::Restart(offer.clone()));
-            }
-            if secondary(ui, false, "Later") {
-                action = Some(Action::Later);
-            }
+            let restart = bar
+                .primary(ui, true, "Restart Now")
+                .then(|| Action::Restart(offer.clone()));
+            let later = bar.secondary(ui, false, "Later").then_some(Action::Later);
+            later.or(restart)
         }
         Phase::Failed { offer, .. } => {
-            if primary(ui, false, "Try Again") {
-                action = Some(Action::Retry(offer.clone()));
-            }
-            if secondary(ui, false, "Close") {
-                action = Some(Action::Dismiss);
-            }
+            let retry = bar
+                .primary(ui, false, "Try Again")
+                .then(|| Action::Retry(offer.clone()));
+            bar.dismiss(ui, "Close").or(retry)
         }
         Phase::Unmanaged | Phase::NoPackage { .. } => {
-            if primary(ui, true, "Open Releases") {
+            if bar.primary(ui, true, "Open Releases") {
                 cdj3k_emu_platform::desktop::open_url(cdj3k_emu_update::RELEASES_PAGE);
             }
-            if secondary(ui, false, "Close") {
-                action = Some(Action::Dismiss);
-            }
+            bar.dismiss(ui, "Close")
         }
-        Phase::Checking | Phase::Current { .. } => {
-            if secondary(ui, false, "Close") {
-                action = Some(Action::Dismiss);
-            }
-        }
-        Phase::Restarting(_) | Phase::Exiting => {}
+        Phase::Checking | Phase::Current { .. } => bar.dismiss(ui, "Close"),
+        Phase::Restarting(_) | Phase::Exiting => None,
+    }
+}
+
+/// Take the offer, put it off, or skip it.
+fn offer_buttons(ui: &mut egui::Ui, bar: &Bar<'_>, offer: &Offer) -> Option<Action> {
+    let label = if offer.kind.installs_itself() {
+        "Update"
+    } else {
+        "Download"
+    };
+    let mut action = None;
+    if bar.primary(ui, false, label) {
+        action = Some(Action::Update(offer.clone()));
+    }
+    if bar.secondary(ui, true, "Remind Me Later") {
+        action = Some(Action::RemindLater);
+    }
+    if bar.secondary(ui, true, "Skip This Version") {
+        action = Some(Action::Skip(offer.version.clone()));
     }
     action
 }

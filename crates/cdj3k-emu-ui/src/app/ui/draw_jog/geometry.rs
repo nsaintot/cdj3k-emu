@@ -4,7 +4,7 @@
 
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
-use egui::{Pos2, Rect, Vec2};
+use egui::{emath::Rot2, epaint::TextShape, FontId, Pos2, Rect, Vec2};
 
 use super::super::UiScale;
 use super::*;
@@ -356,7 +356,6 @@ pub(super) fn inner_lcd_push_curved_label(
     cutout_outline_px: f32,
     invert_glyph_orientation: bool,
 ) {
-    let font = font.clone();
     let galley =
         ctx.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER));
     if galley.is_empty() {
@@ -389,56 +388,62 @@ pub(super) fn inner_lcd_push_curved_label(
         .unwrap_or(galley.rect.center().y);
 
     let mut cum = 0.0_f32;
-    for row in &galley.rows {
-        for glyph in &row.glyphs {
-            let adv = glyph.advance_width;
-            if adv < 1.0e-4 {
-                continue;
-            }
-            let mid_s = cum + adv * 0.5;
-            cum += adv;
-            let spread = (mid_s / total_width - 0.5) * arc_span;
-            let theta = angle.to_radians()
-                + if invert_glyph_orientation {
-                    -spread
-                } else {
-                    spread
-                };
-            let orient = theta + if invert_glyph_orientation { PI } else { 0.0 };
-
-            let chr = glyph.chr.to_string();
-            if chr.chars().all(|c| c.is_whitespace()) {
-                continue;
-            }
-
-            let g_galley =
-                ctx.fonts_mut(|f| f.layout_no_wrap(chr, font.clone(), Color32::PLACEHOLDER));
-            if g_galley.is_empty() {
-                continue;
-            }
-            let anchor = Pos2::new(g_galley.mesh_bounds.center().x, row_center_y);
-            let rot = Rot2::from_angle(orient);
-            let base_on_circle = inner_lcd_point_on_ring(center, radius, theta);
-            let galley_pos = snap_to_pixel(base_on_circle - rot * anchor.to_vec2());
-
-            if cutout_stub {
-                for d in [(1.0_f32, 0.0_f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-                    let off = Vec2::new(d.0 * cutout_outline_px, d.1 * cutout_outline_px);
-                    let ts = TextShape::new(galley_pos + off, g_galley.clone(), COL_BTN)
-                        .with_override_text_color(COL_BTN)
-                        .with_angle(orient);
-                    out.add(Shape::Text(ts));
-                }
-                let ts = TextShape::new(galley_pos, g_galley.clone(), label_color)
-                    .with_override_text_color(label_color)
-                    .with_angle(orient);
-                out.add(Shape::Text(ts));
+    for glyph in galley.rows.iter().flat_map(|row| &row.glyphs) {
+        let adv = glyph.advance_width;
+        if adv < 1.0e-4 {
+            continue;
+        }
+        let mid_s = cum + adv * 0.5;
+        cum += adv;
+        let spread = (mid_s / total_width - 0.5) * arc_span;
+        let theta = angle.to_radians()
+            + if invert_glyph_orientation {
+                -spread
             } else {
-                let ts = TextShape::new(galley_pos, g_galley.clone(), label_color)
-                    .with_override_text_color(label_color)
-                    .with_angle(orient);
-                out.add(Shape::Text(ts));
-            }
+                spread
+            };
+        let orient = theta + if invert_glyph_orientation { PI } else { 0.0 };
+
+        let chr = glyph.chr.to_string();
+        if chr.chars().all(|c| c.is_whitespace()) {
+            continue;
+        }
+
+        let g_galley = ctx.fonts_mut(|f| f.layout_no_wrap(chr, font.clone(), Color32::PLACEHOLDER));
+        if g_galley.is_empty() {
+            continue;
+        }
+        let anchor = Pos2::new(g_galley.mesh_bounds.center().x, row_center_y);
+        let rot = Rot2::from_angle(orient);
+        let base_on_circle = inner_lcd_point_on_ring(center, radius, theta);
+        let galley_pos = snap_to_pixel(base_on_circle - rot * anchor.to_vec2());
+        let stub = cutout_stub.then_some(cutout_outline_px);
+        push_turned_glyph(out, galley_pos, g_galley, orient, label_color, stub);
+    }
+}
+
+/// One glyph's text at `pos`, turned to `orient`. With a `stub` width, four
+/// copies offset by it in the button colour go first: the dark rim behind
+/// LCD-coloured glyphs.
+fn push_turned_glyph(
+    out: &mut ShapeList,
+    pos: Pos2,
+    galley: std::sync::Arc<egui::Galley>,
+    orient: f32,
+    color: Color32,
+    stub: Option<f32>,
+) {
+    if let Some(w) = stub {
+        for d in [(1.0_f32, 0.0_f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+            let off = Vec2::new(d.0 * w, d.1 * w);
+            let ts = TextShape::new(pos + off, galley.clone(), COL_BTN)
+                .with_override_text_color(COL_BTN)
+                .with_angle(orient);
+            out.add(Shape::Text(ts));
         }
     }
+    let ts = TextShape::new(pos, galley, color)
+        .with_override_text_color(color)
+        .with_angle(orient);
+    out.add(Shape::Text(ts));
 }

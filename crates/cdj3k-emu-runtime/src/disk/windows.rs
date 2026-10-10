@@ -47,11 +47,7 @@ pub(super) fn open_raw(disk: &PhysicalDisk, _qmp_fd_socket: &Path) -> Result<Raw
         .write(true)
         .open(&disk.bsd_path)
     {
-        return Err(if e.kind() == std::io::ErrorKind::PermissionDenied {
-            UsbError::PermissionDenied(disk.bsd_path.clone())
-        } else {
-            UsbError::Io(e)
-        });
+        return Err(UsbError::opening(&disk.bsd_path, e));
     }
     let chain = serde_json::json!({
         "driver": "raw",

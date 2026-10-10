@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use std::path::Path;
 
-use cdj3k_emu_firmware::cpio::{self, Kind};
+use cdj3k_emu_firmware::cpio::{self, Entry, Kind};
 use flate2::read::GzDecoder;
 
 fn main() {
@@ -28,11 +28,20 @@ fn main() {
         }
     };
 
+    summarize(&entries);
+    let argv: Vec<String> = std::env::args().skip(2).collect();
+    run_flags(&entries, &argv);
+    lookup(&entries, &argv);
+    round_trip(&entries);
+}
+
+/// Counts by kind, mode and owner, and the largest file.
+fn summarize(entries: &[Entry]) {
     let mut kinds: BTreeMap<&str, usize> = BTreeMap::new();
     let mut modes: BTreeMap<u32, usize> = BTreeMap::new();
     let mut owners: BTreeMap<(u32, u32), usize> = BTreeMap::new();
     let mut biggest = (0usize, String::new());
-    for e in &entries {
+    for e in entries {
         let k = match &e.kind {
             Kind::File(d) => {
                 if d.len() > biggest.0 {
@@ -62,51 +71,57 @@ fn main() {
             .collect::<Vec<_>>()
     );
     println!("largest file: {} ({} bytes)", biggest.1, biggest.0);
+}
 
-    // `--ls <prefix>` lists a directory; `--cat <path>` prints a file.
-    let argv: Vec<String> = std::env::args().skip(2).collect();
+/// `--ls <prefix>` lists a directory; `--cat <path>` prints a file.
+fn run_flags(entries: &[Entry], argv: &[String]) {
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
             "--ls" => {
-                let prefix = &argv[i + 1];
-                println!("--- ls {prefix} ---");
-                for e in entries
-                    .iter()
-                    .filter(|e| {
-                        let p = e.path.to_string_lossy().to_string();
-                        p.starts_with(prefix.as_str())
-                    })
-                    .take(40)
-                {
-                    let what = match &e.kind {
-                        Kind::File(d) => format!("file {}", d.len()),
-                        Kind::Dir => "dir".into(),
-                        Kind::Symlink(t) => format!("-> {t}"),
-                        Kind::CharDev { major, minor } => format!("chardev {major}:{minor}"),
-                    };
-                    println!("  {:04o} {} [{what}]", e.mode, e.path.display());
-                }
+                ls(entries, &argv[i + 1]);
                 i += 2;
             }
             "--cat" => {
-                let want = &argv[i + 1];
-                if let Some(Kind::File(d)) = entries
-                    .iter()
-                    .find(|e| e.path == Path::new(want))
-                    .map(|e| e.kind.clone())
-                {
-                    println!("--- cat {want} ---\n{}", String::from_utf8_lossy(&d));
-                }
+                cat(entries, &argv[i + 1]);
                 i += 2;
             }
             _ => i += 1,
         }
     }
+}
 
-    // Any extra arguments are paths to look up.
-    for want in std::env::args().skip(2).filter(|a| a.starts_with('/')) {
-        match entries.iter().find(|e| e.path == Path::new(&want)) {
+fn ls(entries: &[Entry], prefix: &str) {
+    println!("--- ls {prefix} ---");
+    for e in entries
+        .iter()
+        .filter(|e| e.path.to_string_lossy().starts_with(prefix))
+        .take(40)
+    {
+        let what = match &e.kind {
+            Kind::File(d) => format!("file {}", d.len()),
+            Kind::Dir => "dir".into(),
+            Kind::Symlink(t) => format!("-> {t}"),
+            Kind::CharDev { major, minor } => format!("chardev {major}:{minor}"),
+        };
+        println!("  {:04o} {} [{what}]", e.mode, e.path.display());
+    }
+}
+
+fn cat(entries: &[Entry], want: &str) {
+    if let Some(Kind::File(d)) = entries
+        .iter()
+        .find(|e| e.path == Path::new(want))
+        .map(|e| &e.kind)
+    {
+        println!("--- cat {want} ---\n{}", String::from_utf8_lossy(d));
+    }
+}
+
+/// Any extra arguments that are absolute paths are looked up.
+fn lookup(entries: &[Entry], argv: &[String]) {
+    for want in argv.iter().filter(|a| a.starts_with('/')) {
+        match entries.iter().find(|e| e.path == Path::new(want)) {
             Some(e) => println!(
                 "lookup {want}: {:?} mode {:04o} uid {} gid {}",
                 match &e.kind {
@@ -122,9 +137,11 @@ fn main() {
             None => println!("lookup {want}: ABSENT"),
         }
     }
+}
 
-    // Re-encode and re-parse: proves the codec is lossless on a real archive.
-    let re = cpio::write(&entries);
+/// Re-encode and re-parse: proves the codec is lossless on a real archive.
+fn round_trip(entries: &[Entry]) {
+    let re = cpio::write(entries);
     match cpio::read(&re) {
         Ok(again) if again == entries => {
             println!("round trip: OK ({} bytes re-encoded)", re.len())
@@ -135,11 +152,8 @@ fn main() {
                 again.len(),
                 entries.len()
             );
-            for (a, b) in entries.iter().zip(&again) {
-                if a != b {
-                    println!("  first difference at {}", a.path.display());
-                    break;
-                }
+            if let Some((a, _)) = entries.iter().zip(&again).find(|(a, b)| a != b) {
+                println!("  first difference at {}", a.path.display());
             }
         }
         Err(e) => println!("round trip: RE-PARSE FAILED {e}"),

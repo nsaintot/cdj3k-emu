@@ -36,6 +36,36 @@ pub(super) fn draw_main_lcd(
     let display_rounding = (bezel_rounding - bezel_px).max(2.0);
     p.rect_filled(display_rect, display_rounding, COL_LCD_BG);
 
+    paint_lcd_content(app, p, layout, display_rect);
+
+    // Touch is handled by the popout viewport when the LCD is detached.
+    if !app.main_screen_popped {
+        let touch = capture_lcd_touch(ui, display_rect, "lcd_touch");
+        app.apply_lcd_touch(touch);
+    }
+
+    draw_bordered_rect_section(
+        p,
+        display_rect,
+        None,
+        None,
+        DoubleBorderSpec::from_strokes_with_gap(
+            StrokeSpec {
+                width: layout.sc(LCD_BEZEL_REF),
+                color: COL_SILVER,
+            },
+            StrokeSpec {
+                width: layout.sc(LCD_BEZEL_REF),
+                color: COL_SILVER,
+            },
+            layout.sc(1.0),
+        ),
+    );
+}
+
+/// What the glass shows: the display stream, dimmed while it is not
+/// connected, or a placeholder while it connects or is popped out.
+fn paint_lcd_content(app: &CdjApp, p: &egui::Painter, layout: &UiScale, display_rect: Rect) {
     let uv_full = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
     if app.main_screen_popped {
         p.text(
@@ -46,7 +76,7 @@ pub(super) fn draw_main_lcd(
             Color32::from_rgb(60, 60, 70),
         );
     } else if !app.lcds_blanked {
-        if let Some(tex_id) = app.display_tex_id {
+        if let Some(tex_id) = app.textures.main_id {
             if app.display_stream.is_connected() {
                 p.image(tex_id, display_rect, uv_full, Color32::WHITE);
             } else {
@@ -68,46 +98,33 @@ pub(super) fn draw_main_lcd(
             );
         }
     }
+}
 
-    // Touch is handled by the popout viewport when the LCD is detached.
-    if !app.main_screen_popped {
-        let lcd_resp = ui.interact(
-            display_rect,
-            ui.id().with("lcd_touch"),
-            egui::Sense::click_and_drag(),
-        );
-        app.apply_lcd_touch(crate::app::LcdTouchCapture {
-            hovered: lcd_resp.hovered(),
-            scroll_y: crate::app::scroll::raw_delta(ui).y,
-            pointer_moved: ui.input(|i| i.pointer.delta().length_sq() > 0.0),
-            is_down: lcd_resp.is_pointer_button_down_on(),
-            ctrl: ui.input(|i| i.modifiers.ctrl),
-            right_down: ui.input(|i| {
-                i.pointer.button_down(egui::PointerButton::Secondary)
-                    && i.pointer
-                        .hover_pos()
-                        .is_some_and(|p| display_rect.contains(p))
-            }),
-            interact_pos: lcd_resp.interact_pointer_pos(),
-            display_rect,
-        });
-    }
-
-    draw_bordered_rect_section(
-        p,
+/// The pointer over the glass at `display_rect`, as the touch encoder takes it;
+/// `id` keys the interaction.
+pub(in crate::app) fn capture_lcd_touch(
+    ui: &mut egui::Ui,
+    display_rect: Rect,
+    id: &str,
+) -> crate::app::LcdTouchCapture {
+    let lcd_resp = ui.interact(
         display_rect,
-        None,
-        None,
-        DoubleBorderSpec::from_strokes_with_gap(
-            StrokeSpec {
-                width: layout.sc(LCD_BEZEL_REF),
-                color: COL_SILVER,
-            },
-            StrokeSpec {
-                width: layout.sc(LCD_BEZEL_REF),
-                color: COL_SILVER,
-            },
-            layout.sc(1.0),
-        ),
+        ui.id().with(id),
+        egui::Sense::click_and_drag(),
     );
+    crate::app::LcdTouchCapture {
+        hovered: lcd_resp.hovered(),
+        scroll_y: crate::app::scroll::raw_delta(ui).y,
+        pointer_moved: ui.input(|i| i.pointer.delta().length_sq() > 0.0),
+        is_down: lcd_resp.is_pointer_button_down_on(),
+        ctrl: ui.input(|i| i.modifiers.ctrl),
+        right_down: ui.input(|i| {
+            i.pointer.button_down(egui::PointerButton::Secondary)
+                && i.pointer
+                    .hover_pos()
+                    .is_some_and(|p| display_rect.contains(p))
+        }),
+        interact_pos: lcd_resp.interact_pointer_pos(),
+        display_rect,
+    }
 }

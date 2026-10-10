@@ -21,6 +21,8 @@ pub mod winbridge;
 mod windows_helper;
 #[cfg(target_os = "windows")]
 mod windows_net;
+#[cfg(target_os = "windows")]
+mod windows_tap;
 
 #[cfg(target_os = "macos")]
 #[path = "macos.rs"]

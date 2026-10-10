@@ -132,10 +132,18 @@ impl<T> DragDropItem for Keyed<'_, T> {
     }
 }
 
+/// Where a row sits: its width, and whether it is the first row or being
+/// dragged.
+struct RowFrame {
+    width: f32,
+    first: bool,
+    dragged: bool,
+}
+
 impl Table<'_> {
     /// Draw the table into the top of `area`, as tall as its rows or `area`.
-    /// `key` identifies an item from one frame to the next. Returns a finished drag as (from,
-    /// to), `to` being the item's index once moved.
+    /// `key` identifies an item from one frame to the next. Returns a finished
+    /// drag as (from, to), `to` being the item's index once moved.
     pub fn show<T>(
         &self,
         ui: &mut Ui,
@@ -153,68 +161,22 @@ impl Table<'_> {
             area.min,
             Vec2::new(area.width(), content_h.min(area.height())),
         );
-        let round = theme::ROUND * k;
         let p = ui.painter().clone();
-        p.rect_filled(table, round, pal.plate);
-
-        let head = Rect::from_min_size(table.min, Vec2::new(table.width(), head_h));
-        p.rect_filled(
-            head,
-            egui::epaint::CornerRadiusF32 {
-                nw: round,
-                ne: round,
-                sw: 0.0,
-                se: 0.0,
-            },
-            pal.field,
-        );
-        hairline(&p, head.left_bottom(), head.right_bottom(), pal.line, k);
-        let widths: Vec<Width> = self.columns.iter().map(|c| c.width).collect();
-        let inner = |r: Rect| columns(r.shrink2(Vec2::new(self.pad * k, 0.0)), &widths, k);
-        let micro = egui::FontId::proportional(theme::MICRO_FONT * k);
-        for (col, cell) in self.columns.iter().zip(inner(head)) {
-            tracked(
-                &p,
-                cell.left_center(),
-                col.label,
-                &micro,
-                pal.dim,
-                HEAD_TRACK * k,
-            );
-        }
+        let head = self.draw_head(&p, table, pal);
 
         let body = Rect::from_min_max(Pos2::new(table.left(), head.bottom()), table.max);
         let width = body.width();
-        // One row: its plate, the rule above it, then the caller's content.
         let mut row = |ui: &mut Ui,
                        first: bool,
                        dragged: bool,
                        handle: Option<Handle<'_>>,
                        line: Line<'_, T>| {
-            let rect = Rect::from_min_size(ui.cursor().min, Vec2::new(width, row_h));
-            ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
-                ui.set_min_size(rect.size());
-                let p = ui.painter();
-                p.rect_filled(rect, 0.0, pal.plate);
-                if dragged {
-                    p.rect_stroke(
-                        rect,
-                        0.0,
-                        Stroke::new(theme::HAIRLINE * k, pal.line_strong),
-                        egui::StrokeKind::Inside,
-                    );
-                } else if !first {
-                    hairline(p, rect.left_top(), rect.right_top(), pal.line, k);
-                }
-                let mut r = Row {
-                    ui,
-                    rect,
-                    cells: inner(rect),
-                    dragged,
-                    handle,
-                };
-                draw(&mut r, line);
-            });
+            let frame = RowFrame {
+                width,
+                first,
+                dragged,
+            };
+            self.draw_row(ui, frame, handle, line, pal, &mut draw);
         };
 
         let mut moved = None;
@@ -249,11 +211,91 @@ impl Table<'_> {
         });
         p.rect_stroke(
             table,
-            round,
+            theme::ROUND * k,
             Stroke::new(theme::HAIRLINE * k, pal.line),
             egui::StrokeKind::Middle,
         );
         moved
+    }
+
+    /// The table's plate, and the head band across its top with the column
+    /// labels. Returns the head band.
+    fn draw_head(&self, p: &Painter, table: Rect, pal: &Palette) -> Rect {
+        let k = self.k;
+        let round = theme::ROUND * k;
+        p.rect_filled(table, round, pal.plate);
+        let head = Rect::from_min_size(table.min, Vec2::new(table.width(), self.head_h * k));
+        p.rect_filled(
+            head,
+            egui::epaint::CornerRadiusF32 {
+                nw: round,
+                ne: round,
+                sw: 0.0,
+                se: 0.0,
+            },
+            pal.field,
+        );
+        hairline(p, head.left_bottom(), head.right_bottom(), pal.line, k);
+        let micro = egui::FontId::proportional(theme::MICRO_FONT * k);
+        for (col, cell) in self.columns.iter().zip(self.cells(head)) {
+            tracked(
+                p,
+                cell.left_center(),
+                col.label,
+                &micro,
+                pal.dim,
+                HEAD_TRACK * k,
+            );
+        }
+        head
+    }
+
+    /// `r` cut into the columns, inside the side padding.
+    fn cells(&self, r: Rect) -> Vec<Rect> {
+        let widths: Vec<Width> = self.columns.iter().map(|c| c.width).collect();
+        columns(
+            r.shrink2(Vec2::new(self.pad * self.k, 0.0)),
+            &widths,
+            self.k,
+        )
+    }
+
+    /// One row at the cursor: its plate, the rule above it, then the caller's
+    /// content.
+    fn draw_row<T>(
+        &self,
+        ui: &mut Ui,
+        frame: RowFrame,
+        handle: Option<Handle<'_>>,
+        line: Line<'_, T>,
+        pal: &Palette,
+        draw: &mut impl FnMut(&mut Row, Line<'_, T>),
+    ) {
+        let k = self.k;
+        let rect = Rect::from_min_size(ui.cursor().min, Vec2::new(frame.width, self.row_h * k));
+        ui.scope_builder(UiBuilder::new().max_rect(rect), |ui| {
+            ui.set_min_size(rect.size());
+            let p = ui.painter();
+            p.rect_filled(rect, 0.0, pal.plate);
+            if frame.dragged {
+                p.rect_stroke(
+                    rect,
+                    0.0,
+                    Stroke::new(theme::HAIRLINE * k, pal.line_strong),
+                    egui::StrokeKind::Inside,
+                );
+            } else if !frame.first {
+                hairline(p, rect.left_top(), rect.right_top(), pal.line, k);
+            }
+            let mut r = Row {
+                ui,
+                rect,
+                cells: self.cells(rect),
+                dragged: frame.dragged,
+                handle,
+            };
+            draw(&mut r, line);
+        });
     }
 }
 

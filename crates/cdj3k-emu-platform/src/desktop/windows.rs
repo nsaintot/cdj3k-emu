@@ -250,40 +250,67 @@ unsafe fn caption_hit(hwnd: HWND, lparam: LPARAM) -> u32 {
     // SAFETY: as above.
     let zoomed = unsafe { IsZoomed(hwnd) }.as_bool();
     if !zoomed {
-        let edge = frame_thickness(hwnd);
-        let corner = edge * 2;
-        let (w, h) = (client.right, client.bottom);
-        let left = pt.x < edge;
-        let right = pt.x >= w - edge;
-        let top = pt.y < edge;
-        let bottom = pt.y >= h - edge;
-        let near_left = pt.x < corner;
-        let near_right = pt.x >= w - corner;
-        let near_top = pt.y < corner;
-        let near_bottom = pt.y >= h - corner;
-        let hit = if (top && near_left) || (left && near_top) {
-            Some(HTTOPLEFT)
-        } else if (top && near_right) || (right && near_top) {
-            Some(HTTOPRIGHT)
-        } else if (bottom && near_left) || (left && near_bottom) {
-            Some(HTBOTTOMLEFT)
-        } else if (bottom && near_right) || (right && near_bottom) {
-            Some(HTBOTTOMRIGHT)
-        } else if top {
-            Some(HTTOP)
-        } else if bottom {
-            Some(HTBOTTOM)
-        } else if left {
-            Some(HTLEFT)
-        } else if right {
-            Some(HTRIGHT)
-        } else {
-            None
-        };
-        if let Some(hit) = hit {
+        if let Some(hit) = border_hit(pt, &client, frame_thickness(hwnd)) {
             return hit;
         }
     }
+    strip_hit(pt)
+}
+
+/// One side of the client area, as seen from a point: on its resize border,
+/// and near enough to it to make a corner of the border along the other axis.
+#[derive(Clone, Copy)]
+struct Side {
+    on: bool,
+    near: bool,
+}
+
+impl Side {
+    /// The left or top side, for the point's coordinate along that axis.
+    fn low(v: i32, edge: i32) -> Self {
+        Self {
+            on: v < edge,
+            near: v < edge * 2,
+        }
+    }
+
+    /// The right or bottom side, `len` being the client's extent.
+    fn high(v: i32, len: i32, edge: i32) -> Self {
+        Self {
+            on: v >= len - edge,
+            near: v >= len - edge * 2,
+        }
+    }
+
+    /// Whether the point is in the corner this side shares with `other`.
+    fn corner(self, other: Side) -> bool {
+        (self.on && other.near) || (other.on && self.near)
+    }
+}
+
+/// The resize border a client point is on, `edge` pixels thick and twice that
+/// along each side at a corner; corners first.
+fn border_hit(pt: POINT, client: &RECT, edge: i32) -> Option<u32> {
+    let left = Side::low(pt.x, edge);
+    let right = Side::high(pt.x, client.right, edge);
+    let top = Side::low(pt.y, edge);
+    let bottom = Side::high(pt.y, client.bottom, edge);
+    [
+        (top.corner(left), HTTOPLEFT),
+        (top.corner(right), HTTOPRIGHT),
+        (bottom.corner(left), HTBOTTOMLEFT),
+        (bottom.corner(right), HTBOTTOMRIGHT),
+        (top.on, HTTOP),
+        (bottom.on, HTBOTTOM),
+        (left.on, HTLEFT),
+        (right.on, HTRIGHT),
+    ]
+    .into_iter()
+    .find_map(|(on, hit)| on.then_some(hit))
+}
+
+/// The caption on the strip's empty stretches, the client everywhere else.
+fn strip_hit(pt: POINT) -> u32 {
     let inside = |r: &RECT| pt.x >= r.left && pt.x < r.right && pt.y >= r.top && pt.y < r.bottom;
     let caption = CAPTION.lock().unwrap_or_else(|e| e.into_inner());
     match caption.as_ref() {

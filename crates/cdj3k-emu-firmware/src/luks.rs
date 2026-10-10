@@ -8,6 +8,7 @@
 //! PBKDF2 slot key → AES-XTS or AES-CBC decrypt key material →
 //! AFC merge → verify master key digest → decrypt payload.
 
+use std::fmt::Write as _;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -316,142 +317,163 @@ fn decrypt_upd_at(
     decrypt_payload(&mut r, out_path, &header, &master_key).map_err(LuksError::Io)
 }
 
+/// The master key of the first active slot `keyfile` opens.
+///
+/// Every attempt is traced into the [`LuksError::NoValidKeySlot`] diagnostic,
+/// which the firmware wizard shows when the .UPD does not decrypt (wrong key,
+/// no active slot, unreadable key material).
 fn try_key_slots<R: Read + Seek>(
     r: &mut R,
     h: &Luks1Header,
     keyfile: &[u8],
 ) -> Result<Vec<u8>, LuksError> {
     let mut diag = String::new();
-
-    // Diagnostic trace of slot-decryption attempts.  Accumulated into `diag`
-    // and surfaced in `LuksError::NoActiveSlot` so the firmware wizard can
-    // show users exactly why their .UPD didn't decrypt (wrong key, no active
-    // slot, etc.).  Not mirrored to stderr — the wizard owns the channel.
-    macro_rules! d {
-        ($($arg:tt)*) => {{
-            let line = format!($($arg)*);
-            diag.push_str(&line);
-            diag.push('\n');
-        }};
-    }
-
     let active_count = h.key_slots.iter().filter(|s| s.active).count();
-    d!("cipher={}-{}  hash={}  key_bytes={}  payload_sector={}  active_slots={}  key_input_bytes={}",
-        h.cipher_name, h.cipher_mode, h.hash_spec,
-        h.key_bytes, h.payload_offset, active_count, keyfile.len());
+    let _ = writeln!(
+        diag,
+        "cipher={}-{}  hash={}  key_bytes={}  payload_sector={}  active_slots={}  key_input_bytes={}",
+        h.cipher_name,
+        h.cipher_mode,
+        h.hash_spec,
+        h.key_bytes,
+        h.payload_offset,
+        active_count,
+        keyfile.len()
+    );
 
-    for (i, slot) in h.key_slots.iter().enumerate() {
-        if !slot.active {
-            continue;
+    for (i, slot) in h.key_slots.iter().enumerate().filter(|(_, s)| s.active) {
+        if let Some(mk) = open_slot(r, h, i, slot, keyfile, &mut diag) {
+            return Ok(mk);
         }
+    }
+    Err(LuksError::NoValidKeySlot(diag))
+}
 
-        let km_size = h.key_bytes as usize * slot.stripes as usize;
-        d!(
-            "slot {i}: iters={}  km_sector={}  stripes={}  km_bytes={}",
-            slot.iterations,
-            slot.key_material_offset,
-            slot.stripes,
-            km_size
-        );
-        d!("slot {i}: keyfile_len={}", keyfile.len());
+/// Read slot `i`'s key material and try every keyfile candidate on it.
+fn open_slot<R: Read + Seek>(
+    r: &mut R,
+    h: &Luks1Header,
+    i: usize,
+    slot: &KeySlot,
+    keyfile: &[u8],
+    diag: &mut String,
+) -> Option<Vec<u8>> {
+    let km_size = h.key_bytes as usize * slot.stripes as usize;
+    let _ = writeln!(
+        diag,
+        "slot {i}: iters={}  km_sector={}  stripes={}  km_bytes={}",
+        slot.iterations, slot.key_material_offset, slot.stripes, km_size
+    );
+    let _ = writeln!(diag, "slot {i}: keyfile_len={}", keyfile.len());
 
-        // 1. PBKDF2 (hash from header): keyfile → slot key (refined in brute-force below).
-        let mut slot_key = vec![0u8; h.key_bytes as usize];
-        if pbkdf2_derive(
-            &h.hash_spec,
-            keyfile,
-            &slot.salt,
-            slot.iterations,
-            &mut slot_key,
-        )
-        .is_err()
-        {
-            d!("slot {i}: PBKDF2 failed (invalid key length?)");
-            continue;
-        }
-
-        // 2. Read raw key material.
-        let km_offset = slot.key_material_offset as u64 * LUKS_SECTOR;
-        if let Err(e) = r.seek(SeekFrom::Start(km_offset)) {
-            d!("slot {i}: seek to {km_offset} failed: {e}");
-            continue;
-        }
-        let mut km = vec![0u8; km_size];
-        if let Err(e) = r.read_exact(&mut km) {
-            d!("slot {i}: read {km_size} bytes failed: {e}");
-            continue;
-        }
-        // Brute-force: (keyfile variant) × (sector_start) × (key_order) = up to 8 combinations.
-        let km_sec_abs = slot.key_material_offset as u64;
-        let mode_lc = h.cipher_mode.to_lowercase();
-
-        // Build candidate keyfile inputs: raw bytes, and base64-decoded if the file looks like text.
-        let mut kf_candidates: Vec<(&'static str, Vec<u8>)> = vec![("raw", keyfile.to_vec())];
-        if let Ok(text) = std::str::from_utf8(keyfile) {
-            let stripped: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-            if let Some(decoded) = try_base64(&stripped) {
-                d!(
-                    "slot {i}: also trying base64-decoded keyfile ({} bytes)",
-                    decoded.len()
-                );
-                kf_candidates.push(("b64dec", decoded));
-            }
-        }
-
-        // cryptsetup's LUKS_decrypt_from_storage calls crypt_storage_decrypt(s, 0, ...)
-        // so the XTS IV always starts at sector 0 regardless of km_off.
-        // We still probe both 0 and km_sec_abs as a fallback for non-standard images.
-        for (_kf_label, kf) in &kf_candidates {
-            let mut sk = vec![0u8; h.key_bytes as usize];
-            if pbkdf2_derive(&h.hash_spec, kf, &slot.salt, slot.iterations, &mut sk).is_err() {
-                continue;
-            }
-            for &sec in &[0u64, km_sec_abs] {
-                for &swap in &[false, true] {
-                    let (s1, s2) = if swap {
-                        (&sk[32..], &sk[..32])
-                    } else {
-                        (&sk[..32], &sk[32..])
-                    };
-                    if let (Ok(c1), Ok(c2)) =
-                        (Aes256::new_from_slice(s1), Aes256::new_from_slice(s2))
-                    {
-                        let xts_v = Xts128::new(c1, c2);
-                        let mut km_v = km.clone();
-                        for (idx, chunk) in km_v.chunks_mut(512).enumerate() {
-                            xts_v.decrypt_sector(chunk, xts_tweak(sec + idx as u64, &mode_lc));
-                        }
-                        let mk_v = af_merge(
-                            &km_v,
-                            h.key_bytes as usize,
-                            slot.stripes as usize,
-                            &h.hash_spec,
-                        );
-                        let mut ck = vec![0u8; 20];
-                        let ok = pbkdf2_derive(
-                            &h.hash_spec,
-                            &mk_v,
-                            &h.mk_digest_salt,
-                            h.mk_digest_iter,
-                            &mut ck,
-                        )
-                        .is_ok()
-                            && ck[..] == h.mk_digest[..];
-                        if ok {
-                            d!("slot {i}: digest OK");
-                            return Ok(mk_v);
-                        }
-                    }
-                }
-            }
-        }
-
-        d!("slot {i}: digest MISMATCH");
-        d!("  expected: {:02x?}", h.mk_digest);
-        d!("  computed: (none matched)");
+    let km_offset = slot.key_material_offset as u64 * LUKS_SECTOR;
+    if let Err(e) = r.seek(SeekFrom::Start(km_offset)) {
+        let _ = writeln!(diag, "slot {i}: seek to {km_offset} failed: {e}");
+        return None;
+    }
+    let mut km = vec![0u8; km_size];
+    if let Err(e) = r.read_exact(&mut km) {
+        let _ = writeln!(diag, "slot {i}: read {km_size} bytes failed: {e}");
+        return None;
     }
 
-    Err(LuksError::NoValidKeySlot(diag))
+    for kf in keyfile_candidates(keyfile, i, diag) {
+        if let Some(mk) = try_keyfile(h, slot, &km, &kf) {
+            let _ = writeln!(diag, "slot {i}: digest OK");
+            return Some(mk);
+        }
+    }
+
+    let _ = writeln!(diag, "slot {i}: digest MISMATCH");
+    let _ = writeln!(diag, "  expected: {:02x?}", h.mk_digest);
+    let _ = writeln!(diag, "  computed: (none matched)");
+    None
+}
+
+/// The keyfile as given, then base64-decoded when it is text that decodes.
+fn keyfile_candidates(keyfile: &[u8], i: usize, diag: &mut String) -> Vec<Vec<u8>> {
+    let mut candidates = vec![keyfile.to_vec()];
+    if let Ok(text) = std::str::from_utf8(keyfile) {
+        let stripped: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        if let Some(decoded) = try_base64(&stripped) {
+            let _ = writeln!(
+                diag,
+                "slot {i}: also trying base64-decoded keyfile ({} bytes)",
+                decoded.len()
+            );
+            candidates.push(decoded);
+        }
+    }
+    candidates
+}
+
+/// The master key keyfile `kf` recovers from slot material `km`, if any.
+///
+/// cryptsetup's LUKS_decrypt_from_storage calls crypt_storage_decrypt(s, 0, ...)
+/// so the XTS IV always starts at sector 0 regardless of km_off.  Numbering
+/// from the material's own sector, and the key halves swapped, are probed too
+/// for non-standard images.
+fn try_keyfile(h: &Luks1Header, slot: &KeySlot, km: &[u8], kf: &[u8]) -> Option<Vec<u8>> {
+    let mut sk = vec![0u8; h.key_bytes as usize];
+    pbkdf2_derive(&h.hash_spec, kf, &slot.salt, slot.iterations, &mut sk).ok()?;
+    let mode_lc = h.cipher_mode.to_lowercase();
+    let variants = [0u64, slot.key_material_offset as u64]
+        .into_iter()
+        .flat_map(|first_sector| [(first_sector, false), (first_sector, true)]);
+    for (first_sector, swap) in variants {
+        let (data_key, tweak_key) = if swap {
+            (&sk[32..], &sk[..32])
+        } else {
+            (&sk[..32], &sk[32..])
+        };
+        let Some(material) = xts_decrypt(km, data_key, tweak_key, first_sector, &mode_lc) else {
+            continue;
+        };
+        let mk = af_merge(
+            &material,
+            h.key_bytes as usize,
+            slot.stripes as usize,
+            &h.hash_spec,
+        );
+        if digest_matches(h, &mk) {
+            return Some(mk);
+        }
+    }
+    None
+}
+
+/// `km` XTS-decrypted with AES-256 halves, sectors numbered from
+/// `first_sector`; `None` when a half is not a 32-byte key.
+fn xts_decrypt(
+    km: &[u8],
+    data_key: &[u8],
+    tweak_key: &[u8],
+    first_sector: u64,
+    mode_lc: &str,
+) -> Option<Vec<u8>> {
+    let xts = Xts128::new(
+        Aes256::new_from_slice(data_key).ok()?,
+        Aes256::new_from_slice(tweak_key).ok()?,
+    );
+    let mut material = km.to_vec();
+    for (idx, chunk) in material.chunks_mut(512).enumerate() {
+        xts.decrypt_sector(chunk, xts_tweak(first_sector + idx as u64, mode_lc));
+    }
+    Some(material)
+}
+
+/// Whether `mk` is the master key the header's mk-digest names.
+fn digest_matches(h: &Luks1Header, mk: &[u8]) -> bool {
+    let mut check = [0u8; 20];
+    pbkdf2_derive(
+        &h.hash_spec,
+        mk,
+        &h.mk_digest_salt,
+        h.mk_digest_iter,
+        &mut check,
+    )
+    .is_ok()
+        && check == h.mk_digest
 }
 
 fn cstring(bytes: &[u8]) -> String {
@@ -460,26 +482,4 @@ fn cstring(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `OffsetReader` hides `base` from the parser: an absolute seek lands
-    /// `base` bytes further into the file and reports the shifted position.
-    #[test]
-    fn offset_reader_shifts_absolute_seeks() {
-        let data: Vec<u8> = (0..=255u8).collect();
-        let mut r = OffsetReader {
-            inner: std::io::Cursor::new(data),
-            base: 16,
-        };
-
-        assert_eq!(r.seek(SeekFrom::Start(0)).unwrap(), 0);
-        let mut buf = [0u8; 4];
-        r.read_exact(&mut buf).unwrap();
-        assert_eq!(buf, [16, 17, 18, 19], "offset 0 reads the byte at base");
-
-        assert_eq!(r.seek(SeekFrom::Start(32)).unwrap(), 32);
-        r.read_exact(&mut buf).unwrap();
-        assert_eq!(buf, [48, 49, 50, 51]);
-    }
-}
+mod tests;

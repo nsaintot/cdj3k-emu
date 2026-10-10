@@ -4,6 +4,23 @@
 use super::*;
 use crate::app::table;
 
+/// The status pill at the title's right end.
+const PILL_H: f32 = 22.0;
+const PILL_PAD: f32 = 8.0;
+/// The ORDER, BOOT SCRIPT and LIBRARIES box.
+const DL_H: f32 = 50.0;
+const DL_PAD: f32 = 14.0;
+const DL_VALUE_FONT: f32 = 12.0;
+/// The details box, one row per detail.
+const META_ROW: f32 = 24.0;
+const META_PAD: f32 = 8.0;
+const META_LABEL: f32 = 110.0;
+const SECTION_GAP: f32 = 12.0;
+/// The journal.
+const LOG_FONT: f32 = 11.0;
+const LOG_PAD: f32 = 12.0;
+const LOG_BOTTOM: f32 = 16.0;
+
 pub(super) fn draw_log(ui: &mut egui::Ui, page: &mut ModsPage) -> Option<ModsAction> {
     let Some(log) = page.log.clone() else {
         return Some(ModsAction::CloseLog);
@@ -11,25 +28,7 @@ pub(super) fn draw_log(ui: &mut egui::Ui, page: &mut ModsPage) -> Option<ModsAct
     let k = k_of(ui.max_rect());
     let pal = theme::palette(ui.ctx());
     let area = ui.max_rect();
-
-    // The title, the DEV chip after it, and the status pill at the right end;
-    // the title is shortened to fit between them.
-    let (pill_text, pill_col) = pill(&log, pal);
-    let font = FontId::proportional(STATUS_FONT * k);
-    let title_font = FontId::proportional(theme::TITLE_FONT * k);
-    let (title, title_w, pw) = {
-        let p = ui.painter();
-        let pw = text_width(p, &pill_text, &font, STATUS_TRACK * k) + 2.0 * PILL_PAD * k;
-        let chip_w = if log.dev {
-            chip_width(p, "DEV", k) + 10.0 * k
-        } else {
-            0.0
-        };
-        let room = area.width() - 2.0 * theme::GUTTER * k - pw - chip_w - 16.0 * k;
-        let title = elide(p, &log.name, &title_font, room);
-        let title_w = text_width(p, &title, &title_font, 0.0);
-        (title, title_w, pw)
-    };
+    let (title, title_w, pill_w) = fit_title(ui.painter(), area, &log, pal, k);
     let head = Header {
         slot: Some(page.slot),
         model: page.model,
@@ -42,7 +41,48 @@ pub(super) fn draw_log(ui: &mut egui::Ui, page: &mut ModsPage) -> Option<ModsAct
     };
     let body = draw_header(ui, &head).body;
     let (space, bar) = footer_split(body, k);
-    let p = ui.painter();
+    title_marks(ui.painter(), area, &log, title_w, pill_w, pal, k);
+    let meta = draw_sections(ui, space, &log, pal, k);
+    log_footer(ui, bar, &log, pal, k).or(meta)
+}
+
+/// The title, the DEV chip after it, and the status pill at the right end:
+/// the title shortened to fit between them. Returns the title, its width and
+/// the pill's width.
+fn fit_title(
+    p: &egui::Painter,
+    area: Rect,
+    log: &LogView,
+    pal: &Palette,
+    k: f32,
+) -> (String, f32, f32) {
+    let (pill_text, _) = pill(log, pal);
+    let font = FontId::proportional(STATUS_FONT * k);
+    let title_font = FontId::proportional(theme::TITLE_FONT * k);
+    let pw = text_width(p, &pill_text, &font, STATUS_TRACK * k) + 2.0 * PILL_PAD * k;
+    let chip_w = if log.dev {
+        chip_width(p, "DEV", k) + 10.0 * k
+    } else {
+        0.0
+    };
+    let room = area.width() - 2.0 * theme::GUTTER * k - pw - chip_w - 16.0 * k;
+    let title = elide(p, &log.name, &title_font, room);
+    let title_w = text_width(p, &title, &title_font, 0.0);
+    (title, title_w, pw)
+}
+
+/// The DEV chip after the title, `title_w` wide, and the status pill, `pw`
+/// wide, at the right end of the title line.
+fn title_marks(
+    p: &egui::Painter,
+    area: Rect,
+    log: &LogView,
+    title_w: f32,
+    pw: f32,
+    pal: &Palette,
+    k: f32,
+) {
+    let (pill_text, pill_col) = pill(log, pal);
     let title_cy = area.top() + (theme::TOPBAR_H + 20.0) * k + theme::TITLE_FONT * k * 0.56;
     if log.dev {
         chip(
@@ -71,17 +111,27 @@ pub(super) fn draw_log(ui: &mut egui::Ui, page: &mut ModsPage) -> Option<ModsAct
         p,
         Pos2::new(pill_rect.left() + PILL_PAD * k, pill_rect.center().y),
         &pill_text,
-        &font,
+        &FontId::proportional(STATUS_FONT * k),
         pill_col,
         STATUS_TRACK * k,
     );
+}
 
+/// The details box, the facts box and the journal, top to bottom in
+/// `space`. Returns a link clicked in the details.
+fn draw_sections(
+    ui: &mut egui::Ui,
+    space: Rect,
+    log: &LogView,
+    pal: &Palette,
+    k: f32,
+) -> Option<ModsAction> {
     let left = space.left() + theme::GUTTER * k;
     let width = space.width() - 2.0 * theme::GUTTER * k;
     let mut y = space.top();
     let mut action = None;
     // No details box when mod.toml cannot be read.
-    let lines = meta_lines(&log);
+    let lines = meta_lines(log);
     if !lines.is_empty() {
         let meta = Rect::from_min_size(
             Pos2::new(left, y),
@@ -91,17 +141,27 @@ pub(super) fn draw_log(ui: &mut egui::Ui, page: &mut ModsPage) -> Option<ModsAct
         y = meta.bottom() + SECTION_GAP * k;
     }
     let dl = Rect::from_min_size(Pos2::new(left, y), Vec2::new(width, DL_H * k));
-    draw_facts(ui.painter(), dl, &log, k, pal);
+    draw_facts(ui.painter(), dl, log, k, pal);
     y = dl.bottom() + SECTION_GAP * k;
 
     let box_rect = Rect::from_min_max(
         Pos2::new(left, y),
         Pos2::new(left + width, space.bottom() - LOG_BOTTOM * k),
     );
-    draw_journal(ui, box_rect, &log, k, pal);
+    draw_journal(ui, box_rect, log, k, pal);
+    action
+}
 
-    // The footer has the Back and Copy log buttons.
+/// The footer's Back and Copy log buttons.
+fn log_footer(
+    ui: &mut egui::Ui,
+    bar: Rect,
+    log: &LogView,
+    pal: &Palette,
+    k: f32,
+) -> Option<ModsAction> {
     let inner = plain_footer(ui, bar, k, pal);
+    let mut action = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
         theme::apply_setup_style(ui, pal);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -375,4 +435,29 @@ pub(super) fn draw_journal(ui: &mut egui::Ui, rect: Rect, log: &LogView, k: f32,
                 ui.add(egui::Label::new(job).extend());
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_web_addresses_are_links() {
+        for url in [
+            "https://github.com/nsaintot/cdj3k-mods",
+            "http://localhost:8080/x?y#z",
+        ] {
+            assert!(web_url(url), "{url}");
+        }
+        for url in [
+            "github.com/nsaintot",
+            "https://",
+            "https:///path",
+            "ftp://host/x",
+            "https://host/a b",
+            "javascript:alert(1)",
+        ] {
+            assert!(!web_url(url), "{url}");
+        }
+    }
 }

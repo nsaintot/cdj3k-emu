@@ -177,21 +177,7 @@ pub fn patch_initramfs(
         return Err(PatchError::MissingResource(patch_dir.display().to_string()));
     }
 
-    // Per-phase timings go to the provision log.  The rootfs is unpacked to
-    // temp files, repacked and deleted, so the cost tracks file count as well
-    // as size and differs sharply between models.
-    let started = std::time::Instant::now();
-    let mut mark = std::time::Instant::now();
-    macro_rules! phase {
-        ($name:literal) => {{
-            eprintln!(
-                "[initramfs] {:<16} {:>6.1}s",
-                $name,
-                mark.elapsed().as_secs_f64()
-            );
-            mark = std::time::Instant::now();
-        }};
-    }
+    let mut clock = PhaseClock::start();
 
     // Create a temp working directory.
     let tmp = tmp_dir("cdj3k-emu-initramfs")?;
@@ -200,31 +186,100 @@ pub fn patch_initramfs(
 
     // 1. Unpack the original initramfs into rootfs/.
     unpack_cpio_gz(initramfs_gz, &rootfs)?;
-    phase!("unpack");
+    clock.phase("unpack");
 
     // 2. Inject guest tools (aarch64 ELFs) into rootfs/usr/bin/.
     if tools_dir.exists() {
-        let bin_dst = rootfs.join("usr/bin");
-        std::fs::create_dir_all(&bin_dst)?;
-        let home_dst = rootfs.join("home/root");
-        std::fs::create_dir_all(&home_dst)?;
+        inject_tools(&tools_dir, &rootfs)?;
+    }
+    clock.phase("inject");
 
-        for entry in std::fs::read_dir(&tools_dir)? {
-            let src = entry?.path();
-            let name = src.file_name().unwrap().to_string_lossy().to_string();
-            let dst = if name == "deck_shim.so" {
-                home_dst.join(&name)
-            } else {
-                bin_dst.join(&name)
-            };
-            std::fs::copy(&src, &dst)?;
-            crate::file_mode::set_executable(&dst)?;
+    // 3. Run patch-rootfs.sh from the bundled patch directory.
+    run_patch_script(&patch_dir, &rootfs)?;
+    clock.phase("patch scripts");
+
+    // 4. Repack rootfs → raw cpio.
+    let raw_cpio = tmp.join("initramfs-patched.cpio");
+    repack_cpio(&rootfs, &raw_cpio)?;
+    clock.phase("cpio repack");
+
+    // 5. Fix uid/gid in the raw cpio (macOS bsdcpio records host UID).
+    let mut cpio_bytes = std::fs::read(&raw_cpio)?;
+    fix_cpio_ownership(&mut cpio_bytes);
+    clock.phase("ownership fix");
+
+    // 6. Gzip compress → out_path.
+    write_gz(out_path, &cpio_bytes)?;
+    clock.phase("gzip");
+
+    // 7. Clean up temp dir.
+    let _ = std::fs::remove_dir_all(&tmp);
+    clock.phase("cleanup");
+    clock.total();
+
+    Ok(())
+}
+
+/// Per-phase timings for the provision log.  The rootfs is unpacked to temp
+/// files, repacked and deleted, so the cost tracks file count as well as size
+/// and differs sharply between models.
+struct PhaseClock {
+    started: std::time::Instant,
+    mark: std::time::Instant,
+}
+
+impl PhaseClock {
+    fn start() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            mark: now,
         }
     }
 
-    phase!("inject");
+    /// Log the time since the previous phase ended.
+    fn phase(&mut self, name: &str) {
+        eprintln!(
+            "[initramfs] {:<16} {:>6.1}s",
+            name,
+            self.mark.elapsed().as_secs_f64()
+        );
+        self.mark = std::time::Instant::now();
+    }
 
-    // 3. Run patch-rootfs.sh from the bundled patch directory.
+    fn total(&self) {
+        eprintln!(
+            "[initramfs] {:<16} {:>6.1}s",
+            "total",
+            self.started.elapsed().as_secs_f64()
+        );
+    }
+}
+
+/// Copy every file of `tools_dir` into the rootfs, executable: `deck_shim.so`
+/// to `/home/root`, the rest to `/usr/bin`.
+fn inject_tools(tools_dir: &Path, rootfs: &Path) -> Result<(), PatchError> {
+    let bin_dst = rootfs.join("usr/bin");
+    std::fs::create_dir_all(&bin_dst)?;
+    let home_dst = rootfs.join("home/root");
+    std::fs::create_dir_all(&home_dst)?;
+
+    for entry in std::fs::read_dir(tools_dir)? {
+        let src = entry?.path();
+        let name = src.file_name().unwrap().to_string_lossy().to_string();
+        let dst = if name == "deck_shim.so" {
+            home_dst.join(&name)
+        } else {
+            bin_dst.join(&name)
+        };
+        std::fs::copy(&src, &dst)?;
+        crate::file_mode::set_executable(&dst)?;
+    }
+    Ok(())
+}
+
+/// Run the bundled `patch-rootfs.sh` over `rootfs`.
+fn run_patch_script(patch_dir: &Path, rootfs: &Path) -> Result<(), PatchError> {
     let patch_script = patch_dir.join("patch-rootfs.sh");
     if !patch_script.exists() {
         return Err(PatchError::MissingResource(
@@ -233,29 +288,20 @@ pub fn patch_initramfs(
     }
     let status = Command::new("bash")
         .arg(&patch_script)
-        .arg(&rootfs)
-        .env("ROOTFS", &rootfs)
-        .env("PATCH_ASSETS_DIR", &patch_dir)
+        .arg(rootfs)
+        .env("ROOTFS", rootfs)
+        .env("PATCH_ASSETS_DIR", patch_dir)
         .status()?;
     if !status.success() {
         return Err(PatchError::CommandFailed(format!(
             "patch-rootfs.sh exited with {status}"
         )));
     }
+    Ok(())
+}
 
-    phase!("patch scripts");
-
-    // 4. Repack rootfs → raw cpio.
-    let raw_cpio = tmp.join("initramfs-patched.cpio");
-    repack_cpio(&rootfs, &raw_cpio)?;
-    phase!("cpio repack");
-
-    // 5. Fix uid/gid in the raw cpio (macOS bsdcpio records host UID).
-    let mut cpio_bytes = std::fs::read(&raw_cpio)?;
-    fix_cpio_ownership(&mut cpio_bytes);
-    phase!("ownership fix");
-
-    // 6. Gzip compress → out_path.
+/// Gzip `bytes` to `out_path`, creating its directory.
+fn write_gz(out_path: &Path, bytes: &[u8]) -> Result<(), PatchError> {
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -263,23 +309,8 @@ pub fn patch_initramfs(
     // Level 6 (flate2's default) rather than 9: on the CDJ-3000X rootfs
     // (196 MiB) both emit 81 MiB, and 9 takes ~1.8x as long.
     let mut gz = GzEncoder::new(out_file, Compression::default());
-    gz.write_all(&cpio_bytes)?;
+    gz.write_all(bytes)?;
     gz.finish()?;
-    phase!("gzip");
-
-    // 7. Clean up temp dir.
-    let _ = std::fs::remove_dir_all(&tmp);
-    eprintln!(
-        "[initramfs] {:<16} {:>6.1}s",
-        "cleanup",
-        mark.elapsed().as_secs_f64()
-    );
-    eprintln!(
-        "[initramfs] {:<16} {:>6.1}s",
-        "total",
-        started.elapsed().as_secs_f64()
-    );
-
     Ok(())
 }
 

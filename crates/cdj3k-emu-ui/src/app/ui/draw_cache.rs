@@ -216,10 +216,6 @@ impl<K: PartialEq + Clone> Default for ShapeCache<K> {
 }
 
 impl<K: PartialEq + Clone> ShapeCache<K> {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Return the cached shapes, rebuilding if `key` changed.
     pub fn get_or_build(&mut self, key: K, build: impl FnOnce(&mut ShapeList)) -> &[Shape] {
         if self.key.as_ref() != Some(&key) {
@@ -274,10 +270,6 @@ pub struct BtnShapeCache {
 }
 
 impl BtnShapeCache {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Return shapes for `id`, rebuilding if `key` changed since last call (or on first call).
     pub fn get_or_build(
         &mut self,
@@ -305,10 +297,6 @@ pub struct StaticShapeCache {
 }
 
 impl StaticShapeCache {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Return the cached shapes, rebuilding if the layout or DPI changed.
     pub fn get_or_build(
         &mut self,
@@ -328,4 +316,43 @@ impl StaticShapeCache {
         }
         &self.shapes
     }
+
+    /// Paint the cached shapes with `p`, rebuilt first if the layout or DPI
+    /// changed; returns how many it painted.
+    pub(in crate::app) fn paint(
+        &mut self,
+        p: &egui::Painter,
+        layout: &super::UiScale,
+        ppp: f32,
+        build: impl FnOnce(&mut ShapeList),
+    ) -> u64 {
+        let (ox, oy, scale) = layout.cache_key();
+        let shapes = self.get_or_build(ox, oy, scale, ppp, build);
+        p.extend(shapes.iter().cloned());
+        shapes.len() as u64
+    }
+}
+
+// ── ShapeCaches ───────────────────────────────────────────────────────────────
+
+/// Layout, the two knobs' angles and their pressed states.
+pub(in crate::app) type KnobCacheKey = (i32, i32, i32, [u32; 2], [bool; 2]);
+
+/// Every shape cache the panel draws through. A model change drops them all.
+#[derive(Default)]
+pub(in crate::app) struct ShapeCaches {
+    pub(in crate::app) btn: BtnShapeCache,
+    pub(in crate::app) chassis_bg: StaticShapeCache,
+    pub(in crate::app) chassis_lcd_overlay: StaticShapeCache,
+    pub(in crate::app) top_statics: StaticShapeCache,
+    pub(in crate::app) left_statics: StaticShapeCache,
+    pub(in crate::app) right_statics: StaticShapeCache,
+    pub(in crate::app) jog_statics: StaticShapeCache,
+    pub(in crate::app) jog_ring_lights: ShapeCache<(i32, i32, i32, u8, bool)>,
+    pub(in crate::app) jog_corner_labels: ShapeCache<(i32, i32, i32, i32, [u8; 16])>,
+    pub(in crate::app) grip: ShapeCache<(i32, i32, i32, i32)>,
+    /// A jog knurl, keyed on layout and the platter's angle.
+    pub(in crate::app) knurl: ShapeCache<(i32, i32, i32, u32)>,
+    /// Two rotary knobs, keyed on layout, their angles and pressed states.
+    pub(in crate::app) knob: ShapeCache<KnobCacheKey>,
 }

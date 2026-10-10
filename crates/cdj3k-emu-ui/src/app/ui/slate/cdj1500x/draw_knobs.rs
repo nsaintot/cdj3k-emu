@@ -128,7 +128,7 @@ pub(super) fn draw_knobs(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter,
     let (ox, oy, scale) = layout.cache_key();
     let q = |v: f32| (v * 1000.0).round() as i32;
     let key = (q(ox), q(oy), q(scale), angles.map(f32::to_bits), held);
-    let shapes = app.knob_cache.get_or_build(key, |list| {
+    let shapes = app.caches.knob.get_or_build(key, |list| {
         collect_knob(list, layout, beat_loop, angles[0], held[0]);
         collect_knob(list, layout, browse, angles[1], held[1]);
     });

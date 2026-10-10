@@ -1,4 +1,4 @@
-use std::f32::consts::TAU;
+use std::f32::consts::{FRAC_PI_2, PI, TAU};
 
 use egui::epaint::{PathShape, PathStroke};
 use egui::{Color32, Pos2, Rect, Shape, Stroke, Vec2};
@@ -85,10 +85,16 @@ pub(in crate::app) fn paint_double_circle_ring(
     radius: f32,
     spec: DoubleBorderSpec,
 ) {
-    let r_outer = radius + spec.inner.width * 0.5 + spec.gap.max(0.0) + spec.outer.width * 0.5;
+    paint_collected(painter, |out| {
+        paint_double_circle_ring_collect(out, center, radius, spec)
+    });
+}
 
-    painter.circle_stroke(center, r_outer, spec.outer.stroke());
-    painter.circle_stroke(center, radius, spec.inner.stroke());
+/// Paint what `collect` adds to a fresh [`ShapeList`].
+fn paint_collected(painter: &egui::Painter, collect: impl FnOnce(&mut ShapeList)) {
+    let mut list = ShapeList::default();
+    collect(&mut list);
+    painter.extend(list.into_shapes());
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -103,42 +109,6 @@ pub(in crate::app) enum ButtonType {
         pad_h: f32,
         pad_v: f32,
     },
-}
-
-fn paint_double_rect_border(
-    painter: &egui::Painter,
-    rect: Rect,
-    rounding: Option<f32>,
-    spec: DoubleBorderSpec,
-) {
-    let rounding = rounding.unwrap_or(0.0);
-    let expand = spec.inner.width * 0.5 + spec.gap.max(0.0) + spec.outer.width * 0.5;
-    let rect_outer = rect.expand(expand);
-    let max_r = 0.5 * rect_outer.width().min(rect_outer.height());
-    let rounding_outer = (rounding + expand).min(max_r);
-
-    if rounding == 0.0 {
-        painter.rect_stroke(
-            rect_outer,
-            0.0,
-            spec.outer.stroke(),
-            egui::StrokeKind::Middle,
-        );
-        painter.rect_stroke(rect, 0.0, spec.inner.stroke(), egui::StrokeKind::Middle);
-    } else {
-        painter.rect_stroke(
-            rect_outer,
-            rounding_outer,
-            spec.outer.stroke(),
-            egui::StrokeKind::Middle,
-        );
-        painter.rect_stroke(
-            rect,
-            rounding,
-            spec.inner.stroke(),
-            egui::StrokeKind::Middle,
-        );
-    }
 }
 
 /// An open USB tray, folded up against its casing's top wall: a thin panel
@@ -191,11 +161,9 @@ pub(in crate::app) fn draw_bordered_rect_section(
     fill: Option<Color32>,
     border: DoubleBorderSpec,
 ) {
-    if let Some(fill_color) = fill {
-        painter.rect_filled(rect, rounding.unwrap_or(0.0), fill_color);
-    }
-
-    paint_double_rect_border(painter, rect, rounding, border);
+    paint_collected(painter, |out| {
+        collect_bordered_rect_section(out, rect, rounding, fill, border)
+    });
 }
 
 /// ShapeList version of [`draw_bordered_rect_section`] for static caching.
@@ -215,6 +183,37 @@ pub(in crate::app) fn collect_bordered_rect_section(
 // ---------------------------------------------------------------------------
 // Rotary control (gear-style knob + outlined indicator + tick ring)
 // ---------------------------------------------------------------------------
+
+/// Where the pointer at `v` from a rotary's centre sits along its tick arc
+/// (starting `arc_start_cw` clockwise from the top, spanning `arc_span`): 0 at
+/// the first tick, 1 at the last, unclamped.
+pub(in crate::app) fn rotary_arc_fraction(v: Vec2, arc_start_cw: f32, arc_span: f32) -> f32 {
+    let ang = (v.y.atan2(v.x) + FRAC_PI_2).rem_euclid(TAU);
+    let mid = (arc_start_cw + arc_span * 0.5).rem_euclid(TAU);
+    let mut rel = ang - mid;
+    if rel > PI {
+        rel -= TAU;
+    } else if rel < -PI {
+        rel += TAU;
+    }
+    0.5 + rel / arc_span
+}
+
+/// Add `scroll` to `accum` and take out the whole detents of `px_per_detent`
+/// it holds: their count, positive for scrolling up.
+pub(in crate::app) fn scroll_detents(accum: &mut f32, scroll: f32, px_per_detent: f32) -> i32 {
+    *accum += scroll;
+    let mut detents = 0;
+    while *accum >= px_per_detent {
+        *accum -= px_per_detent;
+        detents += 1;
+    }
+    while *accum <= -px_per_detent {
+        *accum += px_per_detent;
+        detents -= 1;
+    }
+    detents
+}
 
 /// Gear-style knob outline: flat-topped teeth connected by true **circular arc**
 /// valleys. Each valley is the unique circle passing through the two adjacent
@@ -308,6 +307,35 @@ pub(in crate::app) struct RotaryControlSpec {
     pub draw_ticks: bool,
 }
 
+impl RotaryControlSpec {
+    /// A bare gear in `color`: no indicator, no tick ring.
+    pub(in crate::app) fn gear_only(gear: RotaryGearSpec, color: Color32) -> Self {
+        let none = StrokeSpec { width: 0.0, color };
+        Self {
+            gear,
+            indicator: RotaryIndicatorSpec {
+                length: 0.0,
+                width: 0.0,
+                angle_cw_from_top_rad: 0.0,
+                stroke: none,
+            },
+            ticks: RotaryTickSpec {
+                count: 0,
+                arc_start_cw_rad: 0.0,
+                arc_span_rad: 0.0,
+                ring_offset: 0.0,
+                dot_radius: 0.0,
+                center_dot_radius: 0.0,
+                endcap_length: 0.0,
+                endcap_stroke: none,
+            },
+            color,
+            draw_indicator: false,
+            draw_ticks: false,
+        }
+    }
+}
+
 /// Paints a rotary control assembly - gear knob, outlined indicator pill, and tick
 /// ring - centered on `center`.
 pub(in crate::app) fn draw_rotary_control(
@@ -315,10 +343,79 @@ pub(in crate::app) fn draw_rotary_control(
     center: Pos2,
     spec: RotaryControlSpec,
 ) {
-    paint_gear_outline(painter, center, &spec.gear);
+    paint_collected(painter, |out| {
+        draw_rotary_control_collect(out, center, spec)
+    });
+}
+
+/// Decorative arc drawn inside an arc button (visible border between inner and outer edges).
+#[derive(Clone, Copy, Debug)]
+pub(in crate::app) struct ArcDecorSpec {
+    /// Radius of the arc from the button's center point, in screen px.
+    pub radius: f32,
+    pub stroke: Stroke,
+}
+
+/// Notch arc drawn between the bezel boundary and the decorative arc.
+/// Shorter angular span, thicker stroke.
+#[derive(Clone, Copy, Debug)]
+pub(in crate::app) struct ArcNotchSpec {
+    /// Radius from the button's center point, in screen px.
+    pub radius: f32,
+    /// Half-angle: the notch spans `[mid - half_angle, mid + half_angle]`.
+    pub half_angle: f32,
+    pub stroke: Stroke,
+}
+
+// Number of line segments used to approximate the inner concave arc.
+const ARC_SEGMENTS: usize = 20;
+
+// ── ShapeList-collecting variants ─────────────────────────────────────────────
+// These write into a [`ShapeList`] so the geometry can be cached and replayed
+// without recomputation; the painter-based functions above paint what they
+// collect.
+
+/// ShapeList variant of [`draw_back_double_circle_border`] for static caching.
+pub(in crate::app) fn collect_back_double_circle_border(
+    out: &mut ShapeList,
+    center_left: Pos2,
+    center_right: Pos2,
+    radius: f32,
+    thickness: f32,
+    color: Color32,
+    border_color: Color32,
+) {
+    let min_x = center_left.x.min(center_right.x) - radius;
+    let max_x = center_left.x.max(center_right.x) + radius;
+    let min_y = center_left.y.min(center_right.y) - radius;
+    let max_y = center_left.y.max(center_right.y) + radius;
+    let capsule = Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y));
+    out.rect_filled(capsule, radius, color);
+    out.rect_stroke(capsule, radius, Stroke::new(thickness, border_color));
+}
+
+pub(in crate::app) fn paint_double_circle_ring_collect(
+    out: &mut ShapeList,
+    center: Pos2,
+    radius: f32,
+    spec: DoubleBorderSpec,
+) {
+    let r_outer = radius + spec.inner.width * 0.5 + spec.gap.max(0.0) + spec.outer.width * 0.5;
+    out.circle_stroke(center, r_outer, spec.outer.stroke());
+    out.circle_stroke(center, radius, spec.inner.stroke());
+}
+
+/// Collect a full rotary control (gear + optional indicator + optional tick ring)
+/// into a [`ShapeList`] for static caching.
+pub(in crate::app) fn draw_rotary_control_collect(
+    out: &mut ShapeList,
+    center: Pos2,
+    spec: RotaryControlSpec,
+) {
+    collect_gear_outline(out, center, &spec.gear);
     if spec.draw_ticks {
-        paint_rotary_tick_ring(
-            painter,
+        collect_rotary_tick_ring(
+            out,
             center,
             spec.gear.base_radius + spec.gear.tooth_amplitude,
             &spec.ticks,
@@ -326,11 +423,11 @@ pub(in crate::app) fn draw_rotary_control(
         );
     }
     if spec.draw_indicator {
-        paint_rotary_indicator(painter, center, &spec.indicator);
+        collect_rotary_indicator(out, center, &spec.indicator);
     }
 }
 
-fn paint_gear_outline(painter: &egui::Painter, center: Pos2, gear: &RotaryGearSpec) {
+fn collect_gear_outline(out: &mut ShapeList, center: Pos2, gear: &RotaryGearSpec) {
     if gear.tooth_count == 0 {
         return;
     }
@@ -400,7 +497,7 @@ fn paint_gear_outline(painter: &egui::Painter, center: Pos2, gear: &RotaryGearSp
     }
     // The gear polygon is star-shaped about the center, so egui's tessellator
     // handles the fill correctly despite the concave valleys.
-    painter.add(Shape::Path(PathShape {
+    out.add(Shape::Path(PathShape {
         points: pts,
         closed: true,
         fill: gear.fill,
@@ -408,7 +505,7 @@ fn paint_gear_outline(painter: &egui::Painter, center: Pos2, gear: &RotaryGearSp
     }));
 }
 
-fn paint_rotary_indicator(painter: &egui::Painter, center: Pos2, indicator: &RotaryIndicatorSpec) {
+fn collect_rotary_indicator(out: &mut ShapeList, center: Pos2, indicator: &RotaryIndicatorSpec) {
     // Long-axis unit vector (pointing outward) and perpendicular (for width).
     // Clockwise-from-top maps to screen-space (+x right, +y down) via
     // (sin(θ), -cos(θ)); the perpendicular is its 90°-cw rotation.
@@ -419,197 +516,6 @@ fn paint_rotary_indicator(painter: &egui::Painter, center: Pos2, indicator: &Rot
 
     // Four corners of the rotated rectangle; outer tip is flat. The inner end
     // sits at `center`, which is hidden under the gear body - no rounding needed.
-    let inner_l = center + perp * -half_w;
-    let inner_r = center + perp * half_w;
-    let outer_r = inner_r + dir * indicator.length;
-    let outer_l = inner_l + dir * indicator.length;
-    painter.add(Shape::closed_line(
-        vec![inner_l, inner_r, outer_r, outer_l],
-        indicator.stroke.stroke(),
-    ));
-}
-
-fn paint_rotary_tick_ring(
-    painter: &egui::Painter,
-    center: Pos2,
-    gear_outer_radius: f32,
-    ticks: &RotaryTickSpec,
-    color: Color32,
-) {
-    if ticks.count < 2 {
-        return;
-    }
-    let ring_r = gear_outer_radius + ticks.ring_offset;
-    let last = ticks.count - 1;
-    let middle = last / 2;
-    for i in 0..ticks.count {
-        let cw = ticks.arc_start_cw_rad + (i as f32 / last as f32) * ticks.arc_span_rad;
-        let (sin_cw, cos_cw) = cw.sin_cos();
-        if i == 0 || i == last {
-            let dir = Vec2::new(sin_cw, -cos_cw);
-            let outer_r = ring_r * ENDCAP_RADIAL_FACTOR;
-            let tick_pos = center + dir * outer_r;
-            let inward = center + dir * (outer_r - ticks.endcap_length);
-            painter.line_segment([tick_pos, inward], ticks.endcap_stroke.stroke());
-        } else {
-            // Convert "clockwise from top" to screen-coord unit vector.
-            let dir = Vec2::new(sin_cw, -cos_cw);
-            let radius = if i == middle {
-                ticks.center_dot_radius
-            } else {
-                ticks.dot_radius
-            };
-            painter.circle_filled(center + dir * ring_r, radius, color);
-        }
-    }
-}
-
-/// Decorative arc drawn inside an arc button (visible border between inner and outer edges).
-#[derive(Clone, Copy, Debug)]
-pub(in crate::app) struct ArcDecorSpec {
-    /// Radius of the arc from the button's center point, in screen px.
-    pub radius: f32,
-    pub stroke: Stroke,
-}
-
-/// Notch arc drawn between the bezel boundary and the decorative arc.
-/// Shorter angular span, thicker stroke.
-#[derive(Clone, Copy, Debug)]
-pub(in crate::app) struct ArcNotchSpec {
-    /// Radius from the button's center point, in screen px.
-    pub radius: f32,
-    /// Half-angle: the notch spans `[mid - half_angle, mid + half_angle]`.
-    pub half_angle: f32,
-    pub stroke: Stroke,
-}
-
-// Number of line segments used to approximate the inner concave arc.
-const ARC_SEGMENTS: usize = 20;
-
-// ── ShapeList-collecting variants ─────────────────────────────────────────────
-// These mirror the painter-based functions above but write into a [`ShapeList`]
-// so the geometry can be cached and replayed without recomputation.
-
-/// ShapeList variant of [`draw_back_double_circle_border`] for static caching.
-pub(in crate::app) fn collect_back_double_circle_border(
-    out: &mut ShapeList,
-    center_left: Pos2,
-    center_right: Pos2,
-    radius: f32,
-    thickness: f32,
-    color: Color32,
-    border_color: Color32,
-) {
-    let min_x = center_left.x.min(center_right.x) - radius;
-    let max_x = center_left.x.max(center_right.x) + radius;
-    let min_y = center_left.y.min(center_right.y) - radius;
-    let max_y = center_left.y.max(center_right.y) + radius;
-    let capsule = Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y));
-    out.rect_filled(capsule, radius, color);
-    out.rect_stroke(capsule, radius, Stroke::new(thickness, border_color));
-}
-
-pub(in crate::app) fn paint_double_circle_ring_collect(
-    out: &mut ShapeList,
-    center: Pos2,
-    radius: f32,
-    spec: DoubleBorderSpec,
-) {
-    let r_outer = radius + spec.inner.width * 0.5 + spec.gap.max(0.0) + spec.outer.width * 0.5;
-    out.circle_stroke(center, r_outer, spec.outer.stroke());
-    out.circle_stroke(center, radius, spec.inner.stroke());
-}
-
-/// Collect a full rotary control (gear + optional indicator + optional tick ring)
-/// into a [`ShapeList`] for static caching.
-pub(in crate::app) fn draw_rotary_control_collect(
-    out: &mut ShapeList,
-    center: Pos2,
-    spec: RotaryControlSpec,
-) {
-    collect_gear_outline(out, center, &spec.gear);
-    if spec.draw_ticks {
-        collect_rotary_tick_ring(
-            out,
-            center,
-            spec.gear.base_radius + spec.gear.tooth_amplitude,
-            &spec.ticks,
-            spec.color,
-        );
-    }
-    if spec.draw_indicator {
-        collect_rotary_indicator(out, center, &spec.indicator);
-    }
-}
-
-fn collect_gear_outline(out: &mut ShapeList, center: Pos2, gear: &RotaryGearSpec) {
-    if gear.tooth_count == 0 {
-        return;
-    }
-    let r_min = gear.base_radius;
-    let r_max = gear.base_radius + gear.tooth_amplitude;
-    let slot = TAU / gear.tooth_count as f32;
-    let tooth_half = slot * gear.tooth_top_fraction.clamp(0.0, 1.0) * 0.5;
-    let valley_segments = gear.valley_segments.max(1);
-
-    let valley_half_span = 0.5 * (slot - 2.0 * tooth_half);
-    let cos_half = valley_half_span.cos();
-    let denom = r_max * cos_half - r_min;
-    let use_arc = denom.abs() > 1.0e-4;
-    let (x_c, arc_r, half_delta) = if use_arc {
-        let x_c = (r_max * r_max - r_min * r_min) / (2.0 * denom);
-        let arc_r = (r_min - x_c).abs();
-        let half_delta = ((x_c - r_max * cos_half) / arc_r).clamp(-1.0, 1.0).acos();
-        (x_c, arc_r, half_delta)
-    } else {
-        (0.0, 0.0, 0.0)
-    };
-
-    let interior = valley_segments.saturating_sub(1);
-    let mut valley_local: Vec<(f32, f32)> = Vec::with_capacity(interior);
-    for k in 1..valley_segments {
-        let t = k as f32 / valley_segments as f32;
-        if use_arc {
-            let u = 2.0 * t - 1.0;
-            let phi = std::f32::consts::PI - half_delta * u;
-            let (sin_phi, cos_phi) = phi.sin_cos();
-            valley_local.push((x_c + arc_r * cos_phi, arc_r * sin_phi));
-        } else {
-            let r = r_min + (r_max - r_min) * (2.0 * t - 1.0).abs();
-            let local_angle = (t - 0.5) * 2.0 * valley_half_span;
-            let (sin_a, cos_a) = local_angle.sin_cos();
-            valley_local.push((r * cos_a, r * sin_a));
-        }
-    }
-
-    let mut pts: Vec<Pos2> = Vec::with_capacity(gear.tooth_count * (2 + interior));
-    for i in 0..gear.tooth_count {
-        let tooth_center = (i as f32 + 0.5) * slot + gear.rotation_rad;
-        let a_left = tooth_center - tooth_half;
-        let a_right = tooth_center + tooth_half;
-        let (sin_l, cos_l) = a_left.sin_cos();
-        pts.push(center + Vec2::new(cos_l, sin_l) * r_max);
-        let (sin_r, cos_r) = a_right.sin_cos();
-        pts.push(center + Vec2::new(cos_r, sin_r) * r_max);
-        let mid_angle = a_right + valley_half_span;
-        let (sin_mid, cos_mid) = mid_angle.sin_cos();
-        for &(rx, ry) in &valley_local {
-            pts.push(center + Vec2::new(rx * cos_mid - ry * sin_mid, rx * sin_mid + ry * cos_mid));
-        }
-    }
-    out.add(Shape::Path(PathShape {
-        points: pts,
-        closed: true,
-        fill: gear.fill,
-        stroke: gear.stroke.stroke().into(),
-    }));
-}
-
-fn collect_rotary_indicator(out: &mut ShapeList, center: Pos2, indicator: &RotaryIndicatorSpec) {
-    let (sin_a, cos_a) = indicator.angle_cw_from_top_rad.sin_cos();
-    let dir = Vec2::new(sin_a, -cos_a);
-    let perp = Vec2::new(cos_a, sin_a);
-    let half_w = indicator.width * 0.5;
     let inner_l = center + perp * -half_w;
     let inner_r = center + perp * half_w;
     let outer_r = inner_r + dir * indicator.length;
@@ -646,7 +552,6 @@ fn collect_double_rect_border(
     }
 }
 
-/// Collect a basic rectangular button into `out`. No interaction - caller provides `is_pressed`.
 fn collect_rotary_tick_ring(
     out: &mut ShapeList,
     center: Pos2,
@@ -670,6 +575,7 @@ fn collect_rotary_tick_ring(
             let inward = center + dir * (outer_r - ticks.endcap_length);
             out.line_segment([tick_pos, inward], ticks.endcap_stroke.stroke());
         } else {
+            // Convert "clockwise from top" to screen-coord unit vector.
             let dir = Vec2::new(sin_cw, -cos_cw);
             let radius = if i == middle {
                 ticks.center_dot_radius

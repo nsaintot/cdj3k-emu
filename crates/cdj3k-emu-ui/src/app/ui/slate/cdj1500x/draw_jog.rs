@@ -95,7 +95,8 @@ pub(super) fn draw_jog(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, l
     let q = |v: f32| (v * 1000.0).round() as i32;
     let key = (q(ox), q(oy), q(scale), angle.to_bits());
     let mut shapes = app
-        .knurl_cache
+        .caches
+        .knurl
         .get_or_build(key, |list| list.add(Shape::mesh(knurl(center, angle, s))))
         .to_vec();
     shapes.reserve(RING_SEGMENTS + 7);
@@ -123,7 +124,13 @@ pub(super) fn draw_jog(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, l
         Stroke::new(layout.sc(HUB_STROKE), COL_SILVER),
     ));
 
-    // The LED ring, as the deck drives it.
+    push_led_ring(&mut shapes, app, center, &s);
+    app.frame_shape_count += shapes.len() as u64;
+    p.extend(shapes);
+}
+
+/// The hub's LED ring, as the deck drives it.
+fn push_led_ring(shapes: &mut Vec<Shape>, app: &CdjApp, center: Pos2, s: &impl Fn(f32) -> f32) {
     let ring = match app.mosi().lamp(Lamp::JogMeter) {
         Some(LampState::Level(v)) => cdj1500x::jog_ring(v),
         _ => JogRing::Off,
@@ -152,8 +159,6 @@ pub(super) fn draw_jog(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, l
             Stroke::NONE,
         ));
     }
-    app.frame_shape_count += shapes.len() as u64;
-    p.extend(shapes);
 }
 
 /// The knurl turned to `angle`: rows of flat-topped pyramids, each row half a

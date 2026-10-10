@@ -60,9 +60,9 @@ pub(super) use draw_primitives::{
     collect_arc_quad_button, collect_back_double_circle_border, collect_bordered_rect_section,
     collect_button, collect_circle_button, collect_computer_glyph, collect_usb_trident,
     draw_bordered_rect_section, draw_rotary_control, draw_rotary_control_collect, draw_usb_tray,
-    paint_double_circle_ring, paint_double_circle_ring_collect, ArcDecorSpec, ArcNotchSpec,
-    ButtonType, DoubleBorderSpec, RotaryControlSpec, RotaryGearSpec, RotaryIndicatorSpec,
-    RotaryTickSpec, StrokeSpec, UsbTraySpec,
+    paint_double_circle_ring, paint_double_circle_ring_collect, rotary_arc_fraction,
+    scroll_detents, ArcDecorSpec, ArcNotchSpec, ButtonType, DoubleBorderSpec, RotaryControlSpec,
+    RotaryGearSpec, RotaryIndicatorSpec, RotaryTickSpec, StrokeSpec, UsbTraySpec,
 };
 
 pub(super) struct UiScale {
@@ -257,40 +257,31 @@ pub(super) fn draw_debug_content(ui: &mut egui::Ui, snap: &DebugSnapshot, local_
     ui.separator();
 
     // ---- MISO frame (64 bytes, 4 rows of 16) ----
-    ui.label(
-        egui::RichText::new("miso (ctrl)")
-            .font(mono.clone())
-            .strong(),
-    );
-    for row in 0..4 {
-        let start = row * 16;
-        let hex: String = snap.last_miso[start..start + 16]
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<Vec<_>>()
-            .join(" ");
-        ui.label(egui::RichText::new(format!("b{:02}  {}", start, hex)).font(mono.clone()));
-    }
+    hex_dump(ui, "miso (ctrl)", &snap.last_miso, &mono);
     ui.separator();
 
     // ---- MOSI LED frame (64 bytes, 4 rows of 16) ----
-    ui.label(
-        egui::RichText::new("mosi (led)")
-            .font(mono.clone())
-            .strong(),
-    );
-    let led = &snap.led_frame;
+    hex_dump(ui, "mosi (led)", &snap.led_frame, &mono);
+    mosi_decoded(ui, &snap.led_frame, mono);
+}
+
+/// A heading, then the first 64 bytes of `frame` in 4 rows of 16.
+fn hex_dump(ui: &mut egui::Ui, heading: &str, frame: &[u8], mono: &egui::FontId) {
+    ui.label(egui::RichText::new(heading).font(mono.clone()).strong());
     for row in 0..4 {
         let start = row * 16;
-        let hex: String = led[start..start + 16]
+        let hex: String = frame[start..start + 16]
             .iter()
             .map(|b| format!("{:02x}", b))
             .collect::<Vec<_>>()
             .join(" ");
         ui.label(egui::RichText::new(format!("b{:02}  {}", start, hex)).font(mono.clone()));
     }
+}
 
-    // ---- MOSI decoded ----
+/// The LED frame read back: its bitfield bytes, the pads' RGB and the
+/// indicators'.
+fn mosi_decoded(ui: &mut egui::Ui, led: &[u8], mono: egui::FontId) {
     ui.add_space(4.0);
     ui.label(
         egui::RichText::new("mosi decoded")
@@ -330,7 +321,7 @@ impl CdjApp {
             status: self.status.clone(),
             main_fps: self.fps_smooth,
             main_shape_count: self.frame_shape_count,
-            jog_dbg_lines: self.jog_dbg_lines.clone(),
+            jog_dbg_lines: self.debug.jog_lines.clone(),
             lcd_touch: self.lcd_touch,
             last_miso: self.last_miso,
             led_frame: self.led_state.frame,

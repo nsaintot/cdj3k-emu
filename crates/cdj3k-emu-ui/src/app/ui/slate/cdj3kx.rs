@@ -13,8 +13,8 @@ mod draw_right;
 mod draw_top;
 mod layout;
 
-use crate::app::picker::{Bay, Card, CardGlyph, Glyph};
-use crate::app::ui::slate::Slate;
+use super::card::{Bay, Card, CardGlyph};
+use crate::app::ui::slate::{draw_flat_panel, riser_glyph, FlatPanel, RiserZones, Slate};
 #[allow(unused_imports)]
 use crate::app::ui::*;
 use crate::app::CdjApp;
@@ -26,59 +26,28 @@ pub(in crate::app) const SLATE: Slate = Slate {
     card: Card {
         subtitle: "10.1-inch touch display",
         era: "2025",
-        glyph: CardGlyph::Riser(Glyph {
+        glyph: CardGlyph::Riser(riser_glyph(RiserZones {
             canvas: (REF_W, REF_H),
-            body_top: layout::TRANSPORT_REF_TOP / REF_H,
-            riser: (
-                layout::TOP_CENTRAL_REF_LEFT / REF_W,
-                layout::TOP_CENTRAL_REF_RIGHT / REF_W,
-            ),
+            riser: draw_top::MENUBAR_COL_REF,
             screen: Rect::from_min_max(
-                Pos2::new(GLASS_LEFT / REF_W, GLASS_TOP / REF_H),
-                Pos2::new(
-                    (GLASS_LEFT + GLASS_W) / REF_W,
-                    (GLASS_TOP + GLASS_H) / REF_H,
-                ),
+                Pos2::new(GLASS_LEFT, GLASS_TOP),
+                Pos2::new(GLASS_LEFT + GLASS_W, GLASS_TOP + GLASS_H),
             ),
             bezel: Vec2::new(0.038, 0.027),
-            transport_col: Rect::from_min_max(
-                Pos2::new(
-                    layout::TRANSPORT_REF_LEFT / REF_W,
-                    layout::TRANSPORT_REF_TOP / REF_H,
-                ),
-                Pos2::new(
-                    layout::TRANSPORT_REF_RIGHT / REF_W,
-                    layout::TRANSPORT_REF_BOT / REF_H,
-                ),
-            ),
-            modes_col: Rect::from_min_max(
-                Pos2::new(
-                    layout::MODES_REF_LEFT / REF_W,
-                    layout::MODES_REF_TOP / REF_H,
-                ),
-                Pos2::new(
-                    layout::MODES_REF_RIGHT / REF_W,
-                    layout::MODES_REF_BOT / REF_H,
-                ),
-            ),
-            bay: Bay::TwinUsb,
             recessed: false,
-            pads_x: (PADS_LEFT / REF_W, (PADS_LEFT + PADS_W) / REF_W),
-            pads_y: (
-                (PADS_MID_Y - PADS_H * 0.5) / REF_H,
-                (PADS_MID_Y + PADS_H * 0.5) / REF_H,
+            pads: Rect::from_min_max(
+                Pos2::new(PADS_LEFT, PADS_MID_Y - PADS_H * 0.5),
+                Pos2::new(PADS_LEFT + PADS_W, PADS_MID_Y + PADS_H * 0.5),
             ),
             pad_gap: draw_top::HOT_CUE_BTN_GAP_REF / PAD_PITCH,
-            jog: (
-                (layout::JOG_REF_LEFT + layout::JOG_REF_RIGHT) * 0.5 / REF_W,
-                (layout::JOG_REF_TOP + layout::JOG_REF_BOT) * 0.5 / REF_H,
-                draw_jog::JOG_OUTER_2_STROKE_RADIUS / REF_W,
-            ),
-            jog_hub: draw_jog::JOG_INNER_LCD_C0_RADIUS / draw_jog::JOG_OUTER_2_STROKE_RADIUS,
-            pod: Pos2::new(POD_X / REF_W, POD_Y / REF_H),
+            transport_col: draw_left::PERF_TRANSPORT_COL_REF,
+            modes_col: draw_right::MODES_COL_REF,
+            bay: Bay::TwinUsb,
+            jog: layout::jog_rect(),
+            pod: Pos2::new(POD_X, POD_Y),
             pod_half_w: 185.0,
             pod_ring_r: POD_RING_R,
-        }),
+        })),
     },
     draw_panel,
 };
@@ -132,49 +101,17 @@ const JOG_CHROME: JogChrome = JogChrome {
     nav_arrows: false,
 };
 
-/// Draw the whole panel: chassis, LCD overlay, then every section.
+/// How this slate's panel is composed.
+const PANEL: FlatPanel = FlatPanel {
+    canvas: (REF_W, REF_H),
+    chassis: draw_chassis::collect_chassis,
+    lcd_overlay: draw_chassis::collect_chassis_lcd_overlay,
+    top: draw_top::draw_top_section,
+    left: draw_left::draw_left_section,
+    jog: (layout::jog_rect, JOG_CHROME),
+    right: draw_right::draw_right_sections,
+};
+
 fn draw_panel(app: &mut CdjApp, ui: &mut egui::Ui) {
-    // `max_rect`, not `clip_rect`: the clip rect is a painting bound and
-    // still spans the window when a panel sits above, which would draw the
-    // chassis underneath the in-window menu.
-    let layout = UiScale::fit(ui.max_rect().shrink(2.0), REF_W, REF_H);
-    let (ox, oy, scale) = layout.cache_key();
-    let p = ui.painter().clone();
-    let ppp = ui.ctx().pixels_per_point();
-
-    // Chassis - fully static, rebuilt only on resize.
-    let bg_shapes = app
-        .chassis_bg_cache
-        .get_or_build(ox, oy, scale, ppp, |list| {
-            draw_chassis::collect_chassis(list, &layout);
-        });
-    app.frame_shape_count += bg_shapes.len() as u64;
-    p.extend(bg_shapes.iter().cloned());
-    // LCD overlay on top of all sections - fully static, rebuilt only on resize.
-    let overlay_shapes = app
-        .chassis_lcd_overlay_cache
-        .get_or_build(ox, oy, scale, ppp, |list| {
-            draw_chassis::collect_chassis_lcd_overlay(list, &layout);
-        });
-    app.frame_shape_count += overlay_shapes.len() as u64;
-    p.extend(overlay_shapes.iter().cloned());
-
-    {
-        puffin::profile_scope!("draw_top");
-        draw_top::draw_top_section(app, ui, &p, &layout);
-    }
-    {
-        puffin::profile_scope!("draw_left");
-        draw_left::draw_left_section(app, ui, &p, &layout);
-    }
-    {
-        puffin::profile_scope!("draw_jog");
-        app.draw_jog_wheel_section(ui, &p, &layout, layout::jog_rect(), JOG_CHROME);
-    }
-    {
-        puffin::profile_scope!("draw_right");
-        draw_right::draw_right_sections(app, ui, &p, &layout);
-    }
-
-    debug_align_squares(&p, &layout, REF_W, REF_H);
+    draw_flat_panel(app, ui, &PANEL);
 }

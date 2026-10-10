@@ -39,24 +39,8 @@
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 
-# ── Temp-file cleanup ────────────────────────────────────────────────────────
-# `set -e` will bail us out on any failure (codesign, hdiutil, cargo, curl);
-# without an EXIT trap, the entitlement plist and staging directories that
-# we create with mktemp would leak into /tmp until the next reboot.  Each
-# create step appends its path to TMP_CLEANUP and the trap nukes them all.
-TMP_CLEANUP=()
-cleanup_tmp() {
-    # Bash gotcha: an EXIT trap's final command status overrides the script's
-    # explicit `exit N`. If every entry has already been removed manually,
-    # the `[[ -e ]] && rm` compound short-circuits to 1 and the whole script
-    # would exit 1 despite `exit 0` at the bottom.  `return 0` pins it down.
-    for p in "${TMP_CLEANUP[@]}"; do
-        [[ -n "$p" && -e "$p" ]] && rm -rf "$p"
-    done
-    return 0
-}
-trap cleanup_tmp EXIT
-
+# shellcheck source=lib.sh
+source "$REPO_ROOT/packaging/macos/lib.sh"
 
 # ── Options ──────────────────────────────────────────────────────────────────
 PROFILE="release"

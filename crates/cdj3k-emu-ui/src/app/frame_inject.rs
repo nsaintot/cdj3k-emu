@@ -51,7 +51,7 @@ impl CdjApp {
     /// The MISO frame for the full current control state. All inject paths
     /// build their frame here.
     pub(super) fn build_current_frame(&self) -> [u8; miso_frame::MISO_SIZE] {
-        miso_frame::encode(self.model, &self.panel_state())
+        self.model.encode(&self.panel_state())
     }
 
     /// The current control state with the power flag dropped: the frame the
@@ -61,7 +61,7 @@ impl CdjApp {
             power: false,
             ..self.panel_state()
         };
-        miso_frame::encode(self.model, &state)
+        self.model.encode(&state)
     }
 
     pub(super) fn inject_jog(&mut self) {
@@ -78,12 +78,12 @@ impl CdjApp {
 
     /// The latest LED frame, read through the map of the player on screen.
     pub(crate) fn mosi(&self) -> MosiFrame {
-        MosiFrame::new(self.led_state.frame, self.model)
+        self.model.mosi_frame(self.led_state.frame)
     }
 
-    /// A button by written name (see [`miso_frame::button_by_name`]).
+    /// A button by written name (see [`Model::button_by_name`]).
     pub(super) fn btn_by_name(&self, name: &str) -> Option<(usize, u8)> {
-        miso_frame::button_by_name(self.model, name)
+        self.model.button_by_name(name)
     }
 
     /// Force `bit` low in every frame (`on`) or stop doing so, and inject.

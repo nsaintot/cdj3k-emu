@@ -1,12 +1,15 @@
 //! A slot's identity, hardware selections and menu state.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
 
 use cdj3k_emu_panel::Model;
 
 use super::identity::{generate_mac, generate_soc_serial, is_valid_soc_serial};
-use super::kv::{instance_path, locked, read_kv, write_kv, SLOT_KEYS};
+use super::kv::{
+    flag, flag_value, instance_path, locked, number, read_kv, text, write_kv, SLOT_KEYS,
+};
 use cdj3k_emu_platform::net::is_valid_mac;
 
 #[derive(Debug, Clone)]
@@ -101,26 +104,14 @@ impl InstanceSettings {
     fn load_or_init_unlocked(instance_id: u32) -> Self {
         let path = instance_path(instance_id);
         let mut map = read_kv(&path);
-        let mut minted = false;
-        let mac = match map.get("mac") {
-            Some(m) if is_valid_mac(m) => m.clone(),
-            _ => {
-                let m = generate_mac();
-                map.insert("mac".into(), m.clone());
-                minted = true;
-                m
-            }
-        };
-        let soc_serial = match map.get("soc_serial") {
-            Some(s) if is_valid_soc_serial(s) => s.clone(),
-            _ => {
-                let s = generate_soc_serial();
-                map.insert("soc_serial".into(), s.clone());
-                minted = true;
-                s
-            }
-        };
-        if minted {
+        let (mac, minted_mac) = kept_or_minted(&mut map, "mac", is_valid_mac, generate_mac);
+        let (soc_serial, minted_serial) = kept_or_minted(
+            &mut map,
+            "soc_serial",
+            is_valid_soc_serial,
+            generate_soc_serial,
+        );
+        if minted_mac || minted_serial {
             if let Err(e) = write_kv(&path, &map, SLOT_KEYS) {
                 // Disk write failed — the minted MAC and SoC serial won't
                 // survive a restart, but we'd rather proceed with one-shot
@@ -133,64 +124,25 @@ impl InstanceSettings {
                 );
             }
         }
-        let audio_enabled = map
-            .get("audio_enabled")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let audio_device_uid = map
-            .get("audio_device_uid")
-            .filter(|v| !v.is_empty())
-            .cloned();
-        // ALC default: ON. New users get the sync compensation by default;
-        // opt-out is a power-user choice that the toggle persists.
-        let alc_enabled = map
-            .get("alc_enabled")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(true);
-        // Trackpad haptics default: ON.  See `haptic_enabled` doc-comment.
-        let haptic_enabled = map
-            .get("haptic_enabled")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(true);
-        // PC link default: OFF - emulated cable starts unplugged.
-        let pc_link_enabled = map
-            .get("pc_link_enabled")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        let model = map.get("model").and_then(|v| Model::parse(v));
-        let firmware_release = map
-            .get("firmware_release")
-            .filter(|v| !v.is_empty())
-            .cloned();
-        let fs = map.get("fs").and_then(|v| v.parse().ok()).unwrap_or(0);
-        let mods_enabled = map
-            .get("mods_enabled")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(true);
-        let net_iface = map.get("net_iface").filter(|v| !v.is_empty()).cloned();
-        let usb_virtual_path = map
-            .get("usb_virtual_path")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from);
-        let usb_physical_bsd = map
-            .get("usb_physical_bsd")
-            .filter(|v| !v.is_empty())
-            .cloned();
         Self {
             mac,
             soc_serial,
-            audio_enabled,
-            audio_device_uid,
-            alc_enabled,
-            haptic_enabled,
-            pc_link_enabled,
-            model,
-            firmware_release,
-            fs,
-            mods_enabled,
-            net_iface,
-            usb_virtual_path,
-            usb_physical_bsd,
+            audio_enabled: flag(&map, "audio_enabled", false),
+            audio_device_uid: text(&map, "audio_device_uid"),
+            // ALC default: ON. New users get the sync compensation by default;
+            // opt-out is a power-user choice that the toggle persists.
+            alc_enabled: flag(&map, "alc_enabled", true),
+            // Trackpad haptics default: ON.  See `haptic_enabled` doc-comment.
+            haptic_enabled: flag(&map, "haptic_enabled", true),
+            // PC link default: OFF - emulated cable starts unplugged.
+            pc_link_enabled: flag(&map, "pc_link_enabled", false),
+            model: map.get("model").and_then(|v| Model::parse(v)),
+            firmware_release: text(&map, "firmware_release"),
+            fs: number(&map, "fs"),
+            mods_enabled: flag(&map, "mods_enabled", true),
+            net_iface: text(&map, "net_iface"),
+            usb_virtual_path: text(&map, "usb_virtual_path").map(PathBuf::from),
+            usb_physical_bsd: text(&map, "usb_physical_bsd"),
         }
     }
 
@@ -205,25 +157,17 @@ impl InstanceSettings {
     /// The firmware release recorded for `instance_id`, without loading the
     /// rest of the slot's settings. Mirrors [`Self::saved_model`].
     pub fn saved_firmware_release(instance_id: u32) -> Option<String> {
-        read_kv(&instance_path(instance_id))
-            .get("firmware_release")
-            .filter(|v| !v.is_empty())
-            .cloned()
+        text(&read_kv(&instance_path(instance_id)), "firmware_release")
     }
 
     /// The slot's [`Self::fs`], without loading the rest of its settings.
     pub fn saved_fs(instance_id: u32) -> u32 {
-        read_kv(&instance_path(instance_id))
-            .get("fs")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0)
+        number(&read_kv(&instance_path(instance_id)), "fs")
     }
 
     /// The slot's "Enable Mods", without loading the rest of its settings.
     pub fn saved_mods_enabled(instance_id: u32) -> bool {
-        read_kv(&instance_path(instance_id))
-            .get("mods_enabled")
-            .is_none_or(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        flag(&read_kv(&instance_path(instance_id)), "mods_enabled", true)
     }
 
     /// A fresh SoC serial, not yet given to any slot. The firmware installer
@@ -271,26 +215,14 @@ impl InstanceSettings {
         let mut map = read_kv(&path);
         map.insert("mac".into(), self.mac.clone());
         map.insert("soc_serial".into(), self.soc_serial.clone());
-        map.insert(
-            "audio_enabled".into(),
-            (if self.audio_enabled { "1" } else { "0" }).to_string(),
-        );
+        map.insert("audio_enabled".into(), flag_value(self.audio_enabled));
         map.insert(
             "audio_device_uid".into(),
             self.audio_device_uid.clone().unwrap_or_default(),
         );
-        map.insert(
-            "alc_enabled".into(),
-            (if self.alc_enabled { "1" } else { "0" }).to_string(),
-        );
-        map.insert(
-            "haptic_enabled".into(),
-            (if self.haptic_enabled { "1" } else { "0" }).to_string(),
-        );
-        map.insert(
-            "pc_link_enabled".into(),
-            (if self.pc_link_enabled { "1" } else { "0" }).to_string(),
-        );
+        map.insert("alc_enabled".into(), flag_value(self.alc_enabled));
+        map.insert("haptic_enabled".into(), flag_value(self.haptic_enabled));
+        map.insert("pc_link_enabled".into(), flag_value(self.pc_link_enabled));
         map.insert(
             "model".into(),
             self.model.map(|m| m.slug().to_string()).unwrap_or_default(),
@@ -300,10 +232,7 @@ impl InstanceSettings {
             self.firmware_release.clone().unwrap_or_default(),
         );
         map.insert("fs".into(), self.fs.to_string());
-        map.insert(
-            "mods_enabled".into(),
-            (if self.mods_enabled { "1" } else { "0" }).to_string(),
-        );
+        map.insert("mods_enabled".into(), flag_value(self.mods_enabled));
         map.insert(
             "net_iface".into(),
             self.net_iface.clone().unwrap_or_default(),
@@ -323,9 +252,48 @@ impl InstanceSettings {
     }
 }
 
+/// `map[key]` when `valid` accepts it, else a fresh value from `generate`,
+/// stored back into `map`. The value, and whether it was minted.
+fn kept_or_minted(
+    map: &mut BTreeMap<String, String>,
+    key: &str,
+    valid: fn(&str) -> bool,
+    generate: fn() -> String,
+) -> (String, bool) {
+    match map.get(key) {
+        Some(v) if valid(v) => (v.clone(), false),
+        _ => {
+            let v = generate();
+            map.insert(key.into(), v.clone());
+            (v, true)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fresh slot mints and persists its identity; the toggles take their
+    /// defaults.
+    #[test]
+    fn a_fresh_slot_takes_the_defaults() {
+        let _home = crate::TestHome::new("fresh");
+
+        let s = InstanceSettings::load_or_init(2);
+        assert!(is_valid_mac(&s.mac), "{}", s.mac);
+        assert!(is_valid_soc_serial(&s.soc_serial), "{}", s.soc_serial);
+        assert!(!s.audio_enabled);
+        assert!(s.alc_enabled);
+        assert!(s.haptic_enabled);
+        assert!(!s.pc_link_enabled);
+        assert_eq!(s.model, None);
+        assert_eq!(s.audio_device_uid, None);
+        assert_eq!(s.usb_virtual_path, None);
+
+        let again = InstanceSettings::load_or_init(2);
+        assert_eq!((again.mac, again.soc_serial), (s.mac, s.soc_serial));
+    }
 
     /// `update` keeps the fields other writers own (the minted MAC) and the
     /// saved model comes back through the read-only `saved_model`.

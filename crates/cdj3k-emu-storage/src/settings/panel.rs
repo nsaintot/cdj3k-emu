@@ -2,7 +2,7 @@
 
 use std::io;
 
-use super::kv::{instance_path, locked, read_kv, write_kv, SLOT_KEYS};
+use super::kv::{flag, flag_value, instance_path, locked, read_kv, write_kv, SLOT_KEYS};
 
 /// The two panel rotaries and the screen-extend view flag, one set per slot.
 ///
@@ -43,10 +43,7 @@ impl PanelSettings {
         let map = read_kv(&instance_path(instance_id));
         let d = Self::default();
         Self {
-            screen_extended: map
-                .get("screen_extended")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(d.screen_extended),
+            screen_extended: flag(&map, "screen_extended", d.screen_extended),
             // A non-finite value would index the brake table as NaN and wedge
             // the jog, so it falls back to the default instead of clamping.
             jog_adjust: map
@@ -67,10 +64,7 @@ impl PanelSettings {
         let _g = locked();
         let path = instance_path(instance_id);
         let mut map = read_kv(&path);
-        map.insert(
-            "screen_extended".into(),
-            if self.screen_extended { "1" } else { "0" }.into(),
-        );
+        map.insert("screen_extended".into(), flag_value(self.screen_extended));
         map.insert("jog_adjust".into(), format!("{}", self.jog_adjust));
         map.insert("vinyl_speed".into(), format!("{}", self.vinyl_speed));
         write_kv(&path, &map, SLOT_KEYS)

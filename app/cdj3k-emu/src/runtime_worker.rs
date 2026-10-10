@@ -1,34 +1,30 @@
 //! Background thread that polls `menu_state` and drives QemuInstance / UsbManager.
 
+mod mods;
+mod net;
+mod pc_link;
+mod qemu;
+mod usb;
+
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use cdj3k_emu_platform::menu_state::{APP_SHUTDOWN, NO_USB_MOUNTED};
-
-use cdj3k_emu_platform::menu_state;
+use cdj3k_emu_platform::menu_state::{self, APP_SHUTDOWN, NO_USB_MOUNTED};
 use cdj3k_emu_runtime::mods_report::ModsReport;
-use cdj3k_emu_runtime::pc_link::PcLink;
+use cdj3k_emu_runtime::{
+    host_disk_provider, register_worker_thread, CfgClient, HostDiskProvider, NetKeepAlive,
+    PhysicalDisk, QemuConfig, QemuInstance, UsbManager,
+};
 
 use crate::launch::ModsLaunch;
-use cdj3k_emu_runtime::{
-    host_disk_provider, register_worker_thread, CfgClient, DiskProvider, HostDiskProvider,
-    NetKeepAlive, QemuConfig, QemuInstance, UsbManager,
-};
-use cdj3k_emu_storage::mods::BootMods;
+
+pub use net::adopt_attachment;
+use pc_link::PcLinkState;
+use usb::PendingRemount;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const NET_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
-// Resend interval for an unacknowledged `pc_link` command (cfgd echoes only
-// after its `systemctl` returns).
-const PC_LINK_CFG_RESEND: Duration = Duration::from_millis(1500);
-/// Spacing between `PcLink::start` attempts while the guest socket is absent.
-const PC_LINK_RETRY: Duration = Duration::from_millis(500);
-/// `pc_link` failure replies tolerated before the reconcile stops reissuing
-/// the command.  An unanswered send means the guest has not opened the cfg
-/// port yet and is retried indefinitely; a failure reply means cfgd ran
-/// systemctl and it did not work.
-const PC_LINK_CFG_MAX_FAILURES: u32 = 4;
 
 /// Pre-built network backend, set up before the very first QEMU spawn so the
 /// initial process already has the right `-netdev`. The worker holds it for
@@ -55,82 +51,162 @@ pub fn spawn(
 }
 
 fn run(
-    mut instance: Option<QemuInstance>,
-    mut config: QemuConfig,
+    instance: Option<QemuInstance>,
+    config: QemuConfig,
     prebuilt_net: PrebuiltNet,
     mods: ModsLaunch,
 ) {
-    {
-        let mut s = menu_state::lock();
-        s.qemu_running = instance.is_some();
-        // A restart that went through a relaunch forced the shade; the new
-        // QEMU is up, and the boot shade holds until its first frames.
-        if instance.is_some() {
-            s.shade_forced = false;
+    let mut worker = Worker::new(instance, config, prebuilt_net, mods);
+    while worker.tick() {
+        std::thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// Everything the worker carries from one tick to the next. Fields drop in
+/// declaration order: the PC-link bridge first, while its socket is valid,
+/// then the network keep-alive, then the USB manager and the cfg client.
+struct Worker {
+    pc_link: PcLinkState,
+    /// Storage to re-mount after the next QEMU boot (deferred until cfg.sock is ready).
+    pending_remount: Option<PendingRemount>,
+    /// Mods whose journal was requested and has not arrived yet.
+    mod_logs_due: Vec<String>,
+    /// The last mods report recorded, so each new report is saved only once.
+    last_mods_report: ModsReport,
+    /// Latched per QEMU lifetime - cleared on restart so a fresh kernel module
+    /// load gets the user's persisted ALC value pushed once cfg.sock is up.
+    alc_pushed_for_boot: bool,
+    last_net_refresh: Instant,
+    last_phys_toggle: i32,
+    prev_net_idx: u32,
+    /// TAP bridge: dropped on app exit and on iface change, tearing down the
+    /// host TAP.  Sockets and directories are removed in one place only:
+    /// `cleanup_runtime_files` on process exit.
+    _active_net: NetKeepAlive,
+    last_disk_refresh: Instant,
+    phys_disks: Vec<PhysicalDisk>,
+    usb: UsbManager,
+    cfg_client: CfgClient,
+    provider: HostDiskProvider,
+    mods: ModsLaunch,
+    config: QemuConfig,
+    instance: Option<QemuInstance>,
+    /// The physical disk persisted for this slot, restored on the first disk scan.
+    saved_phys_bsd: Option<String>,
+    phys_restore_attempted: bool,
+}
+
+impl Worker {
+    fn new(
+        instance: Option<QemuInstance>,
+        config: QemuConfig,
+        prebuilt_net: PrebuiltNet,
+        mods: ModsLaunch,
+    ) -> Self {
+        {
+            let mut s = menu_state::lock();
+            s.qemu_running = instance.is_some();
+            // A restart that went through a relaunch forced the shade; the new
+            // QEMU is up, and the boot shade holds until its first frames.
+            if instance.is_some() {
+                s.shade_forced = false;
+            }
+        }
+        let provider = host_disk_provider();
+        let cfg_client = CfgClient::new(&config.sock_dir());
+        let usb = UsbManager::new(&config, cfg_client.clone());
+        let pc_link = PcLinkState::new();
+        // Populate the interface cache immediately so the menu has data on first open.
+        menu_state::refresh_net_interfaces();
+
+        // Virtual USB: main.rs seeded usb_virtual_img if the file existed; queue a
+        // deferred mount that runs once QEMU is up.
+        let pending_remount = menu_state::lock()
+            .usb_virtual_img
+            .clone()
+            .filter(|path| path.exists())
+            .map(|path| PendingRemount::Virtual { path });
+        let saved_phys_bsd =
+            cdj3k_emu_storage::InstanceSettings::load_or_init(config.instance_id).usb_physical_bsd;
+
+        Self {
+            pc_link,
+            pending_remount,
+            mod_logs_due: Vec::new(),
+            last_mods_report: ModsReport::Unknown,
+            alc_pushed_for_boot: false,
+            last_net_refresh: Instant::now() - NET_REFRESH_INTERVAL,
+            last_phys_toggle: -1,
+            prev_net_idx: prebuilt_net.initial_net_idx,
+            _active_net: prebuilt_net.keep,
+            last_disk_refresh: Instant::now() - DISK_REFRESH_INTERVAL,
+            phys_disks: Vec::new(),
+            usb,
+            cfg_client,
+            provider,
+            mods,
+            config,
+            instance,
+            phys_restore_attempted: saved_phys_bsd.is_none(),
+            saved_phys_bsd,
         }
     }
-    let provider = host_disk_provider();
-    let cfg_client = CfgClient::new(&config.sock_dir());
-    let mut usb = UsbManager::new(&config, cfg_client.clone());
-    let mut phys_disks: Vec<cdj3k_emu_runtime::PhysicalDisk> = Vec::new();
-    let mut last_disk_refresh = Instant::now() - DISK_REFRESH_INTERVAL;
 
-    // TAP bridge: owned here so Drop fires on app exit (worker breaks out of
-    // the loop, function returns, locals drop) and on iface change (`= None;`
-    // drops the previous Some), tearing down the host TAP.  Sockets and
-    // directories are removed in one place only: `cleanup_runtime_files` on
-    // process exit.
-    #[allow(unused_assignments)]
-    let mut _active_net: NetKeepAlive = prebuilt_net.keep;
-    let mut prev_net_idx: u32 = prebuilt_net.initial_net_idx;
-    let mut last_phys_toggle: i32 = -1;
-    let mut last_net_refresh = Instant::now() - NET_REFRESH_INTERVAL;
-    // Latched per QEMU lifetime - cleared on restart so a fresh kernel module
-    // load gets the user's persisted ALC value pushed once cfg.sock is up.
-    let mut alc_pushed_for_boot = false;
-    // The last mods report recorded, so each new report is saved only once.
-    let mut last_mods_report = ModsReport::Unknown;
-    // Mods whose journal was requested and has not arrived yet.
-    let mut mod_logs_due: Vec<String> = Vec::new();
-    // Storage to re-mount after the next QEMU boot (deferred until cfg.sock is ready).
-    let mut pending_remount: Option<PendingRemount> = None;
-    // Host-side PC-link bridge.  `Some` from the first successful connect
-    // until the toggle goes off or the app stops.  Owns the OS-visible
-    // endpoints across a QEMU respawn and re-dials the socket underneath them.
-    let mut pc_link: Option<PcLink> = None;
-    // True if the user wants pc_link on but the latest connect attempt
-    // failed (typically because the guest's bridge service isn't up yet).
-    // Next worker iteration retries.
-    let mut pc_link_retry_pending = false;
-    // Ack-gated cfg reconcile state (resend throttle + last driven state).
-    let mut last_pc_link_cfg = Instant::now() - PC_LINK_CFG_RESEND;
-    let mut last_pc_link_retry = Instant::now() - PC_LINK_RETRY;
-    let mut pc_link_gave_up = false;
-    let mut last_pc_link_want: Option<bool> = None;
-    // Populate the interface cache immediately so the menu has data on first open.
-    menu_state::refresh_net_interfaces();
-
-    // ── Restore persisted per-instance settings (best effort) ────────────────
-    // Virtual USB: main.rs seeded usb_virtual_img if the file existed; queue a
-    // deferred mount that runs once QEMU is up.
-    if let Some(path) = menu_state::lock().usb_virtual_img.clone() {
-        if path.exists() {
-            pending_remount = Some(PendingRemount::Virtual { path });
+    /// One poll iteration. Returns false once the worker is to exit.
+    fn tick(&mut self) -> bool {
+        if self.exit_requested() {
+            self.shut_down();
+            return false;
         }
-    }
-    let saved_phys_bsd =
-        cdj3k_emu_storage::InstanceSettings::load_or_init(config.instance_id).usb_physical_bsd;
-    let mut phys_restore_attempted = saved_phys_bsd.is_none();
+        if self.guest_exited() {
+            self.reap_guest();
+            if APP_SHUTDOWN.load(Ordering::Relaxed) {
+                menu_state::lock().qemu_respawning = false;
+                return false;
+            }
+            self.respawn_after_guest_exit();
+        }
+        self.request_mods_restart();
 
-    loop {
-        // ── Exit gates: app shutdown, or the setup window retiring this worker ─
+        let req = Requests::drain(self.instance.is_none());
+        if req.boot {
+            self.spawn_qemu(qemu::SpawnCause::Provisioned);
+        }
+        if req.stop {
+            self.stop_qemu();
+        }
+        let settings_need_restart = self.apply_setting_toggles(&req);
+        let restart_pending = req.restart || settings_need_restart;
+        self.reconcile_pc_link(&req);
+        self.push_alc_once(req.alc_enabled);
+        self.mirror_latency();
+        self.track_mods_report();
+        self.mirror_guest_cfg_live();
+        if restart_pending {
+            self.restart_qemu();
+        }
+        if req.selected_iface != self.prev_net_idx {
+            self.switch_network(req.selected_iface);
+        }
+        self.handle_usb_requests(&req);
+        self.acknowledge_guest_eject();
+        self.apply_pending_remount();
+        self.refresh_net_list();
+        self.refresh_disks();
+        true
+    }
+
+    /// App shutdown, or the setup window retiring this worker. A restart with
+    /// a finished install waiting is the shell's to do: it launches again, and
+    /// a launch swaps the install in. The guest rebooting counts, as does the
+    /// menu's restart.
+    fn exit_requested(&self) -> bool {
         let mut retire = std::mem::take(&mut menu_state::lock().worker_exit_requested);
-        // A restart with a finished install waiting is the shell's to do: it
-        // launches again, and a launch swaps the install in. The guest
-        // rebooting counts, as does the menu's restart.
         let restarting = menu_state::lock().restart_requested
-            || instance.as_ref().is_some_and(|i| !i.is_running());
-        if !retire && restarting && cdj3k_emu_storage::pending_install(config.instance_id).is_some()
+            || self.instance.as_ref().is_some_and(|i| !i.is_running());
+        if !retire
+            && restarting
+            && cdj3k_emu_storage::pending_install(self.config.instance_id).is_some()
         {
             let mut s = menu_state::lock();
             s.restart_requested = false;
@@ -138,654 +214,95 @@ fn run(
             s.shade_forced = true;
             retire = true;
         }
-        if APP_SHUTDOWN.load(Ordering::Relaxed) || retire {
-            // Save an Enable Mods toggle that the request handling below
-            // would otherwise miss.
-            let toggled = {
-                let mut s = menu_state::lock();
-                std::mem::take(&mut s.mods_toggle_requested).then_some(s.mods_enabled)
-            };
-            if let Some(on) = toggled {
-                persist_inst(config.instance_id, |s| s.mods_enabled = on);
-            }
-            // Drop PcLink first so its threads exit while the socket is still
-            // valid; otherwise the reader thread blocks on a half-closed fd.
-            // `take()` triggers Drop on the inner value; we ignore the
-            // returned Option since `pc_link` is going out of scope anyway.
-            let _ = pc_link.take();
-            if let Some(mut inst) = instance.take() {
-                inst.stop();
-            }
-            // A restart asked for now would restart the next worker's new QEMU.
+        APP_SHUTDOWN.load(Ordering::Relaxed) || retire
+    }
+
+    fn shut_down(&mut self) {
+        // Save an Enable Mods toggle that the request handling would
+        // otherwise miss.
+        let toggled = {
             let mut s = menu_state::lock();
-            s.qemu_running = false;
-            s.restart_requested = false;
-            break;
-        }
-
-        // ── Auto-restart after guest-initiated shutdown ───────────────────────
-        let guest_exited = instance.as_ref().map(|i| !i.is_running()).unwrap_or(false);
-        if guest_exited {
-            // PcLink stays: its endpoints must outlive the respawn, else
-            // rekordbox's polled HID name goes stale.  The socket dies with
-            // the guest; the reader takes EOF and the liveness check re-dials.
-            if let Some(ref mut inst) = instance {
-                inst.stop();
-            }
-            instance = None;
-            pc_link_gave_up = false;
-            {
-                let mut s = menu_state::lock();
-                s.qemu_running = false;
-                s.qemu_respawning = true;
-            }
-
-            if APP_SHUTDOWN.load(Ordering::Relaxed) {
-                menu_state::lock().qemu_respawning = false;
-                break;
-            }
-
-            eprintln!("cdj3k-emu: QEMU exited - restarting");
-            let (prev_phys, prev_virt) = {
-                let s = menu_state::lock();
-                (s.usb_phys_mounted_idx, s.usb_virtual_mounted)
-            };
-            reset_usb(&mut usb, &config, &cfg_client);
-            pending_remount = PendingRemount::capture(prev_phys, prev_virt, &phys_disks);
-            let boot = apply_menu_to_config(&mut config, &mods);
-            cfg_client.new_boot();
-            last_mods_report = ModsReport::Unknown;
-            match QemuInstance::spawn(config.clone()) {
-                Ok(new_inst) => {
-                    cdj3k_emu_storage::mods::set_current_boot(boot);
-                    instance = Some(new_inst);
-                    alc_pushed_for_boot = false;
-                    let mut s = menu_state::lock();
-                    s.qemu_running = true;
-                    s.shade_forced = false;
-                }
-                Err(e) => eprintln!("cdj3k-emu: auto-restart failed: {e:?}"),
-            }
-            menu_state::lock().qemu_respawning = false;
-        }
-
-        // If a mods restart was requested after the current boot read the
-        // slot's mods, restart QEMU. Wait until the guest's cfgd answers: a
-        // guest that is still booting cannot power off and is killed after 8 s.
-        {
-            let mut s = menu_state::lock();
-            if instance.is_some()
-                && s.qemu_running
-                && s.mods_restart_seq != s.mods_restart_seq_booted
-                && cfg_client.guest_heard()
-                && !s.restart_requested
-            {
-                s.restart_requested = true;
-                s.shade_forced = true;
-            }
-        }
-
-        // ── Per-iteration request dispatch ───────────────────────────────────
-        // Drain every one-shot flag in a single lock acquisition.
-        let req = {
-            let mut s = menu_state::lock();
-            Requests {
-                boot: std::mem::take(&mut s.qemu_boot_requested) && instance.is_none(),
-                stop: std::mem::take(&mut s.stop_requested),
-                audio_toggle: std::mem::take(&mut s.audio_toggle_requested),
-                audio_device_toggle: std::mem::take(&mut s.audio_device_toggle_requested),
-                alc_toggle: std::mem::take(&mut s.alc_toggle_requested),
-                restart: std::mem::take(&mut s.restart_requested),
-                usb_create: std::mem::take(&mut s.usb_create_req),
-                usb_virt_mount: std::mem::take(&mut s.usb_virtual_mount_req),
-                usb_eject: std::mem::take(&mut s.usb_eject_req),
-                usb_phys_toggle: std::mem::replace(&mut s.usb_phys_toggle_idx, NO_USB_MOUNTED),
-                usb_phys_retry: std::mem::take(&mut s.usb_phys_retry_req),
-                audio_enabled: s.audio_enabled,
-                audio_device_uid: s.audio_device_uid.clone(),
-                alc_enabled: s.alc_enabled,
-                haptic_toggle: std::mem::take(&mut s.haptic_toggle_requested),
-                haptic_enabled: s.haptic_enabled,
-                mods_toggle: std::mem::take(&mut s.mods_toggle_requested),
-                mods_enabled: s.mods_enabled,
-                pc_link_toggle: std::mem::take(&mut s.pc_link_toggle_requested),
-                pc_link_enabled: s.pc_link_enabled,
-                selected_iface: s.selected_interface,
-                usb_virtual_img: s.usb_virtual_img.clone(),
-            }
+            std::mem::take(&mut s.mods_toggle_requested).then_some(s.mods_enabled)
         };
-
-        // ── Post-provisioning boot ────────────────────────────────────────────
-        if req.boot {
-            let boot = apply_menu_to_config(&mut config, &mods);
-            cfg_client.new_boot();
-            last_mods_report = ModsReport::Unknown;
-            match QemuInstance::spawn(config.clone()) {
-                Ok(inst) => {
-                    cdj3k_emu_storage::mods::set_current_boot(boot);
-                    eprintln!("cdj3k-emu: QEMU started after provisioning");
-                    instance = Some(inst);
-                    alc_pushed_for_boot = false;
-                    let mut s = menu_state::lock();
-                    s.qemu_running = true;
-                    s.shade_forced = false;
-                }
-                Err(e) => eprintln!("cdj3k-emu: post-provision QEMU start failed: {e:?}"),
-            }
+        if let Some(on) = toggled {
+            persist_inst(self.config.instance_id, |s| s.mods_enabled = on);
         }
+        // Drop PcLink first so its threads exit while the socket is still
+        // valid; otherwise the reader thread blocks on a half-closed fd.
+        self.pc_link.close_bridge();
+        self.stop_instance();
+        // A restart asked for now would restart the next worker's new QEMU.
+        let mut s = menu_state::lock();
+        s.qemu_running = false;
+        s.restart_requested = false;
+    }
 
-        // ── Stop ─────────────────────────────────────────────────────────────
-        if req.stop {
-            pc_link = None;
-            pc_link_retry_pending = false;
-            pc_link_gave_up = false;
-            if let Some(ref mut inst) = instance {
-                inst.stop();
-            }
-            instance = None;
-            menu_state::lock().qemu_running = false;
-        }
-
-        // ── Audio toggle ─────────────────────────────────────────────────────
-        // Persist the new value then re-arm RESTART so QEMU comes back up with
-        // the new -audio config.
-        let mut restart_pending = req.restart;
+    /// Persist the toggled settings and apply the ones that act at once.
+    /// Returns true when a toggled setting takes a QEMU restart: audio on/off
+    /// and the output device are QEMU's `-audio` / `-audiodev` arguments.
+    fn apply_setting_toggles(&mut self, req: &Requests) -> bool {
+        let id = self.config.instance_id;
         if req.audio_toggle {
-            persist_inst(config.instance_id, |s| s.audio_enabled = req.audio_enabled);
-            restart_pending = true;
+            persist_inst(id, |s| s.audio_enabled = req.audio_enabled);
         }
-
-        // ── Audio output device selection ────────────────────────────────────
-        // Same shape as audio_toggle: persist and trigger a restart so the
-        // new `-audiodev coreaudio,out.dev=<UID>` arg takes effect.
         if req.audio_device_toggle {
-            persist_inst(config.instance_id, |s| {
+            persist_inst(id, |s| {
                 s.audio_device_uid = req.audio_device_uid.clone();
             });
-            restart_pending = true;
         }
-
-        // ── ALC toggle ───────────────────────────────────────────────────────
-        // Push `set audio_sync_enabled <0|1>` to the guest cfg daemon. No
-        // restart needed - sysfs takes effect immediately and the LD_PRELOAD
-        // shims pick up the change on their next 1 s sysfs refresh tick.
-        // Also persist so the setting survives across launches.
         if req.alc_toggle {
-            let v = if req.alc_enabled { "1" } else { "0" };
-            if let Err(e) = cfg_client.set_param("audio_sync_enabled", v) {
-                eprintln!("cdj3k-emu: set audio_sync_enabled failed: {e}");
-            }
-            persist_inst(config.instance_id, |s| s.alc_enabled = req.alc_enabled);
+            self.set_alc(req.alc_enabled);
         }
-
-        // ── Trackpad haptics toggle ──────────────────────────────────────────
         // Host-side only - no QEMU restart, no guest push.  The jog physics
         // layer reads `menu_state.haptic_enabled` at each detent crossing.
         if req.haptic_toggle {
-            persist_inst(config.instance_id, |s| {
-                s.haptic_enabled = req.haptic_enabled
-            });
+            persist_inst(id, |s| s.haptic_enabled = req.haptic_enabled);
         }
-
         // The restart that the toggle requests reads this setting when it
         // builds the initramfs.
         if req.mods_toggle {
-            persist_inst(config.instance_id, |s| s.mods_enabled = req.mods_enabled);
+            persist_inst(id, |s| s.mods_enabled = req.mods_enabled);
         }
+        req.audio_toggle || req.audio_device_toggle
+    }
 
-        // ── PC-link toggle: persist + host PcLink; guest cfg is the reconcile below ──
-        if req.pc_link_toggle {
-            persist_inst(config.instance_id, |s| {
-                s.pc_link_enabled = req.pc_link_enabled
-            });
-            if req.pc_link_enabled {
-                pc_link_retry_pending = true;
-            } else {
-                pc_link = None;
-                pc_link_retry_pending = false;
-            }
+    /// Push `set audio_sync_enabled <0|1>` to the guest cfg daemon and persist
+    /// it. No restart needed - sysfs takes effect immediately and the
+    /// LD_PRELOAD shims pick up the change on their next 1 s sysfs refresh tick.
+    fn set_alc(&self, enabled: bool) {
+        let v = if enabled { "1" } else { "0" };
+        if let Err(e) = self.cfg_client.set_param("audio_sync_enabled", v) {
+            eprintln!("cdj3k-emu: set audio_sync_enabled failed: {e}");
         }
+        persist_inst(self.config.instance_id, |s| s.alc_enabled = enabled);
+    }
 
-        // ── PC-link cfg reconcile: resend `pc_link on/off` until cfgd echoes it ──
-        // A lone send can be dropped (boot race / single-client cfg vport).  On
-        // a desired change, clear the echo so a stale/lost one can't skip it.
-        let want = req.pc_link_enabled;
-        if last_pc_link_want != Some(want) {
-            last_pc_link_want = Some(want);
-            cfg_client.reset_pc_link_state();
-            last_pc_link_cfg = Instant::now() - PC_LINK_CFG_RESEND;
-            pc_link_gave_up = false;
+    /// The kernel module's `audio_sync_enabled` defaults to 0 on every module
+    /// load.  Push the user's persisted value once per QEMU lifetime, as soon
+    /// as cfg.sock is responsive: the first latency push only arrives after
+    /// the cfg daemon has handshook the port.
+    fn push_alc_once(&mut self, enabled: bool) {
+        if self.alc_pushed_for_boot || self.cfg_client.latency().is_none() {
+            return;
         }
-        let failures = cfg_client.pc_link_failures();
-        if instance.is_some()
-            && cfg_client.is_connected()
-            && cfg_client.pc_link_state() != Some(want)
-            && failures < PC_LINK_CFG_MAX_FAILURES
-            && last_pc_link_cfg.elapsed() >= PC_LINK_CFG_RESEND
-        {
-            match cfg_client.pc_link(want) {
-                Ok(()) => eprintln!(
-                    "cdj3k-emu: pc_link cfg to guest ({})",
-                    if want { "on" } else { "off" }
-                ),
-                Err(e) => eprintln!("cdj3k-emu: pc_link cfg send failed: {e}"),
-            }
-            last_pc_link_cfg = Instant::now();
-        } else if failures >= PC_LINK_CFG_MAX_FAILURES && !pc_link_gave_up {
-            pc_link_gave_up = true;
-            eprintln!(
-                "cdj3k-emu: guest refused pc_link {} {} times; not reissuing",
-                if want { "on" } else { "off" },
-                PC_LINK_CFG_MAX_FAILURES
-            );
-            // The bridge is not running, so the toggle goes back to off and
-            // the host endpoints come down with it.  The item stays clickable:
-            // toggling clears the failure count and tries again.  Written to
-            // menu_state rather than persisted, so the next launch starts from
-            // the user's own setting.
-            if want {
-                menu_state::lock().pc_link_enabled = false;
-                pc_link = None;
-                pc_link_retry_pending = false;
-            }
+        let v = if enabled { "1" } else { "0" };
+        if let Err(e) = self.cfg_client.set_param("audio_sync_enabled", v) {
+            eprintln!("cdj3k-emu: initial set audio_sync_enabled failed: {e}");
+        } else {
+            self.alc_pushed_for_boot = true;
         }
+    }
 
-        // ── PC-link reconcile: ensure host PcLink is up when toggle is on ────
-        if req.pc_link_enabled && pc_link.is_none() && instance.is_some() {
-            pc_link_retry_pending = true;
-        }
-
-        // Retry while the toggle is on and QEMU is up.  Each attempt that
-        // gets past the dial registers an IOKit device, and rekordbox's
-        // polled HID name goes stale if that happens repeatedly, so the
-        // attempts are paced rather than run at the poll cadence.
-        if pc_link_retry_pending
-            && pc_link.is_none()
-            && instance.is_some()
-            && last_pc_link_retry.elapsed() >= PC_LINK_RETRY
-        {
-            last_pc_link_retry = Instant::now();
-            match PcLink::start(&config.sock_dir(), config.instance_id) {
-                Ok(link) => {
-                    eprintln!("cdj3k-emu: pc-link bridge connected");
-                    pc_link = Some(link);
-                    pc_link_retry_pending = false;
-                }
-                Err(_) => {
-                    // Quietly retry next iteration.  Logging here would spam
-                    // at the worker poll cadence (every 50 ms).
-                }
-            }
-        }
-
-        // ── PC-link liveness: re-dial a live bridge whose socket died ───────
-        // A QEMU respawn closes the socket without touching the endpoints.
-        // Re-dial rather than rebuild, keeping the HID identity rekordbox polled.
-        // While QEMU is down nothing consumes host->guest frames, so they are
-        // discarded as they arrive.
-        if instance.is_none() {
-            if let Some(link) = pc_link.as_mut() {
-                link.drain_while_down();
-            }
-        }
-        if req.pc_link_enabled && instance.is_some() {
-            if let Some(link) = pc_link.as_mut() {
-                if !link.is_alive() && last_pc_link_retry.elapsed() >= PC_LINK_RETRY {
-                    last_pc_link_retry = Instant::now();
-                    match link.reconnect() {
-                        Ok(()) => eprintln!("cdj3k-emu: pc-link re-dialed"),
-                        // Refused dial is normal during guest boot; retry next tick.
-                        Err(e) if e.is_retryable() => {}
-                        // Outbound channel gone; the backends cannot reach the
-                        // guest.  Rebuild (costs a fresh HID identity).
-                        Err(e) => {
-                            eprintln!("cdj3k-emu: pc-link unrecoverable ({e}) - rebuilding");
-                            pc_link = None;
-                            pc_link_retry_pending = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── First-time ALC push for this QEMU boot ───────────────────────────
-        // The kernel module's `audio_sync_enabled` defaults to 0 on every
-        // module load.  Push the user's persisted value once per QEMU
-        // lifetime, as soon as cfg.sock is responsive.  We detect "responsive"
-        // by waiting for the first latency push - which only arrives after
-        // the cfg daemon has handshook the port.
-        if !alc_pushed_for_boot && cfg_client.latency().is_some() {
-            let v = if req.alc_enabled { "1" } else { "0" };
-            if let Err(e) = cfg_client.set_param("audio_sync_enabled", v) {
-                eprintln!("cdj3k-emu: initial set audio_sync_enabled failed: {e}");
-            } else {
-                alc_pushed_for_boot = true;
-            }
-        }
-
-        // ── Latency mirror ───────────────────────────────────────────────────
-        if let Some(lat) = cfg_client.latency() {
+    fn mirror_latency(&self) {
+        if let Some(lat) = self.cfg_client.latency() {
             menu_state::lock().latency_packed =
                 menu_state::pack_latency(lat.total_ms, lat.guest_ms, lat.host_ms);
         }
-        // ── Mods report ──────────────────────────────────────────────────────
-        let report = cfg_client.mods_report();
-        if report != last_mods_report {
-            if matches!(report, ModsReport::Done { .. } | ModsReport::Off) {
-                record_mods_report(config.instance_id, &report);
-            }
-            mod_logs_due.clear();
-            if let ModsReport::Done { outcomes, unread } = &report {
-                let names = outcomes.iter().map(|o| &o.name);
-                for name in names.chain(unread.iter().map(|u| &u.name)) {
-                    if cfg_client.request_mod_log(name).is_ok() {
-                        mod_logs_due.push(name.clone());
-                    }
-                }
-            }
-            last_mods_report = report;
-        }
-        mod_logs_due.retain(|name| match cfg_client.mod_log(name) {
-            Some(lines) => {
-                let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
-                if let Err(e) =
-                    cdj3k_emu_storage::mods::save_last_boot_log(config.instance_id, name, &text)
-                {
-                    eprintln!("cdj3k-emu: saving the journal of mod {name} failed: {e}");
-                }
-                false
-            }
-            None => true,
-        });
+    }
 
-        let cfg_live = instance.is_some() && cfg_client.guest_heard();
+    fn mirror_guest_cfg_live(&self) {
+        let cfg_live = self.instance.is_some() && self.cfg_client.guest_heard();
         menu_state::lock().guest_cfg_live = cfg_live;
-
-        // ── Restart ──────────────────────────────────────────────────────────
-        if restart_pending {
-            if let Some(ref mut inst) = instance {
-                inst.stop();
-            }
-            instance = None;
-            pc_link_gave_up = false;
-            let (prev_phys, prev_virt) = {
-                let mut s = menu_state::lock();
-                s.qemu_running = false;
-                s.qemu_respawning = true;
-                (s.usb_phys_mounted_idx, s.usb_virtual_mounted)
-            };
-            reset_usb(&mut usb, &config, &cfg_client);
-            pending_remount = PendingRemount::capture(prev_phys, prev_virt, &phys_disks);
-            let boot = apply_menu_to_config(&mut config, &mods);
-            cfg_client.new_boot();
-            last_mods_report = ModsReport::Unknown;
-            match QemuInstance::spawn(config.clone()) {
-                Ok(inst) => {
-                    cdj3k_emu_storage::mods::set_current_boot(boot);
-                    eprintln!("cdj3k-emu: QEMU restarted");
-                    instance = Some(inst);
-                    alc_pushed_for_boot = false;
-                    let mut s = menu_state::lock();
-                    s.qemu_running = true;
-                    s.shade_forced = false;
-                }
-                Err(e) => eprintln!("cdj3k-emu: restart failed: {e:?}"),
-            }
-            menu_state::lock().qemu_respawning = false;
-        }
-
-        // ── Network interface selection ───────────────────────────────────────
-        if req.selected_iface != prev_net_idx {
-            prev_net_idx = req.selected_iface;
-            _active_net = NetKeepAlive::Nothing;
-            config.net_vmnet = None;
-            config.net_tap_iface = None;
-            config.net_tap_fd = None;
-
-            let attempt = match req.selected_iface {
-                menu_state::NET_SEL_NONE => None,
-                menu_state::NET_SEL_VMNET_HOST => Some((
-                    "host-only".to_string(),
-                    cdj3k_emu_runtime::net_attach_host_only(),
-                )),
-                idx => menu_state::lock()
-                    .net_ifaces
-                    .get(idx as usize)
-                    .map(|i| i.name.clone())
-                    .map(|name| {
-                        // The same call `launch.rs` makes, so a selection made
-                        // while running behaves like one made at boot.
-                        let r = cdj3k_emu_runtime::net_attach(
-                            &name,
-                            &config.mac.clone().unwrap_or_default(),
-                            config.instance_id,
-                        );
-                        (name, r)
-                    }),
-            };
-            if let Some((name, result)) = attempt {
-                match result {
-                    Ok(a) => {
-                        eprintln!("cdj3k-emu: bridged on {name}");
-                        config.net_vmnet = a.vmnet.clone();
-                        config.net_tap_iface = a.tap_iface.clone();
-                        config.net_tap_fd = a.tap_fd;
-                        _active_net = a.keep;
-                    }
-                    Err(e) => {
-                        let msg = format!("cannot bridge on {name}: {e}");
-                        eprintln!("cdj3k-emu: {msg}");
-                        let mut s = menu_state::lock();
-                        s.selected_interface = menu_state::NET_SEL_NONE;
-                        s.net_error_message = Some(msg);
-                        prev_net_idx = menu_state::NET_SEL_NONE;
-                    }
-                }
-            }
-
-            let boot = apply_menu_to_config(&mut config, &mods);
-            if let Some(ref mut inst) = instance {
-                let (prev_phys, prev_virt) = {
-                    let s = menu_state::lock();
-                    (s.usb_phys_mounted_idx, s.usb_virtual_mounted)
-                };
-                cfg_client.new_boot();
-                last_mods_report = ModsReport::Unknown;
-                mod_logs_due.clear();
-                match inst.restart(config.clone()) {
-                    Ok(()) => {
-                        cdj3k_emu_storage::mods::set_current_boot(boot);
-                        reset_usb(&mut usb, &config, &cfg_client);
-                        pending_remount =
-                            PendingRemount::capture(prev_phys, prev_virt, &phys_disks);
-                        alc_pushed_for_boot = false;
-                        menu_state::lock().shade_forced = false;
-                    }
-                    Err(e) => eprintln!("cdj3k-emu: restart after net change failed: {e:?}"),
-                }
-            } else {
-                menu_state::lock().shade_forced = false;
-            }
-
-            // Persist the resulting iface name (or None on auto-revert / "none"),
-            // or the vmnet-host token when host-only mode is selected.
-            let final_name = {
-                let s = menu_state::lock();
-                match s.selected_interface {
-                    menu_state::NET_SEL_NONE => None,
-                    menu_state::NET_SEL_VMNET_HOST => {
-                        Some(menu_state::NET_IFACE_VMNET_HOST_TOKEN.to_string())
-                    }
-                    idx => s.net_ifaces.get(idx as usize).map(|i| i.name.clone()),
-                }
-            };
-            persist_inst(config.instance_id, |s| s.net_iface = final_name);
-        }
-
-        // ── Virtual USB create ────────────────────────────────────────────────
-        // attach_virtual / attach_physical auto-eject whatever was mounted, so
-        // we don't need a separate detach step on a virtual↔physical switch.
-        if req.usb_create {
-            if let (Some(path), Some(ref mut inst)) =
-                (req.usb_virtual_img.clone(), instance.as_mut())
-            {
-                const DEFAULT_SIZE: u64 = 32_000_000_000;
-                match usb.create_and_attach_virtual(inst.qmp(), &provider, &path, DEFAULT_SIZE) {
-                    Ok(()) => mark_virtual_mounted(config.instance_id, &path),
-                    Err(e) => eprintln!("cdj3k-emu: USB create failed: {e}"),
-                }
-            }
-        }
-
-        // ── Virtual USB mount ─────────────────────────────────────────────────
-        if req.usb_virt_mount {
-            if let (Some(path), Some(ref mut inst)) =
-                (req.usb_virtual_img.clone(), instance.as_mut())
-            {
-                match usb.attach_virtual(inst.qmp(), &provider, &path) {
-                    Ok(()) => mark_virtual_mounted(config.instance_id, &path),
-                    Err(e) => eprintln!("cdj3k-emu: USB mount failed: {e}"),
-                }
-            }
-        }
-
-        // ── Unified eject (works for both virtual and physical) ──────────────
-        if req.usb_eject {
-            if let Some(ref mut inst) = instance {
-                match usb.detach(inst.qmp(), &provider) {
-                    Ok(()) => {
-                        let mut s = menu_state::lock();
-                        s.usb_virtual_mounted = false;
-                        s.usb_phys_mounted_idx = NO_USB_MOUNTED;
-                        drop(s);
-                        persist_inst(config.instance_id, |s| {
-                            s.usb_virtual_path = None;
-                            s.usb_physical_bsd = None;
-                        });
-                    }
-                    Err(e) => eprintln!("cdj3k-emu: eject failed: {e}"),
-                }
-            }
-        }
-
-        // ── Physical USB switch ──────────────────────────────────────────────
-        // Either a fresh menu pick (usb_phys_toggle >= 0) or a retry of the
-        // last one (usb_phys_retry).  Menu-side already filters re-selecting
-        // the currently mounted disk; ejecting is via `usb_eject`.
-        let toggle_idx = if req.usb_phys_toggle >= 0 {
-            last_phys_toggle = req.usb_phys_toggle;
-            req.usb_phys_toggle
-        } else if req.usb_phys_retry {
-            last_phys_toggle
-        } else {
-            -1
-        };
-        if toggle_idx >= 0 {
-            if let Some(ref mut inst) = instance {
-                if let Some(disk) = phys_disks.get(toggle_idx as usize) {
-                    match usb.attach_physical(inst.qmp(), disk, &provider) {
-                        Ok(()) => {
-                            let mut s = menu_state::lock();
-                            s.usb_phys_mounted_idx = toggle_idx;
-                            s.usb_virtual_mounted = false;
-                            drop(s);
-                            let bsd = disk.bsd_name.clone();
-                            persist_inst(config.instance_id, |s| {
-                                s.usb_physical_bsd = Some(bsd);
-                                s.usb_virtual_path = None;
-                            });
-                        }
-                        Err(cdj3k_emu_runtime::UsbError::PermissionDenied(_)) => {
-                            menu_state::lock().usb_phys_perm_denied =
-                                Some(cdj3k_emu_runtime::disk::RETRY_PROMPT);
-                        }
-                        Err(e) => {
-                            eprintln!("cdj3k-emu: physical USB attach failed: {e}");
-                            menu_state::lock().usb_error_message = Some(match &e {
-                                cdj3k_emu_runtime::UsbError::Io(io) => io.to_string(),
-                                e => e.to_string(),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── Guest-initiated eject (EP122 button → unbind-usb-device.sh) ──────
-        // The guest emits `usb_state 0` after it has unmounted everything; we
-        // mirror that on the host side (swap medium → placeholder, remount
-        // host disk if it was physical) and update menu_state + persistence.
-        // `usb_state 1` arrives from the attach script for our own
-        // host-initiated mounts and carries no new info, so we ignore it.
-        if let Some(false) = cfg_client.poll_usb_state() {
-            if let Some(ref mut inst) = instance {
-                match usb.acknowledge_guest_eject(inst.qmp(), &provider) {
-                    Ok(true) => {
-                        let mut s = menu_state::lock();
-                        s.usb_virtual_mounted = false;
-                        s.usb_phys_mounted_idx = NO_USB_MOUNTED;
-                        drop(s);
-                        persist_inst(config.instance_id, |s| {
-                            s.usb_virtual_path = None;
-                            s.usb_physical_bsd = None;
-                        });
-                    }
-                    Ok(false) => {}
-                    Err(e) => eprintln!("cdj3k-emu: ack guest eject failed: {e}"),
-                }
-            }
-        }
-
-        // ── Deferred storage remount after QEMU restart ───────────────────────
-        if let (Some(ref target), Some(ref mut inst)) = (&pending_remount, instance.as_mut()) {
-            if target.try_apply(&mut usb, inst.qmp(), &provider) {
-                pending_remount = None;
-            }
-        }
-
-        // ── Refresh network interface list ────────────────────────────────────
-        if last_net_refresh.elapsed() >= NET_REFRESH_INTERVAL {
-            menu_state::refresh_net_interfaces();
-            last_net_refresh = Instant::now();
-        }
-
-        // ── Refresh physical disk list ────────────────────────────────────────
-        if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
-            let fresh = provider.list_removable();
-            let display: Vec<menu_state::PhysicalDisk> = fresh
-                .iter()
-                .map(|d| menu_state::PhysicalDisk {
-                    bsd_name: d.bsd_name.clone(),
-                    label: d.label.clone(),
-                })
-                .collect();
-            let restore_toggle = {
-                let mut s = menu_state::lock();
-                if s.usb_phys_disks != display {
-                    s.usb_phys_disks = display;
-                    s.usb_phys_list_version = s.usb_phys_list_version.wrapping_add(1);
-                }
-                // One-shot: try to restore the saved physical disk if it just
-                // appeared. We must compute the index against the fresh list
-                // we just published (not the old guard).
-                let restore = (!phys_restore_attempted)
-                    .then_some(saved_phys_bsd.as_ref())
-                    .flatten()
-                    .and_then(|name| fresh.iter().position(|d| &d.bsd_name == name))
-                    .map(|idx| idx as i32);
-                if let Some(idx) = restore {
-                    s.usb_phys_toggle_idx = idx;
-                }
-                restore.is_some()
-            };
-            phys_disks = fresh;
-            last_disk_refresh = Instant::now();
-            if restore_toggle || !phys_restore_attempted {
-                phys_restore_attempted = true;
-            }
-        }
-
-        std::thread::sleep(POLL_INTERVAL);
     }
 }
 
@@ -815,56 +332,36 @@ struct Requests {
     usb_virtual_img: Option<std::path::PathBuf>,
 }
 
-/// Returns the boot's mods, for `set_current_boot` once QEMU has started.
-fn apply_menu_to_config(config: &mut QemuConfig, mods: &ModsLaunch) -> BootMods {
-    {
-        let s = menu_state::lock();
-        config.service_mode = s.service_mode;
-        config.audio = s.audio_enabled;
-        config.audio_device_uid = s.audio_device_uid.clone();
-    }
-    let boot = mods.boot(config.instance_id, config.model);
-    config.initramfs = boot.initramfs.clone();
-    boot
-}
-
-/// Log the guest's mods report for this boot and save it to the slot's
-/// `mods/last-boot.txt`, which the Mods view reads when no emulation runs.
-fn record_mods_report(instance_id: u32, report: &ModsReport) {
-    if let ModsReport::Done { outcomes, unread } = report {
-        for o in outcomes {
-            eprintln!("cdj3k-emu: mod {}", o.line().trim_start_matches("mod "));
-        }
-        for u in unread {
-            eprintln!(
-                "cdj3k-emu: mod {}: unrecognized report line: {}",
-                u.name, u.line
-            );
-        }
-    }
-    let text: String = report.lines().iter().map(|l| format!("{l}\n")).collect();
-    let ids = cdj3k_emu_storage::mods::current_boot().map_or_else(Vec::new, |b| b.slot_run);
-    if let Err(e) = cdj3k_emu_storage::mods::save_last_boot_report(instance_id, &text, &ids) {
-        eprintln!("cdj3k-emu: saving the mods report failed: {e}");
-    }
-}
-
-/// Mark the virtual USB image at `path` as the current mount for this
-/// instance: set the menu mirror (and clear any physical-mount index since
-/// attach_virtual auto-ejects), then persist `usb_virtual_path` + clear
-/// any prior `usb_physical_bsd` so the next launch restores the same one.
-/// Used by both the `usb_create` and `usb_virt_mount` request paths.
-fn mark_virtual_mounted(instance_id: u32, path: &std::path::Path) {
-    {
+impl Requests {
+    /// Drain every one-shot flag in a single lock acquisition. A boot request
+    /// counts only while no QEMU runs.
+    fn drain(qemu_down: bool) -> Self {
         let mut s = menu_state::lock();
-        s.usb_virtual_mounted = true;
-        s.usb_phys_mounted_idx = NO_USB_MOUNTED;
+        Self {
+            boot: std::mem::take(&mut s.qemu_boot_requested) && qemu_down,
+            stop: std::mem::take(&mut s.stop_requested),
+            audio_toggle: std::mem::take(&mut s.audio_toggle_requested),
+            audio_device_toggle: std::mem::take(&mut s.audio_device_toggle_requested),
+            alc_toggle: std::mem::take(&mut s.alc_toggle_requested),
+            restart: std::mem::take(&mut s.restart_requested),
+            usb_create: std::mem::take(&mut s.usb_create_req),
+            usb_virt_mount: std::mem::take(&mut s.usb_virtual_mount_req),
+            usb_eject: std::mem::take(&mut s.usb_eject_req),
+            usb_phys_toggle: std::mem::replace(&mut s.usb_phys_toggle_idx, NO_USB_MOUNTED),
+            usb_phys_retry: std::mem::take(&mut s.usb_phys_retry_req),
+            audio_enabled: s.audio_enabled,
+            audio_device_uid: s.audio_device_uid.clone(),
+            alc_enabled: s.alc_enabled,
+            haptic_toggle: std::mem::take(&mut s.haptic_toggle_requested),
+            haptic_enabled: s.haptic_enabled,
+            mods_toggle: std::mem::take(&mut s.mods_toggle_requested),
+            mods_enabled: s.mods_enabled,
+            pc_link_toggle: std::mem::take(&mut s.pc_link_toggle_requested),
+            pc_link_enabled: s.pc_link_enabled,
+            selected_iface: s.selected_interface,
+            usb_virtual_img: s.usb_virtual_img.clone(),
+        }
     }
-    let path = path.to_path_buf();
-    persist_inst(instance_id, |s| {
-        s.usb_virtual_path = Some(path);
-        s.usb_physical_bsd = None;
-    });
 }
 
 /// Load, mutate, and re-save InstanceSettings under the settings lock.
@@ -876,80 +373,5 @@ where
 {
     if let Err(e) = cdj3k_emu_storage::InstanceSettings::update(instance_id, mutate) {
         eprintln!("cdj3k-emu: persisting instance settings failed: {e}");
-    }
-}
-
-/// Clear USB manager and mounted-state fields after any QEMU restart.
-/// The new QEMU instance always starts with the placeholder; nothing is mounted.
-fn reset_usb(usb: &mut UsbManager, config: &QemuConfig, cfg: &CfgClient) {
-    *usb = UsbManager::new(config, cfg.clone());
-    let mut s = menu_state::lock();
-    s.usb_virtual_mounted = false;
-    s.usb_phys_mounted_idx = NO_USB_MOUNTED;
-}
-
-enum PendingRemount {
-    Physical {
-        disk: cdj3k_emu_runtime::PhysicalDisk,
-        idx: i32,
-    },
-    Virtual {
-        path: std::path::PathBuf,
-    },
-}
-
-impl PendingRemount {
-    /// Build from pre-reset state. Returns None if nothing was mounted.
-    fn capture(
-        prev_phys_idx: i32,
-        prev_virt: bool,
-        phys_disks: &[cdj3k_emu_runtime::PhysicalDisk],
-    ) -> Option<Self> {
-        if prev_phys_idx >= 0 {
-            phys_disks
-                .get(prev_phys_idx as usize)
-                .map(|d| Self::Physical {
-                    disk: d.clone(),
-                    idx: prev_phys_idx,
-                })
-        } else if prev_virt {
-            menu_state::lock()
-                .usb_virtual_img
-                .clone()
-                .map(|path| Self::Virtual { path })
-        } else {
-            None
-        }
-    }
-
-    /// Try to apply the remount. Returns true on success (caller clears pending).
-    fn try_apply(
-        &self,
-        usb: &mut UsbManager,
-        qmp: &mut cdj3k_emu_runtime::QmpClient,
-        provider: &HostDiskProvider,
-    ) -> bool {
-        match self {
-            Self::Physical { disk, idx } => match usb.attach_physical(qmp, disk, provider) {
-                Ok(()) => {
-                    menu_state::lock().usb_phys_mounted_idx = *idx;
-                    true
-                }
-                Err(e) => {
-                    eprintln!("cdj3k-emu: physical USB remount pending: {e}");
-                    false
-                }
-            },
-            Self::Virtual { path } => match usb.attach_virtual(qmp, provider, path) {
-                Ok(()) => {
-                    menu_state::lock().usb_virtual_mounted = true;
-                    true
-                }
-                Err(e) => {
-                    eprintln!("cdj3k-emu: virtual USB remount pending: {e}");
-                    false
-                }
-            },
-        }
     }
 }

@@ -98,99 +98,14 @@ impl QemuInstance {
     /// Spawn QEMU as a child subprocess (re-exec self with --qemu-worker).
     /// Kills any stale QEMU from a previous .app run before spawning.
     pub fn spawn(config: QemuConfig) -> Result<Self, InstanceError> {
-        // Exclusive non-blocking flock on the eMMC qcow2 - prevents two cdj3k-emu
-        // instances from corrupting the same image. The lock is released when
-        // the file handle held in Inner is dropped. Another window probing
-        // whether the slot is in use holds it for an instant, so a failed try
-        // is retried for a moment before giving up.
-        let emmc_lock = if let Some(emmc) = &config.emmc_img {
-            let f = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(emmc)
-                .map_err(InstanceError::SockDir)?;
-            let mut tries = 0;
-            while cdj3k_emu_platform::file_lock::lock(&f, emmc).is_err() {
-                tries += 1;
-                if tries > 12 {
-                    return Err(InstanceError::EmmcLocked(emmc.clone()));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            Some(f)
-        } else {
-            None
-        };
+        let emmc_lock = lock_emmc(&config)?;
 
         // Only once the lock is ours: while another window's emulation runs,
         // that window holds the lock, and the QEMU on this QMP port is live.
         kill_stale(config.qmp_port, &config.sock_dir());
 
-        // Through the runtime root, not straight to the instance directory:
-        // the host's isolation step runs on the root when it is created.
-        cdj3k_emu_platform::runtime_paths::ensure_runtime_base_dir()
-            .map_err(InstanceError::SockDir)?;
-        std::fs::create_dir_all(config.sock_dir()).map_err(InstanceError::SockDir)?;
-
-        if config.shm {
-            // Guest RAM file matches QemuConfig::MEM_BYTES; sparse so host disk usage is zero.
-            prefill_sparse(&config.shm_path(), crate::config::QemuConfig::MEM_BYTES)
-                .map_err(InstanceError::SockDir)?;
-        }
-
-        // Prefill main.shm to the max framebuffer size BEFORE QEMU starts.
-        // The reader (cdj3k-emu-streams) mmaps the file at open time and never
-        // resizes its mapping; if QEMU later grew the file via ftruncate, the
-        // reader would see frames too large for its mmap and silently drop
-        // them ("Display output is not active" forever). Prefilling avoids the
-        // grow path entirely - QEMU's shm_remap fstats, sees the file is
-        // already big enough, and skips ftruncate. Reader sees a zero header
-        // (no magic) until QEMU writes it, so it just waits.
-        prefill_sparse(&config.sock_dir().join("main.shm"), MAIN_SHM_PREFILL)
-            .map_err(InstanceError::SockDir)?;
-
-        // ivshmem jog frame buffer. Always recreate fresh so a stale
-        // 'JOG1' magic from a previous run doesn't fool the host into reading
-        // the prior session's pixels before the guest publishes the first frame.
-        prefill_sparse(&config.jog_shm_path(), JOG_SHM_BYTES).map_err(InstanceError::SockDir)?;
-
-        // 1-sector placeholder so the USB virtio-blk slot has a valid backing file at boot.
-        {
-            let ph = config.usb_placeholder_path();
-            if !ph.exists() {
-                prefill_sparse(&ph, 512).map_err(InstanceError::SockDir)?;
-            }
-        }
-
-        let qemu_argv = config.build_argv();
-        eprintln!(
-            "cdj3k-emu: spawning QEMU subprocess: {}",
-            crate::qemu_exec::describe(&qemu_argv)
-        );
-
-        let mut cmd = crate::qemu_exec::qemu_command(config.net_tap_fd)
-            .map_err(InstanceError::SockDir)?
-            .with_argv(&qemu_argv);
-        let child = cmd.spawn().map_err(InstanceError::SockDir)?;
-
-        let pid = child.id();
-        crate::process::adopt(pid);
-        QEMU_CHILD_PID.store(pid as i32, Ordering::Relaxed);
-        let running = Arc::new(AtomicBool::new(true));
-        let running_clone = running.clone();
-
-        let thread = std::thread::Builder::new()
-            .name(format!("qemu-monitor-{}", config.instance_id))
-            .spawn(move || {
-                let code = child
-                    .wait_with_output()
-                    .map(|o| o.status.code().unwrap_or(-1))
-                    .unwrap_or(-1);
-                eprintln!("cdj3k-emu: QEMU subprocess exited with code {code}");
-                running_clone.store(false, Ordering::Release);
-                code
-            })
-            .expect("failed to spawn QEMU monitor thread");
+        prepare_sock_dir(&config)?;
+        let (pid, thread, running) = start_qemu(&config)?;
 
         let qmp = QmpClient::connect_with_retry(config.qmp_port, Duration::from_secs(15))?;
         crate::process::set_quit_channel(qmp.stream());
@@ -286,6 +201,106 @@ impl Drop for QemuInstance {
         QEMU_CHILD_PID.store(-1, Ordering::Relaxed);
         cleanup_qemu_files_for_restart(&self.config.sock_dir());
     }
+}
+
+/// Exclusive non-blocking flock on the eMMC qcow2 - prevents two cdj3k-emu
+/// instances from corrupting the same image. The lock is released when the
+/// returned handle is dropped. Another window probing whether the slot is in
+/// use holds it for an instant, so a failed try is retried for a moment
+/// before giving up.
+fn lock_emmc(config: &QemuConfig) -> Result<Option<std::fs::File>, InstanceError> {
+    let Some(emmc) = &config.emmc_img else {
+        return Ok(None);
+    };
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(emmc)
+        .map_err(InstanceError::SockDir)?;
+    let mut tries = 0;
+    while cdj3k_emu_platform::file_lock::lock(&f, emmc).is_err() {
+        tries += 1;
+        if tries > 12 {
+            return Err(InstanceError::EmmcLocked(emmc.clone()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Ok(Some(f))
+}
+
+/// Create the instance directory and the files QEMU maps at boot.
+fn prepare_sock_dir(config: &QemuConfig) -> Result<(), InstanceError> {
+    // Through the runtime root, not straight to the instance directory:
+    // the host's isolation step runs on the root when it is created.
+    cdj3k_emu_platform::runtime_paths::ensure_runtime_base_dir().map_err(InstanceError::SockDir)?;
+    std::fs::create_dir_all(config.sock_dir()).map_err(InstanceError::SockDir)?;
+
+    if config.shm {
+        // Guest RAM file matches QemuConfig::MEM_BYTES; sparse so host disk usage is zero.
+        prefill_sparse(&config.shm_path(), crate::config::QemuConfig::MEM_BYTES)
+            .map_err(InstanceError::SockDir)?;
+    }
+
+    // Prefill main.shm to the max framebuffer size BEFORE QEMU starts.
+    // The reader (cdj3k-emu-streams) mmaps the file at open time and never
+    // resizes its mapping; if QEMU later grew the file via ftruncate, the
+    // reader would see frames too large for its mmap and silently drop
+    // them ("Display output is not active" forever). Prefilling avoids the
+    // grow path entirely - QEMU's shm_remap fstats, sees the file is
+    // already big enough, and skips ftruncate. Reader sees a zero header
+    // (no magic) until QEMU writes it, so it just waits.
+    prefill_sparse(&config.sock_dir().join("main.shm"), MAIN_SHM_PREFILL)
+        .map_err(InstanceError::SockDir)?;
+
+    // ivshmem jog frame buffer. Always recreate fresh so a stale
+    // 'JOG1' magic from a previous run doesn't fool the host into reading
+    // the prior session's pixels before the guest publishes the first frame.
+    prefill_sparse(&config.jog_shm_path(), JOG_SHM_BYTES).map_err(InstanceError::SockDir)?;
+
+    // 1-sector placeholder so the USB virtio-blk slot has a valid backing file at boot.
+    let ph = config.usb_placeholder_path();
+    if !ph.exists() {
+        prefill_sparse(&ph, 512).map_err(InstanceError::SockDir)?;
+    }
+    Ok(())
+}
+
+/// Start the QEMU child and the thread that waits on it. Returns the child's
+/// PID, that thread (which yields the exit code), and the flag it clears when
+/// the child exits.
+fn start_qemu(
+    config: &QemuConfig,
+) -> Result<(u32, JoinHandle<i32>, Arc<AtomicBool>), InstanceError> {
+    let qemu_argv = config.build_argv();
+    eprintln!(
+        "cdj3k-emu: spawning QEMU subprocess: {}",
+        crate::qemu_exec::describe(&qemu_argv)
+    );
+
+    let mut cmd = crate::qemu_exec::qemu_command(config.net_tap_fd)
+        .map_err(InstanceError::SockDir)?
+        .with_argv(&qemu_argv);
+    let child = cmd.spawn().map_err(InstanceError::SockDir)?;
+
+    let pid = child.id();
+    crate::process::adopt(pid);
+    QEMU_CHILD_PID.store(pid as i32, Ordering::Relaxed);
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = running.clone();
+
+    let thread = std::thread::Builder::new()
+        .name(format!("qemu-monitor-{}", config.instance_id))
+        .spawn(move || {
+            let code = child
+                .wait_with_output()
+                .map(|o| o.status.code().unwrap_or(-1))
+                .unwrap_or(-1);
+            eprintln!("cdj3k-emu: QEMU subprocess exited with code {code}");
+            running_clone.store(false, Ordering::Release);
+            code
+        })
+        .expect("failed to spawn QEMU monitor thread");
+    Ok((pid, thread, running))
 }
 
 /// Poll until the process exits, then SIGKILL if it didn't within `timeout`.

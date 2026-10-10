@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::process::Command;
 
-use super::PhysicalDisk;
+use super::{human_size, PhysicalDisk};
 
 /// Whole disks the user could plausibly hand to the deck.
 pub fn list_removable() -> Vec<PhysicalDisk> {
@@ -226,19 +226,6 @@ fn human_name(row: &BTreeMap<String, String>, fallback: &str) -> String {
     fallback.to_string()
 }
 
-/// Sizes as a disk vendor writes them — powers of ten, matching every other
-/// tool a user will compare this against.
-fn human_size(bytes: u64) -> String {
-    const GB: f64 = 1_000_000_000.0;
-    const MB: f64 = 1_000_000.0;
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.1} GB", b / GB)
-    } else {
-        format!("{:.0} MB", b / MB)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,13 +262,5 @@ mod tests {
         row.insert("LABEL".into(), "PIONEER".into());
         assert_eq!(human_name(&row, "sdb"), "PIONEER");
         assert_eq!(human_name(&BTreeMap::new(), "sdb"), "sdb");
-    }
-
-    /// Decimal, as printed on the packaging — a "32 GB" stick must not read
-    /// as 29.8.
-    #[test]
-    fn sizes_read_the_way_the_vendor_writes_them() {
-        assert_eq!(human_size(32_000_000_000), "32.0 GB");
-        assert_eq!(human_size(512_000_000), "512 MB");
     }
 }

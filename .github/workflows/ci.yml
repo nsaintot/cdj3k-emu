@@ -1,8 +1,8 @@
 # Lint and test on every host. The packaged builds are cd.yml.
 name: CI
 
-# Lint, Test (Linux), Test (macOS) and Test (Windows) are the checks the "Main"
-# ruleset requires before a merge.
+# Lint, Quality, Test (Linux), Test (macOS) and Test (Windows) are the checks
+# the "Main" ruleset requires before a merge.
 on:
   pull_request:
     branches: [main]
@@ -47,6 +47,41 @@ jobs:
         run: |
           bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
           ./actionlint -color
+
+  # Structural quality: sentrux check enforces .sentrux/rules.toml, sentrux
+  # gate holds coupling, cycles and god files to .sentrux/baseline.json.
+  quality:
+    name: Quality
+    runs-on: ubuntu-24.04
+    env:
+      SENTRUX: v0.5.7
+    steps:
+      - uses: actions/checkout@v7
+      # The binary links GTK for its GUI, the CLI included. Its grammars come
+      # from the same release; V has none there, and a missing grammar makes
+      # sentrux download the set again on every run.
+      - name: sentrux
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-3-0t64
+          base="https://github.com/sentrux/sentrux/releases/download/$SENTRUX"
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin" ~/.sentrux/plugins/vlang/grammars
+          curl -sSfL -o "$bin/sentrux" "$base/sentrux-linux-x86_64"
+          curl -sSfL -o "$RUNNER_TEMP/grammars.tar.gz" "$base/grammars-linux-x86_64.tar.gz"
+          sha256sum -c <<EOF
+          3237f80fe20d54aad4deefa8a143f0d60543bb5d2d6ad891eb42432f155725a6  $bin/sentrux
+          8849f1eb07df3f6d4ea1ed422d8dee4b9b79a250682fa5646675dae466554454  $RUNNER_TEMP/grammars.tar.gz
+          EOF
+          chmod +x "$bin/sentrux"
+          tar xzf "$RUNNER_TEMP/grammars.tar.gz" -C ~/.sentrux/plugins
+          : > ~/.sentrux/plugins/vlang/grammars/linux-x86_64.so
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/sentrux" analytics off
+      - name: sentrux check
+        run: sentrux check .
+      - name: sentrux gate
+        run: sentrux gate .
 
   test-linux:
     name: Test (Linux)

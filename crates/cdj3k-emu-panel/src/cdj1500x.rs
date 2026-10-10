@@ -220,38 +220,87 @@ pub fn jog_ring(meter: u8) -> JogRing {
 /// The front casing's light in the USB cavity, R G B.
 const SLOT_AT: usize = 4;
 
+/// Where the CDJ-1500X keeps a lamp.
+#[derive(Copy, Clone)]
+enum Wire {
+    Bit(FrameBit),
+    /// A 2-bit level at `(byte, shift)`: 0 off, 3 full, between dim.
+    Step((usize, u32)),
+    /// HOT CUE pad, A = 0, from [`PADS_AT`].
+    Pad(usize),
+    Rgb(usize),
+    Level(usize),
+    Absent,
+}
+
+/// Each lamp's wire, in [`Lamp::ALL`] order: `WIRING[lamp as usize]`.
+const WIRING: [(Lamp, Wire); Lamp::ALL.len()] = [
+    (Lamp::KeySync, Wire::Absent),
+    (Lamp::BeatSync, Wire::Absent),
+    (Lamp::Master, Wire::Absent),
+    (Lamp::Slip, Wire::Absent),
+    (Lamp::Quantize, Wire::Absent),
+    (Lamp::JogRing, Wire::Absent),
+    (Lamp::JogRed, Wire::Absent),
+    (Lamp::JogMeter, Wire::Level(JOG_METER_AT)),
+    (Lamp::Source, Wire::Absent),
+    (Lamp::Browse, Wire::Absent),
+    (Lamp::TagList, Wire::Absent),
+    (Lamp::Playlist, Wire::Absent),
+    (Lamp::Search, Wire::Absent),
+    (Lamp::Menu, Wire::Absent),
+    (Lamp::Play, Wire::Bit(LED_PLAY)),
+    (Lamp::Cue, Wire::Bit(LED_CUE)),
+    (Lamp::LoopIn, Wire::Absent),
+    (Lamp::LoopOut, Wire::Absent),
+    (Lamp::Reloop, Wire::Absent),
+    (Lamp::BeatJump4, Wire::Absent),
+    (Lamp::BeatJump8, Wire::Absent),
+    (Lamp::BeatJumpNext, Wire::Absent),
+    (Lamp::BeatJumpPrev, Wire::Absent),
+    (Lamp::TempoReset, Wire::Absent),
+    (Lamp::MasterTempo, Wire::Absent),
+    (Lamp::JogModeCdj, Wire::Absent),
+    (Lamp::JogModeVinyl, Wire::Absent),
+    (Lamp::Encoder, Wire::Absent),
+    (Lamp::TrackSearch, Wire::Absent),
+    (Lamp::Rev, Wire::Absent),
+    (Lamp::HotA, Wire::Pad(0)),
+    (Lamp::HotB, Wire::Pad(1)),
+    (Lamp::HotC, Wire::Pad(2)),
+    (Lamp::HotD, Wire::Pad(3)),
+    (Lamp::HotE, Wire::Pad(4)),
+    (Lamp::HotF, Wire::Pad(5)),
+    (Lamp::HotG, Wire::Pad(6)),
+    (Lamp::HotH, Wire::Pad(7)),
+    (Lamp::Slot1, Wire::Rgb(SLOT_AT)),
+    (Lamp::Slot2, Wire::Absent),
+    (Lamp::OnAir, Wire::Absent),
+    (Lamp::Rotary, Wire::Absent),
+    (Lamp::Standby, Wire::Bit(LED_STANDBY)),
+    (Lamp::Eject, Wire::Step(EJECT_STEP)),
+];
+
 /// The CDJ-1500X's MOSI decoder.
 #[derive(Debug)]
 pub struct Mosi;
 
 impl MosiCodec for Mosi {
     fn lamp(&self, f: &[u8; MOSI_SIZE], lamp: Lamp) -> Option<LampState> {
-        let bit = |(byte, mask): FrameBit| Some(LampState::Bit(f[byte] & mask != 0));
-        // A 2-bit level: 0 off, 3 full, between dim.
-        let step = |byte: usize, shift: u32| {
+        let step = |(byte, shift): (usize, u32)| {
             Some(LampState::Step(match (f[byte] >> shift) & 0x03 {
                 0 => StepLed::Off,
                 3 => StepLed::Full,
                 _ => StepLed::Medium,
             }))
         };
-        let pad = |i: usize| step(PADS_AT + i / 4, 6 - 2 * (i % 4) as u32);
-        match lamp {
-            Lamp::Play => bit(LED_PLAY),
-            Lamp::Cue => bit(LED_CUE),
-            Lamp::Standby => bit(LED_STANDBY),
-            Lamp::Slot1 => Some(LampState::Rgb(f[SLOT_AT], f[SLOT_AT + 1], f[SLOT_AT + 2])),
-            Lamp::Eject => step(EJECT_STEP.0, EJECT_STEP.1),
-            Lamp::JogMeter => Some(LampState::Level(f[JOG_METER_AT])),
-            Lamp::HotA => pad(0),
-            Lamp::HotB => pad(1),
-            Lamp::HotC => pad(2),
-            Lamp::HotD => pad(3),
-            Lamp::HotE => pad(4),
-            Lamp::HotF => pad(5),
-            Lamp::HotG => pad(6),
-            Lamp::HotH => pad(7),
-            _ => None,
+        match WIRING[lamp as usize].1 {
+            Wire::Bit((byte, mask)) => Some(LampState::Bit(f[byte] & mask != 0)),
+            Wire::Step(at) => step(at),
+            Wire::Pad(i) => step((PADS_AT + i / 4, 6 - 2 * (i % 4) as u32)),
+            Wire::Rgb(at) => Some(LampState::Rgb(f[at], f[at + 1], f[at + 2])),
+            Wire::Level(at) => Some(LampState::Level(f[at])),
+            Wire::Absent => None,
         }
     }
 }
@@ -284,14 +333,23 @@ pub const SPEC: ModelSpec = ModelSpec {
 mod tests {
     use super::*;
     use crate::miso_frame::JogState;
-    use crate::{Model, MosiFrame};
+    use crate::Model;
+
+    /// `WIRING[lamp as usize]` is that lamp's wire.
+    #[test]
+    fn wiring_follows_lamp_order() {
+        for (i, (lamp, _)) in WIRING.iter().enumerate() {
+            assert_eq!(*lamp, Lamp::ALL[i]);
+            assert_eq!(*lamp as usize, i, "{lamp:?}");
+        }
+    }
 
     /// Each button is listed once, at a bit of its own, before the CRC, and
     /// resolves through the model.
     #[test]
     fn each_button_has_its_own_bit_before_the_crc() {
         for (i, (a, bit)) in BUTTONS.iter().enumerate() {
-            assert_eq!(miso_frame::button(Model::Cdj1500x, *a), Some(*bit));
+            assert_eq!(Model::Cdj1500x.button(*a), Some(*bit));
             assert!(bit.0 < CRC_AT, "{} is past the CRC", a.name());
             for (b, other) in &BUTTONS[i + 1..] {
                 assert_ne!(a, b, "{} is listed twice", a.name());
@@ -311,18 +369,15 @@ mod tests {
         assert_eq!(jog_period(-rps), 100);
         assert_eq!(jog_period(0.001), JOG_STOPPED);
         let at = |revs: f64, rps: f32, touched: bool| {
-            miso_frame::encode(
-                Model::Cdj1500x,
-                &PanelState {
-                    jog: JogState {
-                        revs,
-                        rps,
-                        touched,
-                        ..PanelState::at_rest().jog
-                    },
-                    ..PanelState::at_rest()
+            Model::Cdj1500x.encode(&PanelState {
+                jog: JogState {
+                    revs,
+                    rps,
+                    touched,
+                    ..PanelState::at_rest().jog
                 },
-            )
+                ..PanelState::at_rest()
+            })
         };
         let f = at(2.0, 1.0, true);
         assert_eq!(
@@ -360,13 +415,10 @@ mod tests {
     fn the_tempo_wiper_spans_the_travel_around_the_detent() {
         let word = |f: &[u8; MISO_SIZE], at: usize| u16::from_be_bytes([f[at], f[at + 1]]);
         for (travel, wiper) in [(0.0, 0), (0.5, TEMPO_DETENT), (1.0, TEMPO_TOP)] {
-            let f = miso_frame::encode(
-                Model::Cdj1500x,
-                &PanelState {
-                    tempo: travel,
-                    ..PanelState::at_rest()
-                },
-            );
+            let f = Model::Cdj1500x.encode(&PanelState {
+                tempo: travel,
+                ..PanelState::at_rest()
+            });
             assert_eq!(word(&f, TEMPO_AT), wiper, "travel {travel}");
             assert_eq!(word(&f, TEMPO_DETENT_AT), TEMPO_DETENT);
         }
@@ -393,7 +445,7 @@ mod tests {
             ] {
                 let mut raw = [0u8; MOSI_SIZE];
                 raw[PADS_AT + i / 4] = level << (6 - 2 * (i % 4));
-                let f = MosiFrame::new(raw, Model::Cdj1500x);
+                let f = Model::Cdj1500x.mosi_frame(raw);
                 assert_eq!(f.step(pad), want, "{pad:?}");
                 for &other in Lamp::ALL.iter().filter(|&&l| l != pad) {
                     assert!(!f.lit(other), "{pad:?} lights {other:?}");
@@ -409,7 +461,7 @@ mod tests {
         raw[..14].copy_from_slice(&[
             0xc0, 0xff, 0xff, 0x63, 0xff, 0xff, 0xff, 0x00, 0x00, 0xe8, 0x00, 0x00, 0xe0, 0xcd,
         ]);
-        let f = MosiFrame::new(raw, Model::Cdj1500x);
+        let f = Model::Cdj1500x.mosi_frame(raw);
         for pad in Lamp::HOT_CUES {
             assert_eq!(f.step(pad), StepLed::Full, "{pad:?}");
         }
@@ -428,7 +480,7 @@ mod tests {
         let frame = |head: [u8; 10]| {
             let mut raw = [0u8; MOSI_SIZE];
             raw[..10].copy_from_slice(&head);
-            MosiFrame::new(raw, Model::Cdj1500x)
+            Model::Cdj1500x.mosi_frame(raw)
         };
         let all = frame([0xc0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0xeb]);
         for lamp in [Lamp::Play, Lamp::Cue, Lamp::Eject, Lamp::Standby] {
@@ -451,7 +503,7 @@ mod tests {
         let mut raw = [0u8; MOSI_SIZE];
         raw[3] = 0x31;
         raw[4..7].copy_from_slice(&[0x10, 0x20, 0x30]);
-        let f = MosiFrame::new(raw, Model::Cdj1500x);
+        let f = Model::Cdj1500x.mosi_frame(raw);
         assert_eq!(f.lamp(Lamp::JogMeter), Some(LampState::Level(0x31)));
         assert_eq!(f.rgb(Lamp::Slot1), Some((0x10, 0x20, 0x30)));
         for pad in Lamp::HOT_CUES {
@@ -460,7 +512,7 @@ mod tests {
         // The state bytes and the CRC are no lamp.
         let mut raw = [0u8; MOSI_SIZE];
         raw[10..14].copy_from_slice(&[0x53, 0x55, 0xff, 0xff]);
-        let f = MosiFrame::new(raw, Model::Cdj1500x);
+        let f = Model::Cdj1500x.mosi_frame(raw);
         for &lamp in Lamp::ALL {
             assert!(!f.lit(lamp), "{lamp:?}");
         }

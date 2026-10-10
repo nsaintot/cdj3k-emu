@@ -23,7 +23,7 @@ impl CdjApp {
     /// that player has no such button - which is how a slate stays honest
     /// about a control its player does not carry.
     pub(super) fn button(&self, btn: Btn) -> Option<(usize, u8)> {
-        cdj3k_emu_panel::miso_frame::button(self.model, btn)
+        self.model.button(btn)
     }
 
     /// Shared button press/release logic with optional ctrl-latch.
@@ -86,7 +86,7 @@ impl CdjApp {
             ui::draw_cache::BtnCacheKey::new(rect, state, is_pressed, ui.ctx().pixels_per_point());
         let ctx = ui.ctx().clone();
         let painter = ui.painter().clone();
-        let shapes = self.btn_cache.get_or_build(id, cache_key, |list| {
+        let shapes = self.caches.btn.get_or_build(id, cache_key, |list| {
             ui::collect_button(
                 list,
                 &ctx,
@@ -135,7 +135,8 @@ impl CdjApp {
             ui::draw_cache::BtnCacheKey::new(rect, state, is_pressed, ui.ctx().pixels_per_point());
         let painter = ui.painter().clone();
         let shapes = self
-            .btn_cache
+            .caches
+            .btn
             .get_or_build(id, cache_key, |list| collect(list, is_pressed));
         self.frame_shape_count += shapes.len() as u64;
         painter.extend(shapes.iter().cloned());
@@ -180,7 +181,7 @@ impl CdjApp {
             ui::draw_cache::BtnCacheKey::new(rect, state, is_pressed, ui.ctx().pixels_per_point());
         let ctx = ui.ctx().clone();
         let painter = ui.painter().clone();
-        let shapes = self.btn_cache.get_or_build(id, cache_key, |list| {
+        let shapes = self.caches.btn.get_or_build(id, cache_key, |list| {
             ui::collect_circle_button(
                 list,
                 &ctx,
@@ -245,7 +246,7 @@ impl CdjApp {
         );
         let ctx = ui.ctx().clone();
         let painter = ui.painter().clone();
-        let shapes = self.btn_cache.get_or_build(id, cache_key, |list| {
+        let shapes = self.caches.btn.get_or_build(id, cache_key, |list| {
             ui::collect_arc_quad_button(
                 list,
                 &ctx,

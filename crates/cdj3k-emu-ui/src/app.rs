@@ -16,6 +16,7 @@ mod table;
 mod theme;
 mod tilt_input;
 mod ui;
+mod update;
 mod updater;
 mod viewports;
 
@@ -33,7 +34,6 @@ use cdj3k_emu_streams::jog_stream::JogLcdStream;
 use cdj3k_emu_streams::main_stream::MainLcdStream;
 use cdj3k_emu_streams::RepaintGate;
 
-use jog_physics::JOG_OMEGA_MOVING_THRESHOLD;
 use viewports::DebugViewportState;
 
 pub(crate) use lcd_touch::LcdTouchCapture;
@@ -42,22 +42,6 @@ pub(crate) use lcd_touch::LcdTouchCapture;
 /// viewport at ~60 fps regardless of vsync rate or how many sources
 /// requested a repaint.
 pub(crate) const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
-
-/// Fresh main-LCD generations to observe after QEMU starts before the boot
-/// spinner overlay is removed.
-/// The panel frame is all zeroes until the guest drives it. If it never does,
-/// drop the shade anyway this long after QEMU starts.
-const BOOT_SHADE_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// EMA factor for the smoothed FPS estimate.
-const FPS_EMA_ALPHA: f32 = 0.1;
-
-/// Repaint cadence requested by UI animation (60 Hz cap).
-const ANIM_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
-
-/// Linear ramp speed for the boot/idle shade alpha (units of alpha per
-/// second; 1.0 here means the full 0→1 fade takes 1 s).
-const SHADE_FADE_SPEED: f32 = 1.0;
 
 /// `jog_vel` neutral-position encoding (inverse: max u16 = stopped).
 const JOG_VEL_INIT: u16 = 0xffff;
@@ -73,9 +57,6 @@ const TEMPO_INIT: f32 = 0.5;
 /// Puffin profiling HTTP server address. Localhost-only so an enabled
 /// profiling build doesn't expose the endpoint on any host interface.
 const PUFFIN_SERVER_ADDR: &str = "127.0.0.1:8585";
-
-/// Layout, the two knobs' angles and their pressed states.
-type KnobCacheKey = (i32, i32, i32, [u32; 2], [bool; 2]);
 
 pub struct CdjApp {
     /// The model whose slate is drawn (selects layout + control set).
@@ -177,13 +158,7 @@ pub struct CdjApp {
     ctrl_stream: CtrlStream,
 
     display_stream: MainLcdStream,
-    /// Raw GL texture handle - created once, re-used for every dirty upload.
-    display_gl_tex: Option<glow::Texture>,
-    /// egui TextureId returned by `register_native_glow_texture` - used with `painter.image`.
-    display_tex_id: Option<egui::TextureId>,
-    /// Set by a model switch whose main LCD size differs; the next upload
-    /// re-specifies the texture storage.
-    display_tex_stale: bool,
+    textures: LcdTextures,
     /// Frame bits the input script forces low (`clear`), applied last when a
     /// frame is built.
     cleared_bits: Vec<(usize, u8)>,
@@ -196,11 +171,6 @@ pub struct CdjApp {
     ctrl_was_ready: bool,
 
     jog_stream: JogLcdStream,
-    /// GL texture for the jog LCD - owned by us (not egui's tex_manager). Created once with
-    /// `TEXTURE_SWIZZLE_R = BLUE`, `TEXTURE_SWIZZLE_B = RED`, `TEXTURE_SWIZZLE_A = ONE` so
-    /// the GPU samples the wire-format XRGB bytes as RGBA(A=1) for free.
-    jog_gl_tex: Option<glow::Texture>,
-    jog_tex_id: Option<egui::TextureId>,
     /// Corner samples from the last jog frame: SLIP, VINYL, SYNC, MASTER label fills.
     jog_corner_label_colors: [Color32; 4],
 
@@ -218,21 +188,7 @@ pub struct CdjApp {
     /// Rebuilt only when the window scale or `jog_adjust` changes.
     jog_static_cache: Option<ui::draw_cache::JogStaticCache>,
 
-    // ── Shape caches ──────────────────────────────────────────────────────
-    btn_cache: ui::draw_cache::BtnShapeCache,
-    chassis_bg_cache: ui::draw_cache::StaticShapeCache,
-    chassis_lcd_overlay_cache: ui::draw_cache::StaticShapeCache,
-    top_statics_cache: ui::draw_cache::StaticShapeCache,
-    left_statics_cache: ui::draw_cache::StaticShapeCache,
-    right_statics_cache: ui::draw_cache::StaticShapeCache,
-    jog_statics_cache: ui::draw_cache::StaticShapeCache,
-    jog_ring_lights_cache: ui::draw_cache::ShapeCache<(i32, i32, i32, u8, bool)>,
-    jog_corner_labels_cache: ui::draw_cache::ShapeCache<(i32, i32, i32, i32, [u8; 16])>,
-    grip_cache: ui::draw_cache::ShapeCache<(i32, i32, i32, i32)>,
-    /// A jog knurl, keyed on layout and the platter's angle.
-    knurl_cache: ui::draw_cache::ShapeCache<(i32, i32, i32, u32)>,
-    /// Two rotary knobs, keyed on layout, their angles and pressed states.
-    knob_cache: ui::draw_cache::ShapeCache<KnobCacheKey>,
+    caches: ui::draw_cache::ShapeCaches,
 
     fps_smooth: f32,
     /// What holding the window to the chassis aspect carries between frames.
@@ -241,12 +197,7 @@ pub struct CdjApp {
     frame_shape_count: u64,
     /// Last MISO frame sent to the device (first 32 bytes displayed for debugging).
     last_miso: [u8; miso_frame::MISO_SIZE],
-    jog_dbg_last_source: &'static str,
-    jog_dbg_last_delta_rad: f32,
-    jog_dbg_last_dt: f32,
-    jog_dbg_last_omega_sample: f32,
-    /// Rendered above the MISO dump (3 centred lines).
-    jog_dbg_lines: [String; 3],
+    debug: DebugView,
 
     /// When QEMU was last seen transitioning to running. The boot overlay
     /// clears on the first non-zero panel frame, or `BOOT_SHADE_TIMEOUT`
@@ -262,14 +213,41 @@ pub struct CdjApp {
     /// Set when QEMU exits so the next paint zeroes the main + jog GL textures.
     /// Without this, popouts would keep displaying the last captured frame.
     lcd_textures_need_blank: bool,
+}
 
+/// The main and jog LCDs' GL textures, owned here rather than by egui's
+/// texture manager.
+#[derive(Default)]
+struct LcdTextures {
+    /// Raw GL texture handle - created once, re-used for every dirty upload.
+    main_gl: Option<glow::Texture>,
+    /// egui TextureId returned by `register_native_glow_texture` - used with `painter.image`.
+    main_id: Option<egui::TextureId>,
+    /// Set by a model switch whose main LCD size differs; the next upload
+    /// re-specifies the texture storage.
+    main_stale: bool,
+    /// GL texture for the jog LCD - owned by us (not egui's tex_manager). Created once with
+    /// `TEXTURE_SWIZZLE_R = BLUE`, `TEXTURE_SWIZZLE_B = RED`, `TEXTURE_SWIZZLE_A = ONE` so
+    /// the GPU samples the wire-format XRGB bytes as RGBA(A=1) for free.
+    jog_gl: Option<glow::Texture>,
+    jog_id: Option<egui::TextureId>,
+}
+
+/// What the debug viewport shows, and the handles it shares with the panel.
+struct DebugView {
+    jog_source: &'static str,
+    jog_delta_rad: f32,
+    jog_dt: f32,
+    jog_omega_sample: f32,
+    /// Rendered above the MISO dump (3 centred lines).
+    jog_lines: [String; 3],
     /// Snapshot of debug-relevant state, refreshed each main update. Read by
     /// the deferred debug viewport (which runs in its own update cycle and
     /// therefore cannot borrow `&self`).
-    debug_snapshot: Arc<Mutex<ui::DebugSnapshot>>,
-    debug_viewport_state: Arc<Mutex<DebugViewportState>>,
+    snapshot: Arc<Mutex<ui::DebugSnapshot>>,
+    viewport_state: Arc<Mutex<DebugViewportState>>,
     /// Set by the deferred debug viewport when its window's × is clicked.
-    debug_wants_close: Arc<std::sync::atomic::AtomicBool>,
+    wants_close: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Owns the puffin HTTP server for the life of the process when profiling is
@@ -279,6 +257,35 @@ pub struct CdjApp {
 /// without `--profile` / `CDJ3K_PROFILE=1`.
 static PUFFIN_SERVER: std::sync::OnceLock<puffin_http::Server> = std::sync::OnceLock::new();
 
+/// Turn puffin's scope recording on and serve it on [`PUFFIN_SERVER_ADDR`].
+fn start_profiler() {
+    if let Ok(server) = puffin_http::Server::new(PUFFIN_SERVER_ADDR) {
+        let _ = PUFFIN_SERVER.set(server);
+        eprintln!("cdj3k-emu: puffin server listening on {PUFFIN_SERVER_ADDR}");
+    } else {
+        eprintln!("cdj3k-emu: puffin server failed to bind {PUFFIN_SERVER_ADDR}");
+    }
+    puffin::set_scopes_on(true);
+}
+
+/// Set up what the panel needs before its first frame, and return the slot's
+/// saved panel settings.
+fn prepare_panel(egui_ctx: &egui::Context) -> cdj3k_emu_storage::PanelSettings {
+    // Open the trackpad haptic actuator (private MultitouchSupport API).
+    // No-op + silent failure if the device has no actuator or the macOS
+    // private struct layout has drifted.
+    cdj3k_emu_platform::haptic::init();
+
+    // Prevent resizing the window with the keyboard.
+    egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
+    egui_ctx.set_zoom_factor(1.0);
+    let instance_id = cdj3k_emu_platform::menu_state::lock().current_instance_id;
+    let panel = cdj3k_emu_storage::PanelSettings::load(instance_id);
+    // The menu owns the screen-extend flag; restored before the first frame.
+    cdj3k_emu_platform::menu_state::lock().screen_extended = panel.screen_extended;
+    panel
+}
+
 impl CdjApp {
     /// `profile`: when true, enables puffin scope recording and binds a
     /// localhost TCP listener for `puffin_viewer` to connect to.  When
@@ -286,27 +293,9 @@ impl CdjApp {
     /// a single relaxed-atomic load and no TCP port is opened.
     pub fn new(model: Model, socket_dir: String, egui_ctx: egui::Context, profile: bool) -> Self {
         if profile {
-            if let Ok(server) = puffin_http::Server::new(PUFFIN_SERVER_ADDR) {
-                let _ = PUFFIN_SERVER.set(server);
-                eprintln!("cdj3k-emu: puffin server listening on {PUFFIN_SERVER_ADDR}");
-            } else {
-                eprintln!("cdj3k-emu: puffin server failed to bind {PUFFIN_SERVER_ADDR}");
-            }
-            puffin::set_scopes_on(true);
+            start_profiler();
         }
-
-        // Open the trackpad haptic actuator (private MultitouchSupport API).
-        // No-op + silent failure if the device has no actuator or the macOS
-        // private struct layout has drifted.
-        cdj3k_emu_platform::haptic::init();
-
-        // Prevent resizing the window with the keyboard.
-        egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-        egui_ctx.set_zoom_factor(1.0);
-        let instance_id = cdj3k_emu_platform::menu_state::lock().current_instance_id;
-        let panel = cdj3k_emu_storage::PanelSettings::load(instance_id);
-        // The menu owns the screen-extend flag; restored before the first frame.
-        cdj3k_emu_platform::menu_state::lock().screen_extended = panel.screen_extended;
+        let panel = prepare_panel(&egui_ctx);
         let repaint_gate = RepaintGate::new(egui_ctx.clone(), MIN_FRAME_INTERVAL);
         // `--no-spawn` never shows the boot shade, so it must not fade in from
         // opaque either (keeps chassis captures deterministic frame to frame).
@@ -357,15 +346,11 @@ impl CdjApp {
             raw_pointer: Default::default(),
             ctrl_stream: CtrlStream::new(&socket_dir, repaint_gate.clone()),
             display_stream: MainLcdStream::new(&socket_dir, repaint_gate.clone()),
-            display_gl_tex: None,
-            display_tex_id: None,
-            display_tex_stale: false,
+            textures: Default::default(),
             cleared_bits: Vec::new(),
             scripted_btns: Vec::new(),
             ctrl_was_ready: false,
             jog_stream: JogLcdStream::new(&socket_dir, repaint_gate.clone()),
-            jog_gl_tex: None,
-            jog_tex_id: None,
             jog_corner_label_colors: [ui::COL_BTN_TEXT; 4],
             led_state: LedState::default(),
             bloom: None,
@@ -373,35 +358,17 @@ impl CdjApp {
             bloom_keeps: Vec::new(),
             status: "Starting...".to_owned(),
             jog_static_cache: None,
-            btn_cache: ui::draw_cache::BtnShapeCache::new(),
-            chassis_bg_cache: ui::draw_cache::StaticShapeCache::new(),
-            chassis_lcd_overlay_cache: ui::draw_cache::StaticShapeCache::new(),
-            top_statics_cache: ui::draw_cache::StaticShapeCache::new(),
-            left_statics_cache: ui::draw_cache::StaticShapeCache::new(),
-            right_statics_cache: ui::draw_cache::StaticShapeCache::new(),
-            jog_statics_cache: ui::draw_cache::StaticShapeCache::new(),
-            jog_ring_lights_cache: ui::draw_cache::ShapeCache::new(),
-            jog_corner_labels_cache: ui::draw_cache::ShapeCache::new(),
-            grip_cache: ui::draw_cache::ShapeCache::new(),
-            knurl_cache: ui::draw_cache::ShapeCache::new(),
-            knob_cache: ui::draw_cache::ShapeCache::new(),
+            caches: Default::default(),
             fps_smooth: 60.0,
             resize: Default::default(),
             frame_shape_count: 0,
             last_miso: [0u8; miso_frame::MISO_SIZE],
-            jog_dbg_last_source: "none",
-            jog_dbg_last_delta_rad: 0.0,
-            jog_dbg_last_dt: 0.0,
-            jog_dbg_last_omega_sample: 0.0,
-            jog_dbg_lines: [String::new(), String::new(), String::new()],
+            debug: Default::default(),
             qemu_running_since: None,
             qemu_was_running: false,
             shade_alpha: if ui_only { 0.0 } else { 1.0 },
             lcds_blanked: !ui_only,
             lcd_textures_need_blank: false,
-            debug_snapshot: Arc::new(Mutex::new(ui::DebugSnapshot::default())),
-            debug_viewport_state: Arc::new(Mutex::new(DebugViewportState::default())),
-            debug_wants_close: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -414,7 +381,7 @@ impl CdjApp {
     /// caches key on the window scale only, not on the slate.
     pub fn switch_model(&mut self, model: Model) {
         if model.main_lcd() != self.model.main_lcd() {
-            self.display_tex_stale = true;
+            self.textures.main_stale = true;
         }
         self.model = model;
         self.on_leave_panel();
@@ -426,18 +393,7 @@ impl CdjApp {
         self.last_miso = [0u8; miso_frame::MISO_SIZE];
         self.led_state = LedState::default();
         self.jog_static_cache = None;
-        self.btn_cache = ui::draw_cache::BtnShapeCache::new();
-        self.chassis_bg_cache = ui::draw_cache::StaticShapeCache::new();
-        self.chassis_lcd_overlay_cache = ui::draw_cache::StaticShapeCache::new();
-        self.top_statics_cache = ui::draw_cache::StaticShapeCache::new();
-        self.left_statics_cache = ui::draw_cache::StaticShapeCache::new();
-        self.right_statics_cache = ui::draw_cache::StaticShapeCache::new();
-        self.jog_statics_cache = ui::draw_cache::StaticShapeCache::new();
-        self.jog_ring_lights_cache = ui::draw_cache::ShapeCache::new();
-        self.jog_corner_labels_cache = ui::draw_cache::ShapeCache::new();
-        self.grip_cache = ui::draw_cache::ShapeCache::new();
-        self.knurl_cache = ui::draw_cache::ShapeCache::new();
-        self.knob_cache = ui::draw_cache::ShapeCache::new();
+        self.caches = Default::default();
         // The window is re-shaped for the new canvas; let the aspect snap
         // re-evaluate from scratch.
         self.resize = Default::default();
@@ -487,179 +443,6 @@ impl CdjApp {
 }
 
 impl CdjApp {
-    /// One panel frame: ingest the LCD/LED streams, tick the jog physics,
-    /// draw the slate, the boot shade and the pop-out viewports. Driven by
-    /// the shell while the panel screen is up.
-    pub fn update(&mut self, ctx: &egui::Context, root: &mut egui::Ui, frame: &mut eframe::Frame) {
-        // No sleep here. With vsync disabled in NativeOptions, eframe only
-        // paints when something requested a repaint - the gate's metronome
-        // thread paces those requests so this `update()` runs at most ~60 Hz.
-        // Skip the global-profiler mutex hit entirely when profiling is off.
-        // `set_scopes_on` defaults to false in shipping builds (we only flip
-        // it via `--profile` / `CDJ3K_PROFILE=1` in `CdjApp::new`).
-        if puffin::are_scopes_on() {
-            puffin::GlobalProfiler::lock().new_frame();
-        }
-
-        let ref_canvas = self.ref_canvas();
-        cdj3k_emu_platform::desktop::apply_resize_constraints(
-            ctx,
-            frame,
-            &mut self.resize,
-            Some(ref_canvas),
-        );
-
-        self.poll_menu_state();
-
-        // Blank LCD textures after a QEMU exit so popouts go black instead
-        // of holding the last captured frame.
-        if self.lcd_textures_need_blank {
-            if let Some(gl) = frame.gl().cloned() {
-                self.blank_lcd_textures(&gl);
-                self.lcd_textures_need_blank = false;
-            }
-        }
-
-        if let Some(dirty) = self.display_stream.take() {
-            puffin::profile_scope!("texture_upload_display");
-            self.upload_display_dirty(frame, &dirty);
-            // Init bloom pipeline once we have a GL context.
-            if self.bloom.is_none() {
-                if let Some(gl) = frame.gl() {
-                    self.bloom = Some(Arc::new(Mutex::new(bloom::BloomPipeline::new(gl))));
-                }
-            }
-        }
-
-        if let Some(jf) = self.jog_stream.take() {
-            puffin::profile_scope!("texture_upload_jog");
-            // corner_rgba is already swapped to RGBA by the stream's `sample_corner_rgba`.
-            self.jog_corner_label_colors = std::array::from_fn(|i| {
-                Color32::from_rgba_unmultiplied(
-                    jf.corner_rgba[i][0],
-                    jf.corner_rgba[i][1],
-                    jf.corner_rgba[i][2],
-                    jf.corner_rgba[i][3],
-                )
-            });
-            self.upload_jog_dirty(frame, &jf);
-        }
-
-        let disp_state = stream_state_label(
-            self.display_stream.is_connected(),
-            self.display_tex_id.is_some(),
-            "lcd",
-        );
-        let jog_state = stream_state_label(
-            self.jog_stream.is_connected(),
-            self.jog_tex_id.is_some(),
-            "jog",
-        );
-
-        // The guest's sub-CPU module serves its own idle frame until the
-        // host's first one arrives: send the model's frame as soon as the
-        // control channel is up.
-        let ctrl_ready = self.ctrl_stream.is_ready();
-        if ctrl_ready && !self.ctrl_was_ready {
-            self.inject(self.build_current_frame());
-        }
-        self.ctrl_was_ready = ctrl_ready;
-
-        if let Some(ls) = {
-            puffin::profile_scope!("ctrl_take");
-            self.ctrl_stream.take()
-        } {
-            self.led_state = ls;
-        }
-
-        let dt = ctx.input(|i| i.stable_dt.max(1.0e-4));
-        self.fps_smooth = FPS_EMA_ALPHA * (1.0 / dt) + (1.0 - FPS_EMA_ALPHA) * self.fps_smooth;
-
-        {
-            puffin::profile_scope!("tick_jog");
-            self.tick_jog(dt);
-        }
-
-        // Release all ctrl-latched buttons when ctrl is no longer held.
-        let ctrl = ctx.input(|i| i.modifiers.ctrl);
-        if !ctrl && !self.latched_btns.is_empty() {
-            puffin::profile_scope!("latched_clear_inject");
-            self.latched_btns.clear();
-            self.inject(self.build_current_frame());
-        }
-
-        {
-            puffin::profile_scope!("status_fmt");
-            self.status = format!(
-                "{}  {}  adj={:.2} ω={:+.2}rad/s",
-                disp_state, jog_state, self.jog_adjust, self.jog_omega
-            );
-        }
-
-        // Schedule repaints only for pure UI animation - stream threads own
-        // the wakeups for new_display/new_jog/new_led via their own
-        // `request_repaint_after`. Echoing those here would create a
-        // feedback loop (data arrives → stream wakes UI → update schedules
-        // another repaint 16 ms later → extra frame with no new data).
-        let jog_motion = self.jog_omega.abs() > JOG_OMEGA_MOVING_THRESHOLD
-            || self.jog_is_dragging()
-            || self.jog_scroll_hold_sec > 0.0;
-        if jog_motion || self.held_btn.is_some() || !self.latched_btns.is_empty() {
-            ctx.request_repaint_after(ANIM_REPAINT_INTERVAL);
-        }
-
-        let (booting, target_alpha) = self.tick_boot_shade(ctx);
-        self.lcds_blanked = target_alpha > 0.0;
-
-        // ── Chrome ────────────────────────────────────────────────────────
-        // egui is immediate-mode: shapes must be re-submitted each update to
-        // stay visible. The shape caches make this cheap when nothing changes.
-        self.bloom_excludes.clear();
-        self.bloom_keeps.clear();
-        {
-            puffin::profile_scope!("draw_chrome");
-            egui::CentralPanel::default()
-                .frame(egui::Frame::NONE.fill(ui::panel_bg()))
-                .show(root, |ui| {
-                    self.draw_ui(ui);
-                });
-        }
-
-        if self.shade_alpha > 0.0 {
-            puffin::profile_scope!("shade_draw");
-            boot_overlay::paint_boot_shade(ctx, self.shade_alpha, booting);
-        }
-
-        // Refresh the snapshot consumed by the deferred debug viewport.
-        // Cheap (a handful of clones + array copies); kept outside the
-        // secondary-viewports gate so the snapshot stays current even while booting.
-        if let Ok(mut g) = self.debug_snapshot.lock() {
-            *g = self.debug_snapshot();
-        }
-
-        // Secondary viewports: stay hidden until the shade is fully gone -
-        // they aren't covered by the shade overlay.
-        if self.shade_alpha == 0.0 && target_alpha == 0.0 {
-            puffin::profile_scope!("secondary_viewports");
-            self.show_debug_viewport(ctx);
-            self.show_jog_viewport(ctx);
-            self.show_main_viewport(ctx);
-        }
-
-        // Mirror viewport state back to shared state so the menu reflects close
-        // events triggered by clicking ×.
-        {
-            let mut s = menu_state::lock();
-            s.jog_screen_popped = self.jog_screen_popped;
-            s.main_screen_popped = self.main_screen_popped;
-            s.debug_screen_popped = self.debug_screen_popped;
-        }
-
-        // Bloom composite - fires last; thresholds + blurs scene_tex, writes
-        // to screen.
-        self.queue_bloom_pass(ctx);
-    }
-
     /// App teardown: power the guest off, stop the runtime worker, persist
     /// the GUI-side settings and release the runtime files.
     pub fn on_exit(&mut self, gl: Option<&glow::Context>) {
@@ -721,132 +504,19 @@ impl CdjApp {
     pub fn ref_canvas(&self) -> (f32, f32) {
         ui::slate::for_model(self.model).ref_canvas
     }
-
-    /// Pull menu state (set by the native macOS menu or the egui menu):
-    /// the pop-out toggles and power-off requests.
-    fn poll_menu_state(&mut self) {
-        let (jog, main, debug) = {
-            let s = menu_state::lock();
-            (
-                s.jog_screen_popped,
-                s.main_screen_popped,
-                s.debug_screen_popped,
-            )
-        };
-        self.jog_screen_popped = jog;
-        self.main_screen_popped = main;
-        self.debug_screen_popped = debug;
-        self.send_requested_power_off();
-    }
-
-    /// Send the power-off frame that the runtime worker asked for when it
-    /// began stopping QEMU. The shell also calls this while the window is
-    /// hidden, so that the guest can shut down cleanly before the worker kills
-    /// QEMU 8 s later.
-    pub fn send_requested_power_off(&mut self) {
-        if std::mem::take(&mut menu_state::lock().power_off_stimuli_requested) {
-            self.inject(self.power_off_frame());
-        }
-    }
-
-    /// Step the boot/idle shade alpha toward its target. Returns `(booting,
-    /// target_alpha)` for downstream gating.
-    fn tick_boot_shade(&mut self, ctx: &egui::Context) -> (bool, f32) {
-        let (qemu_running, shade_forced, ui_only) = {
-            let s = menu_state::lock();
-            (s.qemu_running, s.shade_forced, s.ui_only)
-        };
-        if qemu_running && !self.qemu_was_running {
-            self.qemu_running_since = Some(Instant::now());
-        }
-        // QEMU just exited: blank LCD textures so popout windows go black.
-        let qemu_just_exited = self.qemu_was_running && !qemu_running;
-        self.qemu_was_running = qemu_running;
-        if qemu_just_exited {
-            self.lcd_textures_need_blank = true;
-            self.qemu_running_since = None;
-            self.led_state = LedState::default();
-        }
-
-        let panel_driven = self.led_state.frame.iter().any(|&b| b != 0);
-        let waited = self
-            .qemu_running_since
-            .is_some_and(|t| t.elapsed() >= BOOT_SHADE_TIMEOUT);
-        let booting = (qemu_running && !panel_driven && !waited) || shade_forced;
-        menu_state::lock().guest_booted = qemu_running && !booting;
-        // `--no-spawn` has no guest to wait for: keep the chassis unshaded.
-        let target_alpha: f32 = if ui_only {
-            0.0
-        } else if !qemu_running || booting {
-            1.0
-        } else {
-            0.0
-        };
-
-        // Linear ramp toward target (configurable speed).
-        let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
-        let prev_alpha = self.shade_alpha;
-        if (target_alpha - prev_alpha).abs() > f32::EPSILON {
-            let step = dt * SHADE_FADE_SPEED;
-            self.shade_alpha = if target_alpha > prev_alpha {
-                (prev_alpha + step).min(target_alpha)
-            } else {
-                (prev_alpha - step).max(target_alpha)
-            };
-            ctx.request_repaint_after(ANIM_REPAINT_INTERVAL);
-        }
-        (booting, target_alpha)
-    }
-
-    /// Append a deferred bloom pass to the topmost layer (runs after all
-    /// chrome has been submitted).
-    fn queue_bloom_pass(&self, ctx: &egui::Context) {
-        let Some(bloom_arc) = self.bloom.clone() else {
-            return;
-        };
-        let mask = bloom::BloomMask {
-            excludes: self.bloom_excludes.clone(),
-            keeps: self.bloom_keeps.clone(),
-            chrome: cdj3k_emu_platform::menu::chrome_rects(ctx),
-        };
-        let scene_key = self.bloom_scene_key();
-        let cb = eframe::egui_glow::CallbackFn::new(move |info, painter| {
-            puffin::profile_scope!("bloom_gl");
-            let [w, h] = info.screen_size_px;
-            // Lock-poison fallback: if a previous bloom run panicked, just
-            // skip this frame's bloom rather than propagating the panic
-            // through the GL callback (which would tear down the renderer).
-            let Ok(mut bloom) = bloom_arc.lock() else {
-                return;
-            };
-            bloom.run(
-                painter.gl(),
-                w as i32,
-                h as i32,
-                info.pixels_per_point,
-                &mask,
-                scene_key,
-            );
-        });
-        // `Order::Debug` is above the `Order::Foreground` a menu draws in, and
-        // the pass covers the whole viewport: the mask's chrome rects keep it
-        // off the strip and every open panel.
-        ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Debug,
-            egui::Id::new("bloom_pass"),
-        ))
-        .add(egui::Shape::Callback(egui::PaintCallback {
-            rect: ctx.content_rect(),
-            callback: Arc::new(cb),
-        }));
-    }
 }
 
-fn stream_state_label(connected: bool, has_tex: bool, prefix: &'static str) -> String {
-    let suffix = match (connected, has_tex) {
-        (true, true) => "OK",
-        (true, false) => "conn",
-        _ => "wait",
-    };
-    format!("{prefix}:{suffix}")
+impl Default for DebugView {
+    fn default() -> Self {
+        Self {
+            jog_source: "none",
+            jog_delta_rad: 0.0,
+            jog_dt: 0.0,
+            jog_omega_sample: 0.0,
+            jog_lines: Default::default(),
+            snapshot: Default::default(),
+            viewport_state: Default::default(),
+            wants_close: Default::default(),
+        }
+    }
 }

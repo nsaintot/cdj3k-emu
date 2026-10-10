@@ -101,6 +101,19 @@ pub(crate) fn create_raw_image(img_path: &Path, size_bytes: u64) -> std::io::Res
     }
 }
 
+/// Sizes as a disk vendor writes them — powers of ten, matching every other
+/// tool a user will compare this against.
+fn human_size(bytes: u64) -> String {
+    const GB: f64 = 1_000_000_000.0;
+    const MB: f64 = 1_000_000.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.1} GB", b / GB)
+    } else {
+        format!("{:.0} MB", b / MB)
+    }
+}
+
 // ── UsbManager ───────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -120,6 +133,17 @@ impl From<QmpError> for UsbError {
 impl From<std::io::Error> for UsbError {
     fn from(e: std::io::Error) -> Self {
         UsbError::Io(e)
+    }
+}
+
+impl UsbError {
+    /// `e` from opening the device at `path`; a refusal names the device.
+    fn opening(path: &str, e: std::io::Error) -> Self {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            UsbError::PermissionDenied(path.to_string())
+        } else {
+            UsbError::Io(e)
+        }
     }
 }
 
@@ -228,13 +252,9 @@ impl UsbManager {
         self.detach(qmp, provider)?;
         // Unmount first so the device is free: desktops auto-mount removable
         // media, and a mounted disk cannot be opened for the guest.
-        provider.unmount_host(&disk.bsd_name).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                UsbError::PermissionDenied(disk.bsd_path.clone())
-            } else {
-                UsbError::Io(e)
-            }
-        })?;
+        provider
+            .unmount_host(&disk.bsd_name)
+            .map_err(|e| UsbError::opening(&disk.bsd_path, e))?;
 
         let medium = match imp::open_raw(disk, &self.qmp_fd_socket) {
             Ok(m) => m,
@@ -338,5 +358,18 @@ impl UsbManager {
         // no manual blockdev --rereadpt needed (and it corrupts the FAT32 device state).
         std::thread::sleep(Duration::from_millis(600));
         self.cfg.usb_attach()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Decimal, as printed on the packaging — a "32 GB" stick must not read
+    /// as 29.8.
+    #[test]
+    fn sizes_read_the_way_the_vendor_writes_them() {
+        assert_eq!(human_size(32_000_000_000), "32.0 GB");
+        assert_eq!(human_size(512_000_000), "512 MB");
     }
 }

@@ -4,7 +4,7 @@
 use egui::{Pos2, Rect};
 
 /// Jog assembly zone, handed to the shared `ui::draw_jog` renderer.
-pub(super) fn jog_rect() -> Rect {
+pub(super) const fn jog_rect() -> Rect {
     Rect::from_min_max(
         Pos2::new(JOG_REF_LEFT, JOG_REF_TOP),
         Pos2::new(JOG_REF_RIGHT, JOG_REF_BOT),

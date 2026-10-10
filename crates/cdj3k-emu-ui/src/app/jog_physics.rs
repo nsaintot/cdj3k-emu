@@ -169,32 +169,32 @@ impl CdjApp {
     fn refresh_jog_debug_lines(&mut self, dragging: bool, grip: bool, brake: f32, dec: f32) {
         puffin::profile_function!();
         let w = DBG_LINE_WIDTH;
-        self.jog_dbg_lines[0] = format!(
+        self.debug.jog_lines[0] = format!(
             "{:^w$}",
             format!(
                 "src={} drag={} touch={} grip={} jog_scroll_hold_sec={:.2}",
-                self.jog_dbg_last_source,
+                self.debug.jog_source,
                 dragging,
                 self.jog_touch_active,
                 grip,
                 self.jog_scroll_hold_sec
             )
         );
-        self.jog_dbg_lines[1] = format!(
+        self.debug.jog_lines[1] = format!(
             "{:^w$}",
             format!(
                 "dθ={:+.4} dt={:.4} ωs={:+.2} ω={:+.2}",
-                self.jog_dbg_last_delta_rad,
-                self.jog_dbg_last_dt,
-                self.jog_dbg_last_omega_sample,
+                self.debug.jog_delta_rad,
+                self.debug.jog_dt,
+                self.debug.jog_omega_sample,
                 self.jog_omega
             )
         );
-        self.jog_dbg_lines[2] = format!(
+        self.debug.jog_lines[2] = format!(
             "{:^w$}",
             format!(
                 "adj={:.2} brake={:.2} dec={:.3} ω={:+.2}rad/s ωs={:+.2}",
-                self.jog_adjust, brake, dec, self.jog_omega, self.jog_dbg_last_omega_sample
+                self.jog_adjust, brake, dec, self.jog_omega, self.debug.jog_omega_sample
             )
         );
     }
@@ -203,89 +203,10 @@ impl CdjApp {
     fn jog_update_encoded_state(&mut self, touch_active: bool, dt: f32) {
         puffin::profile_function!();
 
-        // Position: free-running wrapping u16. Use the actual angle delta
-        // (not omega · dt) so slow drags still register single ticks.
-        let angle_delta = self.jog_angle - self.jog_angle_last_encoded;
-        self.jog_angle_last_encoded = self.jog_angle;
-        self.jog_revs += f64::from(angle_delta / std::f32::consts::TAU);
-        // Actual platter speed this tick: coast while free, the hand's motion
-        // while held.
-        let new_rps = angle_delta / std::f32::consts::TAU / dt.max(DT_FLOOR);
-        let tick_delta = angle_delta * JOG_TICKS_PER_REV / std::f32::consts::TAU;
-        self.jog_accum += tick_delta;
-        let ticks = self.jog_accum.trunc() as i32;
-        self.jog_accum -= ticks as f32;
-        let new_pos = self.jog_pos.wrapping_add(ticks as u16);
-
-        // Haptic detents - one Taptic Engine pulse per HAPTIC_TICKS_PER_CLICK
-        // ticks of motion.  Pure distance-driven: every detent crossing
-        // fires regardless of speed.  Slow drag → individual clicks; fast
-        // spin → the dispatcher thread paces real IOKit calls at
-        // MIN_ACTUATE_INTERVAL and drops excess queue entries.
-        //
-        // `actuate()` is a non-blocking try_send that returns ~immediately
-        // and no-ops when the actuator isn't available, so no upstream
-        // arming/gating is needed - if we crossed a detent, we ask for the
-        // click; the platform layer decides what to do with it.
-        self.jog_haptic_accum += tick_delta.abs();
-        if self.jog_haptic_accum >= HAPTIC_TICKS_PER_CLICK {
-            let speed_rps = self.jog_omega.abs() / std::f32::consts::TAU;
-            let waveform = if speed_rps < HAPTIC_SPEED_SLOW_MAX_RPS {
-                HAPTIC_WAVEFORM_SLOW
-            } else if speed_rps < HAPTIC_SPEED_MEDIUM_MAX_RPS {
-                HAPTIC_WAVEFORM_MEDIUM
-            } else {
-                HAPTIC_WAVEFORM_FAST
-            };
-
-            // Drain the accumulator regardless of the toggle - otherwise
-            // turning haptics back on after a long spin would fire a backlog
-            // of stored clicks at once.  When disabled, we still drain but
-            // skip the actuator call.
-            let enabled = cdj3k_emu_platform::menu_state::lock().haptic_enabled;
-            while self.jog_haptic_accum >= HAPTIC_TICKS_PER_CLICK {
-                self.jog_haptic_accum -= HAPTIC_TICKS_PER_CLICK;
-                if enabled {
-                    for _ in 0..HAPTIC_PULSES_PER_CLICK {
-                        cdj3k_emu_platform::haptic::actuate(waveform);
-                    }
-                }
-            }
-        }
-
-        // Velocity: power-law inverse encoding.
-        let speed_rps = self.jog_omega.abs() / std::f32::consts::TAU;
-        let new_vel: u16 = if speed_rps < JOG_VEL_REST_RPS {
-            JOG_VEL_STOPPED
-        } else {
-            (JOG_VEL_COEFF / speed_rps.powf(JOG_VEL_EXP)).clamp(0.0, JOG_VEL_MAX) as u16
-        };
-
-        // Touch byte: combine touch flag with movement direction.
-        let moving_fwd = self.jog_omega > JOG_OMEGA_MOVING_THRESHOLD;
-        let moving_back = self.jog_omega < -JOG_OMEGA_MOVING_THRESHOLD;
-        let new_touch = if touch_active {
-            // Center platter drag: scratch/vinyl mode - touch flag set.
-            if moving_fwd {
-                TOUCH_HELD_FORWARD
-            } else if moving_back {
-                TOUCH_HELD_BACKWARD
-            } else {
-                TOUCH_HELD_STATIONARY
-            }
-        } else if moving_fwd {
-            TOUCH_FREE_FORWARD
-        } else if moving_back {
-            TOUCH_FREE_BACKWARD
-        } else {
-            // Natural coast stop: emit `TOUCH_NONE` exactly on the frame
-            // we settle to rest, then hold `TOUCH_REST_BASELINE`.
-            if self.jog_touch == TOUCH_FREE_BACKWARD || self.jog_touch == TOUCH_FREE_FORWARD {
-                TOUCH_NONE
-            } else {
-                TOUCH_REST_BASELINE
-            }
-        };
+        let (new_pos, new_rps, tick_delta) = self.jog_advance_position(dt);
+        self.jog_haptic_detents(tick_delta);
+        let new_vel = encode_jog_vel(self.jog_omega);
+        let new_touch = encode_jog_touch(touch_active, self.jog_omega, self.jog_touch);
 
         let changed = new_pos != self.jog_pos
             || new_vel != self.jog_vel
@@ -297,6 +218,54 @@ impl CdjApp {
         self.jog_touch = new_touch;
         if changed {
             self.inject_jog();
+        }
+    }
+
+    /// Position: free-running wrapping u16. Use the actual angle delta (not
+    /// omega · dt) so slow drags still register single ticks. Returns the new
+    /// `jog_pos`, the platter's turns per second this tick - coast while
+    /// free, the hand's motion while held - and the ticks it moved.
+    fn jog_advance_position(&mut self, dt: f32) -> (u16, f32, f32) {
+        let angle_delta = self.jog_angle - self.jog_angle_last_encoded;
+        self.jog_angle_last_encoded = self.jog_angle;
+        self.jog_revs += f64::from(angle_delta / std::f32::consts::TAU);
+        let new_rps = angle_delta / std::f32::consts::TAU / dt.max(DT_FLOOR);
+        let tick_delta = angle_delta * JOG_TICKS_PER_REV / std::f32::consts::TAU;
+        self.jog_accum += tick_delta;
+        let ticks = self.jog_accum.trunc() as i32;
+        self.jog_accum -= ticks as f32;
+        (self.jog_pos.wrapping_add(ticks as u16), new_rps, tick_delta)
+    }
+
+    /// Haptic detents - one Taptic Engine pulse per HAPTIC_TICKS_PER_CLICK
+    /// ticks of motion.  Pure distance-driven: every detent crossing fires
+    /// regardless of speed.  Slow drag → individual clicks; fast spin → the
+    /// dispatcher thread paces real IOKit calls at MIN_ACTUATE_INTERVAL and
+    /// drops excess queue entries.
+    ///
+    /// `actuate()` is a non-blocking try_send that returns ~immediately and
+    /// no-ops when the actuator isn't available, so no upstream arming/gating
+    /// is needed - if we crossed a detent, we ask for the click; the platform
+    /// layer decides what to do with it.
+    fn jog_haptic_detents(&mut self, tick_delta: f32) {
+        self.jog_haptic_accum += tick_delta.abs();
+        if self.jog_haptic_accum < HAPTIC_TICKS_PER_CLICK {
+            return;
+        }
+        let waveform = haptic_waveform(self.jog_omega.abs() / std::f32::consts::TAU);
+
+        // Drain the accumulator regardless of the toggle - otherwise
+        // turning haptics back on after a long spin would fire a backlog
+        // of stored clicks at once.  When disabled, we still drain but
+        // skip the actuator call.
+        let enabled = cdj3k_emu_platform::menu_state::lock().haptic_enabled;
+        while self.jog_haptic_accum >= HAPTIC_TICKS_PER_CLICK {
+            self.jog_haptic_accum -= HAPTIC_TICKS_PER_CLICK;
+            if enabled {
+                for _ in 0..HAPTIC_PULSES_PER_CLICK {
+                    cdj3k_emu_platform::haptic::actuate(waveform);
+                }
+            }
         }
     }
 
@@ -365,10 +334,10 @@ impl CdjApp {
         let omega_sample = delta_rad / dt;
         self.jog_angle += delta_rad;
         self.jog_omega += (omega_sample - self.jog_omega) * alpha;
-        self.jog_dbg_last_source = source;
-        self.jog_dbg_last_delta_rad = delta_rad;
-        self.jog_dbg_last_dt = dt;
-        self.jog_dbg_last_omega_sample = omega_sample;
+        self.debug.jog_source = source;
+        self.debug.jog_delta_rad = delta_rad;
+        self.debug.jog_dt = dt;
+        self.debug.jog_omega_sample = omega_sample;
         // Haptic is purely distance-driven (in `jog_update_encoded_state`).
         // We intentionally do NOT fire one click per input event here -
         // doing so makes haptic track the trackpad's event rate (~60-90 Hz)
@@ -411,5 +380,53 @@ impl CdjApp {
 
     pub(super) fn set_jog_grip_drag(&mut self, grip: bool) {
         self.jog_grip_drag = grip;
+    }
+}
+
+/// The haptic waveform tier for a platter turning at `speed_rps`.
+fn haptic_waveform(speed_rps: f32) -> i32 {
+    if speed_rps < HAPTIC_SPEED_SLOW_MAX_RPS {
+        HAPTIC_WAVEFORM_SLOW
+    } else if speed_rps < HAPTIC_SPEED_MEDIUM_MAX_RPS {
+        HAPTIC_WAVEFORM_MEDIUM
+    } else {
+        HAPTIC_WAVEFORM_FAST
+    }
+}
+
+/// Velocity: power-law inverse encoding.
+fn encode_jog_vel(omega: f32) -> u16 {
+    let speed_rps = omega.abs() / std::f32::consts::TAU;
+    if speed_rps < JOG_VEL_REST_RPS {
+        JOG_VEL_STOPPED
+    } else {
+        (JOG_VEL_COEFF / speed_rps.powf(JOG_VEL_EXP)).clamp(0.0, JOG_VEL_MAX) as u16
+    }
+}
+
+/// Touch byte: combine touch flag with movement direction. `prev` is the
+/// byte last sent.
+fn encode_jog_touch(touch_active: bool, omega: f32, prev: u8) -> u8 {
+    let moving_fwd = omega > JOG_OMEGA_MOVING_THRESHOLD;
+    let moving_back = omega < -JOG_OMEGA_MOVING_THRESHOLD;
+    if touch_active {
+        // Center platter drag: scratch/vinyl mode - touch flag set.
+        if moving_fwd {
+            TOUCH_HELD_FORWARD
+        } else if moving_back {
+            TOUCH_HELD_BACKWARD
+        } else {
+            TOUCH_HELD_STATIONARY
+        }
+    } else if moving_fwd {
+        TOUCH_FREE_FORWARD
+    } else if moving_back {
+        TOUCH_FREE_BACKWARD
+    } else if prev == TOUCH_FREE_BACKWARD || prev == TOUCH_FREE_FORWARD {
+        // Natural coast stop: emit `TOUCH_NONE` exactly on the frame we
+        // settle to rest, then hold `TOUCH_REST_BASELINE`.
+        TOUCH_NONE
+    } else {
+        TOUCH_REST_BASELINE
     }
 }

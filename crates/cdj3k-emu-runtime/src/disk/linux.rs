@@ -32,13 +32,7 @@ impl DiskProvider for HostDiskProvider {
 /// Hand QEMU the device as a descriptor it could not open itself, over the
 /// monitor that can carry one.
 pub(super) fn open_raw(disk: &PhysicalDisk, qmp_fd_socket: &Path) -> Result<RawMedium, UsbError> {
-    let fd = open_device(&disk.bsd_path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
-            UsbError::PermissionDenied(disk.bsd_path.clone())
-        } else {
-            UsbError::Io(e)
-        }
-    })?;
+    let fd = open_device(&disk.bsd_path).map_err(|e| UsbError::opening(&disk.bsd_path, e))?;
     let id = crate::qmp::add_fd(qmp_fd_socket, std::os::fd::AsFd::as_fd(&fd))?;
     Ok(RawMedium {
         filename: fdset_medium(id),

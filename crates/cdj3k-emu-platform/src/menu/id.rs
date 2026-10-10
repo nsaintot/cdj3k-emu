@@ -48,71 +48,70 @@ pub enum MenuId {
     Instance(u32),
 }
 
+/// The wire form of every variant without a payload, read in both directions.
+const FIXED: [(MenuId, &str); 19] = [
+    (MenuId::ManageEmulation, "manage_emulation"),
+    (MenuId::ModsEnabled, "mods_enabled"),
+    (MenuId::Restart, "restart"),
+    (MenuId::ServiceMode, "service_mode"),
+    (MenuId::Haptic, "haptic"),
+    (MenuId::PcLink, "pc_link"),
+    (MenuId::CheckForUpdate, "check_for_update"),
+    (MenuId::ScreenExtended, "screen_extended"),
+    (MenuId::JogScreen, "jog_screen"),
+    (MenuId::MainScreen, "main_screen"),
+    (MenuId::DebugScreen, "debug_screen"),
+    (MenuId::Audio, "audio"),
+    (MenuId::Alc, "alc"),
+    (MenuId::AudioDeviceDefault, "audio_dev_default"),
+    (MenuId::NetNat, "net_none"),
+    (MenuId::NetVmnetHost, "net_vmnet_host"),
+    (MenuId::EjectCurrentMedia, "eject_current_media"),
+    (MenuId::MountVirtualUsb, "mount_virtual_usb"),
+    (MenuId::CreateVirtualUsb, "create_virtual_usb"),
+];
+
+/// Prefixes of the variants that carry a payload, which follows the prefix.
+const AUDIO_DEVICE: &str = "audio_dev_uid_";
+const NET_INTERFACE: &str = "net_if_";
+const PHYSICAL_DISK: &str = "phys_select_";
+const INSTANCE: &str = "instance_";
+
 impl MenuId {
     /// Stable string form for providers whose widgets carry a string id.
     pub fn to_wire(&self) -> String {
         match self {
-            Self::ManageEmulation => "manage_emulation".into(),
-            Self::ModsEnabled => "mods_enabled".into(),
-            Self::Restart => "restart".into(),
-            Self::ServiceMode => "service_mode".into(),
-            Self::Haptic => "haptic".into(),
-            Self::PcLink => "pc_link".into(),
-            Self::CheckForUpdate => "check_for_update".into(),
-            Self::ScreenExtended => "screen_extended".into(),
-            Self::JogScreen => "jog_screen".into(),
-            Self::MainScreen => "main_screen".into(),
-            Self::DebugScreen => "debug_screen".into(),
-            Self::Audio => "audio".into(),
-            Self::Alc => "alc".into(),
-            Self::AudioDeviceDefault => "audio_dev_default".into(),
-            Self::AudioDevice(uid) => format!("audio_dev_uid_{}", encode_hex(uid)),
-            Self::NetNat => "net_none".into(),
-            Self::NetVmnetHost => "net_vmnet_host".into(),
-            Self::NetInterface(n) => format!("net_if_{n}"),
-            Self::EjectCurrentMedia => "eject_current_media".into(),
-            Self::MountVirtualUsb => "mount_virtual_usb".into(),
-            Self::CreateVirtualUsb => "create_virtual_usb".into(),
-            Self::PhysicalDisk(i) => format!("phys_select_{i}"),
-            Self::Instance(n) => format!("instance_{n}"),
+            Self::AudioDevice(uid) => format!("{AUDIO_DEVICE}{}", encode_hex(uid)),
+            Self::NetInterface(n) => format!("{NET_INTERFACE}{n}"),
+            Self::PhysicalDisk(i) => format!("{PHYSICAL_DISK}{i}"),
+            Self::Instance(n) => format!("{INSTANCE}{n}"),
+            fixed => FIXED
+                .iter()
+                .find(|(id, _)| id == fixed)
+                .map(|(_, wire)| (*wire).to_owned())
+                .expect("every variant without a payload is in FIXED"),
         }
     }
 
     /// Inverse of [`MenuId::to_wire`]. `None` for ids this build does not know,
     /// such as a stale widget from an older model.
     pub fn from_wire(s: &str) -> Option<Self> {
-        Some(match s {
-            "manage_emulation" => Self::ManageEmulation,
-            "mods_enabled" => Self::ModsEnabled,
-            "restart" => Self::Restart,
-            "service_mode" => Self::ServiceMode,
-            "haptic" => Self::Haptic,
-            "pc_link" => Self::PcLink,
-            "check_for_update" => Self::CheckForUpdate,
-            "screen_extended" => Self::ScreenExtended,
-            "jog_screen" => Self::JogScreen,
-            "main_screen" => Self::MainScreen,
-            "debug_screen" => Self::DebugScreen,
-            "audio" => Self::Audio,
-            "alc" => Self::Alc,
-            "audio_dev_default" => Self::AudioDeviceDefault,
-            "net_none" => Self::NetNat,
-            "net_vmnet_host" => Self::NetVmnetHost,
-            "eject_current_media" => Self::EjectCurrentMedia,
-            "mount_virtual_usb" => Self::MountVirtualUsb,
-            "create_virtual_usb" => Self::CreateVirtualUsb,
-            other => {
-                if let Some(rest) = other.strip_prefix("audio_dev_uid_") {
-                    Self::AudioDevice(decode_hex(rest)?)
-                } else if let Some(rest) = other.strip_prefix("net_if_") {
-                    Self::NetInterface(rest.parse().ok()?)
-                } else if let Some(rest) = other.strip_prefix("phys_select_") {
-                    Self::PhysicalDisk(rest.parse().ok()?)
-                } else {
-                    Self::Instance(other.strip_prefix("instance_")?.parse().ok()?)
-                }
-            }
-        })
+        if let Some((id, _)) = FIXED.iter().find(|(_, wire)| *wire == s) {
+            return Some(id.clone());
+        }
+        if let Some(rest) = s.strip_prefix(AUDIO_DEVICE) {
+            return decode_hex(rest).map(Self::AudioDevice);
+        }
+        if let Some(rest) = s.strip_prefix(NET_INTERFACE) {
+            return rest.parse().ok().map(Self::NetInterface);
+        }
+        if let Some(rest) = s.strip_prefix(PHYSICAL_DISK) {
+            return rest.parse().ok().map(Self::PhysicalDisk);
+        }
+        if let Some(rest) = s.strip_prefix(INSTANCE) {
+            return rest.parse().ok().map(Self::Instance);
+        }
+        None
     }
 }
 
@@ -173,6 +172,84 @@ mod tests {
         ];
         for id in ids {
             assert_eq!(MenuId::from_wire(&id.to_wire()).as_ref(), Some(&id));
+        }
+    }
+
+    #[test]
+    fn every_variant_has_its_own_fixed_wire_form() {
+        let pinned = [
+            (MenuId::ManageEmulation, "manage_emulation"),
+            (MenuId::ModsEnabled, "mods_enabled"),
+            (MenuId::Restart, "restart"),
+            (MenuId::ServiceMode, "service_mode"),
+            (MenuId::Haptic, "haptic"),
+            (MenuId::PcLink, "pc_link"),
+            (MenuId::CheckForUpdate, "check_for_update"),
+            (MenuId::ScreenExtended, "screen_extended"),
+            (MenuId::JogScreen, "jog_screen"),
+            (MenuId::MainScreen, "main_screen"),
+            (MenuId::DebugScreen, "debug_screen"),
+            (MenuId::Audio, "audio"),
+            (MenuId::Alc, "alc"),
+            (MenuId::AudioDeviceDefault, "audio_dev_default"),
+            (MenuId::AudioDevice("a:b".into()), "audio_dev_uid_613a62"),
+            (MenuId::NetNat, "net_none"),
+            (MenuId::NetVmnetHost, "net_vmnet_host"),
+            (MenuId::NetInterface(3), "net_if_3"),
+            (MenuId::EjectCurrentMedia, "eject_current_media"),
+            (MenuId::MountVirtualUsb, "mount_virtual_usb"),
+            (MenuId::CreateVirtualUsb, "create_virtual_usb"),
+            (MenuId::PhysicalDisk(2), "phys_select_2"),
+            (MenuId::Instance(4), "instance_4"),
+        ];
+        for (id, wire) in pinned {
+            assert_eq!(id.to_wire(), wire);
+            assert_eq!(MenuId::from_wire(wire), Some(id));
+        }
+    }
+
+    /// Every variant without a payload is in [`FIXED`]. A new variant fails
+    /// to compile here until it is matched, and fails the test until it is in
+    /// the table.
+    #[test]
+    fn fixed_covers_every_variant_without_a_payload() {
+        for (id, _) in &FIXED {
+            match id {
+                MenuId::ManageEmulation
+                | MenuId::ModsEnabled
+                | MenuId::Restart
+                | MenuId::ServiceMode
+                | MenuId::Haptic
+                | MenuId::PcLink
+                | MenuId::CheckForUpdate
+                | MenuId::ScreenExtended
+                | MenuId::JogScreen
+                | MenuId::MainScreen
+                | MenuId::DebugScreen
+                | MenuId::Audio
+                | MenuId::Alc
+                | MenuId::AudioDeviceDefault
+                | MenuId::NetNat
+                | MenuId::NetVmnetHost
+                | MenuId::EjectCurrentMedia
+                | MenuId::MountVirtualUsb
+                | MenuId::CreateVirtualUsb => {}
+                MenuId::AudioDevice(_)
+                | MenuId::NetInterface(_)
+                | MenuId::PhysicalDisk(_)
+                | MenuId::Instance(_) => panic!("{id:?} carries a payload"),
+            }
+        }
+        assert_eq!(FIXED.len(), 19);
+    }
+
+    #[test]
+    fn no_two_fixed_ids_share_a_wire_form() {
+        for (i, (a, wire)) in FIXED.iter().enumerate() {
+            for (b, other) in &FIXED[i + 1..] {
+                assert_ne!(a, b);
+                assert_ne!(wire, other);
+            }
         }
     }
 

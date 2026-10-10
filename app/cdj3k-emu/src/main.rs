@@ -1,15 +1,20 @@
 // No console window on Windows.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod cli;
 mod launch;
 mod runtime_worker;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use egui::{FontData, FontDefinitions, FontFamily, FontTweak};
 
 use cdj3k_emu_panel::Model;
 use cdj3k_emu_platform::fonts::{NIMBUS_SANS, NIMBUS_SANS_BOLD, NIMBUS_SANS_CONDENSED};
+use cdj3k_emu_platform::{menu_state, window_socket};
+
+use cli::Cli;
 
 fn configure_helvetica_medium(ctx: &egui::Context) {
     const NIMBUS_SANS_DATA: &[u8] = include_bytes!("../assets/nimbus-sans-l.regular.otf");
@@ -52,6 +57,10 @@ fn configure_helvetica_medium(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// Held until the process exits, so other windows see the slot as open. A
+/// process without it never swaps an install into the slot.
+static SLOT_CLAIM: OnceLock<cdj3k_emu_storage::SlotClaim> = OnceLock::new();
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
@@ -63,140 +72,63 @@ fn main() {
 
     cdj3k_emu_platform::desktop::announce_running();
 
-    // Slot 1 is the default for a fresh launch. Slots 2..=4 are reachable
-    // via `--instance N` (the "Instances" menu launches us with `open -n`).
-    let mut instance: u32 = 1;
-
-    // `--model <slug>` / `CDJ3K_MODEL`: skip the picker and boot this
-    // model right away (headless captures, dev loops, launch scripts).
-    let mut initial_model: Option<Model> = std::env::var("CDJ3K_MODEL")
-        .ok()
-        .and_then(|v| Model::parse(&v));
-
-    let mut kernel: Option<PathBuf> = None;
-    let mut initramfs: Option<PathBuf> = None;
-    let mut no_emmc = false;
-    // Default off: serial log grows unbounded and is only useful for debugging
-    // boot/kernel panics. Enabled via `--serial-log` or `CDJ3K_SERIAL_LOG=1`.
-    let mut serial_log = std::env::var_os("CDJ3K_SERIAL_LOG")
-        .map(|v| v != "0" && !v.is_empty())
-        .unwrap_or(false);
-    // Default off: enables puffin scopes + binds a localhost TCP listener
-    // for puffin_viewer.  Off in shipping builds; enable with `--profile`
-    // or `CDJ3K_PROFILE=1` for performance investigations.
-    let mut profile = std::env::var_os("CDJ3K_PROFILE")
-        .map(|v| v != "0" && !v.is_empty())
-        .unwrap_or(false);
-
-    // `--service-mode` boots straight into the sub-CPU test mode (the
-    // "Service Mode" menu item, which otherwise needs a restart).
-    let mut service_mode = false;
-    // `--provision <.UPD|.iso> [--key <file>]`: run the Install Firmware
-    // pipeline for `--instance` / `--model` without a window, then exit.
-    let mut provision_path: Option<PathBuf> = None;
-    let mut key_path: Option<PathBuf> = None;
-    // `--no-spawn` / `CDJ3K_NO_SPAWN=1`: chassis only - no runtime worker, no
-    // QEMU, no boot shade. For layout work and `CDJ3K_SCREENSHOT` captures.
-    let mut no_spawn = std::env::var_os("CDJ3K_NO_SPAWN")
-        .map(|v| v != "0" && !v.is_empty())
-        .unwrap_or(false);
-    // `--after-update`: started by the updater while the build it replaced is
-    // still exiting, so the slot is waited for rather than found taken.
-    let mut after_update = false;
-    // `--mod <folder>` (repeatable) adds a mod folder for this launch only.
-    // `--no-mods` boots without the slot's mods.
-    let mut extra_mods: Vec<PathBuf> = Vec::new();
-    let mut no_mods = false;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--instance" => {
-                i += 1;
-                if i < args.len() {
-                    instance = args[i].parse().unwrap_or(0);
-                }
-            }
-            "--model" => {
-                i += 1;
-                if i < args.len() {
-                    match Model::parse(&args[i]) {
-                        Some(m) => initial_model = Some(m),
-                        None => eprintln!(
-                            "cdj3k-emu: unknown --model {:?} ({}) - showing the picker",
-                            args[i],
-                            Model::ALL.map(|m| m.spec().slug).join(" | ")
-                        ),
-                    }
-                }
-            }
-            "--kernel" => {
-                i += 1;
-                if i < args.len() {
-                    kernel = Some(PathBuf::from(&args[i]));
-                }
-            }
-            "--initramfs" => {
-                i += 1;
-                if i < args.len() {
-                    initramfs = Some(PathBuf::from(&args[i]));
-                }
-            }
-            "--no-emmc" => {
-                no_emmc = true;
-            }
-            "--serial-log" => {
-                serial_log = true;
-            }
-            "--profile" => {
-                profile = true;
-            }
-            "--service-mode" => {
-                service_mode = true;
-            }
-            "--provision" => {
-                i += 1;
-                if i < args.len() {
-                    provision_path = Some(PathBuf::from(&args[i]));
-                }
-            }
-            "--key" => {
-                i += 1;
-                if i < args.len() {
-                    key_path = Some(PathBuf::from(&args[i]));
-                }
-            }
-            "--no-spawn" => {
-                no_spawn = true;
-            }
-            "--after-update" => {
-                after_update = true;
-            }
-            "--mod" => {
-                i += 1;
-                if i < args.len() {
-                    extra_mods.push(PathBuf::from(&args[i]));
-                }
-            }
-            "--no-mods" => {
-                no_mods = true;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
+    let mut cli = Cli::parse(&args);
+    let instance = cli.instance;
 
     {
-        let mut s = cdj3k_emu_platform::menu_state::lock();
+        let mut s = menu_state::lock();
         s.current_instance_id = instance;
-        s.ui_only = no_spawn;
+        s.ui_only = cli.no_spawn;
         s.pc_link_supported = cdj3k_emu_runtime::pc_link::is_supported();
     }
 
-    // Held until the process exits, so other windows see the slot as open. A
-    // process without it never swaps an install into the slot.
-    static SLOT_CLAIM: std::sync::OnceLock<cdj3k_emu_storage::SlotClaim> =
-        std::sync::OnceLock::new();
+    claim_slot(instance, cli.after_update, cli.provision_path.is_some());
+
+    // Keys older releases kept in the app-wide settings file.
+    cdj3k_emu_storage::prune_app_file();
+
+    install_slot_menu_queries();
+
+    let socket_dir = cdj3k_emu_platform::runtime_paths::instance_dir(instance)
+        .to_string_lossy()
+        .into_owned();
+
+    if !cli.no_spawn {
+        seed_menu_from_settings(instance, cli.service_mode);
+    }
+
+    if let Some(upd) = cli.provision_path.take() {
+        provision_and_exit(upd, cli.key_path.as_deref(), instance, cli.initial_model);
+    }
+
+    cdj3k_emu_storage::adopt_unrecorded_slot(instance);
+
+    // A slot remembers the model it last booted: open on it directly and
+    // show the picker only for a fresh slot or from "Manage Emulation".
+    // `--model` / `CDJ3K_MODEL` override it for this launch; `--no-spawn`
+    // ignores it so chassis work can always reach the picker.
+    if cli.initial_model.is_none() && !cli.no_spawn {
+        cli.initial_model = cdj3k_emu_storage::InstanceSettings::saved_model(instance);
+    }
+
+    let host = launch::Host {
+        instance,
+        kernel: cli.kernel,
+        initramfs: cli.initramfs,
+        no_emmc: cli.no_emmc,
+        serial_log: cli.serial_log,
+        extra_mods: cli.extra_mods,
+        no_mods: cli.no_mods,
+        ui_only: cli.no_spawn,
+        claim: SLOT_CLAIM.get(),
+    };
+
+    run_ui(instance, socket_dir, cli.profile, cli.initial_model, host);
+}
+
+/// Take this process's claim on `instance`, waiting for it after an update.
+/// Exits when another window owns the slot, unless `provisioning`.
+fn claim_slot(instance: u32, after_update: bool, provisioning: bool) {
     let claim = if after_update {
         cdj3k_emu_storage::SlotClaim::take_within(instance, std::time::Duration::from_secs(60))
     } else {
@@ -208,7 +140,7 @@ fn main() {
         }
         // Another window owns the slot: bring it forward rather than run a
         // second emulation over it. `--provision` stages and needs no claim.
-        Ok(None) if provision_path.is_none() => {
+        Ok(None) if !provisioning => {
             eprintln!("cdj3k-emu: slot {instance} is already open in another process");
             if let Some(pid) = cdj3k_emu_storage::slot_holder(instance) {
                 if let Err(e) = cdj3k_emu_platform::desktop::activate_process(pid) {
@@ -220,145 +152,118 @@ fn main() {
         Ok(None) => {}
         Err(e) => eprintln!("cdj3k-emu: claiming slot {instance} failed: {e}"),
     }
+}
 
-    // Keys older releases kept in the app-wide settings file.
-    cdj3k_emu_storage::prune_app_file();
-
-    // What the Instances menu writes beside a slot number. The menu lives a
-    // crate below the settings, so it asks through this.
-    cdj3k_emu_platform::menu_state::set_slot_busy_fn(cdj3k_emu_storage::slot_in_use);
-    cdj3k_emu_platform::menu_state::set_slot_note_fn(|n| {
+/// What the Instances menu writes beside a slot number. The menu lives a
+/// crate below the settings, so it asks through these.
+fn install_slot_menu_queries() {
+    menu_state::set_slot_busy_fn(cdj3k_emu_storage::slot_in_use);
+    menu_state::set_slot_note_fn(|n| {
         cdj3k_emu_storage::slot_summary(n).map(|(model, release)| match release {
             Some(rel) => format!("{} {rel}", model.title()),
             None => model.title().to_string(),
         })
     });
+}
 
-    let socket_dir = cdj3k_emu_platform::runtime_paths::instance_dir(instance)
-        .to_string_lossy()
-        .into_owned();
+/// Copy the slot's settings into the menu once, so the Audio/ALC/...
+/// checkboxes show the correct initial state on the picker and the panel
+/// alike. The runtime worker re-reads `audio_enabled` on every restart via
+/// apply_menu_to_config and pushes `alc_enabled` to the guest cfg daemon once
+/// per QEMU boot. Booting itself happens when a model is chosen
+/// (`launch::Host`).
+fn seed_menu_from_settings(instance: u32, service_mode: bool) {
+    let inst_settings = cdj3k_emu_storage::InstanceSettings::load_or_init(instance);
+    {
+        let mut s = menu_state::lock();
+        s.audio_enabled = inst_settings.audio_enabled;
+        s.audio_device_uid = inst_settings.audio_device_uid.clone();
+        s.alc_enabled = inst_settings.alc_enabled;
+        s.haptic_enabled = inst_settings.haptic_enabled;
+        s.mods_enabled = inst_settings.mods_enabled;
+        s.pc_link_enabled =
+            inst_settings.pc_link_enabled && cdj3k_emu_runtime::pc_link::is_supported();
+        s.service_mode = service_mode;
+    }
 
-    // ── Slot settings → menu mirrors ──────────────────────────────────────
-    // Seeded once here so the Audio/ALC/... checkboxes show the correct
-    // initial state on the picker and the panel alike. The runtime worker
-    // re-reads `audio_enabled` on every restart via apply_menu_to_config and
-    // pushes `alc_enabled` to the guest cfg daemon once per QEMU boot (see
-    // runtime_worker::run). Booting itself happens when a model is chosen
-    // (`launch::Host`).
-    if !no_spawn {
-        let inst_settings = cdj3k_emu_storage::InstanceSettings::load_or_init(instance);
-        {
-            let mut s = cdj3k_emu_platform::menu_state::lock();
-            s.audio_enabled = inst_settings.audio_enabled;
-            s.audio_device_uid = inst_settings.audio_device_uid.clone();
-            s.alc_enabled = inst_settings.alc_enabled;
-            s.haptic_enabled = inst_settings.haptic_enabled;
-            s.mods_enabled = inst_settings.mods_enabled;
-            s.pc_link_enabled =
-                inst_settings.pc_link_enabled && cdj3k_emu_runtime::pc_link::is_supported();
-            s.service_mode = service_mode;
-        }
-
-        // Restore network interface selection (best effort).  If the saved
-        // ifname is no longer present, leave selected_interface at "none" -
-        // the saved value stays on disk and binds again when the iface
-        // returns. The vmnet-host mode round-trips via a reserved token
-        // (not a valid BSD ifname) so it can never collide with a real iface.
-        cdj3k_emu_platform::menu_state::refresh_net_interfaces();
-        if let Some(saved_name) = &inst_settings.net_iface {
-            let mut s = cdj3k_emu_platform::menu_state::lock();
-            if saved_name == cdj3k_emu_platform::menu_state::NET_IFACE_VMNET_HOST_TOKEN {
-                s.selected_interface = cdj3k_emu_platform::menu_state::NET_SEL_VMNET_HOST;
-            } else if let Some(idx) = s.net_ifaces.iter().position(|i| &i.name == saved_name) {
-                s.selected_interface = idx as u32;
-            }
-        }
-
-        // Restore virtual USB image path (best effort).  Only seed if the file
-        // still exists; the runtime worker picks it up via the deferred
-        // remount path once QEMU is ready.  Saved path stays on disk
-        // regardless, so reattaching a missing image (e.g. external drive
-        // remounted) works on a future launch.
-        if let Some(path) = &inst_settings.usb_virtual_path {
-            if path.exists() {
-                cdj3k_emu_platform::menu_state::lock().usb_virtual_img = Some(path.clone());
-            }
+    // Restore network interface selection (best effort).  If the saved
+    // ifname is no longer present, leave selected_interface at "none" -
+    // the saved value stays on disk and binds again when the iface
+    // returns. The vmnet-host mode round-trips via a reserved token
+    // (not a valid BSD ifname) so it can never collide with a real iface.
+    menu_state::refresh_net_interfaces();
+    if let Some(saved_name) = &inst_settings.net_iface {
+        let mut s = menu_state::lock();
+        if saved_name == menu_state::NET_IFACE_VMNET_HOST_TOKEN {
+            s.selected_interface = menu_state::NET_SEL_VMNET_HOST;
+        } else if let Some(idx) = s.net_ifaces.iter().position(|i| &i.name == saved_name) {
+            s.selected_interface = idx as u32;
         }
     }
 
-    // A slot remembers the model it last booted: open on it directly and
-    // show the picker only for a fresh slot or from "Manage Emulation".
-    // `--model` / `CDJ3K_MODEL` override it for this launch; `--no-spawn`
-    // ignores it so chassis work can always reach the picker.
-    if let Some(upd) = provision_path {
-        let Some(model) = initial_model else {
-            eprintln!("cdj3k-emu: --provision needs --model (cdj3k | cdj3kx)");
-            std::process::exit(2);
-        };
-        match cdj3k_emu_ui::provision_blocking(upd, key_path.as_deref(), instance, model) {
-            // The slot's window, if one is open, swaps it in itself.
-            Ok(()) => match SLOT_CLAIM.get().map(cdj3k_emu_storage::apply_staged) {
-                Some(Ok(_)) => {
-                    eprintln!("cdj3k-emu: {model} firmware installed in slot {instance}");
-                    std::process::exit(0);
-                }
-                Some(Err(e)) => {
-                    eprintln!("cdj3k-emu: swapping the installed firmware in failed: {e}");
-                    std::process::exit(1);
-                }
-                None => {
-                    use cdj3k_emu_platform::window_socket::{send, Command, Reply};
-                    let when = match send(instance, Command::InstallReady) {
-                        Ok(Some(Reply::Ok)) => {
-                            "now if its emulation is stopped, otherwise when the emulation stops"
-                        }
-                        _ => "when the emulation stops or next starts",
-                    };
-                    eprintln!(
-                        "cdj3k-emu: {model} firmware installed for slot {instance}; its open \
-                         window swaps it in {when}"
-                    );
-                    std::process::exit(0);
-                }
-            },
-            Err(e) => {
-                eprintln!("cdj3k-emu: provisioning failed: {e}");
-                std::process::exit(1);
-            }
+    // Restore virtual USB image path (best effort).  Only seed if the file
+    // still exists; the runtime worker picks it up via the deferred
+    // remount path once QEMU is ready.  Saved path stays on disk
+    // regardless, so reattaching a missing image (e.g. external drive
+    // remounted) works on a future launch.
+    if let Some(path) = &inst_settings.usb_virtual_path {
+        if path.exists() {
+            menu_state::lock().usb_virtual_img = Some(path.clone());
         }
     }
+}
 
-    cdj3k_emu_storage::adopt_unrecorded_slot(instance);
-
-    if initial_model.is_none() && !no_spawn {
-        initial_model = cdj3k_emu_storage::InstanceSettings::saved_model(instance);
-    }
-
-    let host = launch::Host {
-        instance,
-        kernel,
-        initramfs,
-        no_emmc,
-        serial_log,
-        extra_mods,
-        no_mods,
-        ui_only: no_spawn,
-        claim: SLOT_CLAIM.get(),
+/// `--provision`: install `upd` into the slot for `model`, then exit.
+fn provision_and_exit(upd: PathBuf, key: Option<&Path>, instance: u32, model: Option<Model>) -> ! {
+    let Some(model) = model else {
+        eprintln!("cdj3k-emu: --provision needs --model (cdj3k | cdj3kx)");
+        std::process::exit(2);
     };
+    if let Err(e) = cdj3k_emu_ui::provision_blocking(upd, key, instance, model) {
+        eprintln!("cdj3k-emu: provisioning failed: {e}");
+        std::process::exit(1);
+    }
+    // The slot's window, if one is open, swaps it in itself.
+    match SLOT_CLAIM.get().map(cdj3k_emu_storage::apply_staged) {
+        Some(Ok(_)) => {
+            eprintln!("cdj3k-emu: {model} firmware installed in slot {instance}");
+            std::process::exit(0);
+        }
+        Some(Err(e)) => {
+            eprintln!("cdj3k-emu: swapping the installed firmware in failed: {e}");
+            std::process::exit(1);
+        }
+        None => {
+            let when = notify_install_ready(instance);
+            eprintln!(
+                "cdj3k-emu: {model} firmware installed for slot {instance}; its open \
+                 window swaps it in {when}"
+            );
+            std::process::exit(0);
+        }
+    }
+}
 
-    // ── UI ────────────────────────────────────────────────────────────────
+/// Tell the window that owns the slot that an install is staged, and return
+/// when that window swaps it in.
+fn notify_install_ready(instance: u32) -> &'static str {
+    match window_socket::send(instance, window_socket::Command::InstallReady) {
+        Ok(Some(window_socket::Reply::Ok)) => {
+            "now if its emulation is stopped, otherwise when the emulation stops"
+        }
+        _ => "when the emulation stops or next starts",
+    }
+}
+
+fn run_ui(
+    instance: u32,
+    socket_dir: String,
+    profile: bool,
+    initial_model: Option<Model>,
+    host: launch::Host,
+) {
     let mut options = cdj3k_emu_platform::desktop::native_options(instance);
-
-    // Windows (title bar, taskbar) and X11 take the window's icon. macOS reads
-    // `CFBundleIconFile`; there an empty `IconData` keeps eframe from setting
-    // its built-in icon (`AppTitleIconSetter::new` treats it as None).
-    let icon = if cdj3k_emu_platform::desktop::OWN_WINDOW_ICON {
-        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon_256.png"))
-            .unwrap_or_default()
-    } else {
-        egui::IconData::default()
-    };
-    options.viewport = std::mem::take(&mut options.viewport).with_icon(icon);
+    options.viewport = std::mem::take(&mut options.viewport).with_icon(window_icon());
 
     // Window close and Quit run eframe's `on_exit`; a signal or a plain
     // return run these.
@@ -373,19 +278,6 @@ fn main() {
     );
     cdj3k_emu_platform::desktop::set_app_name(&app_name);
 
-    // Only the process that holds the slot's claim listens on the slot's
-    // window socket.
-    let window_socket = |instance: u32, ctx: &egui::Context| {
-        SLOT_CLAIM.get()?;
-        let ctx = ctx.clone();
-        cdj3k_emu_platform::window_socket::WindowSocket::bind(instance, move || {
-            ctx.request_repaint()
-        })
-        .inspect_err(|e| {
-            eprintln!("cdj3k-emu: slot {instance}: opening the window socket failed: {e}")
-        })
-        .ok()
-    };
     let mut host = Some(host);
     eframe::run_native(
         &app_name,
@@ -401,10 +293,34 @@ fn main() {
                     profile,
                     initial_model,
                     host: Box::new(host.take().expect("app created once")),
-                    window_socket: window_socket(instance, &cc.egui_ctx),
+                    window_socket: open_window_socket(instance, &cc.egui_ctx),
                 },
             )))
         }),
     )
     .unwrap();
+}
+
+/// Windows (title bar, taskbar) and X11 take the window's icon. macOS reads
+/// `CFBundleIconFile`; there an empty `IconData` keeps eframe from setting
+/// its built-in icon (`AppTitleIconSetter::new` treats it as None).
+fn window_icon() -> egui::IconData {
+    if cdj3k_emu_platform::desktop::OWN_WINDOW_ICON {
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon_256.png"))
+            .unwrap_or_default()
+    } else {
+        egui::IconData::default()
+    }
+}
+
+/// Only the process that holds the slot's claim listens on the slot's
+/// window socket.
+fn open_window_socket(instance: u32, ctx: &egui::Context) -> Option<window_socket::WindowSocket> {
+    SLOT_CLAIM.get()?;
+    let ctx = ctx.clone();
+    window_socket::WindowSocket::bind(instance, move || ctx.request_repaint())
+        .inspect_err(|e| {
+            eprintln!("cdj3k-emu: slot {instance}: opening the window socket failed: {e}")
+        })
+        .ok()
 }

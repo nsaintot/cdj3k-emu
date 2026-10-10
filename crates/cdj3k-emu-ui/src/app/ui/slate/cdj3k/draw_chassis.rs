@@ -97,9 +97,17 @@ const TOP_PANEL_ROUNDED_CORNERS: usize = 2;
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Collect the device chassis silhouette into `out` (no-painter variant for caching).
+/// The chassis: its outline, the cosmetic line along its foot, and the
+/// decoration line.
 pub(super) fn collect_chassis(out: &mut ShapeList, layout: &UiScale) {
+    collect_chassis_outline(out, layout);
+    collect_cosmetic_bottom(out, layout);
+    collect_decor_line(out, layout);
+}
+
+/// The cabinet outline, rounded at its corners, rising round the top panel.
+fn collect_chassis_outline(out: &mut ShapeList, layout: &UiScale) {
     let stroke = Stroke::new(layout.sc(CHASSIS_STROKE), COL_CHASSIS);
-    let cosbot_stroke = Stroke::new(layout.sc(COSBOT_STROKE), COL_CHASSIS);
     let chassis_left = layout.sp(CHASSIS_LEFT, CHASSIS_TOP).x;
     let chassis_right = layout.sp(CHASSIS_RIGHT, CHASSIS_TOP).x;
     let chassis_top = layout.sp(CHASSIS_LEFT, CHASSIS_TOP).y;
@@ -108,88 +116,91 @@ pub(super) fn collect_chassis(out: &mut ShapeList, layout: &UiScale) {
     let panel_left = layout.sp(TOP_PANEL_LEFT, 0.0).x;
     let panel_right = layout.sp(TOP_PANEL_RIGHT, 0.0).x;
     let panel_top = layout.sp(0.0, TOP_PANEL_TOP).y;
-    {
-        let mut points: Vec<Pos2> = Vec::with_capacity(
-            CORNER_SEGS * (CHASSIS_ROUNDED_CORNERS + CHASSIS_SEGS)
-                + (CORNER_SEGS * TOP_PANEL_ROUNDED_CORNERS + TOP_PANEL_SEGS),
-        );
-        points.push(Pos2::new(panel_right, chassis_top));
-        points.push(Pos2::new(chassis_right - chassis_rounding, chassis_top));
-        push_arc(
-            &mut points,
-            chassis_right - chassis_rounding,
-            chassis_top + chassis_rounding,
-            chassis_rounding,
-            3.0 * PI / 2.0,
-            2.0 * PI,
-        );
-        points.push(Pos2::new(chassis_right, chassis_bottom - chassis_rounding));
-        push_arc(
-            &mut points,
-            chassis_right - chassis_rounding,
-            chassis_bottom - chassis_rounding,
-            chassis_rounding,
-            0.0,
-            PI / 2.0,
-        );
-        points.push(Pos2::new(chassis_left + chassis_rounding, chassis_bottom));
-        push_arc(
-            &mut points,
-            chassis_left + chassis_rounding,
-            chassis_bottom - chassis_rounding,
-            chassis_rounding,
-            PI / 2.0,
-            PI,
-        );
-        points.push(Pos2::new(chassis_left, chassis_top + chassis_rounding));
-        push_arc(
-            &mut points,
-            chassis_left + chassis_rounding,
-            chassis_top + chassis_rounding,
-            chassis_rounding,
-            PI,
-            3.0 * PI / 2.0,
-        );
-        points.push(Pos2::new(panel_left, chassis_top));
-        points.push(Pos2::new(panel_left, chassis_top));
-        points.push(Pos2::new(panel_left, panel_top + chassis_rounding));
-        push_arc(
-            &mut points,
-            panel_left + chassis_rounding,
-            panel_top + chassis_rounding,
-            chassis_rounding,
-            PI,
-            3.0 * PI / 2.0,
-        );
-        points.push(Pos2::new(panel_right - chassis_rounding, panel_top));
-        push_arc(
-            &mut points,
-            panel_right - chassis_rounding,
-            panel_top + chassis_rounding,
-            chassis_rounding,
-            3.0 * PI / 2.0,
-            2.0 * PI,
-        );
-        points.push(Pos2::new(panel_right, chassis_top));
-        out.add(Shape::line(points, stroke));
-    }
-    {
-        let line1_y = layout.sp(0.0, COSBOT_LINE_1_Y).y;
-        let line2_y = layout.sp(0.0, COSBOT_LINE_2_Y).y;
-        let line1_width = layout.sc(COSBOT_LINE_1_W);
-        let height_diff = line1_y - line2_y;
-        let diagonal_run = height_diff / COSBOT_JOINT_ANGLE.to_radians().tan();
-        let cosbot_points = vec![
-            Pos2::new(chassis_left, line1_y),
-            Pos2::new(chassis_left + line1_width, line1_y),
-            Pos2::new(chassis_left + line1_width + diagonal_run, line2_y),
-            Pos2::new(chassis_right - line1_width - diagonal_run, line2_y),
-            Pos2::new(chassis_right - line1_width, line1_y),
-            Pos2::new(chassis_right, line1_y),
-        ];
-        out.add(Shape::line(cosbot_points, cosbot_stroke));
-    }
-    collect_decor_line(out, layout);
+    let mut points: Vec<Pos2> = Vec::with_capacity(
+        CORNER_SEGS * (CHASSIS_ROUNDED_CORNERS + CHASSIS_SEGS)
+            + (CORNER_SEGS * TOP_PANEL_ROUNDED_CORNERS + TOP_PANEL_SEGS),
+    );
+    points.push(Pos2::new(panel_right, chassis_top));
+    points.push(Pos2::new(chassis_right - chassis_rounding, chassis_top));
+    push_arc(
+        &mut points,
+        chassis_right - chassis_rounding,
+        chassis_top + chassis_rounding,
+        chassis_rounding,
+        3.0 * PI / 2.0,
+        2.0 * PI,
+    );
+    points.push(Pos2::new(chassis_right, chassis_bottom - chassis_rounding));
+    push_arc(
+        &mut points,
+        chassis_right - chassis_rounding,
+        chassis_bottom - chassis_rounding,
+        chassis_rounding,
+        0.0,
+        PI / 2.0,
+    );
+    points.push(Pos2::new(chassis_left + chassis_rounding, chassis_bottom));
+    push_arc(
+        &mut points,
+        chassis_left + chassis_rounding,
+        chassis_bottom - chassis_rounding,
+        chassis_rounding,
+        PI / 2.0,
+        PI,
+    );
+    points.push(Pos2::new(chassis_left, chassis_top + chassis_rounding));
+    push_arc(
+        &mut points,
+        chassis_left + chassis_rounding,
+        chassis_top + chassis_rounding,
+        chassis_rounding,
+        PI,
+        3.0 * PI / 2.0,
+    );
+    points.push(Pos2::new(panel_left, chassis_top));
+    points.push(Pos2::new(panel_left, chassis_top));
+    points.push(Pos2::new(panel_left, panel_top + chassis_rounding));
+    push_arc(
+        &mut points,
+        panel_left + chassis_rounding,
+        panel_top + chassis_rounding,
+        chassis_rounding,
+        PI,
+        3.0 * PI / 2.0,
+    );
+    points.push(Pos2::new(panel_right - chassis_rounding, panel_top));
+    push_arc(
+        &mut points,
+        panel_right - chassis_rounding,
+        panel_top + chassis_rounding,
+        chassis_rounding,
+        3.0 * PI / 2.0,
+        2.0 * PI,
+    );
+    points.push(Pos2::new(panel_right, chassis_top));
+    out.add(Shape::line(points, stroke));
+}
+
+/// The cosmetic line along the foot: flat at each side, stepping up on a
+/// diagonal to the run between them.
+fn collect_cosmetic_bottom(out: &mut ShapeList, layout: &UiScale) {
+    let cosbot_stroke = Stroke::new(layout.sc(COSBOT_STROKE), COL_CHASSIS);
+    let chassis_left = layout.sp(CHASSIS_LEFT, CHASSIS_TOP).x;
+    let chassis_right = layout.sp(CHASSIS_RIGHT, CHASSIS_TOP).x;
+    let line1_y = layout.sp(0.0, COSBOT_LINE_1_Y).y;
+    let line2_y = layout.sp(0.0, COSBOT_LINE_2_Y).y;
+    let line1_width = layout.sc(COSBOT_LINE_1_W);
+    let height_diff = line1_y - line2_y;
+    let diagonal_run = height_diff / COSBOT_JOINT_ANGLE.to_radians().tan();
+    let cosbot_points = vec![
+        Pos2::new(chassis_left, line1_y),
+        Pos2::new(chassis_left + line1_width, line1_y),
+        Pos2::new(chassis_left + line1_width + diagonal_run, line2_y),
+        Pos2::new(chassis_right - line1_width - diagonal_run, line2_y),
+        Pos2::new(chassis_right - line1_width, line1_y),
+        Pos2::new(chassis_right, line1_y),
+    ];
+    out.add(Shape::line(cosbot_points, cosbot_stroke));
 }
 
 /// Inner decorative line: the run on the path, then its parallel [`DECOR_GAP`]
@@ -247,18 +258,6 @@ fn push_sweep(points: &mut Vec<Pos2>, layout: &UiScale, r: f32, start_rad: f32, 
     }
 }
 
-/// LCD panel overlay - must be called **after** all section fills so it is not buried under them.
-///
-/// Draws (top to bottom):
-///   __________     ← navbar rect
-///   |--------|
-///   |________|     ← bezel top line
-///   |\______/|     ← top trapezoid: outer corners → diagonal
-///   ||      ||     ← outer frame sides + bezel side walls
-///   ||______||     ← bezel bottom line
-///   |/      \|     ← two bottom diagonals, no center span
-///   |________|     ← bottom |__| rectangle
-/// Collect the LCD panel overlay into `out` (no-painter variant for caching).
 /// Top of the recess the screen sits in, and the foot of the strip below it,
 /// in reference units - measured off `cdj-3000-schema.png`. `View > Extend
 /// Screen` grows the panel to fill exactly this band, so the extended size and
@@ -283,6 +282,17 @@ fn lcd_glass() -> (f32, f32, f32, f32) {
     )
 }
 
+/// LCD panel overlay - must be called **after** all section fills so it is not buried under them.
+///
+/// Draws (top to bottom):
+///   __________     ← navbar rect
+///   |--------|
+///   |________|     ← bezel top line
+///   |\______/|     ← top trapezoid: outer corners → diagonal
+///   ||      ||     ← outer frame sides + bezel side walls
+///   ||______||     ← bezel bottom line
+///   |/      \|     ← two bottom diagonals, no center span
+///   |________|     ← bottom |__| rectangle
 pub(super) fn collect_chassis_lcd_overlay(out: &mut ShapeList, layout: &UiScale) {
     let costop_stroke = Stroke::new(layout.sc(COSTOP_STROKE), COL_CHASSIS);
     let menubar_left = layout::TOP_CENTRAL_REF_LEFT;
@@ -307,62 +317,18 @@ pub(super) fn collect_chassis_lcd_overlay(out: &mut ShapeList, layout: &UiScale)
         ],
         costop_stroke,
     ));
-    out.line_segment(
-        [
-            layout.sp(menubar_left, lcd_ref_top),
-            layout.sp(menubar_left, outer_bot),
-        ],
-        costop_stroke,
-    );
-    out.line_segment(
-        [
-            layout.sp(menubar_right, lcd_ref_top),
-            layout.sp(menubar_right, outer_bot),
-        ],
-        costop_stroke,
-    );
-    out.line_segment(
-        [
-            layout.sp(menubar_left, lcd_ref_top),
-            layout.sp(lcd_ref_left, trap_top),
-        ],
-        costop_stroke,
-    );
-    out.line_segment(
-        [
-            layout.sp(menubar_right, lcd_ref_top),
-            layout.sp(lcd_ref_right, trap_top),
-        ],
-        costop_stroke,
-    );
-    out.line_segment(
-        [
-            layout.sp(lcd_ref_left, trap_top),
-            layout.sp(lcd_ref_right, trap_top),
-        ],
-        costop_stroke,
-    );
-    out.line_segment(
-        [
-            layout.sp(lcd_ref_left, trap_top),
-            layout.sp(lcd_ref_left, lcd_ref_bot),
-        ],
-        costop_stroke,
-    );
-    out.line_segment(
-        [
-            layout.sp(lcd_ref_right, trap_top),
-            layout.sp(lcd_ref_right, lcd_ref_bot),
-        ],
-        costop_stroke,
-    );
-    out.line_segment(
-        [
-            layout.sp(lcd_ref_left, lcd_ref_bot),
-            layout.sp(lcd_ref_right, lcd_ref_bot),
-        ],
-        costop_stroke,
-    );
+    for [(x0, y0), (x1, y1)] in [
+        [(menubar_left, lcd_ref_top), (menubar_left, outer_bot)],
+        [(menubar_right, lcd_ref_top), (menubar_right, outer_bot)],
+        [(menubar_left, lcd_ref_top), (lcd_ref_left, trap_top)],
+        [(menubar_right, lcd_ref_top), (lcd_ref_right, trap_top)],
+        [(lcd_ref_left, trap_top), (lcd_ref_right, trap_top)],
+        [(lcd_ref_left, trap_top), (lcd_ref_left, lcd_ref_bot)],
+        [(lcd_ref_right, trap_top), (lcd_ref_right, lcd_ref_bot)],
+        [(lcd_ref_left, lcd_ref_bot), (lcd_ref_right, lcd_ref_bot)],
+    ] {
+        out.line_segment([layout.sp(x0, y0), layout.sp(x1, y1)], costop_stroke);
+    }
     // The bezel: the glass' own outline pushed out, which the drawing prints
     // as the pair the screen reads as a double border.
     out.add(Shape::line(
@@ -375,20 +341,12 @@ pub(super) fn collect_chassis_lcd_overlay(out: &mut ShapeList, layout: &UiScale)
         ],
         costop_stroke,
     ));
-    out.line_segment(
-        [
-            layout.sp(lcd_ref_left, lcd_ref_bot),
-            layout.sp(menubar_left, outer_bot),
-        ],
-        costop_stroke,
-    );
-    out.line_segment(
-        [
-            layout.sp(lcd_ref_right, lcd_ref_bot),
-            layout.sp(menubar_right, outer_bot),
-        ],
-        costop_stroke,
-    );
+    for [(x0, y0), (x1, y1)] in [
+        [(lcd_ref_left, lcd_ref_bot), (menubar_left, outer_bot)],
+        [(lcd_ref_right, lcd_ref_bot), (menubar_right, outer_bot)],
+    ] {
+        out.line_segment([layout.sp(x0, y0), layout.sp(x1, y1)], costop_stroke);
+    }
     out.add(Shape::line(
         vec![
             layout.sp(menubar_left, outer_bot),

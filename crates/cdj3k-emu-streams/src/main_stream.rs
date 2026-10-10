@@ -161,18 +161,7 @@ fn poll_loop(
     gate: &crate::RepaintGate,
 ) {
     let mut last_gen: u32 = read_u32(mmap, 4);
-
-    // Local dirty rect accumulator (x0, y0, x1, y1).
-    // Accumulates the union of all dirty rects received since the last
-    // successful publish.  Prevents cursor-ghost artifacts when the UI
-    // thread is busy and cdj3k-emu misses intermediate dirty rect updates
-    // (e.g. "erase old cursor" fires between two polls - without
-    // accumulation the stale cursor pixels would never be uploaded).
-    let mut acc: Option<(usize, usize, usize, usize)> = None;
-    // Track surface dimensions to detect switches (640×480 console → the X
-    // server's mode).
-    let mut last_w: usize = 0;
-    let mut last_h: usize = 0;
+    let mut dirty = DirtyUnion::default();
 
     loop {
         thread::sleep(POLL_INTERVAL);
@@ -196,67 +185,116 @@ fn poll_loop(
         // Re-read dimensions on every frame - the surface can switch
         // mid-session (the initial 640×480 QEMU console → Xorg at the model's
         // main LCD mode).
-        let width = read_u32(mmap, 8) as usize;
-        let height = read_u32(mmap, 12) as usize;
-        let stride = read_u32(mmap, 16) as usize;
-
-        if width == 0
-            || height == 0
-            || stride < width * 4
-            || mmap.len() < SHM_PIXELS_OFFSET + stride * height
-        {
+        let Some(surface) = Surface::read(mmap) else {
             continue;
-        }
-
-        // Reset accumulator on surface dimension change.
-        if width != last_w || height != last_h {
-            acc = None;
-            last_w = width;
-            last_h = height;
-        }
-
-        // Read and validate dirty rect from header.
-        let dx = read_u32(mmap, 24) as usize;
-        let dy = read_u32(mmap, 28) as usize;
-        let dw = read_u32(mmap, 32) as usize;
-        let dh = read_u32(mmap, 36) as usize;
-
-        if dw == 0 || dh == 0 || dx + dw > width || dy + dh > height {
+        };
+        dirty.resize(surface.width, surface.height);
+        let Some(rect) = surface.dirty_rect(mmap) else {
             continue;
-        }
-
-        // Expand the local accumulator to cover this dirty rect.
-        acc = Some(match acc {
-            None => (dx, dy, dx + dw, dy + dh),
-            Some((ax0, ay0, ax1, ay1)) => {
-                (ax0.min(dx), ay0.min(dy), ax1.max(dx + dw), ay1.max(dy + dh))
-            }
-        });
+        };
+        dirty.add(rect);
 
         // Try to publish the accumulated region.  If the slot is still
         // occupied the accumulator keeps growing - next tick will cover
         // everything that was missed.
         if let Ok(mut g) = slot.try_lock() {
             if g.is_none() {
-                if let Some((x0, y0, x1, y1)) = acc.take() {
-                    let uw = x1 - x0;
-                    let uh = y1 - y0;
-
+                if let Some((x0, y0, x1, y1)) = dirty.take() {
                     // Zero-copy: share the mmap reference so the UI thread
                     // uploads directly from the shm file into the GPU texture.
                     *g = Some(DisplayDirty {
                         x: x0 as u32,
                         y: y0 as u32,
-                        w: uw as u32,
-                        h: uh as u32,
-                        stride: stride as u32,
+                        w: (x1 - x0) as u32,
+                        h: (y1 - y0) as u32,
+                        stride: surface.stride as u32,
                         mmap: Arc::clone(mmap),
                     });
                     gate.request();
                 }
             }
-            // Slot busy: keep accumulating, don't take() so acc remains set.
         }
+    }
+}
+
+/// The surface the header describes, in pixels and bytes per row.
+struct Surface {
+    width: usize,
+    height: usize,
+    stride: usize,
+}
+
+impl Surface {
+    /// `None` for an empty surface, or one whose rows the mapping does not
+    /// hold.
+    fn read(shm: &[u8]) -> Option<Self> {
+        let width = read_u32(shm, 8) as usize;
+        let height = read_u32(shm, 12) as usize;
+        let stride = read_u32(shm, 16) as usize;
+        if width == 0
+            || height == 0
+            || stride < width * 4
+            || shm.len() < SHM_PIXELS_OFFSET + stride * height
+        {
+            return None;
+        }
+        Some(Self {
+            width,
+            height,
+            stride,
+        })
+    }
+
+    /// The header's dirty rect as `(x, y, w, h)`; `None` when it is empty or
+    /// leaves the surface.
+    fn dirty_rect(&self, shm: &[u8]) -> Option<(usize, usize, usize, usize)> {
+        let dx = read_u32(shm, 24) as usize;
+        let dy = read_u32(shm, 28) as usize;
+        let dw = read_u32(shm, 32) as usize;
+        let dh = read_u32(shm, 36) as usize;
+        if dw == 0 || dh == 0 || dx + dw > self.width || dy + dh > self.height {
+            return None;
+        }
+        Some((dx, dy, dw, dh))
+    }
+}
+
+/// The union of the dirty rects received since the last successful publish,
+/// as `(x0, y0, x1, y1)`.
+///
+/// Prevents cursor-ghost artifacts when the UI thread is busy and cdj3k-emu
+/// misses intermediate dirty rect updates (e.g. "erase old cursor" fires
+/// between two polls - without accumulation the stale cursor pixels would
+/// never be uploaded).
+#[derive(Default)]
+struct DirtyUnion {
+    rect: Option<(usize, usize, usize, usize)>,
+    /// Surface dimensions, to detect switches (640×480 console → the X
+    /// server's mode).
+    size: (usize, usize),
+}
+
+impl DirtyUnion {
+    /// Drop the union when the surface changes size.
+    fn resize(&mut self, width: usize, height: usize) {
+        if (width, height) != self.size {
+            self.rect = None;
+            self.size = (width, height);
+        }
+    }
+
+    /// Grow the union to cover `(x, y, w, h)`.
+    fn add(&mut self, (dx, dy, dw, dh): (usize, usize, usize, usize)) {
+        self.rect = Some(match self.rect {
+            None => (dx, dy, dx + dw, dy + dh),
+            Some((ax0, ay0, ax1, ay1)) => {
+                (ax0.min(dx), ay0.min(dy), ax1.max(dx + dw), ay1.max(dy + dh))
+            }
+        });
+    }
+
+    fn take(&mut self) -> Option<(usize, usize, usize, usize)> {
+        self.rect.take()
     }
 }
 
@@ -277,8 +315,8 @@ fn open_shm(path: &str) -> Option<Arc<Mmap>> {
 }
 
 /// Plain little-endian read - use for non-generation fields after the acquire.
-fn read_u32(mmap: &Mmap, offset: usize) -> u32 {
-    let bytes: [u8; 4] = mmap[offset..offset + 4].try_into().unwrap();
+fn read_u32(shm: &[u8], offset: usize) -> u32 {
+    let bytes: [u8; 4] = shm[offset..offset + 4].try_into().unwrap();
     u32::from_le_bytes(bytes)
 }
 
@@ -296,4 +334,62 @@ fn read_u32_acquire(mmap: &Mmap, offset: usize) -> u32 {
     // own synchronisation, and the QEMU side performs only atomic
     // accesses to the same word.
     unsafe { (*ptr).load(Ordering::Acquire) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A header for a `width`×`height` surface with `stride`-byte rows and
+    /// the dirty rect `(x, y, w, h)`, followed by its pixels.
+    fn shm(width: u32, height: u32, stride: u32, dirty: [u32; 4]) -> Vec<u8> {
+        let mut b = vec![0u8; SHM_PIXELS_OFFSET + (stride * height) as usize];
+        for (off, v) in [(0, SHM_MAGIC), (8, width), (12, height), (16, stride)]
+            .into_iter()
+            .chain([24, 28, 32, 36].into_iter().zip(dirty))
+        {
+            b[off..off + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn a_surface_needs_rows_the_mapping_holds() {
+        let s = Surface::read(&shm(4, 2, 16, [0; 4])).unwrap();
+        assert_eq!((s.width, s.height, s.stride), (4, 2, 16));
+        assert!(Surface::read(&shm(0, 2, 16, [0; 4])).is_none());
+        assert!(Surface::read(&shm(4, 2, 15, [0; 4])).is_none());
+        let mut short = shm(4, 2, 16, [0; 4]);
+        short.pop();
+        assert!(Surface::read(&short).is_none());
+    }
+
+    #[test]
+    fn a_dirty_rect_must_be_inside_the_surface() {
+        let rect = |d: [u32; 4]| {
+            let b = shm(4, 2, 16, d);
+            Surface::read(&b).unwrap().dirty_rect(&b)
+        };
+        assert_eq!(rect([1, 0, 3, 2]), Some((1, 0, 3, 2)));
+        assert_eq!(rect([1, 0, 0, 2]), None);
+        assert_eq!(rect([2, 0, 3, 2]), None);
+        assert_eq!(rect([0, 1, 1, 2]), None);
+    }
+
+    #[test]
+    fn the_union_grows_until_taken_and_resets_on_resize() {
+        let mut u = DirtyUnion::default();
+        u.resize(4, 2);
+        u.add((1, 1, 1, 1));
+        u.add((0, 0, 1, 1));
+        assert_eq!(u.take(), Some((0, 0, 2, 2)));
+        assert_eq!(u.take(), None);
+
+        u.add((1, 1, 1, 1));
+        u.resize(4, 2);
+        assert_eq!(u.take(), Some((1, 1, 2, 2)), "same size keeps the union");
+        u.add((1, 1, 1, 1));
+        u.resize(8, 4);
+        assert_eq!(u.take(), None, "a new size drops it");
+    }
 }

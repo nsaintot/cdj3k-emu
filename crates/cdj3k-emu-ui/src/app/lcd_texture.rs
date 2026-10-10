@@ -16,14 +16,14 @@ impl CdjApp {
     /// A model switch changes the main framebuffer size: re-specify the
     /// storage of the texture the painter already knows under its id.
     fn ensure_display_storage(&mut self, gl: &glow::Context) {
-        if !self.display_tex_stale {
+        if !self.textures.main_stale {
             return;
         }
-        if let Some(tex) = self.display_gl_tex {
+        if let Some(tex) = self.textures.main_gl {
             let (w, h) = self.model.main_lcd();
             unsafe { specify_lcd_storage(gl, tex, w as i32, h as i32) };
         }
-        self.display_tex_stale = false;
+        self.textures.main_stale = false;
     }
 
     /// Zero both LCD GL textures so popout windows go black after QEMU exit.
@@ -31,12 +31,12 @@ impl CdjApp {
     pub(super) fn blank_lcd_textures(&mut self, gl: &glow::Context) {
         self.ensure_display_storage(gl);
         unsafe {
-            if let Some(tex) = self.display_gl_tex {
+            if let Some(tex) = self.textures.main_gl {
                 let (w, h) = self.model.main_lcd();
                 let zeros = vec![0u8; (w * h) as usize * PX_BYTES];
                 upload_full_zero(gl, tex, w as i32, h as i32, &zeros);
             }
-            if let Some(tex) = self.jog_gl_tex {
+            if let Some(tex) = self.textures.jog_gl {
                 let zeros = vec![0u8; (JOG_FB_W * JOG_FB_H) * PX_BYTES];
                 upload_full_zero(gl, tex, JOG_FB_W as i32, JOG_FB_H as i32, &zeros);
             }
@@ -55,21 +55,21 @@ impl CdjApp {
         };
 
         self.ensure_display_storage(&gl);
-        if self.display_gl_tex.is_none() {
+        if self.textures.main_gl.is_none() {
             // TEXTURE_SWIZZLE_A = ONE forces sampled alpha to 1.0 so egui's
             // premultiplied blend works even though QEMU stores 0 in the X byte.
             let (w, h) = self.model.main_lcd();
             let tex =
                 unsafe { allocate_lcd_texture(&gl, w as i32, h as i32, LcdSwizzle::AlphaOnly) };
             let tex_id = frame.register_native_glow_texture(tex);
-            self.display_gl_tex = Some(tex);
-            self.display_tex_id = Some(tex_id);
+            self.textures.main_gl = Some(tex);
+            self.textures.main_id = Some(tex_id);
         }
 
         // Zero-copy upload: shm pixels are RGBA8888 (QEMU converts XRGB→RGBA
         // in shm_gfx_update); UNPACK_ROW_LENGTH lets us point directly into
         // the mmap without any row copy, even for dirty sub-rects.
-        if let Some(tex) = self.display_gl_tex {
+        if let Some(tex) = self.textures.main_gl {
             let offset = SHM_PIXELS_OFFSET
                 + dirty.y as usize * dirty.stride as usize
                 + dirty.x as usize * PX_BYTES;
@@ -99,7 +99,7 @@ impl CdjApp {
             return false;
         };
 
-        if self.jog_gl_tex.is_none() {
+        if self.textures.jog_gl.is_none() {
             // Channel swizzles: shader.r ← wire byte 2, shader.b ← wire byte 0,
             // shader.a ← 1.0. Lets the shader handle the byte-swap instead of
             // a per-pixel CPU pass on the stream thread.
@@ -112,11 +112,11 @@ impl CdjApp {
                 )
             };
             let tex_id = frame.register_native_glow_texture(tex);
-            self.jog_gl_tex = Some(tex);
-            self.jog_tex_id = Some(tex_id);
+            self.textures.jog_gl = Some(tex);
+            self.textures.jog_id = Some(tex_id);
         }
 
-        if let Some(tex) = self.jog_gl_tex {
+        if let Some(tex) = self.textures.jog_gl {
             // The jog stream always publishes the full 320×240 canvas in its
             // `image` Arc, even for partial-rect packets (those write the
             // subrect at (jf.x, jf.y) in the same buffer). Use

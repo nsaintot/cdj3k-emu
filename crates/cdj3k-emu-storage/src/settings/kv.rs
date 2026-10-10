@@ -92,6 +92,29 @@ pub(crate) fn read_kv(path: &Path) -> BTreeMap<String, String> {
     map
 }
 
+/// `key` as a flag: `1` or `true` (any case) is on, anything else off, and
+/// `default` when the key is absent.
+pub(super) fn flag(map: &BTreeMap<String, String>, key: &str, default: bool) -> bool {
+    map.get(key)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
+/// How [`flag`] values are stored.
+pub(super) fn flag_value(on: bool) -> String {
+    if on { "1" } else { "0" }.to_string()
+}
+
+/// `key` as a number, 0 when it is absent or not a `u32`.
+pub(super) fn number(map: &BTreeMap<String, String>, key: &str) -> u32 {
+    map.get(key).and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+/// `key`'s value, `None` when absent or empty.
+pub(super) fn text(map: &BTreeMap<String, String>, key: &str) -> Option<String> {
+    map.get(key).filter(|v| !v.is_empty()).cloned()
+}
+
 /// Write the keys of `map` that `known` lists to `path`, atomically: the text
 /// goes to a sibling temp file that is renamed over `path`, so a concurrent
 /// reader sees the old or the new file, never an empty one (an empty read would
@@ -222,5 +245,23 @@ mod tests {
         let after = read_kv(&instance_path(slot));
         assert!(!after.contains_key("some_retired_key"), "{after:?}");
         assert_eq!(after.get("mac"), Some(&mac), "the live keys stay");
+    }
+
+    #[test]
+    fn flags_and_text_read_as_written() {
+        let map: BTreeMap<String, String> =
+            [("on", "1"), ("yes", "TRUE"), ("no", "yes"), ("empty", "")]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        assert!(flag(&map, "on", false));
+        assert!(flag(&map, "yes", false));
+        assert!(!flag(&map, "no", true));
+        assert!(flag(&map, "absent", true));
+        assert_eq!(flag_value(true), "1");
+        assert_eq!(flag_value(false), "0");
+        assert_eq!(text(&map, "no").as_deref(), Some("yes"));
+        assert_eq!(text(&map, "empty"), None);
+        assert_eq!(text(&map, "absent"), None);
     }
 }

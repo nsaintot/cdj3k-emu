@@ -6,6 +6,10 @@
 
 use std::fmt;
 
+use crate::button::Btn;
+use crate::frame::FrameBit;
+use crate::miso_frame::{self, PanelState, MISO_SIZE};
+use crate::mosi_frame::{MosiFrame, MOSI_SIZE};
 use crate::spec::ModelSpec;
 use crate::{cdj1500x, cdj3k, cdj3kx};
 
@@ -74,6 +78,31 @@ impl Model {
     /// [`ModelSpec::touch_units`](crate::ModelSpec::touch_units).
     pub fn touch_units(self, fx: f32, fy: f32) -> (u16, u16) {
         self.spec().touch_units(fx, fy)
+    }
+
+    /// Where `btn` sits in this player's frame, or `None` if it has no such
+    /// button.
+    pub fn button(self, btn: Btn) -> Option<FrameBit> {
+        self.spec().miso.button(btn)
+    }
+
+    /// [`Model::button`] from a written name: a [`Btn::name`]
+    /// (case-insensitive) or a raw frame bit (see [`miso_frame::raw_bit`]). A
+    /// raw bit is an address in the player's own frame and is taken as
+    /// written.
+    pub fn button_by_name(self, name: &str) -> Option<FrameBit> {
+        miso_frame::raw_bit(name).or_else(|| self.button(Btn::from_name(name)?))
+    }
+
+    /// This player's MISO frame for `state`.
+    pub fn encode(self, state: &PanelState) -> [u8; MISO_SIZE] {
+        self.spec().miso.encode(state)
+    }
+
+    /// A MOSI frame read through this player's codec.
+    pub fn mosi_frame(self, bytes: [u8; MOSI_SIZE]) -> MosiFrame {
+        let spec = self.spec();
+        MosiFrame::new(bytes, spec.mosi, &spec.leds)
     }
 
     /// Parse a user spelling, case-insensitive: the slug (`cdj3k`, `cdj3kx`),

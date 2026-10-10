@@ -83,6 +83,25 @@ impl ScriptDriver {
             return;
         }
         let now = Instant::now();
+        self.release_due(app, now);
+        let elapsed = self.started.elapsed().as_secs_f64();
+        while self.actions.last().is_some_and(|(t, _)| *t <= elapsed) {
+            let (t, action) = self.actions.pop().unwrap();
+            let ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let t = format!("{t}s @{ms}");
+            if let Some((hold, release)) = perform(action, &t, app, ctx, shot) {
+                self.releases.push((now + hold, release));
+            }
+        }
+        // Keep the clock running: a quiet guest does not repaint on its own.
+        ctx.request_repaint_after(Duration::from_millis(50));
+    }
+
+    /// Let go of every held control whose time is up.
+    fn release_due(&mut self, app: &mut CdjApp, now: Instant) {
         let mut i = 0;
         while i < self.releases.len() {
             if self.releases[i].0 <= now {
@@ -98,64 +117,65 @@ impl ScriptDriver {
                 i += 1;
             }
         }
-        let elapsed = self.started.elapsed().as_secs_f64();
-        while self.actions.last().is_some_and(|(t, _)| *t <= elapsed) {
-            let (t, action) = self.actions.pop().unwrap();
-            let ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
-            let t = format!("{t}s @{ms}");
-            match action {
-                Action::Press { btn: name, hold } => {
-                    let Some(btn) = app.btn_by_name(&name) else {
-                        eprintln!(
-                            "cdj3k-emu: script {t}s press {name}: not a button of this model"
-                        );
-                        continue;
-                    };
-                    eprintln!(
-                        "cdj3k-emu: script {t}s press {name} = {}:{:#04x}",
-                        btn.0, btn.1
-                    );
-                    app.set_btn_scripted(btn, true);
-                    self.releases.push((now + hold, Release::Btn(btn)));
-                }
-                Action::Clear { bit: name, hold } => {
-                    let Some(bit) = app.btn_by_name(&name) else {
-                        eprintln!("cdj3k-emu: script {t}s clear {name}: not a bit of this model");
-                        continue;
-                    };
-                    eprintln!(
-                        "cdj3k-emu: script {t}s clear {name} = {}:{:#04x}",
-                        bit.0, bit.1
-                    );
-                    app.set_bit_cleared(bit, true);
-                    self.releases.push((now + hold, Release::Cleared(bit)));
-                }
-                Action::Touch { x, y, hold } => {
-                    eprintln!("cdj3k-emu: script {t}s touch {x} {y}");
-                    app.script_touch = false;
-                    app.apply_lcd_touch(touch_capture(Some(Pos2::new(x, y))));
-                    app.script_touch = true;
-                    self.releases.push((now + hold, Release::Touch));
-                }
-                Action::Shot(path) => {
-                    eprintln!("cdj3k-emu: script {t}s shot {path}");
-                    shot.request_capture(ctx, path);
-                }
-                Action::Tilt => {
-                    eprintln!("cdj3k-emu: script {t}s tilt");
-                    app.tilted = !app.tilted;
-                }
-                Action::Quit => {
-                    eprintln!("cdj3k-emu: script {t}s quit");
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
+    }
+}
+
+/// Carry out `action`, logged as at `t`. Returns how long to hold what it
+/// set, and what lets go of it.
+fn perform(
+    action: Action,
+    t: &str,
+    app: &mut CdjApp,
+    ctx: &egui::Context,
+    shot: &mut ScreenshotDriver,
+) -> Option<(Duration, Release)> {
+    match action {
+        Action::Press { btn: name, hold } => {
+            let Some(btn) = app.btn_by_name(&name) else {
+                eprintln!("cdj3k-emu: script {t}s press {name}: not a button of this model");
+                return None;
+            };
+            eprintln!(
+                "cdj3k-emu: script {t}s press {name} = {}:{:#04x}",
+                btn.0, btn.1
+            );
+            app.set_btn_scripted(btn, true);
+            Some((hold, Release::Btn(btn)))
         }
-        // Keep the clock running: a quiet guest does not repaint on its own.
-        ctx.request_repaint_after(Duration::from_millis(50));
+        Action::Clear { bit: name, hold } => {
+            let Some(bit) = app.btn_by_name(&name) else {
+                eprintln!("cdj3k-emu: script {t}s clear {name}: not a bit of this model");
+                return None;
+            };
+            eprintln!(
+                "cdj3k-emu: script {t}s clear {name} = {}:{:#04x}",
+                bit.0, bit.1
+            );
+            app.set_bit_cleared(bit, true);
+            Some((hold, Release::Cleared(bit)))
+        }
+        Action::Touch { x, y, hold } => {
+            eprintln!("cdj3k-emu: script {t}s touch {x} {y}");
+            app.script_touch = false;
+            app.apply_lcd_touch(touch_capture(Some(Pos2::new(x, y))));
+            app.script_touch = true;
+            Some((hold, Release::Touch))
+        }
+        Action::Shot(path) => {
+            eprintln!("cdj3k-emu: script {t}s shot {path}");
+            shot.request_capture(ctx, path);
+            None
+        }
+        Action::Tilt => {
+            eprintln!("cdj3k-emu: script {t}s tilt");
+            app.tilted = !app.tilted;
+            None
+        }
+        Action::Quit => {
+            eprintln!("cdj3k-emu: script {t}s quit");
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            None
+        }
     }
 }
 

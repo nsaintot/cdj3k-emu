@@ -164,6 +164,7 @@ struct Watch<'a> {
     app_pid: u32,
 }
 
+/// The watcher: this run's names, then [`WATCHER_BODY`].
 fn build_watcher_script(
     watch: &Watch,
     host_tap: &str,
@@ -172,16 +173,30 @@ fn build_watcher_script(
     script_self: &Path,
 ) -> String {
     format!(
-        r#"#!/bin/sh
-set -e
-CLAIM_FILE={claim_file}
-CLAIM={claim}
-RELEASED={released}
-HOST_TAP={host_tap}
-NAMES_FILE={names_file}
-APP_PID={app_pid}
-BRIDGE={bridge}
-held() {{ [ "$(cat "$CLAIM_FILE" 2>/dev/null)" = "$CLAIM" ] && kill -0 "$APP_PID" 2>/dev/null; }}
+        "#!/bin/sh\n\
+         set -e\n\
+         CLAIM_FILE={claim_file}\n\
+         CLAIM={claim}\n\
+         RELEASED={released}\n\
+         HOST_TAP={host_tap}\n\
+         NAMES_FILE={names_file}\n\
+         APP_PID={app_pid}\n\
+         BRIDGE={bridge}\n\
+         SCRIPT_SELF={script_self}\n\
+         {WATCHER_BODY}",
+        claim_file = sh_quote(&watch.claim_file.to_string_lossy()),
+        claim = sh_quote(watch.claim),
+        released = sh_quote(&watch.released.to_string_lossy()),
+        host_tap = sh_quote(host_tap),
+        names_file = sh_quote(&names_file.to_string_lossy()),
+        app_pid = watch.app_pid,
+        bridge = sh_quote(bridge),
+        script_self = sh_quote(&script_self.to_string_lossy()),
+    )
+}
+
+/// What the watcher does, given the variables [`build_watcher_script`] sets.
+const WATCHER_BODY: &str = r#"held() { [ "$(cat "$CLAIM_FILE" 2>/dev/null)" = "$CLAIM" ] && kill -0 "$APP_PID" 2>/dev/null; }
 
 # tuntap kext: tap devices only appear in ifconfig after /dev/tapN is opened.
 # Claim the first free one by opening its device file on fd 3.
@@ -199,12 +214,12 @@ for n in $(seq 0 15); do
         break
     fi
 done
-[ -z "$TAP_QEMU" ] && {{ echo "tapbridge: no free tap device found" >&2; exit 1; }}
+[ -z "$TAP_QEMU" ] && { echo "tapbridge: no free tap device found" >&2; exit 1; }
 
 # Create-or-reuse the SHARED fixed bridge (shared with djx-emu). If it already
 # exists (another emulator made it), reuse it; otherwise create it by name.
 ifconfig "$BRIDGE" >/dev/null 2>&1 || ifconfig "$BRIDGE" create >/dev/null 2>&1 \
-    || {{ echo "tapbridge: cannot create $BRIDGE" >&2; exit 1; }}
+    || { echo "tapbridge: cannot create $BRIDGE" >&2; exit 1; }
 
 # Add the host tap to the shared bridge once (skip if already a member).
 if ! ifconfig "$BRIDGE" 2>/dev/null | grep -q "member: $HOST_TAP"; then
@@ -232,7 +247,7 @@ while held; do
         ifconfig "$BRIDGE" -stp "$TAP_QEMU" 2>/dev/null || true
         break
     fi
-    [ $(date +%s) -ge $DEADLINE ] && {{ echo "tapbridge: $TAP_QEMU never became RUNNING" >&2; break; }}
+    [ $(date +%s) -ge $DEADLINE ] && { echo "tapbridge: $TAP_QEMU never became RUNNING" >&2; break; }
     sleep 0.2
 done
 
@@ -246,35 +261,27 @@ done
 chmod 0600 "/dev/$TAP_QEMU" 2>/dev/null || true
 ifconfig "$BRIDGE"   deletem "$TAP_QEMU" 2>/dev/null || true
 ifconfig "$TAP_QEMU" down    2>/dev/null || true
-REMAIN=$(ifconfig "$BRIDGE" 2>/dev/null | awk '/member: tap/ {{print $2}}' | grep -v "^$HOST_TAP$" | grep -c . || true)
+REMAIN=$(ifconfig "$BRIDGE" 2>/dev/null | awk '/member: tap/ {print $2}' | grep -v "^$HOST_TAP$" | grep -c . || true)
 if [ "$REMAIN" = "0" ]; then
     ifconfig "$BRIDGE" deletem "$HOST_TAP" 2>/dev/null || true
     ifconfig "$BRIDGE" destroy 2>/dev/null || true
 fi
-rm -f "$NAMES_FILE" {script_self}
+rm -f "$NAMES_FILE" "$SCRIPT_SELF"
 printf '%s' "$CLAIM" > "$RELEASED"
-"#,
-        claim_file = sh_quote(&watch.claim_file.to_string_lossy()),
-        claim = sh_quote(watch.claim),
-        released = sh_quote(&watch.released.to_string_lossy()),
-        host_tap = sh_quote(host_tap),
-        names_file = sh_quote(&names_file.to_string_lossy()),
-        app_pid = watch.app_pid,
-        bridge = sh_quote(bridge),
-        script_self = sh_quote(&script_self.to_string_lossy()),
-    )
+"#;
+
+/// The `<bridge>:<tap>` pair the watcher wrote to `names_file`, when it has.
+fn read_names(names_file: &Path) -> Option<(String, String)> {
+    let content = fs::read_to_string(names_file).ok()?;
+    let (bridge, tap) = content.trim().split_once(':')?;
+    (!bridge.is_empty() && !tap.is_empty()).then(|| (bridge.to_string(), tap.to_string()))
 }
 
 fn wait_for_names(names_file: &Path, timeout: Duration) -> io::Result<(String, String)> {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Ok(content) = fs::read_to_string(names_file) {
-            let content = content.trim();
-            if let Some((bridge, tap)) = content.split_once(':') {
-                if !bridge.is_empty() && !tap.is_empty() {
-                    return Ok((bridge.to_string(), tap.to_string()));
-                }
-            }
+        if let Some(names) = read_names(names_file) {
+            return Ok(names);
         }
         if Instant::now() >= deadline {
             return Err(io::Error::new(
@@ -295,16 +302,9 @@ fn wait_for_names(names_file: &Path, timeout: Duration) -> io::Result<(String, S
 /// and destroy them via a single elevated call.
 fn cleanup_stale(instance_id: u32) {
     let names_file = PathBuf::from(format!("{}.names", tapbridge_base(instance_id)));
-    let Ok(content) = fs::read_to_string(&names_file) else {
+    let Some((bridge, tap)) = read_names(&names_file) else {
         return;
     };
-    let content = content.trim();
-    let Some((bridge, tap)) = content.split_once(':') else {
-        return;
-    };
-    if bridge.is_empty() || tap.is_empty() {
-        return;
-    }
 
     eprintln!(
         "cdj3k-emu: cleaning up stale tapbridge  bridge={}  tap={}",
@@ -313,8 +313,8 @@ fn cleanup_stale(instance_id: u32) {
 
     let cmd = format!(
         "ifconfig {br} deletem {tap} 2>/dev/null; ifconfig {tap} destroy 2>/dev/null; rm -f {nf}",
-        br = sh_quote(bridge),
-        tap = sh_quote(tap),
+        br = sh_quote(&bridge),
+        tap = sh_quote(&tap),
         nf = sh_quote(&names_file.to_string_lossy()),
     );
     // Best-effort - ignore elevation cancellation.
@@ -324,6 +324,22 @@ fn cleanup_stale(instance_id: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A names file counts once it holds both names.
+    #[test]
+    fn names_need_both_halves() {
+        let path =
+            std::env::temp_dir().join(format!("cdj3k-emu-tapbridge-names-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        assert_eq!(read_names(&path), None);
+        for partial in ["bridge99", "bridge99:", ":tap1", "\n"] {
+            fs::write(&path, partial).unwrap();
+            assert_eq!(read_names(&path), None, "{partial:?}");
+        }
+        fs::write(&path, "bridge99:tap1\n").unwrap();
+        assert_eq!(read_names(&path), Some(("bridge99".into(), "tap1".into())));
+        let _ = fs::remove_file(&path);
+    }
 
     /// The watcher holds the link while the claim is the slot's and the app
     /// lives, and answers the lease only after the teardown.
