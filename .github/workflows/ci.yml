@@ -99,6 +99,9 @@ jobs:
       - uses: ./.github/actions/rust
       - run: ./winit/fetch.sh
       - run: cargo test --workspace --locked
+      # The LCD streams poll memory that QEMU writes, and a stale read shows
+      # only in an optimised build.
+      - run: cargo test --release --locked -p cdj3k-emu-streams
 
   test-macos:
     name: Test (macOS)

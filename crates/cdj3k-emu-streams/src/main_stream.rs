@@ -26,6 +26,8 @@
 //! rows without swapping channels.
 
 use memmap2::Mmap;
+
+use crate::shm::View;
 use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -163,7 +165,8 @@ fn poll_loop(
     frames_seen: &Arc<AtomicU32>,
     gate: &crate::RepaintGate,
 ) {
-    let mut last_gen: u32 = read_u32(mmap, 4);
+    let shm = View::new(mmap);
+    let mut last_gen: u32 = shm.u32_at(4, Ordering::Acquire);
     let mut dirty = DirtyUnion::default();
 
     loop {
@@ -171,14 +174,14 @@ fn poll_loop(
 
         // Check the magic on every tick; it disappears when QEMU exits or
         // restarts.
-        if read_u32(mmap, 0) != SHM_MAGIC {
+        if shm.u32_at(0, Ordering::Relaxed) != SHM_MAGIC {
             eprintln!("[main_stream] The shm magic was cleared; reconnecting.");
             return;
         }
 
         // Load the generation with Acquire ordering, which pairs with QEMU's
         // Release add.
-        let gen = read_u32_acquire(mmap, 4);
+        let gen = shm.u32_at(4, Ordering::Acquire);
 
         if gen == last_gen {
             continue;
@@ -190,11 +193,11 @@ fn poll_loop(
         // Read the dimensions again on every frame, because the surface can
         // change during a session: from the initial 640×480 QEMU console to
         // Xorg at the model's main LCD mode.
-        let Some(surface) = Surface::read(mmap) else {
+        let Some(surface) = Surface::read(shm) else {
             continue;
         };
         dirty.resize(surface.width, surface.height);
-        let Some(rect) = surface.dirty_rect(mmap) else {
+        let Some(rect) = surface.dirty_rect(shm) else {
             continue;
         };
         dirty.add(rect);
@@ -232,10 +235,10 @@ struct Surface {
 impl Surface {
     /// `None` for an empty surface, or one whose rows the mapping does not
     /// hold.
-    fn read(shm: &[u8]) -> Option<Self> {
-        let width = read_u32(shm, 8) as usize;
-        let height = read_u32(shm, 12) as usize;
-        let stride = read_u32(shm, 16) as usize;
+    fn read(shm: View<'_>) -> Option<Self> {
+        let width = shm.u32_at(8, Ordering::Relaxed) as usize;
+        let height = shm.u32_at(12, Ordering::Relaxed) as usize;
+        let stride = shm.u32_at(16, Ordering::Relaxed) as usize;
         if width == 0
             || height == 0
             || stride < width * 4
@@ -252,11 +255,11 @@ impl Surface {
 
     /// The header's dirty rect as `(x, y, w, h)`; `None` when it is empty or
     /// leaves the surface.
-    fn dirty_rect(&self, shm: &[u8]) -> Option<(usize, usize, usize, usize)> {
-        let dx = read_u32(shm, 24) as usize;
-        let dy = read_u32(shm, 28) as usize;
-        let dw = read_u32(shm, 32) as usize;
-        let dh = read_u32(shm, 36) as usize;
+    fn dirty_rect(&self, shm: View<'_>) -> Option<(usize, usize, usize, usize)> {
+        let dx = shm.u32_at(24, Ordering::Relaxed) as usize;
+        let dy = shm.u32_at(28, Ordering::Relaxed) as usize;
+        let dw = shm.u32_at(32, Ordering::Relaxed) as usize;
+        let dh = shm.u32_at(36, Ordering::Relaxed) as usize;
         if dw == 0 || dh == 0 || dx + dw > self.width || dy + dh > self.height {
             return None;
         }
@@ -313,34 +316,10 @@ fn open_shm(path: &str) -> Option<Arc<Mmap>> {
     if mmap.len() < SHM_PIXELS_OFFSET {
         return None;
     }
-    if read_u32(&mmap, 0) != SHM_MAGIC {
+    if View::new(&mmap).u32_at(0, Ordering::Relaxed) != SHM_MAGIC {
         return None;
     }
     Some(Arc::new(mmap))
-}
-
-/// Read a little-endian u32 with no ordering. Use it for the fields after
-/// the generation, which the Acquire load of the generation already orders.
-fn read_u32(shm: &[u8], offset: usize) -> u32 {
-    let bytes: [u8; 4] = shm[offset..offset + 4].try_into().unwrap();
-    u32::from_le_bytes(bytes)
-}
-
-/// Load a u32 with Acquire ordering, which pairs with QEMU's
-/// __ATOMIC_RELEASE store.
-fn read_u32_acquire(mmap: &Mmap, offset: usize) -> u32 {
-    // SAFETY: `mmap.as_ptr()` is page-aligned (mmap-allocated regions
-    // always are), and the header layout fixes the generation counter
-    // at offset 4, which is 4-byte aligned and therefore satisfies
-    // `AtomicU32`'s alignment.  The offset is well within bounds of the
-    // mapped region, which the `Mmap` size check at construction
-    // guarantees.
-    let ptr = unsafe { mmap.as_ptr().add(offset) as *const AtomicU32 };
-    // SAFETY: `ptr` was just derived from a live `Mmap` borrowed for the
-    // duration of this call, the dereferenced `AtomicU32` provides its
-    // own synchronisation, and the QEMU side performs only atomic
-    // accesses to the same word.
-    unsafe { (*ptr).load(Ordering::Acquire) }
 }
 
 #[cfg(test)]
@@ -362,20 +341,22 @@ mod tests {
 
     #[test]
     fn a_surface_needs_rows_the_mapping_holds() {
-        let s = Surface::read(&shm(4, 2, 16, [0; 4])).unwrap();
+        let s = Surface::read(View::new(&shm(4, 2, 16, [0; 4]))).unwrap();
         assert_eq!((s.width, s.height, s.stride), (4, 2, 16));
-        assert!(Surface::read(&shm(0, 2, 16, [0; 4])).is_none());
-        assert!(Surface::read(&shm(4, 2, 15, [0; 4])).is_none());
+        assert!(Surface::read(View::new(&shm(0, 2, 16, [0; 4]))).is_none());
+        assert!(Surface::read(View::new(&shm(4, 2, 15, [0; 4]))).is_none());
         let mut short = shm(4, 2, 16, [0; 4]);
         short.pop();
-        assert!(Surface::read(&short).is_none());
+        assert!(Surface::read(View::new(&short)).is_none());
     }
 
     #[test]
     fn a_dirty_rect_must_be_inside_the_surface() {
         let rect = |d: [u32; 4]| {
             let b = shm(4, 2, 16, d);
-            Surface::read(&b).unwrap().dirty_rect(&b)
+            Surface::read(View::new(&b))
+                .unwrap()
+                .dirty_rect(View::new(&b))
         };
         assert_eq!(rect([1, 0, 3, 2]), Some((1, 0, 3, 2)));
         assert_eq!(rect([1, 0, 0, 2]), None);

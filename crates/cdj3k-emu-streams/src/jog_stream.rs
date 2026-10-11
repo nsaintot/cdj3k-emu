@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 
 use memmap2::Mmap;
 
+use crate::shm::View;
+
 /// Jog LCD width after the guest's crop, which is the physical panel's width.
 pub const JOG_FB_W: usize = 320;
 /// Jog LCD height, the same as the DRM jog plane's height.
@@ -188,7 +190,7 @@ fn stream_loop(
 
         // Before the first publish, the file is remapped at the reconnect
         // pace below, which picks up the new file after a restart.
-        if poll_session(&shm, &mut bufs, &sink) {
+        if poll_session(View::new(&shm), &mut bufs, &sink) {
             eprintln!("[jog_stream] The shm magic was cleared; reconnecting.");
             announce = true;
         }
@@ -287,10 +289,10 @@ struct Session {
 
 /// Poll one mapping until its magic goes. Returns whether the magic was ever
 /// seen, i.e. whether the guest published into this mapping.
-fn poll_session(shm: &[u8], bufs: &mut FrameBuffers, sink: &JogSink) -> bool {
+fn poll_session(shm: View<'_>, bufs: &mut FrameBuffers, sink: &JogSink) -> bool {
     let mut session = Session::default();
     let mut seen_magic = false;
-    while read_u32(shm, SHM_OFF_MAGIC) == SHM_MAGIC {
+    while shm.u32_at(SHM_OFF_MAGIC, Ordering::Relaxed) == SHM_MAGIC {
         seen_magic = true;
         session.tick(shm, bufs, sink);
         thread::sleep(POLL_INTERVAL);
@@ -300,8 +302,8 @@ fn poll_session(shm: &[u8], bufs: &mut FrameBuffers, sink: &JogSink) -> bool {
 
 impl Session {
     /// One poll: publish the frame the guest wrote since the last one, if any.
-    fn tick(&mut self, shm: &[u8], bufs: &mut FrameBuffers, sink: &JogSink) {
-        let seq = read_u32(shm, SHM_OFF_SEQ);
+    fn tick(&mut self, shm: View<'_>, bufs: &mut FrameBuffers, sink: &JogSink) {
+        let seq = shm.u32_at(SHM_OFF_SEQ, Ordering::Acquire);
         if seq == self.last_seq || (seq & 1) != 0 {
             if self
                 .last_change_at
@@ -337,14 +339,14 @@ impl Session {
 
 /// Whether the header announces XRGB8888 at the panel's size; logs what it
 /// announces otherwise.
-fn header_is_xrgb_panel(shm: &[u8]) -> bool {
-    let fmt = read_u32(shm, SHM_OFF_FMT);
+fn header_is_xrgb_panel(shm: View<'_>) -> bool {
+    let fmt = shm.u32_at(SHM_OFF_FMT, Ordering::Relaxed);
     if fmt != SHM_FMT_XRGB8888 {
         eprintln!("[jog_stream] The frame format {fmt} is not XRGB8888.");
         return false;
     }
-    let w = read_u16(shm, SHM_OFF_W) as usize;
-    let h = read_u16(shm, SHM_OFF_H) as usize;
+    let w = shm.u16_at(SHM_OFF_W) as usize;
+    let h = shm.u16_at(SHM_OFF_H) as usize;
     if w != JOG_FB_W || h != JOG_FB_H {
         eprintln!("[jog_stream] The frame size {w}x{h} does not match the panel.");
         return false;
@@ -354,29 +356,19 @@ fn header_is_xrgb_panel(shm: &[u8]) -> bool {
 
 /// Copies the pixels into `canvas` under the seqlock. Returns the `seq` of the
 /// copy, or `None` if none of four attempts found `seq` stable.
-fn copy_stable(shm: &[u8], canvas: &mut [u8]) -> Option<u32> {
+fn copy_stable(shm: View<'_>, canvas: &mut [u8]) -> Option<u32> {
     for _ in 0..4 {
-        let seq_before = read_u32(shm, SHM_OFF_SEQ);
+        let seq_before = shm.u32_at(SHM_OFF_SEQ, Ordering::Acquire);
         if seq_before & 1 != 0 {
             std::hint::spin_loop();
             continue;
         }
-        canvas.copy_from_slice(&shm[SHM_PIXELS_OFF..SHM_PIXELS_OFF + FRAME_BYTES]);
-        if read_u32(shm, SHM_OFF_SEQ) == seq_before {
+        shm.copy_to(SHM_PIXELS_OFF, canvas);
+        if shm.u32_at(SHM_OFF_SEQ, Ordering::Relaxed) == seq_before {
             return Some(seq_before);
         }
     }
     None
-}
-
-#[inline]
-fn read_u32(shm: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([shm[off], shm[off + 1], shm[off + 2], shm[off + 3]])
-}
-
-#[inline]
-fn read_u16(shm: &[u8], off: usize) -> u16 {
-    u16::from_le_bytes([shm[off], shm[off + 1]])
 }
 
 /// Sample the canvas at (x, y) and return RGBA bytes for the UI. The canvas
@@ -428,11 +420,11 @@ mod tests {
     #[test]
     fn a_stable_seq_copies_the_pixels() {
         let mut canvas = vec![0u8; FRAME_BYTES];
-        assert_eq!(copy_stable(&shm(4, 0x7f), &mut canvas), Some(4));
+        assert_eq!(copy_stable(View::new(&shm(4, 0x7f)), &mut canvas), Some(4));
         assert!(canvas.iter().all(|&b| b == 0x7f));
 
         let mut canvas = vec![0u8; FRAME_BYTES];
-        assert_eq!(copy_stable(&shm(5, 0x7f), &mut canvas), None);
+        assert_eq!(copy_stable(View::new(&shm(5, 0x7f)), &mut canvas), None);
         assert!(
             canvas.iter().all(|&b| b == 0),
             "a write in progress is not read"
@@ -441,13 +433,13 @@ mod tests {
 
     #[test]
     fn only_an_xrgb_panel_sized_header_is_read() {
-        assert!(header_is_xrgb_panel(&shm(2, 0)));
+        assert!(header_is_xrgb_panel(View::new(&shm(2, 0))));
         let mut b = shm(2, 0);
         b[SHM_OFF_FMT] = 2;
-        assert!(!header_is_xrgb_panel(&b));
+        assert!(!header_is_xrgb_panel(View::new(&b)));
         let mut b = shm(2, 0);
         b[SHM_OFF_W] ^= 1;
-        assert!(!header_is_xrgb_panel(&b));
+        assert!(!header_is_xrgb_panel(View::new(&b)));
     }
 
     #[test]
