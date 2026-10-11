@@ -19,6 +19,8 @@ use xts_mode::Xts128;
 
 const LUKS_MAGIC: &[u8; 6] = b"LUKS\xba\xbe";
 pub(crate) const LUKS_SECTOR: u64 = 512;
+/// The anti-forensic stripe count cryptsetup writes and requires for LUKS1.
+const LUKS1_STRIPES: u32 = 4000;
 
 mod crypto;
 mod rekey;
@@ -321,7 +323,8 @@ fn decrypt_upd_at(
 ///
 /// Every attempt is traced into the [`LuksError::NoValidKeySlot`] diagnostic,
 /// which the firmware wizard shows when the .UPD does not decrypt (wrong key,
-/// no active slot, unreadable key material).
+/// no active slot, unreadable key material, or a master key size or stripe
+/// count that LUKS1 does not allow).
 fn try_key_slots<R: Read + Seek>(
     r: &mut R,
     h: &Luks1Header,
@@ -340,6 +343,10 @@ fn try_key_slots<R: Read + Seek>(
         active_count,
         keyfile.len()
     );
+    if !matches!(h.key_bytes, 32 | 64) {
+        let _ = writeln!(diag, "the master key size is not 32 or 64 bytes");
+        return Err(LuksError::NoValidKeySlot(diag));
+    }
 
     for (i, slot) in h.key_slots.iter().enumerate().filter(|(_, s)| s.active) {
         if let Some(mk) = open_slot(r, h, i, slot, keyfile, &mut diag) {
@@ -364,6 +371,10 @@ fn open_slot<R: Read + Seek>(
         "slot {i}: iters={}  km_sector={}  stripes={}  km_bytes={}",
         slot.iterations, slot.key_material_offset, slot.stripes, km_size
     );
+    if slot.stripes != LUKS1_STRIPES {
+        let _ = writeln!(diag, "slot {i}: the stripe count is not 4000");
+        return None;
+    }
     let _ = writeln!(diag, "slot {i}: keyfile_len={}", keyfile.len());
 
     let km_offset = slot.key_material_offset as u64 * LUKS_SECTOR;

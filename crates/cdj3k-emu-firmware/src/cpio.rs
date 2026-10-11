@@ -195,17 +195,20 @@ impl<'a> Record<'a> {
         let rdevminor = f(10, "rdevminor")?;
         let namesize = f(11, "namesize")? as usize;
 
-        let name_at = at + HEADER_LEN;
-        let name_end = name_at.checked_add(namesize).ok_or(CpioError::BadField {
+        // namesize includes the trailing NUL, so it is at least 1.
+        let bad_namesize = CpioError::BadField {
             at,
             field: "namesize",
-        })?;
+        };
+        if namesize == 0 {
+            return Err(bad_namesize);
+        }
+        let name_at = at + HEADER_LEN;
+        let name_end = name_at.checked_add(namesize).ok_or(bad_namesize)?;
         if name_end > bytes.len() {
             return Err(CpioError::Truncated { at });
         }
-        // namesize includes the trailing NUL.
-        let name =
-            String::from_utf8_lossy(&bytes[name_at..name_end.saturating_sub(1)]).into_owned();
+        let name = String::from_utf8_lossy(&bytes[name_at..name_end - 1]).into_owned();
 
         let data_at = pad4(name_end - at) + at;
         let data_end = data_at.checked_add(filesize).ok_or(CpioError::BadField {
@@ -536,6 +539,19 @@ mod tests {
             Err(CpioError::BadField {
                 at: 0,
                 field: "gid"
+            })
+        ));
+    }
+
+    #[test]
+    fn a_zero_namesize_is_a_bad_field() {
+        let mut bytes = write(&sample());
+        bytes[6 + 11 * 8..6 + 12 * 8].copy_from_slice(b"00000000");
+        assert!(matches!(
+            read(&bytes),
+            Err(CpioError::BadField {
+                at: 0,
+                field: "namesize"
             })
         ));
     }

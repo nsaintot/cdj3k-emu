@@ -18,7 +18,7 @@ use sha2::{Digest, Sha512};
 use xts_mode::Xts128;
 
 use super::crypto::{af_merge, af_split, pbkdf2_derive, random_bytes};
-use super::LUKS_SECTOR;
+use super::{LUKS1_STRIPES, LUKS_SECTOR};
 
 /// PBKDF2 rounds for the added keyslot, which the guest runs once per boot.
 /// The factory slot's 2,868,880 rounds take about 30 s under TCG on x86_64.
@@ -26,8 +26,6 @@ const SLOT_ITERATIONS: u32 = 200_000;
 
 const SLOT_ACTIVE: u32 = 0x00AC_71F3;
 const SLOT_INACTIVE: u32 = 0x0000_DEAD;
-/// The anti-forensic stripe count cryptsetup writes and requires for LUKS1.
-const LUKS1_STRIPES: u32 = 4000;
 const SLOT_COUNT: usize = 8;
 const HEADER_BYTES: usize = 592;
 const SLOT_TABLE_OFFSET: usize = 208;

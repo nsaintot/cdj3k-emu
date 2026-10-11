@@ -142,14 +142,8 @@ pub fn extract_kernel(
 }
 
 fn list_iso_root<R: Read + Seek>(r: &mut R) -> Result<Vec<String>, ExtractError> {
-    let mut pvd = [0u8; ISO_SECTOR as usize];
-    r.seek(SeekFrom::Start(PVD_LBA * ISO_SECTOR))?;
-    r.read_exact(&mut pvd)?;
-    let root_lba = le32(&pvd, 158);
-    let root_len = le32(&pvd, 166);
-    let mut dir = vec![0u8; root_len as usize];
-    r.seek(SeekFrom::Start(root_lba * ISO_SECTOR))?;
-    r.read_exact(&mut dir)?;
+    let (root_lba, root_len) = root_extent(r)?;
+    let dir = read_extent(r, root_lba, root_len)?;
     let entries = dir_records(&dir)
         .filter_map(|rec| {
             let raw = record_name(rec).filter(|n| !is_self_or_parent(n))?;
@@ -256,6 +250,13 @@ pub(crate) fn read_iso_file<R: Read + Seek>(
     r: &mut R,
     name: &str,
 ) -> Result<Vec<u8>, ExtractError> {
+    let (root_lba, root_len) = root_extent(r)?;
+    find_in_dir(r, root_lba, root_len, name)
+}
+
+/// The sector and length of the root directory, read from the primary volume
+/// descriptor after checking its signature.
+fn root_extent<R: Read + Seek>(r: &mut R) -> Result<(u64, u64), ExtractError> {
     let mut pvd = [0u8; ISO_SECTOR as usize];
     r.seek(SeekFrom::Start(PVD_LBA * ISO_SECTOR))?;
     r.read_exact(&mut pvd)?;
@@ -267,10 +268,7 @@ pub(crate) fn read_iso_file<R: Read + Seek>(
     }
 
     // The 34-byte root directory record starts at offset 156.
-    let root_lba = le32(&pvd, 158);
-    let root_len = le32(&pvd, 166);
-
-    find_in_dir(r, root_lba, root_len, name)
+    Ok((le32(&pvd, 158), le32(&pvd, 166)))
 }
 
 /// The little-endian half of an ISO 9660 both-endian u32 at `at`.

@@ -83,6 +83,26 @@ fn the_root_listing_marks_directories() {
     assert_eq!(entries, ["IMAGES/"]);
 }
 
+/// The listing checks the PVD signature and the root extent's bounds before it
+/// allocates anything.
+#[test]
+fn a_malformed_root_is_not_listed() {
+    assert!(matches!(
+        list_iso_root(&mut Cursor::new(vec![0u8; 20 * S])),
+        Err(ExtractError::BadIso(
+            "not an ISO 9660 primary volume descriptor"
+        ))
+    ));
+    let mut huge_root = iso(5, &[]);
+    huge_root[16 * S + 166..16 * S + 170].copy_from_slice(&u32::MAX.to_le_bytes());
+    assert!(matches!(
+        list_iso_root(&mut Cursor::new(huge_root)),
+        Err(ExtractError::BadIso(
+            "extent runs past the end of the image"
+        ))
+    ));
+}
+
 #[test]
 fn malformed_images_are_errors_not_panics() {
     assert!(matches!(

@@ -114,3 +114,26 @@ fn a_wrong_key_reports_every_slot_it_tried() {
         )
     );
 }
+
+/// A header field outside what LUKS1 allows is reported in the diagnostic and
+/// does not reach the key material maths.
+#[test]
+fn a_malformed_header_is_reported_not_opened() {
+    let parse = |image: &[u8]| read_luks1_header(&mut Cursor::new(image)).unwrap();
+    let ends_with = |image: &[u8], line: &str| match open(image, &parse(image), b"vendor") {
+        Err(LuksError::NoValidKeySlot(diag)) => assert!(diag.ends_with(line), "{diag}"),
+        _ => panic!("a malformed container opened"),
+    };
+
+    for key_bytes in [0u32, 16, 48] {
+        let (mut image, _, _) = container();
+        image[108..112].copy_from_slice(&key_bytes.to_be_bytes());
+        ends_with(&image, "the master key size is not 32 or 64 bytes\n");
+    }
+
+    for stripes in [0u32, 1, u32::MAX] {
+        let (mut image, _, _) = container();
+        image[208 + 44..208 + 48].copy_from_slice(&stripes.to_be_bytes());
+        ends_with(&image, "slot 0: the stripe count is not 4000\n");
+    }
+}
