@@ -62,10 +62,9 @@ pub(super) const PERF_LABEL_FONT_SIZE: f32 = 30.0;
 
 // ── CALL/DELETE button (same Y as hot cue row) ────────────────────────────────
 /// The vertical fraction within PERF_TRANSPORT_COL_REF that lines up with the
-/// hot cue row's center. The formula (MID_CENTRAL_REF_TOP +
-/// MID_CENTRAL_REF_SIZE_H * HOT_CUE_BTN_V_CENTER - TRANSPORT_REF_TOP) /
-/// TRANSPORT_REF_SIZE_H gives (1797 + 460 * 0.3 - 579) / 4080 ≈ 0.332; the
-/// constant is 0.329.
+/// hot cue row's center. It is (MID_CENTRAL_REF_TOP + MID_CENTRAL_REF_SIZE_H *
+/// HOT_CUE_BTN_V_CENTER - TRANSPORT_REF_TOP) / TRANSPORT_REF_SIZE_H, which is
+/// (1797 + 460 * 0.267 - 579) / 4080 ≈ 0.329.
 pub(super) const PERF_V_CALL_DELETE: f32 = 0.329;
 pub(super) const PERF_CALL_DELETE_BTN_SIZE: f32 = 45.0; // square side length in ref units
 pub(super) const PERF_CALL_DELETE_BTN_U: f32 = 0.35; // button horizontal center (fraction of col width)
@@ -86,7 +85,9 @@ pub(super) const PERF_CALL_DELETE_LABEL_NUDGE_Y: f32 = 100.0;
 /// and 20 units wider.
 pub(super) const PERF_CALL_DELETE_OUTER_H: f32 = 100.0;
 pub(super) const PERF_CALL_DELETE_OUTER_W: f32 = 200.0;
-pub(super) const PERF_CALL_DELETE_OUTER_ROUNDING: f32 = 12.0; // HOT_CUE_BTN_HEIGHT * 0.12
+/// The rounding of the CALL/DELETE outline, which matches the hot cue
+/// buttons: 12% of their 100-unit height.
+pub(super) const PERF_CALL_DELETE_OUTER_ROUNDING: f32 = 12.0;
 
 pub(super) fn draw_left_section(
     app: &mut CdjApp,

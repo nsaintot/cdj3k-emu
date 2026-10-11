@@ -55,7 +55,7 @@ pub(in crate::app) const HOT_CUE_BTN_ASPECT: f32 = 1.8;
 /// Horizontal gap between consecutive hot cue buttons (reference units).
 pub(in crate::app) const HOT_CUE_BTN_GAP_REF: f32 = 107.0;
 /// Vertical center within [`MID_CENTRAL_PANEL_REF`], from 0 at the top to 1 at the bottom.
-pub(in crate::app) const HOT_CUE_BTN_V_CENTER: f32 = 0.3;
+pub(in crate::app) const HOT_CUE_BTN_V_CENTER: f32 = 0.267;
 /// Font size for hot cue labels.
 const HOT_CUE_BTN_FONT_SIZE: f32 = 34.0;
 /// Colored outline stroke width (reference units).
@@ -64,7 +64,7 @@ const HOT_CUE_BTN_OUTER_STROKE: f32 = 4.0;
 
 // --- HOT CUE label row (above hot cue buttons) ---
 /// Vertical center of the label within [`MID_CENTRAL_PANEL_REF`].
-const HOT_CUE_LABEL_V: f32 = 0.08;
+const HOT_CUE_LABEL_V: f32 = 0.063;
 const HOT_CUE_LABEL_FONT_SIZE: f32 = 34.0;
 /// Distance from the panel center to the inner end of each flanking segment;
 /// it covers the label and its clearance.

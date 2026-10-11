@@ -115,3 +115,18 @@ const PANEL: FlatPanel = FlatPanel {
 fn draw_panel(app: &mut CdjApp, ui: &mut egui::Ui) {
     draw_flat_panel(app, ui, &PANEL);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// CALL/DELETE and the hot cue pads share one centre line, which the
+    /// panel puts at y 1920.
+    #[test]
+    fn call_delete_lines_up_with_the_hot_cue_row() {
+        let call = layout::TRANSPORT_REF_TOP
+            + layout::TRANSPORT_REF_SIZE_H * draw_left::PERF_V_CALL_DELETE;
+        assert!((PADS_MID_Y - 1920.0).abs() < 1.0, "{PADS_MID_Y}");
+        assert!((call - PADS_MID_Y).abs() < 2.0, "{call} {PADS_MID_Y}");
+    }
+}

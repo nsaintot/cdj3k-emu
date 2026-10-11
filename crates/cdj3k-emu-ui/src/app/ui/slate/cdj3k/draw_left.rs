@@ -86,7 +86,9 @@ pub(super) const PERF_CALL_DELETE_LABEL_NUDGE_Y: f32 = 100.0;
 /// and 20 units wider.
 pub(super) const PERF_CALL_DELETE_OUTER_H: f32 = 100.0;
 pub(super) const PERF_CALL_DELETE_OUTER_W: f32 = 200.0;
-pub(super) const PERF_CALL_DELETE_OUTER_ROUNDING: f32 = 12.0; // HOT_CUE_BTN_HEIGHT * 0.12
+/// The rounding of the CALL/DELETE outline, which matches the hot cue
+/// buttons: 12% of their 100-unit height.
+pub(super) const PERF_CALL_DELETE_OUTER_ROUNDING: f32 = 12.0;
 
 pub(super) fn draw_left_section(
     app: &mut CdjApp,
