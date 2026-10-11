@@ -106,6 +106,52 @@ pub fn write_gpt<W: Write + Seek>(
     w.write_all(&pmbr)?;
 
     // ── Partition entries ─────────────────────────────────────────────────────
+    let entry_buf = entry_table(partitions);
+    let entries_crc = CRC32.checksum(&entry_buf);
+
+    // Primary entries at LBA 2.
+    w.seek(SeekFrom::Start(GPT_ENTRIES_LBA * SECTOR))?;
+    w.write_all(&entry_buf)?;
+
+    // The backup entry table sits just before the backup header, which is the
+    // last sector.
+    let backup_entries_lba = disk_sectors - GPT_BACKUP_RESERVED_SECTORS;
+    w.seek(SeekFrom::Start(backup_entries_lba * SECTOR))?;
+    w.write_all(&entry_buf)?;
+
+    // Both headers describe the same disk, so they carry the same disk GUID.
+    let disk_guid = *Uuid::new_v4().as_bytes();
+
+    // ── Primary GPT header ────────────────────────────────────────────────────
+    let primary = build_header(
+        GPT_HEADER_LBA,
+        disk_sectors - 1,
+        GPT_ENTRIES_LBA,
+        disk_sectors,
+        entries_crc,
+        &disk_guid,
+    );
+    w.seek(SeekFrom::Start(GPT_HEADER_LBA * SECTOR))?;
+    w.write_all(&primary)?;
+
+    // ── Backup GPT header ─────────────────────────────────────────────────────
+    let backup = build_header(
+        disk_sectors - 1,
+        GPT_HEADER_LBA,
+        backup_entries_lba,
+        disk_sectors,
+        entries_crc,
+        &disk_guid,
+    );
+    w.seek(SeekFrom::Start((disk_sectors - 1) * SECTOR))?;
+    w.write_all(&backup)?;
+
+    w.flush()
+}
+
+/// The partition entry array: `partitions` followed by empty entries, up to
+/// [`GPT_MAX_ENTRIES`].
+fn entry_table(partitions: &[PartEntry]) -> Vec<u8> {
     let entries_bytes = (GPT_MAX_ENTRIES * GPT_ENTRY_SIZE) as usize;
     let mut entry_buf = vec![0u8; entries_bytes];
     for (i, p) in partitions.iter().enumerate() {
@@ -124,42 +170,7 @@ pub fn write_gpt<W: Write + Seek>(
             name_bytes[j * 2 + 1] = b[1];
         }
     }
-
-    let entries_crc = CRC32.checksum(&entry_buf);
-
-    // Primary entries at LBA 2.
-    w.seek(SeekFrom::Start(GPT_ENTRIES_LBA * SECTOR))?;
-    w.write_all(&entry_buf)?;
-
-    // The backup entry table sits just before the backup header, which is the
-    // last sector.
-    let backup_entries_lba = disk_sectors - GPT_BACKUP_RESERVED_SECTORS;
-    w.seek(SeekFrom::Start(backup_entries_lba * SECTOR))?;
-    w.write_all(&entry_buf)?;
-
-    // ── Primary GPT header ────────────────────────────────────────────────────
-    let primary = build_header(
-        GPT_HEADER_LBA,
-        disk_sectors - 1,
-        GPT_ENTRIES_LBA,
-        disk_sectors,
-        entries_crc,
-    );
-    w.seek(SeekFrom::Start(GPT_HEADER_LBA * SECTOR))?;
-    w.write_all(&primary)?;
-
-    // ── Backup GPT header ─────────────────────────────────────────────────────
-    let backup = build_header(
-        disk_sectors - 1,
-        GPT_HEADER_LBA,
-        backup_entries_lba,
-        disk_sectors,
-        entries_crc,
-    );
-    w.seek(SeekFrom::Start((disk_sectors - 1) * SECTOR))?;
-    w.write_all(&backup)?;
-
-    w.flush()
+    entry_buf
 }
 
 fn build_header(
@@ -168,6 +179,7 @@ fn build_header(
     entries_start_lba: u64,
     disk_sectors: u64,
     entries_crc: u32,
+    disk_guid: &[u8; 16],
 ) -> Vec<u8> {
     let mut h = vec![0u8; 92];
 
@@ -181,10 +193,7 @@ fn build_header(
     h[40..48].copy_from_slice(&GPT_FIRST_USABLE_LBA.to_le_bytes());
     let last_usable_lba = disk_sectors - GPT_BACKUP_RESERVED_SECTORS - 1;
     h[48..56].copy_from_slice(&last_usable_lba.to_le_bytes());
-    // Disk GUID at h[56..72]. Each call generates a new one, so the primary and
-    // backup headers carry different disk GUIDs.
-    let disk_guid = *Uuid::new_v4().as_bytes();
-    h[56..72].copy_from_slice(&disk_guid);
+    h[56..72].copy_from_slice(disk_guid);
     h[72..80].copy_from_slice(&entries_start_lba.to_le_bytes());
     h[80..84].copy_from_slice(&GPT_MAX_ENTRIES.to_le_bytes());
     h[84..88].copy_from_slice(&GPT_ENTRY_SIZE.to_le_bytes());
@@ -219,4 +228,44 @@ const fn guid_to_mixed(d1: u32, d2: u16, d3: u16, d4: [u8; 8]) -> [u8; 16] {
         d4[6],
         d4[7],
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    /// Returns the 92-byte header at `lba` after checking its CRC.
+    fn checked_header(disk: &[u8], lba: u64) -> &[u8] {
+        let at = (lba * SECTOR) as usize;
+        let h = &disk[at..at + 92];
+        assert_eq!(&h[0..8], b"EFI PART");
+        let mut zeroed = h.to_vec();
+        zeroed[16..20].fill(0);
+        let stored = u32::from_le_bytes(h[16..20].try_into().unwrap());
+        assert_eq!(stored, CRC32.checksum(&zeroed), "header CRC at LBA {lba}");
+        h
+    }
+
+    #[test]
+    fn both_headers_share_the_disk_guid_and_have_valid_crcs() {
+        let disk_sectors = 4096;
+        let mut disk = Cursor::new(vec![0u8; (disk_sectors * SECTOR) as usize]);
+        let last_usable = disk_sectors - GPT_BACKUP_RESERVED_SECTORS - 1;
+        let parts = [PartEntry::new(
+            linux_data_type(),
+            GPT_FIRST_USABLE_LBA,
+            last_usable,
+            "data",
+        )];
+        write_gpt(&mut disk, disk_sectors, &parts).unwrap();
+        let disk = disk.into_inner();
+
+        let primary = checked_header(&disk, GPT_HEADER_LBA);
+        let backup = checked_header(&disk, disk_sectors - 1);
+        assert_eq!(primary[56..72], backup[56..72]);
+        assert_ne!(primary[56..72], [0u8; 16]);
+        assert_eq!(primary[88..92], backup[88..92], "entry table CRC");
+    }
 }
