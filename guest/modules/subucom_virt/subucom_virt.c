@@ -27,6 +27,10 @@
  * 64 bytes. If the host injected a frame through ctrl, that frame is
  * returned; otherwise the idle frame is.
  *
+ * A write() on spi1.0 is a reset request from subucom_reset. When the file
+ * that received a valid reset frame is closed, the guest reboots, the way the
+ * sub-CPU resets the SoC on a real deck.
+ *
  * The real device:
  *   SPI: ff1d0000.spi, bus 1 CS0, 3.2 MHz, mode 3 (CPOL=1, CPHA=1)
  *   Device class: subucom_spiclass
@@ -49,6 +53,7 @@
 #include <linux/poll.h>    /* poll_table, POLLIN, POLLRDNORM */
 #include <linux/workqueue.h> /* delayed_work */
 #include <linux/version.h>
+#include <linux/reboot.h>  /* orderly_reboot */
 
 #define DRV_NAME        "subucom_virt"
 #define SPI_DEV_NAME    "subucom_spi1.0"
@@ -246,7 +251,33 @@ static int spi_open(struct inode *inode, struct file *filp)
 
 static int spi_release(struct inode *inode, struct file *filp)
 {
+    if (filp->private_data) {
+        pr_info(DRV_NAME ": the sub-CPU received a reset request; rebooting\n");
+        orderly_reboot();
+    }
     return 0;
+}
+
+/* subucom_reset writes 64-byte frames with a CRC-16/X-25 over the first 62
+ * bytes, little-endian in the last two. The app sends its LED frames through
+ * MOSI_TRANSFER and never calls write(), so any valid frame here is a reset
+ * request. spi_release() acts on it once subucom_reset closes the file, after
+ * its last frame. */
+static ssize_t spi_write(struct file *filp, const char __user *buf,
+                         size_t len, loff_t *off)
+{
+    u8 frame[MISO_SIZE];
+    u16 crc;
+
+    if (len != MISO_SIZE)
+        return -EINVAL;
+    if (xget_bytes(frame, buf, MISO_SIZE))
+        return -EFAULT;
+    crc = crc16_x25(frame, 62);
+    if (frame[62] != (u8)(crc & 0xFF) || frame[63] != (u8)(crc >> 8))
+        return -EINVAL;
+    filp->private_data = (void *)1;
+    return (ssize_t)len;
 }
 
 static ssize_t spi_read(struct file *filp, char __user *buf,
@@ -372,6 +403,7 @@ static const struct file_operations spi_fops = {
     .open           = spi_open,
     .release        = spi_release,
     .read           = spi_read,
+    .write          = spi_write,
     .poll           = spi_poll,
     .unlocked_ioctl = spi_ioctl,
 };

@@ -187,6 +187,14 @@ Either way it stamps a fresh CRC-16/X-25 before the copy-out. Do not move the
 throttle to an hrtimer that wakes a waitqueue: that wake-up races under QEMU
 with HVF.
 
+A `write()` on `subucom_spi1.0` is a reset request. Only `subucom_reset` writes
+to the device: `apl_end.sh` runs it on the CDJ-3000X when the app stops, and it
+sends four 64-byte frames with a valid CRC-16/X-25. The module accepts such a
+frame, and when that file is closed it calls `orderly_reboot()`, the way the
+real sub-CPU resets the SoC. QEMU runs with `-no-reboot`, so the guest reboot
+ends QEMU and the app starts the slot again. A frame of another size or with a
+bad CRC fails with `EINVAL`.
+
 Host injection through `/dev/subucom_ctrl` is **sticky**: a 64-byte
 write replaces `inject_pending` and stays in effect until the next
 write, so the host does not need to re-inject the same frame at 850 Hz.
