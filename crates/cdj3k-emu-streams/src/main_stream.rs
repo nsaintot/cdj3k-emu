@@ -7,7 +7,7 @@
 //! | offset | type | field |
 //! |---|---|---|
 //! | 0 | u32 | magic, 0x514D5348, stored little-endian as the bytes "HSMQ" |
-//! | 4 | u32 | generation, incremented with Release ordering after every dirty blit |
+//! | 4 | u32 | generation, a sequence counter that is odd while QEMU writes an update |
 //! | 8 | u32 | width |
 //! | 12 | u32 | height |
 //! | 16 | u32 | stride, in bytes per row |
@@ -18,8 +18,14 @@
 //! | 36 | u32 | dirty_h |
 //! | 64 | u8[] | pixels, stride × height bytes |
 //!
-//! The reader polls `generation` with Acquire ordering; when it changes, the
-//! dirty rect and the pixel data are consistent.
+//! QEMU adds 1 to `generation` before it writes an update, which makes it odd,
+//! and adds 1 with Release ordering when the update is written, which makes it
+//! even again. The reader polls `generation` with Acquire ordering and skips
+//! the tick while it is odd. When it is even and has changed, the pixels of
+//! the dirty rect are in place. A step of 2 is exactly one update. The header
+//! holds only the latest rect, so the reader uploads the whole surface when
+//! the step is larger (it missed an update) or the generation moved while it
+//! read the rect.
 //!
 //! Pixel format 1 is RGBA8888, in R, G, B, A byte order. `shm_gfx_update`
 //! converts XRGB8888 to RGBA8888 on the QEMU side, so the host can copy whole
@@ -29,7 +35,7 @@ use memmap2::Mmap;
 
 use crate::shm::View;
 use std::fs::File;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{fence, AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -168,6 +174,7 @@ fn poll_loop(
     let shm = View::new(mmap);
     let mut last_gen: u32 = shm.u32_at(4, Ordering::Acquire);
     let mut dirty = DirtyUnion::default();
+    let mut stride = 0;
 
     loop {
         thread::sleep(POLL_INTERVAL);
@@ -180,49 +187,62 @@ fn poll_loop(
         }
 
         // Load the generation with Acquire ordering, which pairs with QEMU's
-        // Release add.
+        // Release add. An odd value means that QEMU is writing an update; the
+        // next tick reads it.
         let gen = shm.u32_at(4, Ordering::Acquire);
-
-        if gen == last_gen {
-            continue;
-        }
-        puffin::profile_scope!("main_lcd_gen_bump");
-        last_gen = gen;
-        frames_seen.fetch_add(1, Ordering::Relaxed);
-
-        // Read the dimensions again on every frame, because the surface can
-        // change during a session: from the initial 640×480 QEMU console to
-        // Xorg at the model's main LCD mode.
-        let Some(surface) = Surface::read(shm) else {
-            continue;
-        };
-        dirty.resize(surface.width, surface.height);
-        let Some(rect) = surface.dirty_rect(shm) else {
-            continue;
-        };
-        dirty.add(rect);
-
-        // Try to publish the accumulated region. If the slot is still
-        // occupied, the union keeps growing and the next tick covers
-        // everything that was missed.
-        if let Ok(mut g) = slot.try_lock() {
-            if g.is_none() {
-                if let Some((x0, y0, x1, y1)) = dirty.take() {
-                    // Share the mmap reference, so the UI thread uploads
-                    // straight from the shm file into the GPU texture.
-                    *g = Some(DisplayDirty {
-                        x: x0 as u32,
-                        y: y0 as u32,
-                        w: (x1 - x0) as u32,
-                        h: (y1 - y0) as u32,
-                        stride: surface.stride as u32,
-                        mmap: Arc::clone(mmap),
-                    });
-                    gate.request();
-                }
+        if gen != last_gen && gen.is_multiple_of(2) {
+            puffin::profile_scope!("main_lcd_gen_bump");
+            frames_seen.fetch_add(1, Ordering::Relaxed);
+            // Read the dimensions again on every frame, because the surface
+            // can change during a session: from the initial 640×480 QEMU
+            // console to Xorg at the model's main LCD mode.
+            if let Some(surface) = Surface::read(shm) {
+                dirty.resize(surface.width, surface.height);
+                dirty.add(surface.changed_region(shm, last_gen, gen));
+                stride = surface.stride;
             }
+            last_gen = gen;
+        }
+
+        // Retry on every tick while the union is not empty, because the UI
+        // may not have taken the previous notification yet.
+        if publish(slot, &mut dirty, stride, mmap) {
+            gate.request();
         }
     }
+}
+
+/// Move the union into `slot` if the UI has taken the previous notification.
+/// Returns `true` when it published. The union is kept when the slot is busy.
+fn publish(
+    slot: &Mutex<Option<DisplayDirty>>,
+    dirty: &mut DirtyUnion,
+    stride: usize,
+    mmap: &Arc<Mmap>,
+) -> bool {
+    if dirty.rect.is_none() {
+        return false;
+    }
+    let Ok(mut g) = slot.try_lock() else {
+        return false;
+    };
+    if g.is_some() {
+        return false;
+    }
+    let Some((x0, y0, x1, y1)) = dirty.take() else {
+        return false;
+    };
+    // Share the mmap reference, so the UI thread uploads straight from the
+    // shm file into the GPU texture.
+    *g = Some(DisplayDirty {
+        x: x0 as u32,
+        y: y0 as u32,
+        w: (x1 - x0) as u32,
+        h: (y1 - y0) as u32,
+        stride: stride as u32,
+        mmap: Arc::clone(mmap),
+    });
+    true
 }
 
 /// The surface the header describes, in pixels and bytes per row.
@@ -264,6 +284,29 @@ impl Surface {
             return None;
         }
         Some((dx, dy, dw, dh))
+    }
+
+    /// The region that changed between `last_gen` and `gen`, as
+    /// `(x, y, w, h)`.
+    ///
+    /// The header holds only the rect of the latest update. The header rect is
+    /// used only when exactly one update landed (a step of 2) and the
+    /// generation did not move while the rect was read; otherwise the whole
+    /// surface is returned.
+    fn changed_region(
+        &self,
+        shm: View<'_>,
+        last_gen: u32,
+        gen: u32,
+    ) -> (usize, usize, usize, usize) {
+        let rect = self.dirty_rect(shm);
+        // Keep the second generation load after the rect loads.
+        fence(Ordering::Acquire);
+        let one_update = gen.wrapping_sub(last_gen) == 2 && shm.u32_at(4, Ordering::Relaxed) == gen;
+        match rect {
+            Some(r) if one_update => r,
+            _ => (0, 0, self.width, self.height),
+        }
     }
 }
 
@@ -362,6 +405,81 @@ mod tests {
         assert_eq!(rect([1, 0, 0, 2]), None);
         assert_eq!(rect([2, 0, 3, 2]), None);
         assert_eq!(rect([0, 1, 1, 2]), None);
+    }
+
+    /// `shm` with the generation counter set to `gen`.
+    fn shm_at(gen: u32, dirty: [u32; 4]) -> Vec<u8> {
+        let mut b = shm(4, 2, 16, dirty);
+        b[4..8].copy_from_slice(&gen.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn one_update_uses_the_header_rect() {
+        let b = shm_at(8, [1, 0, 2, 1]);
+        let s = Surface::read(View::new(&b)).unwrap();
+        assert_eq!(s.changed_region(View::new(&b), 6, 8), (1, 0, 2, 1));
+        let b = shm_at(0, [1, 0, 2, 1]);
+        assert_eq!(
+            s.changed_region(View::new(&b), u32::MAX - 1, 0),
+            (1, 0, 2, 1),
+            "the generation wraps"
+        );
+    }
+
+    #[test]
+    fn a_missed_update_or_a_moving_generation_uploads_the_whole_surface() {
+        let b = shm_at(10, [1, 0, 2, 1]);
+        let s = Surface::read(View::new(&b)).unwrap();
+        assert_eq!(s.changed_region(View::new(&b), 6, 10), (0, 0, 4, 2));
+        assert_eq!(
+            s.changed_region(View::new(&b), 6, 8),
+            (0, 0, 4, 2),
+            "the generation moved from 8 to 10 during the read"
+        );
+        let b = shm_at(9, [1, 0, 2, 1]);
+        assert_eq!(
+            s.changed_region(View::new(&b), 6, 8),
+            (0, 0, 4, 2),
+            "QEMU started the next update during the read"
+        );
+        let b = shm_at(8, [3, 0, 2, 1]);
+        assert_eq!(
+            s.changed_region(View::new(&b), 6, 8),
+            (0, 0, 4, 2),
+            "a rect outside the surface"
+        );
+    }
+
+    #[test]
+    fn a_busy_slot_keeps_the_union_for_the_next_tick() {
+        let mmap = Arc::new(
+            memmap2::MmapMut::map_anon(64)
+                .unwrap()
+                .make_read_only()
+                .unwrap(),
+        );
+        let slot = Mutex::new(None);
+        let mut u = DirtyUnion::default();
+        assert!(!publish(&slot, &mut u, 16, &mmap), "nothing to publish");
+
+        u.add((0, 0, 1, 1));
+        assert!(publish(&slot, &mut u, 16, &mmap));
+        u.add((2, 1, 1, 1));
+        assert!(
+            !publish(&slot, &mut u, 16, &mmap),
+            "the UI has not taken it"
+        );
+        assert_eq!(u.rect, Some((2, 1, 3, 2)));
+
+        let first = slot.lock().unwrap().take().unwrap();
+        assert_eq!((first.x, first.y, first.w, first.h), (0, 0, 1, 1));
+        assert!(publish(&slot, &mut u, 16, &mmap));
+        let second = slot.lock().unwrap().take().unwrap();
+        assert_eq!(
+            (second.x, second.y, second.w, second.h, second.stride),
+            (2, 1, 1, 1, 16)
+        );
     }
 
     #[test]

@@ -1,7 +1,8 @@
 diff --git a/ui/shm-display.c b/ui/shm-display.c
+index e984c1a..7097d02 100644
 --- a/ui/shm-display.c
 +++ b/ui/shm-display.c
-@@ -35,8 +35,10 @@
+@@ -39,8 +39,10 @@
  #include "qemu/module.h"
  #include "qemu/error-report.h"
  
@@ -12,15 +13,17 @@ diff --git a/ui/shm-display.c b/ui/shm-display.c
  
  /* ------------------------------------------------------------------ */
  /* constants and types                                                  */
-@@ -73,38 +75,80 @@
+@@ -77,36 +79,80 @@ typedef struct ShmDisplay {
  /* shm file management                                                  */
  /* ------------------------------------------------------------------ */
  
--static int shm_remap(ShmDisplay *s, uint32_t width, uint32_t height,
--                     uint32_t stride)
+-static int shm_remap(ShmDisplay *s, uint32_t height, uint32_t stride)
 +static void shm_unmap(void *base, size_t size)
  {
 -    size_t sz = SHM_PIXELS_OFFSET + (size_t)stride * height;
+-
+-    if (s->hdr && s->map_size == sz)
+-        return 0; /* already correct size */
 +#ifdef _WIN32
 +    UnmapViewOfFile(base);
 +#else
@@ -28,8 +31,9 @@ diff --git a/ui/shm-display.c b/ui/shm-display.c
 +#endif
 +}
  
--    if (s->hdr && s->map_size == sz)
--        return 0; /* already correct size */
+-    if (s->hdr) {
+-        munmap(s->hdr, s->map_size);
+-        s->hdr = NULL;
 +/*
 + * Map the first @sz bytes of the file at @path read/write and shared, creating
 + * the file and growing it to @sz when it is smaller. Returns NULL on error.
@@ -45,10 +49,7 @@ diff --git a/ui/shm-display.c b/ui/shm-display.c
 +    LARGE_INTEGER cur_size, want_size;
 +    HANDLE file, mapping;
 +    void *m;
- 
--    if (s->hdr) {
--        munmap(s->hdr, s->map_size);
--        s->hdr = NULL;
++
 +    if (!path_w) {
 +        error_report("shm-display: path '%s' is not valid UTF-8", path);
 +        return NULL;
@@ -59,8 +60,7 @@ diff --git a/ui/shm-display.c b/ui/shm-display.c
 -     * emulator) may hold a live MAP_SHARED mapping, and truncating the file
 -     * to 0 would give it SIGBUS on its next access. Growing the file with
 -     * ftruncate is safe: the new pages are zero-filled and the old mapping
--     * stays valid. The header is zeroed below, so readers always see a
--     * consistent state, guarded by the generation counter.
+-     * stays valid.
 -     */
 -    int fd = open(s->path, O_RDWR | O_CREAT, 0600);
 +    file = CreateFileW((LPCWSTR)path_w, GENERIC_READ | GENERIC_WRITE,
@@ -114,7 +114,7 @@ diff --git a/ui/shm-display.c b/ui/shm-display.c
          }
      }
  
-@@ -112,6 +156,27 @@
+@@ -114,6 +160,26 @@ static int shm_remap(ShmDisplay *s, uint32_t height, uint32_t stride)
      close(fd);
      if (m == MAP_FAILED) {
          error_report("shm-display: mmap: %s", strerror(errno));
@@ -124,8 +124,7 @@ diff --git a/ui/shm-display.c b/ui/shm-display.c
 +#endif
 +}
 +
-+static int shm_remap(ShmDisplay *s, uint32_t width, uint32_t height,
-+                     uint32_t stride)
++static int shm_remap(ShmDisplay *s, uint32_t height, uint32_t stride)
 +{
 +    size_t sz = SHM_PIXELS_OFFSET + (size_t)stride * height;
 +

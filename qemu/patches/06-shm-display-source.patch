@@ -1,9 +1,9 @@
 diff --git a/ui/shm-display.c b/ui/shm-display.c
 new file mode 100644
-index 0000000..c3b7e60
+index 0000000..e984c1a
 --- /dev/null
 +++ b/ui/shm-display.c
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,293 @@
 +/*
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + *
@@ -15,7 +15,7 @@ index 0000000..c3b7e60
 + * Header layout (little-endian, offset in bytes):
 + *
 + *   [0]   u32  magic       0x514D5348  ("QMS\x00")
-+ *   [4]   u32  generation  atomic; incremented after every dirty blit
++ *   [4]   u32  generation  atomic; odd while an update is being written
 + *   [8]   u32  width
 + *   [12]  u32  height
 + *   [16]  u32  stride      bytes per row
@@ -27,8 +27,12 @@ index 0000000..c3b7e60
 + *   [40]  u8[] _pad       pad to offset 64
 + *   [64]  u8[] pixels     stride × height bytes
 + *
-+ * The reader polls `generation` with an acquire load. When it changes,
-+ * dirty_x/y/w/h and the pixel data are consistent.
++ * `generation` is a sequence counter. Each update adds 1 before it writes
++ * the header or the pixels, which makes the counter odd, and adds 1 with
++ * release ordering when it is done, which makes it even again. A reader
++ * loads the counter with acquire ordering, skips an odd value, reads the
++ * header, and loads the counter again: an unchanged even value means that
++ * the header it read is consistent. A step of 2 is exactly one update.
 + *
 + * Usage:
 + *   -display shm,path=/tmp/cdj3k-0/main.shm
@@ -55,7 +59,7 @@ index 0000000..c3b7e60
 +
 +typedef struct ShmHdr {
 +    uint32_t magic;
-+    uint32_t generation;   /* the reader polls this with an acquire load */
++    uint32_t generation;   /* the sequence counter; odd during an update */
 +    uint32_t width;
 +    uint32_t height;
 +    uint32_t stride;       /* bytes per row */
@@ -79,8 +83,7 @@ index 0000000..c3b7e60
 +/* shm file management                                                  */
 +/* ------------------------------------------------------------------ */
 +
-+static int shm_remap(ShmDisplay *s, uint32_t width, uint32_t height,
-+                     uint32_t stride)
++static int shm_remap(ShmDisplay *s, uint32_t height, uint32_t stride)
 +{
 +    size_t sz = SHM_PIXELS_OFFSET + (size_t)stride * height;
 +
@@ -97,8 +100,7 @@ index 0000000..c3b7e60
 +     * emulator) may hold a live MAP_SHARED mapping, and truncating the file
 +     * to 0 would give it SIGBUS on its next access. Growing the file with
 +     * ftruncate is safe: the new pages are zero-filled and the old mapping
-+     * stays valid. The header is zeroed below, so readers always see a
-+     * consistent state, guarded by the generation counter.
++     * stays valid.
 +     */
 +    int fd = open(s->path, O_RDWR | O_CREAT, 0600);
 +    if (fd < 0) {
@@ -124,28 +126,39 @@ index 0000000..c3b7e60
 +    s->hdr      = (ShmHdr *)m;
 +    s->map_size = sz;
 +
-+    /* Zero the header and set the static fields before any release store. */
-+    memset(s->hdr, 0, SHM_PIXELS_OFFSET);
-+    s->hdr->magic  = SHM_MAGIC;
-+    s->hdr->width  = width;
-+    s->hdr->height = height;
-+    s->hdr->stride = stride;
-+    s->hdr->format = SHM_FORMAT_RGBA8888;
++    /* The file outlives QEMU, so the counter may be odd if the previous
++     * QEMU stopped during an update. Make it even again. */
++    uint32_t gen = __atomic_load_n(&s->hdr->generation, __ATOMIC_RELAXED);
++    if (gen & 1u) {
++        __atomic_store_n(&s->hdr->generation, gen + 1u, __ATOMIC_RELEASE);
++    }
 +    return 0;
++}
++
++/* Start an update: the counter becomes odd before any header or pixel
++ * store. */
++static void shm_write_begin(ShmHdr *hdr)
++{
++    __atomic_fetch_add(&hdr->generation, 1u, __ATOMIC_RELAXED);
++    __atomic_thread_fence(__ATOMIC_RELEASE);
++}
++
++/* End an update: after this release add, the counter is even, and a reader
++ * that loads it with acquire ordering sees the header and the pixels. */
++static void shm_write_end(ShmHdr *hdr)
++{
++    __atomic_fetch_add(&hdr->generation, 1u, __ATOMIC_RELEASE);
 +}
 +
 +/* ------------------------------------------------------------------ */
 +/* DisplayChangeListener callbacks                                      */
 +/* ------------------------------------------------------------------ */
 +
-+static void shm_gfx_update(DisplayChangeListener *dcl,
-+                            int x, int y, int w, int h)
++/* Copy a rect of the surface into the shm file and record it as the dirty
++ * rect. The caller brackets it with shm_write_begin and shm_write_end. */
++static void shm_blit(ShmDisplay *s, int x, int y, int w, int h)
 +{
-+    ShmDisplay     *s   = container_of(dcl, ShmDisplay, dcl);
 +    DisplaySurface *sur = s->surface;
-+
-+    if (!s->hdr || !sur || w <= 0 || h <= 0)
-+        return;
 +
 +    int      bpp     = surface_bytes_per_pixel(sur);
 +    int      sstride = surface_stride(sur);
@@ -178,10 +191,19 @@ index 0000000..c3b7e60
 +    s->hdr->dirty_y = (uint32_t)y;
 +    s->hdr->dirty_w = (uint32_t)w;
 +    s->hdr->dirty_h = (uint32_t)h;
++}
 +
-+    /* After this release store, a reader that loads generation with an
-+     * acquire load sees the dirty rectangle and the pixels. */
-+    __atomic_fetch_add(&s->hdr->generation, 1u, __ATOMIC_RELEASE);
++static void shm_gfx_update(DisplayChangeListener *dcl,
++                            int x, int y, int w, int h)
++{
++    ShmDisplay *s = container_of(dcl, ShmDisplay, dcl);
++
++    if (!s->hdr || !s->surface || w <= 0 || h <= 0)
++        return;
++
++    shm_write_begin(s->hdr);
++    shm_blit(s, x, y, w, h);
++    shm_write_end(s->hdr);
 +}
 +
 +static void shm_gfx_switch(DisplayChangeListener *dcl, DisplaySurface *surface)
@@ -196,11 +218,21 @@ index 0000000..c3b7e60
 +    uint32_t h      = (uint32_t)surface_height(surface);
 +    uint32_t stride = (uint32_t)surface_stride(surface);
 +
-+    if (shm_remap(s, w, h, stride) < 0)
++    if (shm_remap(s, h, stride) < 0)
 +        return;
 +
-+    /* Paint the initial full frame so the reader never sees garbage. */
-+    shm_gfx_update(dcl, 0, 0, (int)w, (int)h);
++    /* Write the header and the first full frame as one update, so the
++     * reader never sees a new size with old pixels. */
++    shm_write_begin(s->hdr);
++    s->hdr->magic  = SHM_MAGIC;
++    s->hdr->width  = w;
++    s->hdr->height = h;
++    s->hdr->stride = stride;
++    s->hdr->format = SHM_FORMAT_RGBA8888;
++    if (w > 0 && h > 0) {
++        shm_blit(s, 0, 0, (int)w, (int)h);
++    }
++    shm_write_end(s->hdr);
 +}
 +
 +static void shm_refresh(DisplayChangeListener *dcl)

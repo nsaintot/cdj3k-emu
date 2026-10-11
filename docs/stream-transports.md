@@ -67,14 +67,19 @@ the pixels are read in place, with no copy through QEMU's UI ring buffer.
 
 ### Wire layout
 
-All fields are little-endian. The reader polls `generation` with an Acquire
-load; once it changes, the rest of the header and the dirty pixels are
-consistent.
+All fields are little-endian. `generation` is a sequence counter: QEMU adds
+1 before it writes an update, which makes it odd, and adds 1 with Release
+ordering when the update is written, which makes it even again. The reader
+polls it with an Acquire load and skips a tick while it is odd. When it is
+even and has changed, the header and the dirty pixels are consistent. The
+reader loads the counter again after it reads the rect; if it moved, the
+reader uploads the whole surface. A step of 2 is exactly one update; a larger
+step means that the reader missed an update, and it uploads the whole surface.
 
 | Offset | Size | Field        | Notes                                       |
 |--------|------|--------------|---------------------------------------------|
 | 0x00   | u32  | magic        | `0x514D5348` (`QMSH`)                       |
-| 0x04   | u32  | generation   | Acquire-load; bumped after each dirty blit  |
+| 0x04   | u32  | generation   | sequence counter; odd during an update      |
 | 0x08   | u32  | width        | 1280 in steady state                        |
 | 0x0C   | u32  | height       | 720                                         |
 | 0x10   | u32  | stride       | bytes per row                               |
