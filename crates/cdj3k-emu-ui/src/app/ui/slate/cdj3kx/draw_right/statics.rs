@@ -1,5 +1,6 @@
-//! Static labels and chrome for the right (modes / tempo) section. Cached
-//! and rebuilt only when the window scale or layout changes.
+//! Static labels and chrome for the right section, which holds the modes and
+//! the tempo controls. They are cached and rebuilt only when the window scale
+//! or the layout changes.
 
 use egui::{Align2, FontId, Pos2, Rect, Stroke, Vec2};
 
@@ -54,7 +55,7 @@ fn collect_jog_mode_chrome(list: &mut ShapeList, layout: &UiScale) {
     );
 }
 
-/// "INST. DOUBLES" legend, behind the drawn dash.
+/// Collects the "INST. DOUBLES" legend and the dash to its left.
 fn collect_inst_doubles(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let col = MODES_COL_REF;
     let left_ref = col.left() + col.width() * SYNC_INST_DOUBLES_U;
@@ -104,7 +105,7 @@ fn collect_sync_chrome(list: &mut ShapeList, layout: &UiScale) {
     );
 }
 
-/// TEMPO range and MASTER TEMPO labels.
+/// Collects the TEMPO range and MASTER TEMPO labels.
 fn collect_tempo_labels(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let col = MODES_COL_REF;
     list.text(
@@ -134,8 +135,8 @@ fn collect_tempo_labels(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSc
     );
 }
 
-/// Tempo slider: backdrop, label, track bars, the scale, and the TEMPO
-/// RESET label.
+/// Collects the tempo slider's backdrop, its two track bars, its scale and the
+/// TEMPO RESET label.
 fn collect_tempo_slider(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let col = MODES_COL_REF;
     let col_w = col.width();
@@ -190,7 +191,8 @@ fn collect_tempo_slider(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSc
     );
 }
 
-/// Tick marks and segments down the slider.
+/// Collects the detents in the column beside the slider: the − and + signs,
+/// the 0 and a dot for each other position.
 fn collect_tempo_scale(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale, slider: Rect) {
     let col = MODES_COL_REF;
     let col_w = col.width();
@@ -207,7 +209,7 @@ fn collect_tempo_scale(list: &mut ShapeList, ctx: &egui::Context, layout: &UiSca
     }
 }
 
-/// VINYL SPEED ADJ. legend above the knob.
+/// Collects the VINYL SPEED ADJUST legend above the knob.
 fn collect_vinyl_speed_legend(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let s = |r: f32| layout.sc(r * VINYL_SPEED_SIZE_SCALE);
     let center = VINYL_SPEED_PLACE.center(layout);

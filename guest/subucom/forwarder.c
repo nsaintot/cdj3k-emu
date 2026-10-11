@@ -200,10 +200,11 @@ int main(void)
         ssize_t r = read_exact(vport_fd, frame, FRAME_SIZE);
         if (r == 0) {
             /* While no client is connected to ctrl.sock, host_connected is
-             * false and a read returns 0 at once. Keep the port open, because
-             * reopening it takes the same path again and uses up the
-             * guest_connected slot. Sleep and retry; reads block again once
-             * the UI connects and host_connected becomes true. */
+             * false and a read returns 0 at once. Keep the port open: a
+             * reopened port also reads 0 until the UI connects, and each
+             * reopen toggles guest_connected on the QEMU side. Sleep and
+             * retry; reads block again once the UI connects and
+             * host_connected becomes true. */
             usleep(50000);
             continue;
         }
@@ -218,8 +219,8 @@ int main(void)
             continue;
         }
 
-        /* Emulate the sub-CPU power-off timer: a cleared power flag powers the
-         * deck off. Act on the first such frame only, because the host keeps
+        /* Emulate the sub-CPU power-off timer: a cleared power flag reboots the
+         * guest, where a real deck would cut the power. Act on the first such frame only, because the host keeps
          * sending them until the guest shuts down. */
         static int poweroff_armed;
         if (!poweroff_armed && (frame[pb] & POWER_BIT) == 0) {

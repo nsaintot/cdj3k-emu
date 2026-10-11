@@ -110,7 +110,7 @@ impl QmpClient {
 
     /// Swap the medium behind a named drive, the id= of a -drive if=none. In
     /// QEMU, virtio_blk_change_media calls virtio_notify_config, which makes
-    /// the Pioneer guest call virtblk_config_changed and then revalidate_disk.
+    /// the guest call virtblk_config_changed and then set_capacity_and_notify.
     ///
     /// `format: None` leaves the driver chain to the filename, for a `json:`
     /// filename that spells it out.

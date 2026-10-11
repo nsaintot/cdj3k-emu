@@ -1,7 +1,8 @@
 # guest/Makefile builds the guest binaries (aarch64 Linux, run inside QEMU).
 #
 # Targets:
-#   make              - builds with aarch64-linux-musl-gcc (Homebrew musl-cross)
+#   make tools        - builds the static tools with aarch64-linux-musl-gcc
+#                       (Homebrew musl-cross); the shim needs make docker
 #   make docker       - builds with docker/Dockerfile (arm64v8/alpine:3.19)
 #   make abi-check    - checks out/deck_shim.so; under musl it inspects the
 #                       Docker-built .so instead of relinking it
@@ -90,12 +91,9 @@ $(OUT):
 # --- shim ---
 # The shim is the only target that musl cannot build.
 #
-# It is LD_PRELOADed into EP122 and into every process apl_start.sh launches,
-# all of them glibc 2.17. A musl-linked .so records `NEEDED: libc.so`, the deck
-# has no musl, and glibc's ld.so refuses to load it, including into /bin/sh.
-# Both apl_start.sh and apl_end.sh then exit with status 127, and the service
-# fails five times and gives up. The deck is left with no app and a log that
-# says only "libc.so: cannot open shared object file".
+# A musl-linked .so needs libc.so, which the deck's glibc 2.17 does not have,
+# so ld.so refuses the preload in every process that apl_start.sh starts,
+# including /bin/sh, and the deck starts no app.
 #
 # The recipe refuses a musl CC because the default CC here is the musl cross
 # compiler, which is the correct one for the static tools. `make docker`
@@ -110,8 +108,8 @@ $(DECK_SHIM): $(SHIM_CORE_OBJS)
 	@echo "Built: $@"
 	@command -v file >/dev/null && file $@ || true
 
-# The shim exports open, read, clock_gettime and drmSetMaster, so they link
-# with default visibility and no prototype warning.
+# Compile each shim source. No -fvisibility flag is set, so the hooks, such as
+# open, read, clock_gettime and drmSetMaster, are exported.
 $(OUT)/%.o: %.c $(SHIM_CORE_HDRS) | $(OUT)
 	@mkdir -p $(dir $@)
 	$(CC) $(DECK_SHIM_CFLAGS) -c -o $@ $<

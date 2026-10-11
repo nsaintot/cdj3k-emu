@@ -93,8 +93,8 @@ static unsigned int period_frames = 64;
  * at 96 kHz).
  *
  * QEMU returns a TX buffer only after the host audio callback has consumed
- * its frames, so each buffer stays in flight for about 50-100 ms (HAL and
- * static device latency plus the bypass ring, depending on warm-up). That
+ * its frames, so each buffer stays in flight for about 50-100 ms (the virtio
+ * queue and the bypass ring, depending on warm-up). That
  * keeps 5-10 buffers in flight in steady state. A pool of 32 leaves margin
  * for macOS scheduler preemption: the QEMU main loop can pause for up to
  * about 25 ms, and during that time the guest keeps submitting on its own
@@ -123,10 +123,10 @@ struct virtio_snd_config {
 	 * at offset 12. */
 	__le32 controls;
 	/* An extension that the project's QEMU patches add to the config space
-	 * (4 more bytes). It holds the depth in frames of the host audio
-	 * pipeline after the virtio queue: the CoreAudio bypass ring and the
-	 * DAC. It is not in the virtio spec and reads as 0 on an unpatched
-	 * QEMU. */
+	 * (4 more bytes). It holds the depth in frames of the host pipeline
+	 * that frames_in_flight does not see: the host backend's queue and the
+	 * device's fixed latency. It is not in the virtio spec and reads as 0
+	 * on an unpatched QEMU. */
 	__le32 pipeline_extra_frames;
 } __packed;
 
@@ -349,9 +349,9 @@ static void vsnd_tx_submit(struct vsnd_pcm *vpcm, struct vsnd_tx_buf *tb)
 			  tb, GFP_ATOMIC);
 	virtqueue_kick(vpcm->vsnd->vqs[VSND_VQ_TX]);
 
-	/* Count the buffer's frames as in flight downstream (the QEMU bypass
-	 * ring, CoreAudio, USB and the DAC). vsnd_tx_done subtracts them when
-	 * the buffer returns. */
+	/* Count the buffer's frames as in flight until QEMU returns the buffer
+	 * (the virtio queue and the bypass ring). vsnd_tx_done subtracts them
+	 * then. */
 	if (vpcm->frame_bytes)
 		vpcm->frames_in_flight +=
 			(long)vpcm->qemu_period_bytes / vpcm->frame_bytes;

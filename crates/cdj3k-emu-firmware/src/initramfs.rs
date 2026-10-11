@@ -159,6 +159,10 @@ fn decompress_lz4_legacy(input: &[u8]) -> Option<Vec<u8>> {
 
 /// Injects the guest tools into the initramfs and applies the bundled patches.
 ///
+/// The app uses this host-side path only when `CDJ3K_INITRAMFS_HOST` is set,
+/// and it needs bash, GNU sed and cpio. By default the app patches inside a
+/// guest through [`crate::initramfs_guest`].
+///
 /// - `initramfs_gz`   - original `initramfs.cpio.gz` from the ISO
 /// - `resources_dir`  - `Contents/Resources/` inside the .app bundle
 /// - `out_path`       - destination for the patched `initramfs-patched.cpio.gz`
@@ -167,10 +171,6 @@ pub fn patch_initramfs(
     resources_dir: &Path,
     out_path: &Path,
 ) -> Result<(), PatchError> {
-    // The host-side path, taken only with `CDJ3K_INITRAMFS_HOST`: it needs
-    // bash, GNU sed and cpio. The default is `initramfs_guest`, which its
-    // caller selects.
-
     let patch_dir = resources_dir.join("patch");
     let tools_dir = resources_dir.join("tools");
 
@@ -188,7 +188,8 @@ pub fn patch_initramfs(
     unpack_cpio_gz(initramfs_gz, &rootfs)?;
     clock.phase("unpack");
 
-    // 2. Inject guest tools (aarch64 ELFs) into rootfs/usr/bin/.
+    // 2. Copy the guest tools into the rootfs: deck_shim.so to /home/root
+    //    and the rest to /usr/bin.
     if tools_dir.exists() {
         inject_tools(&tools_dir, &rootfs)?;
     }

@@ -152,10 +152,10 @@ impl PcLinkState {
             && self.last_retry.elapsed() >= PC_LINK_RETRY
         {
             self.last_retry = Instant::now();
-            // A failed start is retried on a later tick without a log line,
-            // because the worker polls every 50 ms.
+            // A failed start is not logged, because it is retried every
+            // `PC_LINK_RETRY` while the guest boots.
             if let Ok(link) = PcLink::start(&config.sock_dir(), config.instance_id) {
-                eprintln!("cdj3k-emu: pc-link bridge connected");
+                eprintln!("cdj3k-emu: the PC Link bridge connected.");
                 self.link = Some(link);
                 self.retry_pending = false;
             }
@@ -186,14 +186,14 @@ impl PcLinkState {
         }
         self.last_retry = Instant::now();
         match link.reconnect() {
-            Ok(()) => eprintln!("cdj3k-emu: pc-link reconnected"),
-            // A refused connection is normal while the guest boots; retry on
-            // the next tick.
+            Ok(()) => eprintln!("cdj3k-emu: the PC Link bridge reconnected."),
+            // A refused connection is normal while the guest boots. The next
+            // attempt follows after `PC_LINK_RETRY`.
             Err(e) if e.is_retryable() => {}
             // The outbound channel is gone, so the backends cannot reach the
             // guest. Rebuild the bridge, which gives it a new HID identity.
             Err(e) => {
-                eprintln!("cdj3k-emu: the pc-link bridge cannot recover ({e}); rebuilding it");
+                eprintln!("cdj3k-emu: the PC Link bridge cannot recover ({e}), so it is rebuilt.");
                 self.link = None;
                 self.retry_pending = true;
             }

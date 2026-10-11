@@ -25,8 +25,9 @@ pub(super) struct Frame {
 /// The frame being watched for the panel on screen.
 struct Tracking {
     key: String,
-    /// The size when tracking began: the picker's, until the panel's own
-    /// size lands. Nothing is saved before the window leaves it.
+    /// The window size when tracking began, which is still the picker's size
+    /// until the panel's size is applied. Nothing is saved until the window
+    /// has a different size.
     start_size: egui::Vec2,
     armed: bool,
     last: Option<Frame>,

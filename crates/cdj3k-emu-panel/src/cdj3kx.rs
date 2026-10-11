@@ -4,8 +4,8 @@
 //! format version and 2 pad bytes; its MOSI bitfield is moved 6 bytes later.
 //! The hot cue pads and the media slots sit 12 bytes later than on the
 //! CDJ-3000. PLAY and CUE, which are single bits on the CDJ-3000, are RGB
-//! lamps at 18 and 21, and the selector ring lights at 54, where the CDJ-3000
-//! has ON AIR.
+//! lamps at 18 and 21. The selector ring lights at 54, which is the CDJ-3000's
+//! ON AIR offset moved 12 bytes later.
 
 use crate::button::{Btn, POWER_ON};
 use crate::cdj3k;
@@ -100,8 +100,8 @@ pub const SPEC: ModelSpec = ModelSpec {
     title: "CDJ-3000X",
     slug: "cdj3kx",
     aliases: &["3000x", "3kx"],
-    // An 800x1280 portrait panel that the deck's apl_start.sh rotates with
-    // xrandr; the emulator scans it out in landscape.
+    // The panel is 800x1280 in portrait. The deck's apl_start.sh rotates it
+    // with xrandr, and the emulator scans it out in landscape.
     main_lcd: (1280, 800),
     touch: TouchSpace::ScreenPixels,
     model_env: "CDJ3000X",

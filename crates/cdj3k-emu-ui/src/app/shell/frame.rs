@@ -9,7 +9,8 @@ use crate::app::picker::draw_picker;
 use crate::app::theme;
 use crate::app::updater::UpdaterEvent;
 
-/// How long a quit left to Sparkle waits for it to end the process.
+/// How long the window waits for Sparkle to end the process after handing it
+/// the quit.
 const QUIT_HAND_OFF_WAIT: Duration = Duration::from_secs(15);
 
 static MENU_SETUP: std::sync::Once = std::sync::Once::new();
@@ -73,8 +74,8 @@ impl eframe::App for CdjShell {
         if self.setup.is_some() || matches!(self.screen, Screen::Picker) {
             ctx.request_repaint_after(Duration::from_secs(1));
         }
-        // One window switches the emulation and installs its firmware. It is
-        // exempt from the shade gate, because the install step must be
+        // The setup window switches the emulation and installs its firmware.
+        // The shade gate does not apply to it, because the install step must be
         // reachable while QEMU is not running.
         let action = self.show_setup_window(ctx);
         self.apply_picker_action(action);

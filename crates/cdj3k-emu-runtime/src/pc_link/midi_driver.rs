@@ -294,14 +294,14 @@ impl MidiDriverLink {
         let write_thread = thread::Builder::new()
             .name("pc-link-midi-writer".into())
             .spawn(move || write_loop(&write_client, &write_outbox, &write_stop))
-            .expect("spawn pc-link-midi-writer");
+            .expect("the pc-link-midi-writer thread should start");
 
         let accept_client = client.clone();
         let accept_stop = stop.clone();
         let accept_thread = thread::Builder::new()
             .name("pc-link-midi-driver".into())
             .spawn(move || accept_loop(listener, identity, &accept_client, &tx, &accept_stop))
-            .expect("spawn pc-link-midi-driver");
+            .expect("the pc-link-midi-driver thread should start");
 
         Ok(Self {
             client,

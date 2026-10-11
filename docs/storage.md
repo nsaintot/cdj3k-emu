@@ -98,7 +98,7 @@ the user chooses, outside the app data directory.
 
 ## eMMC qcow2
 
-A 29.1 GB sparse qcow2 image per instance (`emmc::EMMC_SIZE`). Its layout is
+Each instance has a 29.1 GB sparse qcow2 image (`emmc::EMMC_SIZE`). Its layout is
 the deck's own eMMC (`emmc::layout`), so the Pioneer init scripts find the
 partition numbers they expect. The guest kernel names the disk as each
 model's scripts expect:
@@ -177,13 +177,12 @@ it is staged.
 
 Every cabinet of a model descends from the container its firmware ships: each
 has the same UUID and master key, and a different keyslot. The shipped keyslot
-opens with
-the factory passphrase `genkey_pb` computes,
-`sha512hex(model_env + sha512hex(seed))` (`vendor_passphrase`), where the seed
-is the package's `images/images.tar.gz` on the CDJ-3000X and its 129-byte
+opens with the factory passphrase that `genkey_pb` computes,
+`sha512hex(model_env + sha512hex(seed))` (`vendor_passphrase`). The seed is
+the package's `images/images.tar.gz` on the CDJ-3000X and its 129-byte
 `images/app.hash` on the CDJ-1500X, which ships no tarball
-(`read_cabinet_seed`), so the install needs the seed from the same package.
-The install opens that slot to recover the master key, mints the slot's SoC serial, adds a keyslot for
+(`read_cabinet_seed`). The install therefore needs the seed from the same
+package. The install opens that slot to recover the master key, mints the slot's SoC serial, adds a keyslot for
 `sha512hex((model_env + serial) x (N+1))` (`cabinet_passphrase`), and stages
 the result (`luks/rekey.rs`, `add_keyslot`). Without a seed, or when no
 factory slot opens, the container is staged unkeyed.
@@ -271,7 +270,7 @@ so the virtio-blk device shows up to the guest even when empty.
    filesystem and writes to `/proc/udev_usb1`, which EP122 watches for USB
    state.
 
-To detach, `cfgd` runs `usb detach`, which writes `umount /dev/sdb` to
+To detach, the host sends `usb detach` to `cfgd`, which writes `umount /dev/sdb` to
 `/proc/udev_usb1` and unmounts lazily. After a 400 ms wait the placeholder is
 swapped back in. If the previous medium was a physical disk, the host remounts
 it.
@@ -393,7 +392,7 @@ settings.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `mac` | `xx:xx:xx:xx:xx:xx` | generated LAA | First byte forced to `02` (LAA unicast). Generated on first load if absent or invalid. |
+| `mac` | `xx:xx:xx:xx:xx:xx` | generated LAA | The first byte has the locally administered bit set and the multicast bit clear. Generated on first load if absent or invalid. |
 | `soc_serial` | 16 hex digits | generated | The guest's `/proc/cpuinfo` `Serial` line. Minted on first load, replaced by an applied install, fixed otherwise - see below. |
 | `audio_enabled` | `0` / `1` | `0` | "Enable Audio": adds `virtio-snd` to argv |
 | `audio_device_uid` | the host's device id or empty | empty | Output device: CoreAudio UID (`out.device-uid=`), PipeWire node (`out.name=`), WASAPI endpoint id (`out.dev=`) |
@@ -441,8 +440,10 @@ A slot carrying none of these three takes the defaults and writes them on its
 next save.
 
 The app-wide `~/Library/Application Support/com.cdj3k.emu/settings.txt` holds
-no keys: `APP_KEYS` is empty and nothing reads it. At startup,
-`prune_app_file()` removes any key the file still carries.
+the updater's settings (`update_auto_check`, `update_auto_install`,
+`update_remind_after`, `update_skip_version`; see
+[Releases and updates](releases.md)). At startup, `prune_app_file()` removes
+every other key.
 
 Firmware metadata read from the .UPD ISO is stored in neither file. It goes
 into the U-Boot env block in the eMMC image at provisioning time.

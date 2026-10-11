@@ -75,7 +75,7 @@ pub(super) fn upd_name_objection(path: &str, model: Model, slot: u32) -> Option<
     }
 }
 
-/// The names a deck's update file can have, such as "CDJ3K… or CDJ3000…".
+/// The names a deck's update file can have, such as "CDJ1500X… or EP166…".
 fn name_list(model: Model) -> String {
     let names: Vec<String> = model
         .firmware_file_names()
@@ -199,7 +199,7 @@ fn install(job: &Job, run: &Run) -> Result<(), Stopped> {
     let tmp_iso = decrypt(job, paths.dir(), run)?;
     let firmware_info = read_firmware_info(&tmp_iso, run);
 
-    // 2. Install the vanilla kernel and extract the Pioneer initramfs.
+    // 2. Install the vanilla kernel.
     run.set(ProvisionStep::ExtractingKernel);
     let out_dir = paths.dir().to_path_buf();
     run.check(std::fs::create_dir_all(&out_dir))?;
@@ -208,8 +208,9 @@ fn install(job: &Job, run: &Run) -> Result<(), Stopped> {
     let kernel_src = resources_dir.join("Image");
     install_kernel(&kernel_src, &paths.kernel, run)?;
 
-    // 3. Patch the initramfs. The Pioneer firmware is the base of the rootfs,
-    //    because the app binary and the Pioneer libraries live there.
+    // 3. Extract the Pioneer initramfs and patch it. The Pioneer firmware is
+    //    the base of the rootfs, because the app binary and the Pioneer
+    //    libraries live there.
     run.set(ProvisionStep::PatchingInitramfs);
     log!(
         run,

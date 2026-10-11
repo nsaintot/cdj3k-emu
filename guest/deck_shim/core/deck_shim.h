@@ -150,9 +150,10 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 /* USB HID Gadget interposer (/dev/hidg0)                              */
 /* ------------------------------------------------------------------ */
-/* Reads and writes pass through to the real f_hid char device. Only  */
-/* ioctl is intercepted, so that unknown HID-class requests return 0  */
-/* instead of f_hid's ENOTTY, which EP122 treats as a gadget failure. */
+/* Reads and writes pass through to the real f_hid char device. The   */
+/* shim intercepts ioctl, so that unknown HID-class requests return 0 */
+/* instead of f_hid's ENOTTY, which EP122 treats as a gadget failure, */
+/* and poll, which always reports POLLOUT.                            */
 
 #define HIDG_PATH    "/dev/hidg0"
 #define MAX_HIDG_FDS 8
@@ -172,7 +173,7 @@ typedef struct {
 /* The pin state that every read reports: no pin is active, so no USB device
  * is present. */
 #define GPIODRV_STATE_BYTE  0xFF
-/* Shortest spacing between consecutive pin-state reads. */
+/* The shortest time between two pin-state reads. */
 #define GPIODRV_MIN_READ_NS 1000000L
 
 /* ------------------------------------------------------------------ */

@@ -283,8 +283,8 @@ impl CdjApp {
     }
 }
 
-/// Bounding rect of an arc-quadrant button, from samples along its inner and
-/// outer arcs.
+/// Returns the bounding rect of an arc-quadrant button, from samples along its
+/// inner and outer arcs.
 fn arc_quad_bounding_rect(
     center: Pos2,
     inner_r: f32,

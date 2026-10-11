@@ -2,10 +2,15 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Patch 23: state files for hardware the guest does not have.
 #
-# The CDJ-3000X firmware runs wlan-monitor.sh for its Wi-Fi module; without
-# the SDIO device the script exits before writing the files it owns, so they
-# are created at boot by systemd-tmpfiles with the values it would have
-# written on that same failure path. /var/volatile and /tmp are tmpfs.
+# The CDJ-3000X and CDJ-1500X firmware runs wlan-monitor.sh for its Wi-Fi
+# module. This patch masks the unit that runs it: start-mlan0.service on the
+# CDJ-3000X, start-wlan.service on the CDJ-1500X. Without the SDIO device, the
+# script writes the WLAN module caution (E-7026: WLAN module ERROR) to
+# /proc/udev_usbctn1, as wlanbterr after a 10 s probe or as mlanbterr at once,
+# depending on the firmware.
+#
+# systemd-tmpfiles creates the files the script owns instead, with the values
+# it writes when it finds no Wi-Fi device. /var/volatile and /tmp are tmpfs.
 #
 # When /var/net_mlan0_state.dat is absent, the app logs
 # "[checkNetworkConnectionChange] ... open err." once a second.
@@ -14,18 +19,11 @@
 # 100 ms and waits. "XX" is what the monitor writes when it finds no device, and
 # mlan0Addr is written on the same path.
 #
-# The unit that runs wlan-monitor.sh is masked: on its no-SDIO path the script
-# writes the WLAN module caution (E-7026: WLAN module ERROR) to
-# /proc/udev_usbctn1, as wlanbterr after a 10 s probe or as mlanbterr at once,
-# depending on the firmware. The files it would have written are provided
-# here instead.  The unit is start-mlan0.service on the CDJ-3000X,
-# start-wlan.service on the CDJ-1500X.
-#
-# mlan0 itself: service mode's version page reads the WLAN address from
+# Service mode's version page reads the WLAN address from
 # `ifconfig mlan0` and, while it finds none, re-runs it twice a second. A unit
 # adds mlan0 with the guest kernel's built-in dummy driver (booted with
 # dummy.numdummies=0, so there is no dummy0) and gives it eth0's address with
-# the locally-administered bit set. It stays down, so the app's network code
+# the locally administered bit set. It stays down, so the app's network code
 # sees no link on it.
 set -euo pipefail
 : "${ROOTFS:?ROOTFS must be set by dispatcher}"

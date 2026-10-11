@@ -19,7 +19,8 @@ fn neutral([r, g, b]: [u8; 3]) -> bool {
     r.min(g).min(b) >= 0xf6
 }
 
-/// Red and green keep the plain gamma mapping; blue is the azure.
+/// Red and green keep the plain gamma mapping; pure blue is shifted to an
+/// azure, `3e 7a ff`.
 #[test]
 fn the_cdj3000_blue_is_desaturated_and_warm_colours_are_not() {
     let pad = &cdj3k::SPEC.leds.pad;

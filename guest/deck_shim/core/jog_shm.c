@@ -44,7 +44,7 @@ static void jog_register_fb(uint32_t fb_id, uint32_t gem_handle)
  *   | Logical columns | Physical columns | Pixels |
  *   |-----------------|------------------|--------|
  *   | 0-63            | 1024-1279        | 64     |
- *   | 64-319          | 0-1019           | 256    |
+ *   | 64-319          | 0-1023           | 256    |
  * Both segments are stride-4 reads, which the compiler vectorises with NEON. */
 static void extract_to_shm(const void *src_1280, void *dst_320)
 {
@@ -171,9 +171,8 @@ void export_jog_prime(int drm_fd, uint32_t gem_handle, uint32_t fb_id)
                 prime.fd, gem_handle, fb_id);
     }
 
-    /* Register this handle, then map it with MAP_DUMB and mmap. MAP_DUMB from a
-     * non-master process crashes the kernel; this code runs inside the app,
-     * which is the DRM master. */
+    /* Register this handle, then map it with MAP_DUMB and mmap on the app's own
+     * DRM fd, inside the app process. */
     jog_register_fb(fb_id, gem_handle);
     {
         fake_mode_map_dumb_t md;
@@ -181,18 +180,18 @@ void export_jog_prime(int drm_fd, uint32_t gem_handle, uint32_t fb_id)
         md.handle = gem_handle;
         if (sys_ioctl(drm_fd, 0xC01064B3u /* DRM_IOCTL_MODE_MAP_DUMB = _IOWR('d',0xB3,16) */, &md) == 0) {
             g_jog_fbs[g_jog_fb_count - 1].mmap_offset = md.offset;
-            fprintf(stderr, "[deck_shim] MAP_DUMB(master) handle=%u returned offset=0x%llx\n",
+            fprintf(stderr, "[deck_shim] MAP_DUMB handle=%u returned offset=0x%llx\n",
                     gem_handle, (unsigned long long)md.offset);
             void *ptr = sys_mmap(NULL, JOG_DMA_SIZE, PROT_READ | PROT_WRITE,
                                  MAP_SHARED, drm_fd, (off_t)md.offset);
             if (ptr != MAP_FAILED) {
                 g_jog_fbs[g_jog_fb_count - 1].dma_ptr = ptr;
-                fprintf(stderr, "[deck_shim] mmap(master) mapped jog handle=%u at %p\n", gem_handle, ptr);
+                fprintf(stderr, "[deck_shim] mmap mapped jog handle=%u at %p\n", gem_handle, ptr);
             } else {
-                fprintf(stderr, "[deck_shim] mmap(master) of jog handle=%u failed: %s\n", gem_handle, strerror(errno));
+                fprintf(stderr, "[deck_shim] mmap of jog handle=%u failed: %s\n", gem_handle, strerror(errno));
             }
         } else {
-            fprintf(stderr, "[deck_shim] MAP_DUMB(master) handle=%u failed: %s\n", gem_handle, strerror(errno));
+            fprintf(stderr, "[deck_shim] MAP_DUMB handle=%u failed: %s\n", gem_handle, strerror(errno));
         }
     }
 

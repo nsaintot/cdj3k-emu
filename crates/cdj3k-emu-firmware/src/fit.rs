@@ -88,14 +88,16 @@ impl<'a> Tree<'a> {
         let header = |at: usize| {
             word(at)
                 .map(|w| w as usize)
-                .ok_or(ExtractError::BadIso("truncated FDT header"))
+                .ok_or(ExtractError::BadIso("the FDT header is truncated"))
         };
         let total_size = header(4)?;
         let struct_off = header(8)?;
         let strings_off = header(12)?;
-        let strings = fit
-            .get(strings_off..total_size.min(fit.len()))
-            .ok_or(ExtractError::BadIso("FDT strings block out of range"))?;
+        let strings =
+            fit.get(strings_off..total_size.min(fit.len()))
+                .ok_or(ExtractError::BadIso(
+                    "the FDT strings block is out of range",
+                ))?;
         let cstr = |b: &'a [u8]| -> &'a str {
             let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
             std::str::from_utf8(&b[..end]).unwrap_or("")
@@ -134,7 +136,7 @@ impl<'a> Tree<'a> {
                 }
                 FDT_NOP => {}
                 FDT_END => break,
-                _ => return Err(ExtractError::BadIso("unknown FDT token")),
+                _ => return Err(ExtractError::BadIso("the FDT has an unknown token")),
             }
         }
         Ok(Self { total_size, props })

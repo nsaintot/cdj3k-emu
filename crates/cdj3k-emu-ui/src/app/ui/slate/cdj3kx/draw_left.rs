@@ -55,15 +55,17 @@ pub(super) const PERF_SLIP_QUANTIZE_BTN_OUTER_STROKE: f32 = 2.0;
 pub(super) const PERF_SLIP_FILL_PAD_H: f32 = 15.0;
 pub(super) const PERF_SLIP_FILL_PAD_V: f32 = 0.0;
 
-/// Vertical placement within [`PERF_TRANSPORT_COL_REF`] (0 = top, 1 = bottom).
+/// Vertical placement within [`PERF_TRANSPORT_COL_REF`], from 0 at the top to 1 at the bottom.
 pub(super) const PERF_V_SLIP_QUANTIZE_BTNS: f32 = 0.265;
 
 pub(super) const PERF_LABEL_FONT_SIZE: f32 = 30.0;
 
 // ── CALL/DELETE button (same Y as hot cue row) ────────────────────────────────
-/// Vertical fraction within PERF_TRANSPORT_COL_REF that aligns with the hot cue row center.
-/// = (MID_CENTRAL_REF_TOP + MID_CENTRAL_REF_SIZE_H * HOT_CUE_BTN_V_CENTER - TRANSPORT_REF_TOP)
-///   / TRANSPORT_REF_SIZE_H  ≈ (1505 + 460*0.3 - 300) / 4080 ≈ 0.329
+/// The vertical fraction within PERF_TRANSPORT_COL_REF that lines up with the
+/// hot cue row's center. The formula (MID_CENTRAL_REF_TOP +
+/// MID_CENTRAL_REF_SIZE_H * HOT_CUE_BTN_V_CENTER - TRANSPORT_REF_TOP) /
+/// TRANSPORT_REF_SIZE_H gives (1797 + 460 * 0.3 - 579) / 4080 ≈ 0.332; the
+/// constant is 0.329.
 pub(super) const PERF_V_CALL_DELETE: f32 = 0.329;
 pub(super) const PERF_CALL_DELETE_BTN_SIZE: f32 = 45.0; // square side length in ref units
 pub(super) const PERF_CALL_DELETE_BTN_U: f32 = 0.35; // button horizontal center (fraction of col width)
@@ -80,8 +82,8 @@ pub(super) const PERF_CALL_DELETE_SEGMENT_LENGTH: f32 = 174.0;
 pub(super) const PERF_CALL_DELETE_SEGMENT_THICKNESS: f32 = 4.0;
 /// Upward offset from button center to label center (ref units). Labels sit above the button top edge.
 pub(super) const PERF_CALL_DELETE_LABEL_NUDGE_Y: f32 = 100.0;
-/// The outer container is the same size as a hot cue button
-/// (HOT_CUE_BTN_WIDTH_REF is 180 and the aspect ratio is 1.8).
+/// The outer container is as tall as a hot cue button, 100 units (180 / 1.8),
+/// and 20 units wider.
 pub(super) const PERF_CALL_DELETE_OUTER_H: f32 = 100.0;
 pub(super) const PERF_CALL_DELETE_OUTER_W: f32 = 200.0;
 pub(super) const PERF_CALL_DELETE_OUTER_ROUNDING: f32 = 12.0; // HOT_CUE_BTN_HEIGHT * 0.12

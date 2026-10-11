@@ -33,7 +33,7 @@ pub(super) const PERF_USB_STOP_BTN_R: f32 = 42.0;
 pub(super) const PERF_USB_STOP_BTN_INNER_STROKE: f32 = 4.0;
 pub(super) const PERF_USB_STOP_BTN_OUTER_STROKE: f32 = 8.0;
 
-// ── USB sign + LED cavity (left of the USB STOP button) ──────────────────────
+// ── USB sign and LED cavity, left of the USB STOP button ─────────────────────
 /// Center of the USB sign (logo), in fractions of PERF_TRANSPORT_COL_REF.
 pub(super) const PERF_U_USB_SIGN: f32 = 0.33;
 pub(super) const PERF_V_USB_SIGN: f32 = 0.0795;
@@ -63,15 +63,17 @@ pub(super) const PERF_USB_LED_SPOT_RY: f32 = 105.0;
 pub(super) const PERF_USB_MOUNT_BORDER_INNER_STROKE: f32 = 12.0;
 pub(super) const PERF_USB_MOUNT_BORDER_OUTER_STROKE: f32 = 4.0;
 pub(super) const PERF_USB_MOUNT_BORDER_GAP: f32 = 4.0;
-/// Open tray folded against the top wall; offsets from the casing centre.
+/// The open tray, folded against the top wall. The offsets are from the casing
+/// centre.
 pub(super) const PERF_USB_FLAP_W: f32 = 178.0;
 pub(super) const PERF_USB_FLAP_TOP_DY: f32 = -56.0;
 pub(super) const PERF_USB_FLAP_BOT_DY: f32 = -44.0;
 pub(super) const PERF_USB_FLAP_STROKE: f32 = 2.0;
-/// Handle dome: chord along the flap's top edge, and its height above it.
+/// The handle dome's chord along the flap's top edge, and its height above
+/// that edge.
 pub(super) const PERF_USB_DOME_CHORD: f32 = 81.0;
 pub(super) const PERF_USB_DOME_H: f32 = 12.0;
-/// Receptacle frame inside casing (ref units), below the tray.
+/// The receptacle frame inside the casing, below the tray, in reference units.
 pub(super) const PERF_USB_CONNECTOR_W: f32 = 134.0;
 pub(super) const PERF_USB_CONNECTOR_H: f32 = 56.0;
 pub(super) const PERF_USB_CONNECTOR_V_OFF: f32 = 4.0;
@@ -191,7 +193,7 @@ fn paint_usb_glow(
     for layer in 0..N {
         // t is 1.0 at the rect edge and 0.0 at the outermost layer.
         let t = 1.0 - layer as f32 / (N - 1) as f32;
-        // Quadratic ease-out for softer outer falloff.
+        // A quadratic ease-out softens the outer falloff.
         let falloff = t * t;
         // Each layer extends progressively farther from the rect.
         let expand = (1.0 - t) * max_expand;
@@ -206,8 +208,8 @@ fn paint_usb_glow(
     }
 }
 
-/// Translucent housing lit from behind by an LED at the top and bottom
-/// wall centres.
+/// Paints the translucent housing, lit by an LED at the centre of its top wall
+/// and one at the centre of its bottom wall.
 fn paint_usb_housing(
     app: &CdjApp,
     p: &egui::Painter,

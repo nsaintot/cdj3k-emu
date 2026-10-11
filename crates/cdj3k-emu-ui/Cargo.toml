@@ -1,6 +1,6 @@
 [package]
 name = "cdj3k-emu-ui"
-description = "egui-based CDJ-3000 chassis renderer: jog wheel physics, LCD compositing, pop-out viewports."
+description = "The egui front end. It draws the CDJ-3000, CDJ-3000X and CDJ-1500X panels, simulates the jog wheel, and hosts the setup, mods and update windows."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

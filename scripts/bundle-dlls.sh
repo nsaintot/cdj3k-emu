@@ -19,7 +19,7 @@ SEARCH=()
 while [[ $# -gt 0 && "$1" != "--" ]]; do SEARCH+=("$1"); shift; done
 [[ "${1:-}" == "--" ]] || { echo "ERROR: a -- argument must come before the binaries." >&2; exit 1; }
 shift
-[[ ${#SEARCH[@]} -gt 0 && $# -gt 0 ]] || { echo "ERROR: no search dirs or no binaries" >&2; exit 1; }
+[[ ${#SEARCH[@]} -gt 0 && $# -gt 0 ]] || { echo "ERROR: give at least one search directory and one binary." >&2; exit 1; }
 
 OBJDUMP=""
 for o in llvm-objdump objdump; do

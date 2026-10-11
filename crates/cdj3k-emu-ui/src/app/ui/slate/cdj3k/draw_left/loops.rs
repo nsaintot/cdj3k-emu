@@ -34,7 +34,7 @@ pub(super) const PERF_BEAT_LOOP_SUBLABEL_W: f32 = 70.0;
 pub(super) const PERF_BEAT_LOOP_SUBLABEL_H: f32 = 40.0;
 pub(super) const PERF_BEAT_LOOP_SUBLABEL_ROUNDING: f32 = 8.0;
 
-/// Vertical placement within [`PERF_TRANSPORT_COL_REF`] (0 = top, 1 = bottom).
+/// Vertical placement within [`PERF_TRANSPORT_COL_REF`], from 0 at the top to 1 at the bottom.
 pub(super) const PERF_V_LOOP_IN_OUT_LABEL: f32 = 0.36;
 pub(super) const PERF_V_LOOP_LINE: f32 = 0.387;
 pub(super) const PERF_V_LOOP_LABEL: f32 = 0.387;
@@ -145,7 +145,8 @@ fn draw_reloop(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     );
 }
 
-/// BEAT LOOP 1/2X and 2X.
+/// Draws the two BEAT LOOP buttons, labeled 4 and 8 (`Btn::BeatloopHalf` and
+/// `Btn::Beatloop2x`).
 pub(super) fn draw_beat_loop(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let beat_loop_half = layout.sp_in_rect(
         PERF_TRANSPORT_COL_REF,

@@ -116,9 +116,10 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
     uint8_t cmd = (uint8_t)(request & 0xFFu);
 
     /* SET_MASTER (0x1e) and DROP_MASTER (0x1f): the app tries to become DRM master
-     * after it opens the device. Xorg already holds master on virtio_gpu, so the
-     * kernel returns EPERM, which the app treats as a fatal init error. The shim
-     * handles the KMS calls the app needs, so it reports success instead. */
+     * after it opens the device. Xorg's modesetting driver already holds master on
+     * card0 (see patch 25), so the kernel refuses the call, and the app treats that
+     * as a fatal init error. The shim handles the KMS calls the app needs, so it
+     * returns 0 without calling the kernel. */
     if (cmd == 0x1eu || cmd == 0x1fu) {
         DBG("drm ioctl(fd=%d, %s): suppressed, returning 0\n", fd,
             cmd == 0x1eu ? "SET_MASTER" : "DROP_MASTER");
@@ -170,7 +171,7 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
         return r;
     }
 
-    /* CREATE_DUMB: log buffer allocation. */
+    /* CREATE_DUMB: pass through and log the allocation. */
     if (cmd == DRM_CMD_MODE_CREATE_DUMB) {
         int r = sys_ioctl(fd, request, arg);
         if (arg) {
@@ -380,9 +381,10 @@ int handle_drm_ioctl(int fd, unsigned long request, void *arg) {
         return 0;
     }
 
-    /* GETPLANE (0xB6): virtio-gpu on kernel 4.4 returns ENOMEM, and the app then
-     * dereferences a bad pointer and crashes. Return a valid synthetic plane 80 with
-     * possible_crtcs=0x3, usable on both CRTCs (the main screen and the jog LCD).
+    /* GETPLANE (0xB6): answer without calling the kernel, because the app crashes
+     * when this request fails. Plane 80 reports possible_crtcs=0x3 (the main
+     * screen and the jog LCD) and the last SETPLANE state; every other plane
+     * reports possible_crtcs=0x1.
      *
      * struct drm_mode_get_plane: plane_id[0] crtc_id[1] fb_id[2] possible_crtcs[3]
      *   gamma_size[4] count_format_types[5] format_type_ptr[6..7] */

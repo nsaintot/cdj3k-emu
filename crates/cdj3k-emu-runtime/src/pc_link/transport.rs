@@ -189,7 +189,7 @@ fn handshake_loop(stream: &UnixStream) -> io::Result<GadgetIdentity> {
         if now >= deadline {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "no gadget identity from the guest bridge",
+                "the guest bridge sent no gadget identity",
             ));
         }
         if now >= next_hello {
@@ -207,7 +207,7 @@ fn handshake_loop(stream: &UnixStream) -> io::Result<GadgetIdentity> {
             Ok(None) => {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
-                    "guest closed the link during the handshake",
+                    "the guest closed the link during the handshake",
                 ))
             }
             Err(e)
@@ -267,7 +267,7 @@ impl PartialFrame {
                 }
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
-                    "pc-link frame cut short",
+                    "the pc-link frame ended early",
                 ));
             }
         }

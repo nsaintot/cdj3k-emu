@@ -47,9 +47,9 @@ static int do_open(const char *pathname, int flags, mode_t mode) {
             DBG("open(%s): opened the real DRM fd %ld\n", pathname, fd);
             return (int)fd;
         }
-        /* ALSA control/PCM/seq: pass through to the real kernel devices.
-         * CONFIG_SND_SEQUENCER=y, so EP122's seq client handshake reaches
-         * the real subsystem. */
+        /* ALSA control, PCM and sequencer devices reach the final sys_openat
+         * unchanged. CONFIG_SND_SEQUENCER=y, so EP122's sequencer client
+         * handshake reaches the real subsystem. */
         /* /dev/hidg0 is the USB HID gadget char device. The shim opens the real
          * f_hid device and registers the fd, so the ioctl hook can answer 0 instead
          * of f_hid's ENOTTY, which puts EP122's gadget manager into "USB Error". */

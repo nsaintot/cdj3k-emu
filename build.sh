@@ -63,12 +63,13 @@ done
 export ENABLE_SSH
 
 DOCKER_OUT="$REPO_ROOT/build/docker-out"
-# A persistent BuildKit cache on disk. OrbStack's default builder cache is too
-# small for the kernel build tree, so GC evicts layers between runs even with
-# an unchanged Dockerfile. mode=max also keeps the intermediate layers. This
-# needs a docker-container buildx builder (see docker/ensure-buildx-builder.sh),
-# because the default "docker" driver cannot use --cache-to type=local. CDJ3K_DOCKER_CACHE overrides the directory; `gha` puts
-# the layers in the GitHub Actions cache instead.
+# DOCKER_CACHE is a persistent BuildKit cache on disk. OrbStack's default
+# builder cache is too small for the kernel build tree, so GC evicts layers
+# between runs even with an unchanged Dockerfile. mode=max also keeps the
+# intermediate layers. This needs a docker-container buildx builder (see
+# docker/ensure-buildx-builder.sh), because the default "docker" driver cannot
+# use --cache-to type=local. CDJ3K_DOCKER_CACHE overrides the directory; `gha`
+# puts the layers in the GitHub Actions cache instead.
 DOCKER_CACHE="${CDJ3K_DOCKER_CACHE-$REPO_ROOT/build/docker-cache}"
 DOCKER_BUILDER="$("$REPO_ROOT/docker/ensure-buildx-builder.sh")"
 WORKDIR="$REPO_ROOT/build/work"

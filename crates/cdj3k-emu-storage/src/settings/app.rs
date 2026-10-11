@@ -14,8 +14,8 @@ pub struct AppSettings {
     /// A release the user chose to skip. The automatic check offers only a
     /// newer one; a check from the menu offers it still.
     pub update_skip_version: Option<String>,
-    /// Unix time before which the automatic check stays quiet: set by "Remind
-    /// Me Later". 0 for none.
+    /// The Unix time before which the automatic check stays quiet, set by
+    /// "Remind Me Later". It is 0 when no reminder is set.
     pub update_remind_after: u64,
     /// Download and prepare what the automatic check finds without asking,
     /// then offer the restart. Off by default. On macOS, Sparkle's own setting

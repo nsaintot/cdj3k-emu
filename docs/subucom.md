@@ -10,7 +10,7 @@
 ## End-to-end path
 
 ```
-                                  host (cdj-ui, egui main thread)
+                                  host (the emulator UI, egui main thread)
                                    │
                                    │ inject() MISO   ▲ take() MOSI
                                    ▼                 │
@@ -34,7 +34,7 @@
                        │       subucom_virt.ko (kernel module)
                        │                      │
                        ▼                      ▼
-              MOSI ring + waitqueue    inject_pending (sticky MISO buf)
+        latest MOSI frame + waitqueue  inject_pending (sticky MISO buf)
                        ▲                      │
                        │  ioctl                │ read()
                        │  MOSI_TRANSFER        │ throttled ~850 Hz
@@ -65,8 +65,8 @@ capacitive sensors) and drives every LED on the chassis (mono GPIO LEDs,
 IC6003 dim-channel LEDs, hot-cue RGB pads, SOURCE/SD/USB/ON-AIR
 indicators).
 
-EP122 talks to it over `ff1d0000.spi` in Mode 3 at 3.2 MHz, CS0,
-~850 Hz polling. Each poll is a full-duplex 64-byte exchange: **MOSI**
+EP122 talks to it over `ff1d0000.spi` (mode 3, 3.2 MHz, CS0) and polls it at
+about 850 Hz. Each poll is a full-duplex 64-byte exchange: **MOSI**
 (EP122 to the sub-CPU) carries LED state, and **MISO** (the sub-CPU to EP122)
 carries input state. cdj3k-emu replaces the sub-CPU with software but keeps
 EP122 unchanged.
@@ -80,7 +80,8 @@ Both directions are **64 bytes, fixed length**.
 | Bytes | Contents |
 |-------|----------|
 | `[0..2]` | reserved / zero (frame-type header, always `0x0000`) |
-| `[2..5]` | constant magic `0x01 0x04 0x03` |
+| `[2..4]` | constant `0x01 0x04` |
+| `[4]` | direction rocker (MISO); `0x03` in the idle frame |
 | `[5..62]` | payload (LED PWM for MOSI, input state for MISO) |
 | `[62..64]` | **CRC-16/X-25** over bytes `[0..62]`, stored little-endian |
 
@@ -95,8 +96,8 @@ and adds lamps of its own. `cdj3kx.rs` carries the shifts: its MISO encoder
 writes the CDJ-3000's fields `MISO_SHIFT` bytes later, and its `MosiMap`
 (`cdj3kx::MOSI`) moves the lamps.
 
-The CDJ-1500X (EP166) has 32-byte frames of its own on
-`/dev/subucom_spi3.0`, the same CRC-16/X-25 stored big-endian; see
+The CDJ-1500X (EP166) uses its own 32-byte frames on
+`/dev/subucom_spi3.0`, with the same CRC-16/X-25 stored big-endian; see
 [Models](models.md) and `cdj1500x.rs`.
 
 ### MOSI payload (LED state)
@@ -131,18 +132,18 @@ The payload is mostly bitmasks plus a few scalar fields. By region:
 - **Buttons** `[5..12]` - packed bitmasks, one bit per button
   (PLAY/CUE/SEARCH, HOT A..H, BROWSE/MENU/QUANTIZE, POWER_ON, …).
 - **Direction rocker** `b04` - **not a bitmask**, a 2-bit value:
-  `1`=REV, `2`=SLIP_REV (momentary), `3`=FWD. Use the `Direction` enum.
+  `1` is REV, `2` is SLIP_REV (momentary) and `3` is FWD. Use the `Direction` enum.
 - **Rotary encoder** `b14..b16` - 16-bit LE counter.
-- **LCD touch** `b16..b20` - two 16-bit LE coords; `(0,0)` = no touch.
+- **LCD touch** `b16..b20` - two 16-bit LE coordinates; `(0,0)` means no touch.
 - **Tempo slider** `b22..b24` - 16-bit LE, dead-band ~`0x7F50..0x7FD0`.
 - **Vinyl-speed rotary** `b24` - 8-bit.
 - **Jog wheel** `b26..b31` - position (16-bit LE), velocity (16-bit LE,
-  **inverse**: `0xFFFF`=stopped, `0x0000`=max), touch byte
-  (`0x00`=none / `0x03`=press / `0x04`=idle baseline / `0x0c`=turning).
+  inverted: `0xFFFF` is stopped and `0x0000` is maximum speed), then a touch
+  byte (`0x00` none, `0x03` press, `0x04` idle baseline, `0x0c` turning).
 - **Capacitive sensors** `b32..b44` - 12 bytes; baseline ≈ `0xD5/0xD6`
   per channel; a deviation means a finger is near.
-- **Device state** `b12` - `0x80`=power-on, `0x01`=SD-cover-closed.
-  High nibble carries the sub-CPU power-off timer (see *forwarder*).
+- **Device state** `b12` - `0x80` is power on and `0x01` is SD cover closed.
+  The high nibble carries the sub-CPU power-off timer (see *forwarder*).
 
 A pre-baked `IDLE` per model holds the "nothing pressed" baseline. The UI
 describes the panel in a model-neutral `PanelState` (pressed and cleared
@@ -180,7 +181,8 @@ unblocks.
 MISO is delivered through `spi_read()`. There is no free-running hrtimer: the
 read sleeps in `schedule_timeout_interruptible` for one poll interval
 (`interval_us`, default `1176 µs`), then returns either the latest
-host-injected frame (`inject_pending`) or the built-in `miso_idle` template.
+host-injected frame (`inject_pending`) or the model's idle frame
+(`miso_idle_model`, which the module derives from `miso_idle` at load).
 Either way it stamps a fresh CRC-16/X-25 before the copy-out. Do not move the
 throttle to an hrtimer that wakes a waitqueue: that wake-up races under QEMU
 with HVF.
@@ -209,7 +211,7 @@ that handles both directions:
 - **Main loop**: a blocking `read(vport_fd, 64)` from the host, then a
   `write(ctrl_wfd, …)` back into `/dev/subucom_ctrl`, which lands in
   `inject_pending`. A `read()` that returns 0 means `host_connected=false`
-  (no cdj-ui peer on `ctrl.sock`); the loop sleeps and retries. It does
+  (no UI peer on `ctrl.sock`); the loop sleeps and retries. It does
   **not** close the vport, because reopening it would use up a
   `guest_connected` toggle on the QEMU side.
 

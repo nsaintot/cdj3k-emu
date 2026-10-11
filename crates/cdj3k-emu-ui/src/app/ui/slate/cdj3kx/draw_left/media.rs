@@ -10,11 +10,11 @@ use super::super::{
 use super::PERF_TRANSPORT_COL_REF;
 use crate::app::ui::{DoubleBorderSpec, StrokeSpec};
 
-// ── USB 1 slot - top of transport column ─────────────────────────────────────
-// The CDJ-3000X stacks the slot: name, rating, casing, light band, then a notch tab
-// with "STOP" and a slim STOP button. The slot has no PC-link glyph and no
-// trident logo.
-/// Centre line the whole group shares.
+// ── USB 1 slot, at the top of the transport column ───────────────────────────
+// The CDJ-3000X stacks the slot: the name, the rating, the casing, the light
+// band, then a notch tab with "STOP" and a slim STOP button. USB 1 has a
+// host-link computer glyph and no trident logo.
+/// The centre line that the whole group shares.
 pub(super) const PERF_U_USB_STOP_BTN: f32 = 0.331;
 /// The button sits left of that centre line.
 pub(super) const PERF_USB_STOP_BTN_OFF_X: f32 = -7.0;
@@ -35,7 +35,7 @@ pub(super) const PERF_USB_DC_SPLIT: f32 = 4.0;
 pub(super) const PERF_USB_STOP_LABEL_FONT_SIZE: f32 = 30.0;
 
 /// Placement of the dash drawn to the left of "STOP", which is
-/// [`LEGEND_TAB_W`](super::super::LEGEND_TAB_W) wide.
+/// The notch tab is [`LEGEND_TAB_W`](super::super::LEGEND_TAB_W) wide.
 pub(super) const PERF_USB_STOP_TAB_OFF_X: f32 = 54.0;
 pub(super) const PERF_USB_STOP_LABEL_OFF_X: f32 = -34.0;
 
@@ -52,7 +52,7 @@ pub(super) const PERF_USB_STOP_BTN_ROUNDING: f32 = 1.0;
 pub(super) const PERF_USB_STOP_BTN_INNER_STROKE: f32 = 1.5;
 pub(super) const PERF_USB_STOP_BTN_OUTER_STROKE: f32 = 2.0;
 
-/// Center of the USB MOUNT casing.
+/// Centre of the USB MOUNT casing.
 pub(super) const PERF_U_USB_MOUNT: f32 = 0.331;
 pub(super) const PERF_V_USB_MOUNT: f32 = 0.055;
 
@@ -70,7 +70,7 @@ pub(super) const PERF_USB_STRIP_H: f32 = 13.0;
 pub(super) const PERF_USB_MOUNT_BORDER_INNER_STROKE: f32 = 3.0;
 pub(super) const PERF_USB_MOUNT_BORDER_OUTER_STROKE: f32 = 6.0;
 pub(super) const PERF_USB_MOUNT_BORDER_GAP: f32 = 2.0;
-/// Vertical offset of the receptacle frame from the center of the mount cavity
+/// Vertical offset of the receptacle frame from the centre of the mount cavity
 /// (ref units). The receptacle sits high in the casing, which leaves room for
 /// the band below.
 pub(super) const PERF_USB_CONNECTOR_V_OFF: f32 = -26.0;
@@ -353,7 +353,7 @@ fn paint_usb_a(p: &egui::Painter, layout: &UiScale, connector_rect: Rect) {
         connector_border,
     );
 
-    // Draw the tongue inside the receptacle cavity, centered at the top.
+    // Draw the tongue inside the receptacle cavity, centred at the top.
     let cavity_inset = layout.sc(PERF_USB_CONNECTOR_INNER_STROKE) * 0.5 + layout.sc(3.0);
     let cavity = connector_rect.shrink(cavity_inset);
     let tongue_top = cavity.top() + layout.sc(PERF_USB_MOUNT_TONGUE_TOP_PAD);

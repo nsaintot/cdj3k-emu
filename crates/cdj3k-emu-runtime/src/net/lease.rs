@@ -14,9 +14,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// In the instance directory: the slot's claim on its link.
+/// The file in the instance directory that holds the slot's claim on its link.
 pub const CLAIM_FILE: &str = "net.claim";
-/// In the instance directory: the watcher's answer, the claim it let go.
+/// The file in the instance directory where the watcher writes the claim it
+/// released.
 pub const RELEASED_FILE: &str = "net.released";
 
 /// How long a dropped lease waits for the watcher's answer.

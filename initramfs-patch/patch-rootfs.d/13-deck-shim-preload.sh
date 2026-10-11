@@ -40,7 +40,7 @@ Wants=cdj3k-mods.service
 After=cdj3k-mods.service
 
 [Service]
-# Shim diagnostics, off by default.  Read them with `journalctl -u <unit>`,
+# The shim's diagnostics are off by default. Read them with `journalctl -u <unit>`,
 # the unit this drop-in belongs to (EP122 on the CDJ-3000, EP145 on the
 # CDJ-3000X, EP166 on the CDJ-1500X).
 # Environment=DECK_TIME_SHIFT_DEBUG=1

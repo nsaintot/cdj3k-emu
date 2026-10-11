@@ -77,7 +77,7 @@ fn record_mods_report(instance_id: u32, report: &ModsReport) {
         }
         for u in unread {
             eprintln!(
-                "cdj3k-emu: mod {}: unrecognized report line: {}",
+                "cdj3k-emu: mod {}: the report line {} could not be parsed.",
                 u.name, u.line
             );
         }

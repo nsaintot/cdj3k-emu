@@ -162,7 +162,8 @@ pub(super) fn draw_right_sections(
     tempo::draw_tempo_slider(app, ui, p, layout);
 }
 
-/// JOG MODE: the VINYL / CDJ legends lit by the mode, and its button.
+/// Draws the JOG MODE button and the VINYL and CDJ legends, each lit while its
+/// mode is on.
 fn draw_jog_mode(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, layout: &UiScale) {
     let (combo_ref, jog_ref) = jog_mode_boxes();
     let label_x = combo_ref.center().x + JOG_MODE_LABEL_OFF_X;
@@ -225,7 +226,7 @@ fn draw_jog_mode(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, layout:
     );
 }
 
-/// BEAT SYNC (left) and MASTER (right) on one row, KEY SYNC centred below.
+/// Draws BEAT SYNC and MASTER side by side, with KEY SYNC centred below them.
 fn draw_sync(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let (_, bs_ref, master_ref, ks_ref) = sync_boxes();
     let bs_rect = screen(layout, bs_ref);

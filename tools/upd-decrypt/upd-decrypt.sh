@@ -5,7 +5,8 @@
 # Usage:
 #   ./upd-decrypt.sh <input.UPD> <output.img> [keyfile]
 #
-# The default keyfile is the bundled aes256.key in this folder.
+# The default keyfile is aes256.key in this folder, which is not part of the
+# repository.
 # The wrapper requires Docker and works on macOS and Linux.
 #
 # WARNING: This wrapper runs the helper container with `--privileged` because

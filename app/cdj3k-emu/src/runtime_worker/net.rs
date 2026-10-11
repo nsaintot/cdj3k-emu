@@ -14,7 +14,7 @@ use super::{persist_inst, Worker, NET_REFRESH_INTERVAL};
 /// Point `config` at a successful attachment on `name` and return what has to
 /// stay alive while QEMU uses it.
 pub fn adopt_attachment(config: &mut QemuConfig, name: &str, a: NetAttachment) -> NetKeepAlive {
-    eprintln!("cdj3k-emu: bridged on {name}");
+    eprintln!("cdj3k-emu: the guest is bridged on {name}.");
     config.net_vmnet = a.vmnet;
     config.net_tap_iface = a.tap_iface;
     config.net_tap_fd = a.tap_fd;

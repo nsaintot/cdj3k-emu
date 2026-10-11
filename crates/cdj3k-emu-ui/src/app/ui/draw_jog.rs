@@ -72,7 +72,7 @@ pub(super) const JOG_OUTER_1_STROKE_RADIUS: f32 = 1000.0;
 pub(super) const JOG_OUTER_2_STROKE_RADIUS: f32 = 1060.0;
 pub(super) const JOG_OUTER_2_STROKE_GAP: f32 = 0.0;
 
-// --- Position indicator on the r_outer_2 ring ---
+// --- Position indicator across the outer band ---
 /// The tangential half-width of the slim white position indicator, in reference units.
 pub(super) const JOG_POS_INDICATOR_HALF_WIDTH_REF: f32 = 8.0;
 
@@ -220,8 +220,8 @@ impl CdjApp {
         );
         self.paint_ring_lights(p, layout, center, r_touch);
 
-        // The position indicator is a slim white rectangle on r_outer_2 that
-        // rotates with the jog.
+        // The position indicator is a slim white quad across the outer band,
+        // from r_outer_1 to r_outer_2, that rotates with the jog.
         let pts = indicator_quad(center, self.jog_display_angle(), layout);
         p.add(Shape::convex_polygon(pts, COL_WHITE, Stroke::NONE));
     }

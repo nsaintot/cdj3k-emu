@@ -24,10 +24,10 @@ rfd = { version = "0.15", default-features = false }
 # rfd's default backend is GTK3. xdg-portal talks to the desktop portal over
 # D-Bus instead, so no GUI toolkit is linked in.
 #
-# async-std rather than tokio: the picker is called from the UI thread with no
-# runtime around it, and zbus's tokio executor panics there
-# ("there is no reactor running"). async-std's `block_on` drives the executor
-# itself, which is what a blocking dialog needs.
+# The picker uses async-std because it is called from the UI thread with no
+# runtime around it, where zbus's tokio executor panics ("there is no reactor
+# running"). async-std's `block_on` drives the executor itself, as a blocking
+# dialog needs.
 [target.'cfg(target_os = "linux")'.dependencies]
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 

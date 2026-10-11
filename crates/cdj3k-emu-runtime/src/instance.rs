@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 /// `QemuInstance::spawn` sets it, and `stop()` and `Drop` clear it.
 pub static QEMU_CHILD_PID: AtomicI32 = AtomicI32::new(-1);
 
-/// How long the player's sub-CPU takes to unmount USB after a power-off
-/// stimulus. This matches the countdown on the real player.
+/// How long the player's sub-CPU waits after a power-off stimulus before it
+/// cuts power, which gives EP122 time to unmount USB. This matches the
+/// countdown on the real player.
 const APP_CLEANUP_WAIT: Duration = Duration::from_secs(8);
 /// How long systemd needs to stop its units after an ACPI shutdown request.
 const ACPI_SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
@@ -30,7 +31,7 @@ const SIGTERM_POLL: Duration = Duration::from_millis(50);
 const JOG_SHM_BYTES: u64 = 1 << 20;
 /// The prefill size of `main.shm`. It covers any stride, so QEMU never has to
 /// grow the file; the reader holds a fixed mapping and cannot follow
-/// `ftruncate`. A 1280×720 RGBA8888 frame and its header take about 3.6 MiB,
+/// `ftruncate`. A 1280×720 RGBA8888 frame and its header take about 3.5 MiB,
 /// so 8 MiB leaves a generous margin.
 const MAIN_SHM_PREFILL: u64 = 8 * 1024 * 1024;
 
@@ -137,9 +138,10 @@ impl QemuInstance {
         self.running.load(Ordering::Acquire)
     }
 
-    /// Stop gracefully. Send the SPI power-off stimuli and give EP122 8 s to
-    /// clean up USB, send ACPI system_powerdown and wait 20 s for the guest to
-    /// halt, then send QMP quit and fall back to SIGKILL.
+    /// Stop the guest. Send the SPI power-off stimuli and give EP122 8 s to
+    /// unmount USB, then send SIGKILL, as the player's sub-CPU cuts power.
+    /// The ACPI powerdown and QMP `quit` steps run only if the monitor thread
+    /// has not yet seen QEMU exit.
     pub fn stop(&mut self) -> i32 {
         self.shutdown_sequence();
         let code = self
@@ -152,18 +154,19 @@ impl QemuInstance {
         code
     }
 
-    /// Take the guest through the EP122 cleanup, the ACPI powerdown, QMP quit
-    /// and SIGKILL in turn. The caller joins the thread and resets the global
-    /// PID. `stop()` and `Drop` share this.
+    /// Send the power-off stimuli, wait [`APP_CLEANUP_WAIT`] and send SIGKILL
+    /// if QEMU is still running. The ACPI powerdown and QMP `quit` steps
+    /// follow only if the monitor thread has not yet seen QEMU exit. The
+    /// caller joins the thread and resets the global PID. `stop()` and `Drop`
+    /// share this.
     fn shutdown_sequence(&mut self) {
         if self.inner.thread.is_none() {
             return;
         }
         menu_state::lock().power_off_stimuli_requested = true;
-        // Give EP122 about 8 s to unmount USB, as the player's sub-CPU does.
+        // Give EP122 8 s to unmount USB, then kill QEMU, as the sub-CPU does.
         wait_or_kill(&self.running, self.inner.pid, APP_CLEANUP_WAIT);
         if self.running.load(Ordering::Acquire) {
-            // The EP122 cleanup is over; shut Linux down cleanly through ACPI.
             let _ = self.inner.qmp.system_powerdown();
             wait_or_kill(&self.running, self.inner.pid, ACPI_SHUTDOWN_WAIT);
         }

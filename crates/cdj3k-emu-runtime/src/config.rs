@@ -38,10 +38,9 @@ pub struct QemuConfig {
     /// Boot EP122 into its service and test mode.
     pub service_mode: bool,
 
-    /// The eMMC qcow2 image. virtio_blk.c maps device index 0 to /dev/mmcblk1
-    /// (major 179, base minor 8), and partitions p1 to p8 appear as
-    /// mmcblk1p1 to mmcblk1p8. p7 holds the settings (/home/root/settings)
-    /// and p8 the user data (/mnt).
+    /// The eMMC qcow2 image. The guest names it `/dev/mmcblk<emmc_index>`:
+    /// mmcblk1 on the RK3399 decks and mmcblk0 on the CDJ-1500X. p7 holds the
+    /// settings (/home/root/settings) and p8 the user data (/mnt).
     pub emmc_img: Option<PathBuf>,
 
     /// The vmnet back end for Pro DJ Link. QEMU opens the interface itself
@@ -80,10 +79,10 @@ pub struct QemuConfig {
     pub soc_serial: Option<String>,
 
     /// When `true`, QEMU writes the guest serial console to
-    /// `{sock_dir}/serial.log`. It is off by default in release builds,
-    /// because the file grows without limit over a long session and is useful
-    /// only to debug the boot or a kernel panic. Turn it on with
-    /// `--serial-log` or `CDJ3K_SERIAL_LOG=1`.
+    /// `{sock_dir}/serial.log`. It is off by default, because the file grows
+    /// without limit over a long session and is useful only to debug the boot
+    /// or a kernel panic. Turn it on with `--serial-log` or
+    /// `CDJ3K_SERIAL_LOG=1`.
     pub serial_log: bool,
 }
 
@@ -208,9 +207,10 @@ impl QemuConfig {
             opt("-machine", self.machine_base()),
             opt("-m", format!("{}B", Self::MEM_BYTES)),
             cpu,
-            // The RK3399 has 6 cores (2x A72 + 4x A53) and the player app pins
-            // work to specific ones: cryptsetup to core 4 (genkey_pr |
-            // initoptenv, which opens cabinet.img), the X server to core 5.
+            // The RK3399 has six cores, two A72 and four A53, and the player
+            // app pins work to specific ones: cryptsetup to core 4 (the
+            // `genkey_pr | initoptenv` pipeline that opens cabinet.img) and the
+            // X server to core 5.
             // Fewer cores make those `taskset -c 4/5` calls fail, so the
             // cabinet never unlocks and Device Library Plus cannot read its
             // keys.

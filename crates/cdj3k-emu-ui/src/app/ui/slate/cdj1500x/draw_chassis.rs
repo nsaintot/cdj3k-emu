@@ -84,8 +84,8 @@ pub(super) fn collect_chassis(out: &mut ShapeList, layout: &UiScale) {
     }
 }
 
-/// Returns a rounded rectangle's outline, clockwise from the end of the
-/// top-left corner.
+/// Returns a rounded rectangle's outline, clockwise from the start of the
+/// top-right corner.
 fn rounded_rect(layout: &UiScale, r: Rect, radius: f32) -> Vec<Pos2> {
     let mut pts = Vec::with_capacity(4 * (CORNER_SEGS + 1));
     let c = |x: f32, y: f32| Pos2::new(x, y);

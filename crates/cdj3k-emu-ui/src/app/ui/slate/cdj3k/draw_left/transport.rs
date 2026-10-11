@@ -16,7 +16,7 @@ pub(super) const PERF_DOUBLE_CIRCLE_BTN_INNER_STROKE: f32 = 8.0;
 pub(super) const PERF_DOUBLE_CIRCLE_BTN_OUTER_STROKE: f32 = 4.0;
 pub(super) const PERF_DOUBLE_CIRCLE_LABEL_FONT_SIZE: f32 = 34.0;
 
-/// Vertical placement within [`PERF_TRANSPORT_COL_REF`] (0 = top, 1 = bottom).
+/// Vertical placement within [`PERF_TRANSPORT_COL_REF`], from 0 at the top to 1 at the bottom.
 pub(super) const PERF_V_TRACK_SEARCH_LABEL: f32 = 0.644;
 pub(super) const PERF_V_TRACK_SEARCH_CTRLS: f32 = 0.6735;
 pub(super) const PERF_V_SEARCH_LABEL: f32 = 0.707;
@@ -35,7 +35,7 @@ pub(super) const PERF_PLAY_FONT_SIZE: f32 = 38.0;
 pub(super) const PERF_PLAY_LABEL_FONT_SIZE: f32 = 34.0;
 pub(super) const PERF_PLAY_LABEL_GAP_Y: f32 = 210.0;
 
-/// TRACK SEARCH and SEARCH: two pairs of circle buttons.
+/// Draws the TRACK SEARCH and SEARCH buttons, two pairs of circle buttons.
 pub(super) fn draw_search(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let pair = |v: f32| {
         (
@@ -85,7 +85,8 @@ pub(super) fn draw_search(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale)
     }
 }
 
-/// CUE and PLAY/PAUSE: the large round buttons, their rim lit by the lamp.
+/// Draws CUE and PLAY/PAUSE, the large round buttons, each with its rim lit by
+/// its lamp.
 pub(super) fn draw_cue_play(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let cue_c = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.5, PERF_V_CUE);
     let cue_led = app.mosi().lit(Lamp::Cue);

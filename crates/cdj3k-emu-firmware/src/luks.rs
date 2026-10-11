@@ -175,7 +175,7 @@ pub(crate) struct Luks1Header {
     pub(crate) mk_digest: [u8; 20], // master key digest (20 bytes of PBKDF2 output)
     pub(crate) mk_digest_salt: [u8; 32],
     pub(crate) mk_digest_iter: u32,
-    #[allow(dead_code)] // parsed for diagnostics but unused by the decrypt path
+    #[allow(dead_code)] // Parsed with the header; nothing reads it.
     pub(crate) uuid: String,
     pub(crate) key_slots: Vec<KeySlot>,
 }

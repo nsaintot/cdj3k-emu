@@ -14,17 +14,19 @@ use cdj3k_emu_platform::net::is_valid_mac;
 
 #[derive(Debug, Clone)]
 pub struct InstanceSettings {
-    /// Locally-administered MAC, e.g. "0a:11:22:33:44:55". Stable across launches.
+    /// The slot's locally administered MAC, such as "0a:11:22:33:44:55". It
+    /// stays the same across launches.
     pub mac: String,
-    /// SoC serial the guest publishes as the `Serial` line of `/proc/cpuinfo`,
-    /// e.g. "0123456789abcd05": 16 lowercase hex digits, last byte non-zero.
+    /// The SoC serial that the guest publishes as the `Serial` line of
+    /// `/proc/cpuinfo`, such as "0123456789abcd05". It has 16 lowercase hex
+    /// digits and a non-zero last byte.
     ///
     /// `genkey_pr` derives the `cabinet.img` LUKS passphrase as
     /// `sha512hex((model + serial) repeated N + 1 times)`, where `N` is
-    /// `strtol(last two digits of the serial, 16)`.  `initoptenv` only opens
-    /// the container with it - nothing re-keys - so the serial has to be the
-    /// one the staged cabinet was keyed for, and changing it afterwards locks
-    /// `cabinet.img` out.
+    /// `strtol(last two digits of the serial, 16)`. `initoptenv` only opens
+    /// the container with it and nothing re-keys the container, so the serial
+    /// has to be the one the staged cabinet was keyed for. Changing it
+    /// afterwards locks `cabinet.img` out.
     pub soc_serial: String,
     /// Whether QEMU is launched with the audio backend. When true, virtio-sound
     /// is added and routed to the host's audio output; when false, the guest
@@ -170,13 +172,13 @@ impl InstanceSettings {
     /// keys a new eMMC's cabinet for it and records it once the install is
     /// complete. A minted serial opens no real deck's cabinet: that needs the
     /// deck's own serial, which [`Self::set_soc_serial`] pins. Nothing else
-    /// may change the serial - see [`Self::soc_serial`].
+    /// may change the serial; see [`Self::soc_serial`].
     pub fn mint_soc_serial() -> String {
         generate_soc_serial()
     }
 
-    /// `serial` in the stored form, or an error if `genkey_pr` could not use
-    /// it.
+    /// Return `serial` trimmed and lower-cased, or an error if it is not 16 hex
+    /// digits with a non-zero last byte.
     pub fn parse_soc_serial(serial: &str) -> io::Result<String> {
         let serial = serial.trim().to_ascii_lowercase();
         if !is_valid_soc_serial(&serial) {
@@ -192,7 +194,7 @@ impl InstanceSettings {
     ///
     /// Set this to a real deck's `/proc/cpuinfo` serial and the guest's
     /// `genkey_pr` derives that deck's `cabinet.img` passphrase, so its cabinet
-    /// opens here. Rejects anything `genkey_pr` could not use.
+    /// opens here. Rejects a serial that [`Self::parse_soc_serial`] refuses.
     pub fn set_soc_serial(instance_id: u32, serial: &str) -> io::Result<String> {
         let serial = Self::parse_soc_serial(serial)?;
         Self::update(instance_id, {
@@ -325,8 +327,8 @@ mod tests {
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
 
-        // Pinning a real deck's serial normalises and sticks; a value
-        // genkey_pr could not use is refused without disturbing it.
+        // Pinning a real deck's serial normalises and stores it. An invalid
+        // value is refused and leaves the stored serial unchanged.
         let pinned = InstanceSettings::set_soc_serial(slot, " 0123456789ABCD05 ").unwrap();
         assert_eq!(pinned, "0123456789abcd05", "trimmed and lower-cased");
         assert!(InstanceSettings::set_soc_serial(slot, "0123456789abcd00").is_err());

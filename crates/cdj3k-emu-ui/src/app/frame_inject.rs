@@ -17,7 +17,8 @@ impl CdjApp {
         self.ctrl_stream.inject(&frame_bytes);
     }
 
-    /// The full current control state, in no deck's coordinates.
+    /// The full current control state. The button bits are already in the
+    /// player's frame; the player's encoder places the analog fields.
     pub(super) fn panel_state(&self) -> PanelState {
         PanelState {
             pressed: self

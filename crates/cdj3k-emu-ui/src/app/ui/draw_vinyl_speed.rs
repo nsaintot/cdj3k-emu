@@ -1,8 +1,8 @@
 //! The VINYL SPEED ADJUST knob: a rotary pot with a scroll accumulator, drawn
 //! as a gear with an indicator.
 //!
-//! Every player draws the same knob from the shape constants below; a slate
-//! supplies only the knob's position on its panel.
+//! The CDJ-3000 and CDJ-3000X slates draw the same knob from the shape
+//! constants below; each supplies only the knob's position on its panel.
 
 use egui::{Pos2, Rect, Sense, Shape, Stroke, Vec2};
 
@@ -92,8 +92,8 @@ pub(in crate::app) fn draw_vinyl_speed_adj(
         vinyl_speed_spec(&s, r_base, tooth_amp, indicator_angle),
     );
 
-    // Each slate draws the static labels and endstop brackets in its
-    // draw_right/statics.rs.
+    // The CDJ-3000 and CDJ-3000X slates draw the static labels and endstop
+    // brackets in their draw_right/statics.rs.
 }
 
 /// Handles drag and scroll on the knob. A drag maps the pointer angle to a

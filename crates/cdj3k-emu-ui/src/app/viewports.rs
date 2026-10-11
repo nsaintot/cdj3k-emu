@@ -38,7 +38,7 @@ const FPS_ALPHA: f32 = 0.1;
 /// The aspect error, in pixels, above which an `InnerSize` command is sent
 /// again to restore the aspect ratio.
 const ASPECT_FIX_TOL_PX: f32 = 2.0;
-/// The jog LCD's aspect ratio; its framebuffer is square.
+/// The jog LCD's aspect ratio, from its 320 x 240 framebuffer.
 const JOG_LCD_ASPECT: f32 = JOG_FB_W as f32 / JOG_FB_H as f32;
 
 const JOG_LCD_INITIAL_SIZE: [f32; 2] = [320.0, 240.0];

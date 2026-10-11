@@ -15,7 +15,7 @@ pub const HELPER_FLAG: &str = "--windows-net-helper";
 /// when the slot lets it go.
 pub const WATCH_FLAG: &str = "--windows-net-watch";
 
-/// In the instance directory: the helper's verdict.
+/// The file in the instance directory where the helper writes its result.
 pub const RESULT_FILE: &str = "winnet.result";
 
 /// The connection name of the tap adapter a slot owns.

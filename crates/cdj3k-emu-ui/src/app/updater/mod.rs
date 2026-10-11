@@ -135,7 +135,7 @@ pub(in crate::app) struct Updater {
     silent: bool,
     /// When the next automatic check is due.
     next_auto: Instant,
-    /// Wait before the next retry.
+    /// The wait before the next retry.
     retry_delay: Duration,
     /// When automatic checks started failing.
     failing_since: Option<Instant>,
@@ -145,7 +145,7 @@ pub(in crate::app) struct Updater {
     retrying: bool,
     /// The window has been opened for the current ready update or download.
     ready_shown: bool,
-    /// The version whose offer was closed: not offered again in this run.
+    /// The version whose offer was closed. It is not offered again in this run.
     dismissed: Option<String>,
     /// Keep the window in front until this time.
     raise_until: Option<Instant>,

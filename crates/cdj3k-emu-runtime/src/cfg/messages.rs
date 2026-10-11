@@ -86,10 +86,10 @@ fn on_pc_link(rest: &str, s: &mut Shared) {
         "on" => s.pc_link_state = Some(true),
         "off" => s.pc_link_state = Some(false),
         "on_failed" | "off_failed" | "?" => {
-            eprintln!("cfg: guest reported pc_link {}", rest.trim());
+            eprintln!("cfg: the guest reported pc_link {}.", rest.trim());
             s.pc_link_failures = s.pc_link_failures.saturating_add(1);
         }
-        other => eprintln!("cfg: unrecognised pc_link response '{other}'"),
+        other => eprintln!("cfg: the pc_link response '{other}' is not recognised."),
     }
 }
 
@@ -104,7 +104,7 @@ fn on_mods(rest: &str, s: &mut Shared) {
             Some(partial) => s.mods = partial.done(),
             None => eprintln!("cfg: ignoring `mods end` without a `mods begin`"),
         },
-        other => eprintln!("cfg: unrecognised mods line '{other}'"),
+        other => eprintln!("cfg: the mods line '{other}' is not recognised."),
     }
 }
 
@@ -112,7 +112,7 @@ fn on_mods(rest: &str, s: &mut Shared) {
 /// `mods end`.
 fn on_mod(rest: &str, s: &mut Shared) {
     if !s.mods_partial.as_mut().is_some_and(|p| p.push(rest)) {
-        eprintln!("cfg: unexpected mod line '{rest}'");
+        eprintln!("cfg: ignoring the mod line '{rest}', which is outside a report.");
     }
 }
 

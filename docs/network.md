@@ -79,8 +79,8 @@ This is the default ("Default (NAT)" in the Network menu). QEMU's built-in
 userspace stack provides DHCP, DNS and outbound NAT.
 
 - SSH: host port `2222 + instance_id` forwards to guest `:22`.
-- **Cannot** receive DJPL broadcasts from other hosts.
-- **Cannot** be discovered by other DJPL endpoints.
+- It cannot receive DJPL broadcasts from other hosts.
+- Other DJPL endpoints cannot discover it.
 - It suits solo development, building and kernel work: anything that does
   not beat-sync against a peer.
 
@@ -210,9 +210,9 @@ Flow (`WindowsBridge::setup`, `net/windows_net.rs`):
    one not yet bridged (`create` reports success with only its first adapter
    joined). Windows has one Network Bridge, so an existing one is joined,
    never replaced.
-4. Membership of both is checked again, the helper starts a copy of the app
-   as `--windows-net-watch` with the same request, and the verdict goes to
-   `<instance>/winnet.result` (`ok`, `tap` or `bridge`, then the message;
+4. The helper checks again that both are bridge members, starts a copy of
+   the app as `--windows-net-watch` with the same request, and writes the
+   verdict to `<instance>/winnet.result` (`ok`, `tap` or `bridge`, then the message;
    `winbridge::Outcome`).
 5. The watcher holds the link for the lease. When the lease goes it takes
    the tap out of the bridge, or destroys the bridge when `bridge-owned` names
@@ -289,8 +289,8 @@ not need one: they only start background daemons and watchdogs.
 On Linux it is `pkexec /bin/sh -c <cmd>`, answered by the desktop's polkit
 agent; it needs a local seat.
 
-On Windows it is UAC: `ShellExecuteExW` with the `runas` verb on
-`cmd.exe /C <cmd>`, run hidden, and waits for it. The exit code is the
+On Windows it runs `cmd.exe /C <cmd>` hidden through `ShellExecuteExW` with
+the `runas` verb, which shows the UAC prompt, and waits for it. The exit code is the
 result, and a declined prompt returns `PermissionDenied`.
 
 ### Link lifetime
@@ -325,7 +325,7 @@ when QEMU exits.
 
 ---
 
-## Discovery & SSH
+## Discovery and SSH
 
 ### User-mode
 
@@ -334,7 +334,7 @@ ssh -p $((2222 + INSTANCE_ID)) root@localhost
 scp -P $((2222 + INSTANCE_ID)) file root@localhost:/tmp/
 ```
 
-The default port for instance 0 is `2222`. The guest runs dropbear only when the
+The default slot, slot 1, listens on port `2223`. The guest runs dropbear only when the
 setup window's **Developer / Root SSH** option was ticked at provisioning: the
 provisioning boot gets `cdj3k.ssh=1`, which the patch dispatcher reads as
 `ENABLE_SSH` for `02`-`05` in `initramfs-patch/patch-rootfs.d/`.
@@ -422,4 +422,4 @@ files). The lease relies on that: only the app can change the claim.
 | `crates/cdj3k-emu-storage/src/settings/`                   | persisted `mac`, `net_iface`, MAC generator       |
 | `crates/cdj3k-emu-platform/src/runtime_paths/`             | socket / instance-dir layout                      |
 | `qemu/build.sh`                                            | QEMU build (unrelated to runtime networking)      |
-| `initramfs-patch/patch-rootfs.d/03-dropbear-enable.sh`     | enables SSH in the guest in every mode            |
+| `initramfs-patch/patch-rootfs.d/03-dropbear-enable.sh`     | enables SSH in the guest when the slot was provisioned with Root SSH, in every network mode |

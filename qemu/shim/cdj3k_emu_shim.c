@@ -3,18 +3,16 @@
  *
  * cdj3k_emu_shim.c - QEMU embedding shim for libcdj3k-emu-qemu.dylib
  *
- * Linked into qemu-system-aarch64 / libcdj3k-emu-qemu.dylib alongside QEMU
- * objects (which are GPL-2.0-or-later).  As a derivative of QEMU it inherits
- * the same license.
+ * Linked into libcdj3k-emu-qemu.dylib with the QEMU objects
+ * (GPL-2.0-or-later), so it has the same license.
  *
- * Exposes cdj3k_emu_qemu_run(argc, argv) as a callable C function that blocks
- * until QEMU exits.  Intended to run on a dedicated background thread from
- * Rust (cdj3k-emu-runtime).  The caller stops QEMU by sending {"execute":"quit"}
- * via the QMP TCP port; qemu_cleanup() then calls exit() which is intercepted
- * here via Mach-O dylib interposing and converted to a longjmp.
+ * cdj3k_emu_qemu_run(argc, argv) runs QEMU and blocks until it exits.
+ * cdj3k-emu-runtime calls it on a dedicated background thread. The caller
+ * stops QEMU by sending {"execute":"quit"} through QMP; qemu_cleanup() then
+ * calls exit(), which the Mach-O interpose below turns into a longjmp.
  *
- * The shm display backend (ui/shm-display.c) is assumed - this disables the
- * macOS CFRunLoop path so QEMU runs headless on the calling thread.
+ * The shim expects the shm display backend (ui/shm-display.c). It disables
+ * the macOS CFRunLoop path, so QEMU runs headless on the calling thread.
  */
 
 #include <setjmp.h>
@@ -23,28 +21,29 @@
 #include <unistd.h>
 
 /* ── Forward declarations of QEMU internals ────────────────────────────────
- * Full headers pull in too many QEMU-internal types.  We only need the
- * function signatures; the linker resolves the bodies from the linked objects.
+ * The full headers pull in too many QEMU-internal types. Only the function
+ * signatures are needed; the linker resolves them from the linked objects.
  */
 void  qemu_init(int argc, char **argv);
 int   qemu_main_loop(void);
 void  qemu_cleanup(int exitcode);
-/* bql_lock() is a macro in QEMU 10.x: bql_lock_impl(__FILE__, __LINE__) */
+/* bql_lock() is a macro that expands to bql_lock_impl(__FILE__, __LINE__). */
 void  bql_lock_impl(const char *file, int line);
 void  bql_unlock(void);
 void  replay_mutex_lock(void);
 void  replay_mutex_unlock(void);
 
-/* Function pointer set to os_darwin_cfrunloop_main on macOS by default.
- * We set it to NULL so the main() path falls through to qemu_default_main,
- * which runs qemu_main_loop() on the calling thread (headless mode).
- * Declared as data in system/main.c; visible across the linked objects. */
+/* On macOS, qemu_main points to os_darwin_cfrunloop_main by default.
+ * cdj3k_emu_qemu_run sets it to NULL, so that the main() path falls through
+ * to qemu_default_main, which runs qemu_main_loop() on the calling thread.
+ * system/main.c defines it as data. */
 extern int (*qemu_main)(void);
 
 /* ── exit() interpose ──────────────────────────────────────────────────────
- * QEMU calls exit() at the end of qemu_cleanup().  In an embedded dylib that
- * would terminate the host process.  We intercept it with Mach-O interposing
- * (applies only within this dylib image) and longjmp back to cdj3k_emu_qemu_run.
+ * QEMU calls exit() at the end of qemu_cleanup(), which in an embedded dylib
+ * would terminate the host process. Mach-O interposing, which applies to
+ * every image in the process, replaces exit() and longjmps back to
+ * cdj3k_emu_qemu_run.
  */
 
 static jmp_buf  _cdj3k_emu_exit_buf;
@@ -56,16 +55,14 @@ static void _cdj3k_emu_exit_interpose(int status)
         _cdj3k_emu_in_run = 0;
         longjmp(_cdj3k_emu_exit_buf, status + 1);
     }
-    /* Not inside cdj3k_emu_qemu_run - pass through to the real exit.
-     * Use _exit() to avoid re-entering our own interpose (we only hooked
-     * exit, not _exit).  This also covers the normal host-process shutdown
-     * path: Mach-O __interpose patches all images in the process, so the
-     * Rust runtime's final exit(0) lands here too. */
+    /* Outside cdj3k_emu_qemu_run, end the process. _exit() does not go
+     * through the interpose, which hooks only exit(). The interpose patches
+     * every image in the process, so the Rust runtime's final exit(0) also
+     * arrives here. */
     _exit(status);
 }
 
-/* Mach-O dylib interpose section - replaces exit() for all code linked
- * into this dylib image (i.e. all QEMU code that calls exit()).         */
+/* Mach-O interpose entry for exit(). */
 __attribute__((used))
 static struct {
     const void *replacement;
@@ -77,9 +74,9 @@ __attribute__((section("__DATA,__interpose"))) = {
 };
 
 /* ── cdj3k_emu_qemu_abort ───────────────────────────────────────────────────────
- * Called by the host process on clean application quit.  Skips longjmp and
- * calls _exit() directly so QEMU background threads (RCU, etc.) are killed
- * by the OS rather than crashing on freed state.
+ * The host process calls this when the application quits. It calls _exit()
+ * directly, without the longjmp, so the OS ends QEMU's background threads
+ * (RCU and others) before they can touch freed state.
  */
 __attribute__((visibility("default")))
 void cdj3k_emu_qemu_abort(void)
@@ -92,29 +89,32 @@ void cdj3k_emu_qemu_abort(void)
  *
  * int cdj3k_emu_qemu_run(int argc, char **argv)
  *
- * Run QEMU on the calling thread.  Blocks until QEMU exits (clean shutdown
- * via QMP "quit" → qemu_cleanup → exit() → longjmp here).
- * Returns QEMU's exit code (0 on clean stop).
+ * Run QEMU on the calling thread and block until QEMU exits. On a clean
+ * shutdown, a QMP "quit" makes qemu_cleanup call exit(), which the interpose
+ * turns into a longjmp back here. Returns QEMU's exit code (0 on a clean
+ * stop).
  *
- * Thread safety: call at most once at a time; restart by calling again after
- * the previous call has returned.
+ * Thread safety: only one call may run at a time. Call it again after the
+ * previous call has returned to restart QEMU.
  */
 __attribute__((visibility("default")))
 int cdj3k_emu_qemu_run(int argc, char **argv)
 {
-    /* Disable the Cocoa CFRunLoop path - we run headless (shm backend). */
+    /* Disable the Cocoa CFRunLoop path; QEMU runs headless with the shm
+     * backend. */
     qemu_main = NULL;
 
     int jmp_val = setjmp(_cdj3k_emu_exit_buf);
     if (jmp_val != 0) {
-        /* exit() was intercepted; jmp_val = exit_status + 1. */
+        /* The interpose caught exit(); jmp_val is the exit status + 1. */
         return jmp_val - 1;
     }
 
     _cdj3k_emu_in_run = 1;
 
-    /* Mirrors the logic in system/main.c::main() with qemu_main == NULL:
-     *   qemu_init() → bql_unlock/replay_unlock → qemu_default_main() inline */
+    /* This follows main() in system/main.c with qemu_main set to NULL. It
+     * calls qemu_init(), releases the BQL and the replay mutex, then runs
+     * the body of qemu_default_main() inline. */
     qemu_init(argc, argv);
 
     /* qemu_init returns with BQL and replay_mutex held. Release them so
@@ -122,12 +122,12 @@ int cdj3k_emu_qemu_run(int argc, char **argv)
     bql_unlock();
     replay_mutex_unlock();
 
-    /* Run the main event loop (same as qemu_default_main on a thread). */
+    /* Run the main event loop, as qemu_default_main does. */
     replay_mutex_lock();
     bql_lock_impl(__FILE__, __LINE__);
     int status = qemu_main_loop();
-    qemu_cleanup(status);   /* → exit() → _cdj3k_emu_exit_interpose → longjmp */
+    qemu_cleanup(status);   /* calls exit(), which longjmps back to the setjmp above */
 
-    /* Unreachable - longjmp exits before we get here. */
+    /* Unreachable: the longjmp leaves before this line. */
     return status;
 }

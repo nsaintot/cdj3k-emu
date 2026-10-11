@@ -1,5 +1,9 @@
 //! The button shape collectors that the button cache uses: rectangular,
 //! circular, arc-quadrant, hot-cue and inset-fill buttons.
+//!
+//! They write into a `ShapeList` for caching and handle no interaction. The
+//! caller, such as `CdjApp::btn`, calls `ui.interact()` and computes
+//! `is_pressed = response.is_pointer_button_down_on() || latched`.
 
 use std::f32::consts::PI;
 
@@ -88,7 +92,7 @@ fn collect_button_basic(
 }
 
 /// Collects an inset-fill rectangular button into `out`. The double border
-/// wraps the full `rect`, but the colored fill is drawn in an inner rect around
+/// wraps the full `rect`, but the coloured fill is drawn in an inner rect around
 /// the label, padded by `pad_h` and `pad_v` pixels. Use it when the fill should
 /// look like a label highlight instead of a button background.
 fn collect_button_inset_fill(

@@ -84,9 +84,9 @@ converts the .mot file to a binary before writing it over SPI.
 ## Booting G2M under QEMU: what works, what doesn't
 
 With the gate bypassed (for example, by removing the rk3399 marker check), the
-G2M kernel boots cleanly on QEMU `virt` aarch64. The current
-`extract_initramfs` already decompresses LZ4 legacy in addition to gzip, so the
-G2M initramfs comes out intact. End-to-end you get:
+G2M kernel boots cleanly on QEMU `virt` aarch64. `extract_initramfs`
+decompresses LZ4 legacy as well as gzip, so the G2M initramfs comes out
+intact. End to end, the result is:
 
 - Yocto 2.1.3 init brings the system up.
 - udev populates `/dev/dri/card0` and `/dev/fb0` against virtio-gpu.

@@ -62,8 +62,7 @@ with real CDJs on a physical LAN.
 >   Pioneer DJ. CDJ, rekordbox, and Pro DJ Link are trademarks of their
 >   respective owners.
 > - Not a frame-accurate hardware simulator. Pixel output and SPI timings are
->   faithful enough to drive EP122 / EP145 (the stock firmware), but the goal is a
->   daily-driver emulator, not a forensic recreation.
+>   close enough to run EP122 and EP145 (the stock firmware) for everyday use.
 > - Not a turntable replacement. The jog wheel and rotaries are driven with
 >   pointer drags and the scroll wheel; an external MIDI controller cannot
 >   drive the emulated SPI bus.
@@ -155,7 +154,7 @@ they are entitled to.
 
 ### Every host
 
-- Roughly 8 GB of free RAM to run two instances at once (1.5 GB for each
+- Roughly 8 GB of free RAM to run two instances at once (3 GiB for each
   guest, plus the host's overhead).
 - A firmware update file for a supported model, and its decryption key if it needs one.
 
@@ -229,17 +228,16 @@ cdj3k-emu asks for elevation only when you ask it to do one of these.
 
 ### macOS
 
-macOS asks for the admin password in three situations:
+macOS asks for the admin password in two situations:
 
 | Action                                                   | Why it elevates                                                                                                                                                                                                               |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bridging a TAP interface (OpenVPN-style) for Pro DJ Link | Creates a macOS kernel bridge with `ifconfig`, which is root-only. vmnet modes need no prompt: QEMU opens the interface itself under the app's `com.apple.developer.networking.vmnet` entitlement.                            |
-| Selecting a TAP interface (OpenVPN etc.)                 | Creates a macOS `bridge` device and assigns a `tap` device to QEMU through Authorization Services. Both are removed when the slot stops using them or the app exits.                                                          |
-| Attaching a physical USB drive in pass-through mode      | `chmod 660` on `/dev/diskN` so QEMU can open it `O_RDWR`. The exact device path is validated against `/dev/disk[0-9]+(s[0-9]+)?` before elevation — see `crates/cdj3k-emu-runtime/src/disk/macos.rs::is_valid_bsd_disk_path`. |
+| Selecting a TAP interface (OpenVPN-style) for Pro DJ Link | The app creates a macOS `bridge` and a `tap` for QEMU with `ifconfig`, which is root-only. Both are removed when the slot stops using them or the app exits. vmnet modes need no prompt: QEMU opens the interface itself under the app's `com.apple.developer.networking.vmnet` entitlement. |
+| Attaching a physical USB drive in pass-through mode      | `chmod 660` on `/dev/diskN` so QEMU can open it `O_RDWR`. The app checks the device path against `/dev/disk[0-9]+(s[0-9]+)?` before elevation (see `crates/cdj3k-emu-runtime/src/disk/macos.rs::is_valid_bsd_disk_path`). |
 
-All three use the native macOS password dialog through `AuthorizationServices`,
-which accepts Touch ID and Apple Watch. None of them grants lasting privileges:
-each elevation covers one command.
+The TAP bridge asks through Authorization Services and the USB pass-through
+through an `osascript` admin prompt; both use the native macOS password
+dialog. Neither grants lasting privileges: each elevation covers one command.
 
 ### Linux
 

@@ -50,7 +50,7 @@ pub enum CpioError {
 impl fmt::Display for CpioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Truncated { at } => write!(f, "cpio truncated at offset {at}"),
+            Self::Truncated { at } => write!(f, "the cpio archive ends early at offset {at}"),
             Self::BadMagic { at } => write!(f, "bad cpio magic at offset {at}"),
             Self::BadField { at, field } => {
                 write!(f, "malformed cpio field {field} at offset {at}")

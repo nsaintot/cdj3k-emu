@@ -236,7 +236,7 @@ socket.
 | | |
 |---|---|
 | Gadget descriptors | `initramfs-patch/patch-rootfs.d/28-usb-gadget.sh` |
-| USB-B connect probe redirect | `guest/deck_shim/core/syscalls.c` (`/proc/udev_usbg1` → `/tmp/usbg1`) |
+| USB-B connect probe redirect | `guest/deck_shim/core/syscalls.c` (redirects `/proc/udev_usbg1` to `/tmp/usbg1`) |
 | Bridge unit | `initramfs-patch/patch-rootfs.d/29-pc-link-bridge.sh` |
 | Guest bridge | `guest/pc_link_bridge/` |
 | Host PcLink (HID/MIDI/transport) | `crates/cdj3k-emu-runtime/src/pc_link/` |

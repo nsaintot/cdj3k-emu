@@ -9,7 +9,7 @@
 //!   stable. This thread polls `seq` at about 60 Hz; when it advances, the
 //!   thread copies the pixels under the seqlock and publishes a `JogFrame`.
 //!
-//! The layout must match `JOG_SHM_*` in `guest/shim/shim.h`:
+//! The layout must match `JOG_SHM_*` in `guest/deck_shim/core/deck_shim.h`:
 //!
 //! | offset | type | field |
 //! |---|---|---|
@@ -104,7 +104,7 @@ impl JogLcdStream {
         thread::Builder::new()
             .name("jog-lcd-stream".into())
             .spawn(move || stream_loop(&path, slot_clone, connected_clone, gate))
-            .expect("spawn jog-lcd-stream thread");
+            .expect("the jog-lcd-stream thread could not be started");
 
         Self {
             slot,

@@ -151,7 +151,8 @@ virtio_snd: tx=N stall=A(+a) pop=B(+b) xrun=C wdog=W overrun=D(d) gap=E(e)us lat
 | `lat=g+h=T` | Guest pipeline, host pipeline and their total, in ms (not capped) |
 | `inflight_n` | TX buffers currently in flight |
 
-Healthy steady state: `stall=0(+0) pop=0(+0) xrun=0 wdog=0`, `lat ≈ 50-70 ms`.
+In a healthy steady state the line shows `stall=0(+0) pop=0(+0) xrun=0 wdog=0`
+and a `lat` total of 50 to 70 ms.
 
 ---
 
@@ -236,14 +237,15 @@ above output rate), a 2nd-order Butterworth lowpass biquad with its cutoff at
 0.46 × the output rate runs before the interpolation, so high frequencies do
 not fold into the audible band.
 
-**Soft-PLL clock-skew correction**: even at matching nominal rates, a small
-drift between the guest's audio clock and the device's clock would slowly
-fill or drain the ring. An integrator-only PLL accumulates the error between
+**Soft-PLL clock-skew correction** (resampled path only): a small drift
+between the guest's audio clock and the device's clock would slowly fill or
+drain the ring. An integrator-only PLL accumulates the error between
 the ring depth and an 80 ms target and adjusts the resampler ratio by at most
 ±0.5%. Each call moves the integrator by only 1e-6 × the normalized error, so
 the change is inaudible, but over seconds it locks the writer's output rate to
 the reader's clock. This avoids both the clicks of dropped frames and the
-cycle of a filling ring followed by a watchdog xrun.
+cycle of a filling ring followed by a watchdog xrun. The passthrough path has
+no correction, so drift there ends in a watchdog xrun.
 
 The resampler state (sliding window, fractional phase, biquad state and PLL
 integrator) is reset only on a cold start, when the format changes. It carries
@@ -340,7 +342,7 @@ A logger on the drain timer writes **at most one stderr line per second**,
 and only when a counter has changed:
 
 ```
-virtio-snd: xrun report - underrun frames=N (~U us of silence in last second), overrun count=M (writer dropped batches)
+virtio-snd: xrun report: underrun frames=N (~U us of silence in the last second), overrun count=M (writes deferred because the ring was full)
 ```
 
 A clean run logs nothing. The totals are exported through the C symbols
@@ -421,7 +423,7 @@ ssh root@<guest> 'echo 1 > /sys/module/virtio_snd/parameters/verbose_stats; dmes
 # Which path the writer takes:
 # - With the device and the guest both at 96 kHz, it takes the passthrough path.
 # - With different rates it resamples, and the PLL integrator moves.
-# - With the bypass invalidated it uses AUD_write and logs "INVALIDATED" to stderr.
+# - With the bypass turned off it uses AUD_write and logs "the host audio bypass is off" to stderr.
 ```
 
 A healthy guest line in steady state:
@@ -438,7 +440,7 @@ Signs of stress or preemption:
 | Symptom | Source | Mitigation |
 |---|---|---|
 | `gap=2000000us` in the guest log | macOS preempted the HVF vCPU thread | `12-hvf-vcpu-qos.patch` raises its priority; beyond that, reduce host load |
-| `wdog` rising every ~60 s | Clock skew filled the ring and the watchdog forced a recovery | The soft PLL in `08-virtio-snd-bypass.patch` holds the depth at 80 ms; check that the patch is applied |
+| `wdog` rising every ~60 s | Clock skew filled the ring and the watchdog forced a recovery | When the guest and HAL rates differ, the soft PLL in `08-virtio-snd-bypass.patch` holds the depth at 80 ms; check that the patch is applied. At matching rates the passthrough path has no correction |
 | `underrun frames > 0` in the host xrun report | The ring ran empty | The writer thread was preempted; check `12-hvf-vcpu-qos.patch` and host CPU load |
 | `overrun count > 0`, sustained | The writer outpaces the reader | The soft PLL is not pulling the depth down fast enough; compare the guest and HAL rates |
 | Pops on music but not on silence | Guest-side DSP (JUCE, Pioneer firmware) | Out of scope; the sine test below shows that the host pipeline is bit-perfect |
@@ -520,10 +522,10 @@ keeps its duration.
 
 ## Windows (WASAPI)
 
-The guest side and patch 08's bypass ring are the same. Patch 18 adds the
-`wasapi` audiodev QEMU does not have upstream: a shared-mode, event-driven
-render client, one thread per output voice owning every COM object of its
-stream.
+The guest side and patch 08's bypass ring are the same. Patch 18 adds a
+`wasapi` audiodev, which upstream QEMU lacks. It is a shared-mode,
+event-driven render client with one thread per output voice, and that thread
+owns every COM object of its stream.
 
 | | macOS | Windows |
 |---|---|---|

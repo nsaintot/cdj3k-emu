@@ -45,7 +45,7 @@ fn inside(poly: &[Pos2], p: Pos2) -> bool {
 
 impl CdjApp {
     /// Record the raw pointer and, while tilted, map every position over the
-    /// panel back onto its plan. Runs before each frame.
+    /// panel back onto its plan. It runs before each frame.
     pub(super) fn tilt_input_hook(&mut self, raw: &mut RawInput) {
         self.raw_pointer.pressed = false;
         let map = self.tilt_input.take();

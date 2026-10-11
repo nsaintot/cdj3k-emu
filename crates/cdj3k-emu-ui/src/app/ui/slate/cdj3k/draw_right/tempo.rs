@@ -29,7 +29,7 @@ pub(super) const MASTER_TEMPO_INNER_STROKE: f32 = 4.0;
 pub(super) const MASTER_TEMPO_OUTER_STROKE: f32 = 8.0;
 
 // ── Tempo slider ──────────────────────────────────────────────────────────────
-/// Vertical range within MODES_COL_REF (0 = top, 1 = bottom). The drawing
+/// Vertical range within MODES_COL_REF, from 0 at the top to 1 at the bottom. The drawing
 /// prints the scale's first and last segment at ref y 3092 and 4048; with the
 /// travel on those, [`TEMPO_BACKDROP_PAD_Y`] lands the backdrop on 2952..4188,
 /// which is exactly where the drawing puts the slider's surround.
@@ -43,7 +43,8 @@ pub(super) const TEMPO_SLIDER_LABEL_FONT_SIZE: f32 = 34.0;
 /// 22 dots, a gap and the + sign. Each gap takes one position.
 pub(super) const TEMPO_TICK_COUNT: usize = 51;
 
-/// Horizontal fraction of the MODES column (0 = col.left(), 1 = col.right()).
+/// The horizontal position as a fraction of the MODES column, from 0 at
+/// `col.left()` to 1 at `col.right()`.
 pub(super) const TEMPO_TICK_X_U: f32 = 0.225;
 
 /// Bounds of the slider content (tick marks, segments, knob and track bar) as
@@ -71,7 +72,8 @@ pub(super) const TEMPO_SEG_MAJOR_STROKE: f32 = 5.0;
 /// potentiometer.
 pub(super) const TEMPO_TRACK_BAR_W: f32 = 5.0;
 pub(super) const TEMPO_TRACK_BAR_GAP: f32 = 12.0;
-/// Inset from backdrop top/bottom where the track bar starts/ends (ref units).
+/// The track bars' inset from the backdrop's top and bottom, in reference
+/// units.
 pub(super) const TEMPO_TRACK_BAR_INSET: f32 = 110.0;
 
 /// A dragged value within this distance of 0.5 snaps to 0.5.

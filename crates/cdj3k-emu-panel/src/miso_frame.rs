@@ -17,7 +17,7 @@ use crate::Direction;
 
 pub const MISO_SIZE: usize = 64;
 
-/// Rotary encoder counter at rest (b14-b15, LE).
+/// The rotary encoder's counter at rest, a little-endian word at bytes 14-15.
 ///
 /// The deck differentiates this counter, so the host has to send exactly what
 /// the guest's sub-CPU module serves while nothing turns; the deck reads any
@@ -65,7 +65,8 @@ pub struct JogState {
     pub touched: bool,
 }
 
-/// What the panel is doing, in no deck's coordinates.
+/// What the panel is doing. The button bits are already in the player's
+/// frame; the player's encoder places the analog fields.
 #[derive(Clone, Debug)]
 pub struct PanelState {
     /// Frame bits held down, already resolved in the player's frame.

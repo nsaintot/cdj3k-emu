@@ -381,8 +381,8 @@ fn open_panel(title: &str, allowed_types: &[&str], folders: bool) -> Option<std:
         panel.setAllowsOtherFileTypes(false);
         panel.setAllowsMultipleSelection(false);
         if !allowed_types.is_empty() {
-            // NSOpenPanel.allowedFileTypes is deprecated since macOS 12 but still
-            // works.
+            // NSOpenPanel.allowedFileTypes has been deprecated since macOS 12 but
+            // still works.
             let types: Vec<Retained<NSString>> = allowed_types
                 .iter()
                 .map(|t| NSString::from_str(t))

@@ -7,12 +7,12 @@ index 9cb9f1f..baefba0 100644
          virtio_stl_p(vdev, &blkcfg.max_write_zeroes_seg, 1);
      }
 -    if (bs->bl.zoned != BLK_Z_NONE) {
-+    /* bs is NULL when the BlockBackend has no medium attached - either a
-+     * removable device with nothing inserted, or any device whose
-+     * BlockDriverState was removed (e.g. blk_remove_bs during shutdown).
-+     * Without this guard, a VCPU MMIO read of virtio-blk config racing
-+     * with media teardown faults on `bs->bl.zoned`. Treat absent medium
-+     * as the not-zoned case, mirroring the else branch below. */
++    /* bs is NULL when the BlockBackend has no medium: a removable device
++     * with nothing inserted, or a device whose BlockDriverState was removed
++     * (for example by blk_remove_bs during shutdown). A vCPU MMIO read of
++     * the config that races with the media teardown would otherwise fault
++     * on `bs->bl.zoned`. A missing medium is treated as not zoned, like the
++     * else branch below. */
 +    if (bs && bs->bl.zoned != BLK_Z_NONE) {
          switch (bs->bl.zoned) {
          case BLK_Z_HM:
@@ -23,10 +23,10 @@ index 9cb9f1f..baefba0 100644
  
 +static void virtio_blk_change_media_cb(void *opaque, bool load, Error **errp)
 +{
-+    /* Backing file swapped via blockdev-change-medium - kick the guest
-+     * to re-read config (capacity, etc.).  Mirrors the resize_cb path;
-+     * the guest's virtio_blk driver routes both through
-+     * virtblk_config_changed → revalidate_disk. */
++    /* blockdev-change-medium swapped the backing file, so tell the guest
++     * to read the config (capacity and the rest) again. This mirrors
++     * resize_cb: the guest's virtio_blk driver handles both in
++     * virtblk_config_changed, which calls revalidate_disk. */
 +    VirtIODevice *vdev = VIRTIO_DEVICE(opaque);
 +    (void)load; (void)errp;
 +    virtio_notify_config(vdev);

@@ -18,7 +18,8 @@ use crate::app::ui::draw_vinyl_speed::{
 };
 
 // ── Navigation rotary (owned by this module) ─────────────────────────────────
-/// Vertical position of the nav rotary center within MODES_COL_REF (0=top,1=bottom).
+/// Vertical position of the nav rotary center within MODES_COL_REF, from 0 at
+/// the top to 1 at the bottom.
 pub(super) const NAV_CENTER_V: f32 = layout::NAV_POD_V;
 /// Colour of the single-colour encoder LED; the encoder bit only switches it
 /// on and off.
@@ -26,7 +27,7 @@ const NAV_ENCODER_GLOW_COL: Color32 = Color32::from_rgb(182, 220, 220);
 
 /// Horizontal position of the nav rotary center within MODES_COL_REF.
 pub(super) const NAV_CENTER_U: f32 = layout::NAV_POD_U;
-/// Scale factor relative to VINYL_SPEED_SIZE_SCALE.
+/// The size multiplier for the nav rotary's reference dimensions.
 pub(super) const NAV_SIZE_SCALE: f32 = 1.00;
 /// Gear radius in ref units, the same as the vinyl speed knob's.
 pub(super) const NAV_KNOB_RADIUS_REF: f32 = VINYL_SPEED_KNOB_RADIUS_REF;
@@ -53,7 +54,8 @@ pub(super) const NAV_BTN_BORDER_INNER_W_REF: f32 = 9.0;
 pub(super) const NAV_BTN_BORDER_OUTER_W_REF: f32 = 6.0;
 /// Gap between inner and outer border strokes (ref units).
 pub(super) const NAV_BTN_BORDER_GAP_REF: f32 = 1.5;
-/// Decorative arc inside each button: radius from nav center (ref units).
+/// The radius of the decorative arc inside each button, measured from the nav
+/// center, in ref units.
 pub(super) const NAV_BTN_DEC_ARC_R_REF: f32 = 255.0;
 /// Stroke width of the decorative arc (ref units).
 pub(super) const NAV_BTN_DEC_ARC_STROKE_REF: f32 = 6.0;
@@ -65,7 +67,8 @@ pub(super) const NAV_BTN_NOTCH_HALF_ANGLE_DEG: f32 = 12.0;
 /// Stroke width of the notch arc in ref units; it is thicker than the
 /// decorative arc.
 pub(super) const NAV_BTN_NOTCH_STROKE_REF: f32 = 10.0;
-/// Decorative inner circle inside the nav rotary knob: radius (ref units).
+/// The radius of the decorative inner circle on the nav rotary knob, in ref
+/// units.
 pub(super) const NAV_INNER_CIRCLE_R_REF: f32 = 85.0;
 /// Inner stroke width for the inner circle ring (ref units).
 pub(super) const NAV_INNER_CIRCLE_INNER_W_REF: f32 = 3.0;
@@ -91,9 +94,10 @@ pub(super) const NAV_ENCODER_GLOW_SPREAD_REF: f32 = 25.0;
 /// Width of the main fill stroke at full alpha (ref units).
 pub(super) const NAV_ENCODER_MAIN_W_REF: f32 = 8.0;
 
-/// One arc button of the pod: its span in screen angles (0=right, π/2=down,
-/// -π/2=up), its legend and the legend's nudge (ref units), whether the
-/// legend is condensed and line-spaced, and whether it carries the notch arc.
+/// One arc button of the pod: its span in screen angles, where 0 points right,
+/// π/2 down and -π/2 up; its legend and the legend's nudge in ref units;
+/// whether the legend is condensed and line-spaced; and whether it carries the
+/// notch arc.
 struct NavButton {
     span: (f32, f32),
     label: &'static str,
@@ -174,7 +178,8 @@ pub(super) fn draw_nav_rotary(
     let bezel_inner_r = r_outer + s(NAV_BEZEL_INNER_GAP_REF);
     let bezel_outer_r = bezel_inner_r + s(NAV_BEZEL_WIDTH_REF);
     let btn_outer_r = s(NAV_BTN_OUTER_R_REF);
-    // The pod (bezel and arc buttons) covers the extended screen: keep its bloom.
+    // The pod, with its bezel and arc buttons, is drawn over the extended
+    // screen, so its bloom is kept there.
     let pod_edge = layout
         .sc(NAV_BTN_BORDER_INNER_W_REF + NAV_BTN_BORDER_GAP_REF * 2.0 + NAV_BTN_BORDER_OUTER_W_REF);
     app.bloom_keeps.push(crate::app::bloom::BloomKeep {
@@ -313,8 +318,8 @@ fn paint_bezel(
     bezel_inner_r: f32,
     bezel_outer_r: f32,
 ) {
-    // circle_stroke renders the stroke outward from the given radius, so pass
-    // bezel_inner_r directly so the fill starts exactly at the gear outer edge.
+    // circle_stroke draws the stroke outward from the given radius, so passing
+    // bezel_inner_r starts the fill at the gear's outer edge.
     let bezel_thickness = bezel_outer_r - bezel_inner_r;
     p.circle_stroke(
         center,
@@ -400,7 +405,7 @@ fn paint_nav_gear(
         ),
     );
 
-    // ── 4. Inner decorative circle on the rotary knob ────────────────────
+    // ── Inner decorative circle on the rotary knob ───────────────────────
     let inner_r = s(NAV_INNER_CIRCLE_R_REF);
     p.circle_filled(center, inner_r, nav_fill);
     paint_double_circle_ring(

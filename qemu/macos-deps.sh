@@ -32,7 +32,7 @@ case "${ARCH}" in
     arm64)  CPU_FAMILY=aarch64 ;;
 esac
 
-# Info.plist's LSMinimumSystemVersion.
+# This matches LSMinimumSystemVersion in Info.plist.
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
 
 SRC_ROOT="${SCRIPT_DIR}/deps-src"
@@ -62,7 +62,7 @@ mkdir -p "${SRC_ROOT}" "${PREFIX}/lib/pkgconfig" "${WORK}"
 # --------------------------------------------------------------------------
 
 for tool in python3 ninja pkg-config curl; do
-    command -v "${tool}" >/dev/null || { echo "ERROR: ${tool} not found" >&2; exit 1; }
+    command -v "${tool}" >/dev/null || { echo "ERROR: ${tool} was not found." >&2; exit 1; }
 done
 
 VENV="${SRC_ROOT}/meson-venv"
@@ -83,9 +83,10 @@ EOF
 chmod +x "${PREFIX}/pkg-config"
 
 # -isysroot keeps /usr/local (an Intel Homebrew) off the search paths. An SDK
-# newer than the deployment target declares calls the target lacks (pipe2 in
-# the macOS 27 SDK); as errors, configure checks find them missing instead of
-# the binary failing to load on an older macOS.
+# newer than the deployment target declares calls that the target lacks, such
+# as pipe2 in the macOS 27 SDK. AVAIL_FLAGS makes such calls errors, so the
+# configure checks report them missing and the binary still loads on an older
+# macOS.
 AVAIL_FLAGS="-Werror=unguarded-availability -Werror=unguarded-availability-new"
 MIN_FLAGS="-isysroot ${SDK} -mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}"
 ARCH_FLAGS="-arch ${ARCH} ${MIN_FLAGS} ${AVAIL_FLAGS}"
@@ -180,7 +181,7 @@ PROBE
     done
 }
 
-# unpack <tarball> -> prints the source directory, fresh for this arch
+# unpack <tarball>: extract a fresh copy for this arch and print its directory.
 unpack() {
     local file="${SRC_ROOT}/$1" dir
     dir="${WORK}/$(tar -tf "${file}" | head -1 | cut -d/ -f1)"
@@ -221,7 +222,7 @@ meson_lib() {
     "${MESON}" install -C "${src}/_build" --no-rebuild >/dev/null
 }
 
-# pcre2 comes from glib's own wrap; no libintl, so glib's messages stay English.
+# pcre2 comes from glib's own wrap. Without libintl, glib's messages stay in English.
 meson_lib glib-2.0 "glib-${GLIB_VERSION}.tar.xz" \
     -Dnls=disabled -Dtests=false -Dintrospection=disabled -Dman-pages=disabled \
     -Ddocumentation=false -Dselinux=disabled -Dxattr=false -Dlibmount=disabled \

@@ -211,7 +211,8 @@ pub(super) fn build_jog_inner(
     build_jog_inner_lcd_background(out_mid, center, layout);
     build_jog_inner_lcd_foreground(out_over, ctx, center, layout);
 
-    // The JOG ADJUST knob with its gear, ticks and labels, keyed on jog_adjust.
+    // Build the JOG ADJUST knob with its gear, ticks and labels; its angle
+    // follows jog_adjust.
     build_jog_adjust_static(out_over, ctx, layout, jog_adjust, jog_ref, chrome);
 }
 

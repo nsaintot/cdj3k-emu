@@ -128,7 +128,7 @@ impl WindowsBridge {
                 return Err(io::Error::other("the elevated helper left no result"));
             }
         }
-        eprintln!("cdj3k-emu: bridge up on {iface}  tap={tap}");
+        eprintln!("cdj3k-emu: the bridge is up on {iface} with the tap {tap}.");
         Ok(link)
     }
 }

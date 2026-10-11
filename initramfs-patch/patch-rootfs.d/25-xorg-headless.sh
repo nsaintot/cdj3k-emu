@@ -17,9 +17,10 @@
 #          20-modesetting.conf).
 #        - Without card0, it runs exec X :0 -configdir /etc/x11-headless-conf.
 #      Both modes then work without rebuilding the initramfs.
-#   3. Drop the stock CPU pins: x11-only.sh's (taskset -c 3 on the CDJ-3000,
-#      -c 5 on the CDJ-3000X), and apl_start.sh's `taskset -pc 5` of Xorg and
-#      its InputThread (CDJ-3000X). apl_start.sh also sets
+#   3. Removes the stock CPU pins: the taskset in x11-only.sh (core 3 on the
+#      CDJ-3000, core 5 on the CDJ-3000X) and, on the CDJ-3000X, the
+#      `taskset -pc 5` that apl_start.sh applies to Xorg and its InputThread.
+#      apl_start.sh also sets
 #      sched_rt_runtime_us=-1, so under emulation the player's real-time
 #      threads on the pinned core starve Xorg.
 #

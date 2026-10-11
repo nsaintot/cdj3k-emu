@@ -162,8 +162,8 @@ struct RowSource<'a> {
 }
 
 impl Slot {
-    /// `unpacked`: mods the running boot left out because their files could
-    /// not be read, with the reason.
+    /// `unpacked` lists the mods that the running boot left out because their
+    /// files could not be read, with the reason.
     fn read(slot: u32, unpacked: &[(String, String)]) -> Self {
         let model = InstanceSettings::saved_model(slot);
         let release = InstanceSettings::saved_firmware_release(slot);
@@ -279,7 +279,7 @@ fn outcome_status(o: &ModOutcome, env: usize) -> RowStatus {
 }
 
 /// Describes what a mod without a loader.sh passed to the app, such as
-/// `env loaded` or `2 libraries + env loaded`.
+/// `env loaded` or `2 libraries and env loaded`.
 fn declared_detail(libs: u32, env: usize) -> String {
     let libs = match libs {
         0 => None,
@@ -290,7 +290,7 @@ fn declared_detail(libs: u32, env: usize) -> String {
         (None, false) => "nothing to load".into(),
         (None, true) => "env loaded".into(),
         (Some(l), false) => format!("{l} loaded"),
-        (Some(l), true) => format!("{l} + env loaded"),
+        (Some(l), true) => format!("{l} and env loaded"),
     }
 }
 
@@ -359,7 +359,7 @@ mod tests {
     fn a_mod_without_loader_says_what_it_passed() {
         assert_eq!(declared_detail(0, 1), "env loaded");
         assert_eq!(declared_detail(1, 0), "library loaded");
-        assert_eq!(declared_detail(2, 3), "2 libraries + env loaded");
+        assert_eq!(declared_detail(2, 3), "2 libraries and env loaded");
         assert_eq!(declared_detail(0, 0), "nothing to load");
     }
 }

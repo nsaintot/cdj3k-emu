@@ -350,8 +350,8 @@ impl UsbManager {
         Ok(())
     }
 
-    /// Wait for virtblk_config_changed to settle, then ask the guest agent to
-    /// run usb-external-attach.sh. The script mounts the device and writes to
+    /// Wait for virtblk_config_changed to settle, then ask cfgd to run
+    /// usb-external-attach.sh. The script mounts the device and writes to
     /// /proc/udev_usb1, which EP122 watches for the USB state.
     fn guest_usb_attach(&self) -> std::io::Result<()> {
         // Give the guest driver time to run virtblk_config_changed_work. The

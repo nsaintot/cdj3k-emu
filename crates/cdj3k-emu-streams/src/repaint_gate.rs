@@ -49,7 +49,7 @@ impl RepaintGate {
         thread::Builder::new()
             .name("repaint-gate".into())
             .spawn(move || metronome(pending_clone, ctx, min_interval))
-            .expect("spawn repaint-gate thread");
+            .expect("the repaint-gate thread could not be started");
         Self { pending }
     }
 

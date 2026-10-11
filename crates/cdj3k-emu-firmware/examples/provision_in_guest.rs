@@ -39,9 +39,9 @@ fn main() {
 
     let scratch = std::path::PathBuf::from(out).with_extension("scratch.img");
     let size = cdj3k_emu_firmware::initramfs_guest::scratch_size_for(Path::new(src))
-        .expect("size the scratch file");
-    let f = std::fs::File::create(&scratch).expect("create scratch");
-    f.set_len(size).expect("size scratch");
+        .expect("the initramfs should be readable to size the scratch file");
+    let f = std::fs::File::create(&scratch).expect("the scratch file should be created");
+    f.set_len(size).expect("the scratch file should be resized");
     drop(f);
 
     match patch_initramfs_in_guest(

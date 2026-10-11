@@ -24,8 +24,9 @@ int ioctl(int fd, unsigned long request, ...) {
     /* Accept every ioctl on a HIDG fd. f_hid's char device recognises only
      * a small set and returns ENOTTY for the other HID-class ioctls. The
      * app's USB gadget manager treats ENOTTY as a gadget initialisation
-     * failure and may show "USB Error. Remove the device." Reads, writes and
-     * poll pass through to the real f_hid device. */
+     * failure and may show "USB Error. Remove the device." Reads and writes
+     * pass through to the real f_hid device; poll() reports the fd as
+     * always writable (see syscalls.c). */
     if (is_hidg_fd(fd))
         return 0;
 

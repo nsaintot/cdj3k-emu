@@ -20,7 +20,7 @@
 # --notarize then refuses.
 set -euo pipefail
 
-: "${RUNNER_TEMP:?RUNNER_TEMP not set}"
+: "${RUNNER_TEMP:?RUNNER_TEMP is not set}"
 KEYCHAIN="$RUNNER_TEMP/cdj3k-signing.keychain-db"
 WORK="$RUNNER_TEMP/cdj3k-signing"
 NOTARY_PROFILE_NAME="cdj3k-emu-notarization"

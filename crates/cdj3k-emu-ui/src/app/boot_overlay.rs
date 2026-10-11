@@ -112,8 +112,9 @@ fn paint_spinner(
 
         let mut pts = Vec::with_capacity(3 + ARC_SEGS);
         pts.push(inner_l);
-        // Sweep clockwise from theta+π/2 (left flank) through theta (tip)
-        // to theta−π/2 (right flank).
+        // Sweep from the inner_l flank (theta+π/2) through the tip (theta) to
+        // the inner_r flank (theta−π/2). On screen, where y points down, this
+        // runs counter-clockwise.
         for k in 0..=ARC_SEGS {
             let a = theta + FRAC_PI_2 - PI * (k as f32 / ARC_SEGS as f32);
             let (asn, acs) = a.sin_cos();

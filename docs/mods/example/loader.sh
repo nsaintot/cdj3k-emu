@@ -1,7 +1,8 @@
 #!/bin/sh
-# Optional. Runs as root from this folder once per boot, before the player app
-# starts and after the preload and env from mod.toml are applied. It is
-# stopped after 60 s, along with every process it started. See docs/mods.md.
+# This script is optional. The guest runs it as root from this folder once per
+# boot, before the player app starts and after the preload and environment
+# from mod.toml are applied. It is stopped after 60 s, along with every process
+# it started. See docs/mods.md.
 #
 # The examples below are commented out; uncomment the ones the mod needs.
 set -e

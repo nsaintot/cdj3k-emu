@@ -346,9 +346,9 @@ ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags)
  *     A close() that races with the worker either wins, when it sets the
  *     flag before the worker reads it, or loses, when the tail has already
  *     moved past the entry and the caller closes the fd itself.
- *   - If the scan misses and the worker closes the fd shortly after, the
- *     caller's sys_close fails with EBADF. This is harmless because the app
- *     has already been told the close succeeded. */
+ *   - If the scan misses, the worker has already advanced past the entry
+ *     and does not close the fd, so the caller's sys_close is the only
+ *     close. */
 int shim_link_intercept_close(int fd)
 {
     pthread_mutex_lock(&g_q_mutex);

@@ -22,27 +22,8 @@
  *   | ioctl(fd, DRM_IOCTL_SET_CLIENT_CAP, .) | 0                            |
  *   | ioctl(fd, DRM_IOCTL_MODE_GETRESOURCES) | the kernel's answer          |
  *
- * The CDJ-3000 MISO idle frame (64 bytes). Byte offsets ("bXX") are decimal:
- * b16 is byte 16, not 0x16 (22).
- *   b02-b04: 0x01 0x04 0x03  - header
- *   b05: transport (play/cue/search/track/beatJump)
- *   b06: tempo/sync (reset/masterTempo/range/keySync/beatSync/master)
- *   b07: loop (in/out/reloop/beatloop½/beatloop2x/slip)
- *   b08: memory (mem/del/callPrev/callNext/callDelete)
- *   b09: hot cues A-H (one bit per cue)
- *   b10: menu nav (source/browse/tagList/playlist/search/menu) + jogMode
- *   b11: menu nav (back/tagTrack/filter/shortcut/rotaryPress) + quantize/timeMode
- *   b12: device state bitmask, 0x81 at idle (0x80 power_on, 0x01 sdcard_closed)
- *   b14-b15: rotary encoder counter (16-bit LE)
- *   b16-b17: LCD touch X (16-bit LE, 0x0000 for no touch)
- *   b18-b19: LCD touch Y (16-bit LE, 0x0000 for no touch)
- *   b22-b23: tempo slider (16-bit BE, range 0x0000-0xcfff)
- *   b24: vinyl speed rotary (0x00-0xff)
- *   b26-b27: jog position counter (16-bit LE, wrapping)
- *   b28-b29: jog velocity (16-bit BE, inverse: 0xffff slow, 0x0000 fast)
- *   b30: jog touch state (0x00 none, 0x03 press, 0x04 touch, 0x0c turning)
- *   b34-b43: capacitive sensor baseline
- *   Every button and axis is 0x00 at idle.
+ * The MISO field map is in crates/cdj3k-emu-panel/src/miso_frame.rs (fields)
+ * and cdj3k.rs (IDLE).
  */
 
 #include "deck_shim.h"
@@ -64,9 +45,9 @@ void  *g_jog_current_dma_ptr = NULL;
 uint8_t *g_jog_fb = NULL;
 
 /* The open() interposer gives EP122 a real f_hid char-device fd. The shim
- * keeps this table only so that ioctl() can answer 0 instead of f_hid's
- * ENOTTY, which EP122's gadget manager treats as a fatal init failure (see
- * syscalls_io.c). */
+ * keeps this table so that ioctl() can answer 0 instead of f_hid's ENOTTY,
+ * which EP122's gadget manager treats as a fatal init failure (see
+ * syscalls_io.c), and so that poll() can report the fd as writable. */
 int g_hidg_active[MAX_HIDG_FDS];
 
 int g_gpiodrv_rd = -1;

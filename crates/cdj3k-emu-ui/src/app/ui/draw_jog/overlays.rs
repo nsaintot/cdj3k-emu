@@ -1,6 +1,6 @@
 //! The jog's live overlays: the pitchbend grip turning with the platter, the
 //! ring lights the deck drives, and the inner LCD's corner labels in the
-//! stream's colours.
+//! stream's colors.
 
 use cdj3k_emu_panel::Lamp;
 use egui::{epaint::Mesh, Color32, FontFamily, FontId, Pos2, Shape, Stroke, Vec2};
@@ -25,7 +25,7 @@ pub(super) const JOG_GRIP_OVAL_STROKE_REF: f32 = 6.0;
 // --- The three dots between consecutive grip ovals ---
 /// Number of decorative dots between each pair of consecutive ovals.
 pub(super) const JOG_GRIP_DOT_COUNT: usize = 3;
-/// Radius of each filled dot, in reference units.
+/// Radius of each outlined dot, in reference units.
 pub(super) const JOG_GRIP_DOT_RADIUS_REF: f32 = 10.0;
 /// Total radial spread of the dot cluster from the outermost to the innermost dot, in
 /// reference units.

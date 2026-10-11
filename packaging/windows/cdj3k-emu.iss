@@ -99,8 +99,8 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\bin\cdj3k-emu.exe"; WorkingD
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\bin\cdj3k-emu.exe"; WorkingDir: "{app}\bin"; IconFilename: "{app}\cdj3k-emu.ico"; Tasks: desktopicon
 
 [Run]
-; Inbound QEMU rules for ProLink discovery; deleted first so a reinstall does
-; not duplicate them.
+; Add inbound firewall rules for QEMU so that ProLink discovery works. Each
+; rule is deleted first, so a reinstall does not duplicate it.
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""CDJ3K Emulator QEMU UDP"" program=""{app}\bin\{#QemuExe}"""; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""CDJ3K Emulator QEMU TCP"" program=""{app}\bin\{#QemuExe}"""; Flags: runhidden
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""CDJ3K Emulator QEMU UDP"" dir=in action=allow protocol=UDP program=""{app}\bin\{#QemuExe}"" profile=any enable=yes"; StatusMsg: "Adding firewall rules..."; Flags: runhidden

@@ -159,7 +159,7 @@ fn write_uboot_env(
     let data_len = UBOOT_ENV_SIZE - 4;
     assert!(
         env_data.len() <= data_len,
-        "U-Boot env vars exceed block size"
+        "the U-Boot environment variables exceed the block size"
     );
     env_data.resize(data_len, 0);
 

@@ -1,11 +1,12 @@
 //! MainLcdStream reads the main LCD from the QEMU shm display backend.
 //!
-//! QEMU creates the file `{socket_dir}/main.shm` at boot, and
-//! `qemu/patch/shm-display.c` writes it in this layout:
+//! QEMU creates the file `{socket_dir}/main.shm` at boot, and `ui/shm-display.c`
+//! (added by `qemu/patches/06-shm-display-source.patch`) writes it in this
+//! layout:
 //!
 //! | offset | type | field |
 //! |---|---|---|
-//! | 0 | u32 | magic, 0x514D5348 ("QMS\x00") |
+//! | 0 | u32 | magic, 0x514D5348, stored little-endian as the bytes "HSMQ" |
 //! | 4 | u32 | generation, incremented with Release ordering after every dirty blit |
 //! | 8 | u32 | width |
 //! | 12 | u32 | height |
@@ -80,7 +81,7 @@ impl MainLcdStream {
         thread::Builder::new()
             .name("main-lcd-shm".into())
             .spawn(move || shm_loop(&path, slot_clone, connected_clone, frames_seen_clone, gate))
-            .expect("spawn main-lcd-shm thread");
+            .expect("the main-lcd-shm thread could not be started");
 
         Self {
             slot,

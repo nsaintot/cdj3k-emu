@@ -218,7 +218,8 @@ pub(super) fn draw_list_footer(
                     button_text_width(ui, label, k) + COPY_PAD * k,
                     theme::BUTTON_SIZE[1] * k,
                 ];
-                // Filled when the list has changed since the deck booted.
+                // The button is filled when the list has changed since the deck
+                // booted.
                 let resp = if pending {
                     theme::primary(ui, size, label, pal)
                 } else {

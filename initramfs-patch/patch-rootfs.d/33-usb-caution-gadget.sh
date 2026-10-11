@@ -15,7 +15,7 @@ MARKER='ENV{INTERFACE}=="3/*", RUN+='
 ADDED='ACTION=="add", DEVPATH=="*dummy_hcd*", ENV{INTERFACE}=="3/*", GOTO="usb_caution_end"'
 
 if [ ! -f "$RULES" ]; then
-    echo "  [33] 90-usb-caution.rules not present - skipping"
+    echo "  [33] 90-usb-caution.rules is not present; skipping"
     exit 0
 fi
 if grep -qF 'dummy_hcd' "$RULES"; then
@@ -23,7 +23,7 @@ if grep -qF 'dummy_hcd' "$RULES"; then
     exit 0
 fi
 if ! grep -qF "$MARKER" "$RULES"; then
-    echo "  [33] WARNING: HID caution rule not found, rules left as shipped" >&2
+    echo "  [33] WARNING: the HID caution rule was not found; the rules are left as shipped" >&2
     exit 0
 fi
 

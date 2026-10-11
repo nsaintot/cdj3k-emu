@@ -130,8 +130,8 @@ fn select_audio_device(s: &mut menu_state::AppState, uid: Option<&String>) {
     }
 }
 
-/// Select a network. Selecting a network other than the current one forces
-/// the shade.
+/// Select a network. Selecting a different network restarts QEMU, so the boot
+/// shade comes down at once.
 fn select_interface(s: &mut menu_state::AppState, selection: u32) {
     if s.selected_interface != selection {
         s.shade_forced = true;

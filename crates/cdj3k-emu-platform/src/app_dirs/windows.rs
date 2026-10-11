@@ -1,8 +1,8 @@
 //! `%LOCALAPPDATA%`.
 //!
-//! Local rather than roaming: firmware images and eMMC files are hundreds of
-//! megabytes and belong to one machine, and a roaming profile would sync them
-//! across every domain machine the user logs into.
+//! The directory is in the local profile because firmware images and eMMC
+//! files are hundreds of megabytes and belong to one machine. A roaming
+//! profile would sync them to every domain machine the user logs into.
 //!
 //! Falls back to the temporary directory, which does not survive a reboot,
 //! for a service account with no profile.

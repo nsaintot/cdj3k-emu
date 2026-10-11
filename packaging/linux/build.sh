@@ -29,8 +29,8 @@ done
 }
 mkdir -p "$OUT"
 
-# The emulator is aarch64 whatever the host is; on x86_64 that means TCG,
-# which is several times slower than a machine that can use KVM.
+# The guest is aarch64 whatever the host is. On an x86_64 host QEMU runs it
+# under TCG, which is several times slower than KVM.
 case "$(uname -m)" in
     x86_64|amd64)
         ARCH=amd64; APPIMAGE_ARCH=x86_64

@@ -430,9 +430,9 @@ fn view(snap: &Snapshot) -> MenuNode {
     .with_icon(MenuIcon::View)
 }
 
-/// "44.1 kHz", "48 kHz", "96 kHz" — empty when the device reports no usable
-/// nominal rate. Rounds to one decimal so 44.1 renders, and collapses a
-/// trailing ".0" so 48000 prints as "48 kHz".
+/// Format a nominal rate as "44.1 kHz", "48 kHz" or "96 kHz", or return an
+/// empty string for 0. The rate is rounded to one decimal, and a whole number
+/// drops its ".0", so 48000 prints as "48 kHz".
 fn format_rate(hz: u32) -> String {
     if hz == 0 {
         return String::new();

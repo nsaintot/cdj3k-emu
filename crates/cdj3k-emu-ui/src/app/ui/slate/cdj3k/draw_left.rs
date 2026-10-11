@@ -62,9 +62,10 @@ pub(super) const PERF_V_SLIP_QUANTIZE_BTNS: f32 = 0.254;
 pub(super) const PERF_LABEL_FONT_SIZE: f32 = 30.0;
 
 // ── CALL/DELETE button (same Y as hot cue row) ────────────────────────────────
-/// Vertical fraction within PERF_TRANSPORT_COL_REF that aligns with the hot cue row center.
-/// = (MID_CENTRAL_REF_TOP + MID_CENTRAL_REF_SIZE_H * HOT_CUE_BTN_V_CENTER - TRANSPORT_REF_TOP)
-///   / TRANSPORT_REF_SIZE_H  ≈ (1505 + 460*0.3 - 300) / 4080 ≈ 0.329
+/// The vertical fraction within PERF_TRANSPORT_COL_REF that lines up with the
+/// hot cue row's center. It is (MID_CENTRAL_REF_TOP + MID_CENTRAL_REF_SIZE_H *
+/// HOT_CUE_BTN_V_CENTER - TRANSPORT_REF_TOP) / TRANSPORT_REF_SIZE_H, which is
+/// (1485 + 460 * 0.3 - 280) / 4080 ≈ 0.329.
 pub(super) const PERF_V_CALL_DELETE: f32 = 0.329;
 pub(super) const PERF_CALL_DELETE_BTN_SIZE: f32 = 45.0; // square side length in ref units
 pub(super) const PERF_CALL_DELETE_BTN_U: f32 = 0.35; // button horizontal center (fraction of col width)
@@ -81,8 +82,8 @@ pub(super) const PERF_CALL_DELETE_SEGMENT_LENGTH: f32 = 100.0;
 pub(super) const PERF_CALL_DELETE_SEGMENT_THICKNESS: f32 = 4.0;
 /// Upward offset from button center to label center (ref units). Labels sit above the button top edge.
 pub(super) const PERF_CALL_DELETE_LABEL_NUDGE_Y: f32 = 100.0;
-/// The outer container is the same size as a hot cue button
-/// (HOT_CUE_BTN_WIDTH_REF is 180 and the aspect ratio is 1.8).
+/// The outer container is as tall as a hot cue button, 100 units (180 / 1.8),
+/// and 20 units wider.
 pub(super) const PERF_CALL_DELETE_OUTER_H: f32 = 100.0;
 pub(super) const PERF_CALL_DELETE_OUTER_W: f32 = 200.0;
 pub(super) const PERF_CALL_DELETE_OUTER_ROUNDING: f32 = 12.0; // HOT_CUE_BTN_HEIGHT * 0.12

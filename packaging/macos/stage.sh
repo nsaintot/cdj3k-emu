@@ -138,7 +138,7 @@ echo "==> Assembling $APP_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
-# Each slice is staged and self-contained on its own: its Homebrew dylib graph
+# Each slice is staged on its own and is self-contained: its Homebrew dylib graph
 # (if any) is copied beside it and every load command rewritten to
 # @loader_path, so the .app runs on a machine without Homebrew. The helper
 # ad-hoc-signs what it rewrites; build.sh re-seals everything
@@ -210,7 +210,7 @@ if [[ -n "$STRAY" ]]; then
     exit 1
 fi
 
-# ── Resources: patch scripts, guest modules and tools, PPM assets ────────────
+# ── Resources: patch scripts, guest modules and tools, icon, kernel ─────────
 #
 # build.sh must run first. It produces the guest kernel modules in
 # build/docker-out/modules/*.ko and the guest tools in guest/out/*_aarch64 and
@@ -292,7 +292,7 @@ for tool in subucom_live subucom_forwarder; do
         chmod +x "$RES_TOOLS/$tool"
         echo "     bundled $tool"
     else
-        echo "WARNING: the guest tool $src was not found. Run ./build.sh --modules-only."
+        echo "WARNING: the guest tool $src was not found. Run ./build.sh --artifacts-only."
     fi
 done
 if [[ -f "$REPO_ROOT/guest/out/deck_shim.so" ]]; then
@@ -330,9 +330,9 @@ if [[ $NATIVE -eq 0 ]]; then
 fi
 
 # ── Sparkle ──────────────────────────────────────────────────────────────────
-# The macOS updater. The app loads it at runtime from Contents/Frameworks, and
-# only in a release bundle (package-kind). Its XPC services, for sandboxed
-# apps, are removed.
+# Sparkle is the macOS updater. The app loads it at run time from
+# Contents/Frameworks, and only in a release bundle (package-kind). Its XPC
+# services, which are for sandboxed apps, are removed.
 SPARKLE_VERSION="2.10.0"
 SPARKLE_SHA256="c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c"
 SPARKLE_DIR="$REPO_ROOT/build/sparkle-$SPARKLE_VERSION"

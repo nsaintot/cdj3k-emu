@@ -1,9 +1,9 @@
 //! Trackpad haptic feedback.
 //!
 //! Call `init()` once at startup, `actuate(waveform)` for each click and
-//! `shutdown()` on exit; `available()` and `stats()` are for debugging. Each
-//! `actuate()` only queues the pulse, so a jog at any speed cannot stall the
-//! UI.
+//! `shutdown()` on exit. `available()` tells the menu whether to offer Jog
+//! Haptics, and `stats()` is for debugging. Each `actuate()` only queues the
+//! pulse, so a jog at any speed cannot stall the UI.
 //!
 //! macOS drives the trackpad actuator through the private
 //! `MultitouchSupport.framework`; a host without one has the same five

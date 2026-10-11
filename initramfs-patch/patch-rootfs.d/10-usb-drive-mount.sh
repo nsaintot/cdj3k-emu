@@ -71,7 +71,7 @@ echo "  -> /usr/sbin/usb-drive-mount.sh installed"
 # ---- usb-drive-mount.service ----
 cat > "$SERVICE_DIR/usb-drive-mount.service" << SVCEOF
 [Unit]
-Description=Mount loop-backed USB image (/opt/usb.img) and notify ${APP_NAME} via /proc/udev_usb1
+Description=Mount the loop-backed USB image /opt/usb.img and notify ${APP_NAME} through /proc/udev_usb1
 DefaultDependencies=no
 # The loop driver is built in (CONFIG_BLK_DEV_LOOP=y), so no module needs loading.
 # Order after insmod-virtio-rng.service, an early oneshot service.

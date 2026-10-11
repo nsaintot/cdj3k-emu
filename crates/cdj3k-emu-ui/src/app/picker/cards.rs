@@ -173,7 +173,7 @@ fn draw_card(p: &egui::Painter, rect: Rect, card: &CardState, k: f32, pal: &Pale
     }
 
     // Everything below the miniature is measured up from the card's foot, so
-    // the two cards agree line for line whatever the window's size factor is.
+    // all the cards agree line for line whatever the window's size factor is.
     let pad = CARD_PAD * k;
     let pill = Rect::from_min_max(
         Pos2::new(rect.left() + pad, rect.bottom() - pad - theme::PILL_H * k),

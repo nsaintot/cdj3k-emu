@@ -19,8 +19,8 @@ use crate::desktop::CAPTION_IN_STRIP;
 use crate::menu::id::MenuId;
 use crate::menu::model::{MenuIcon, MenuNode, Notice, Predefined};
 
-/// The id under which the sandwich records itself as open. Not a menu label,
-/// so it can never collide with one.
+/// The id under which the sandwich records itself as open. It starts with a
+/// control character, so it cannot collide with a menu label.
 const HAMBURGER: &str = "\u{1}menu";
 /// The same, for the notice badge's card.
 const NOTICE: &str = "\u{1}notice";

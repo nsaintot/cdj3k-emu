@@ -289,8 +289,8 @@ fn lcd_glass() -> (f32, f32, f32, f32) {
 ///   __________     ← navbar rect
 ///   |--------|
 ///   |________|     ← bezel top line
-///   |\______/|     ← top trapezoid: outer corners → diagonal
-///   ||      ||     ← outer frame sides + bezel side walls
+///   |\______/|     ← top trapezoid, with diagonals from the outer corners
+///   ||      ||     ← outer frame sides and bezel side walls
 ///   ||______||     ← bezel bottom line
 ///   |/      \|     ← two bottom diagonals, no center span
 ///   |________|     ← bottom |__| rectangle

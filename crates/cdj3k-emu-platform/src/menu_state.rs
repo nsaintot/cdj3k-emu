@@ -1,6 +1,6 @@
 //! UI and runtime state shared between the menu, the egui UI and the runtime
-//! worker thread, behind one `Mutex<AppState>`: one lock to order, and one
-//! `lock()` to snapshot everything.
+//! worker thread, behind one `Mutex<AppState>`, so there is no lock order to
+//! keep, and one `lock()` call reads everything.
 //!
 //! The lock is never held across I/O. Hot loops (menu sync, runtime poll)
 //! snapshot what they need, drop the guard, then do the work. The audio thread
@@ -61,11 +61,12 @@ pub struct PhysicalDisk {
 /// [`lock()`].
 pub struct AppState {
     // ── Instance ────────────────────────────────────────────────────────────
-    /// 1..=MAX_INSTANCES. Set once at startup from main.rs (`--instance N`).
+    /// The slot number, from 1 to MAX_INSTANCES. main.rs sets it once at
+    /// startup from `--instance N`.
     pub current_instance_id: u32,
-    /// `--no-spawn`: the window runs without any runtime worker or QEMU
-    /// (chassis/layout work). The boot shade stays down and nothing waits
-    /// for a guest.
+    /// Set by `--no-spawn`. The window runs without a runtime worker or QEMU,
+    /// for work on the chassis layout. The boot shade stays down and nothing
+    /// waits for a guest.
     pub ui_only: bool,
     /// The model of the panel on screen; `None` while the picker is up.
     pub model: Option<cdj3k_emu_panel::Model>,

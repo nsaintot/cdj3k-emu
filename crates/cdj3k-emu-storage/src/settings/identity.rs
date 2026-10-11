@@ -2,9 +2,9 @@
 //! serial the deck's `genkey_pr` keys `cabinet.img` with. This module only
 //! mints and validates them; [`super::InstanceSettings`] stores them.
 
-/// Whether `s` has 16 lowercase hex digits and a non-zero last byte, the form
-/// an RK3399 prints for `Serial`. `genkey_pr` repeats its hash input
-/// `strtol(&serial[14..], 16)` times, so a zero there would hash nothing.
+/// Whether `s` has 16 lowercase hex digits and a non-zero last byte.
+/// `genkey_pr` hashes its input N + 1 times, where N is the last byte, so it
+/// also accepts a zero last byte.
 pub(super) fn is_valid_soc_serial(s: &str) -> bool {
     s.len() == 16
         && s.bytes()
@@ -12,8 +12,8 @@ pub(super) fn is_valid_soc_serial(s: &str) -> bool {
         && matches!(u8::from_str_radix(&s[14..], 16), Ok(n) if n != 0)
 }
 
-/// Mint a SoC serial from a v4 UUID's first 8 bytes, forcing the last byte
-/// non-zero so `genkey_pr`'s repeat count is at least 1.
+/// Mint a SoC serial from a v4 UUID's first 8 bytes, with the last byte forced
+/// non-zero so that the serial passes [`is_valid_soc_serial`].
 pub(super) fn generate_soc_serial() -> String {
     let b = uuid::Uuid::new_v4().into_bytes();
     format!(
@@ -47,11 +47,10 @@ pub(super) fn generate_mac() -> String {
 mod tests {
     use super::*;
 
-    /// What `genkey_pr` can use, and what a mint therefore has to produce.
+    /// A minted serial and MAC always pass their validators.
     #[test]
     fn a_mint_always_passes_its_own_validator() {
         assert!(is_valid_soc_serial("0123456789abcd05"));
-        // Last byte zero: genkey_pr would repeat its hash input zero times.
         assert!(!is_valid_soc_serial("0123456789abcd00"));
         assert!(!is_valid_soc_serial("deadbeef"), "too short");
         assert!(!is_valid_soc_serial("zzzzzzzzzzzzzzzz"), "not hex");

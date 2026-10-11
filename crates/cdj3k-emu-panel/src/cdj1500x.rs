@@ -137,7 +137,7 @@ const BUTTONS: &[(Btn, FrameBit)] = &[
 /// The offset of the frame's big-endian CRC, which covers every byte before it.
 const CRC_AT: usize = 24;
 
-/// Where the shim reads the touch words, u16 LE X then Y.
+/// Where the shim reads the touch words: X, then Y, each a little-endian u16.
 const TOUCH_AT: usize = 26;
 
 /// The CDJ-1500X's MISO encoder. It starts from [`IDLE`], sets the pressed
@@ -230,7 +230,7 @@ enum Wire {
     Bit(FrameBit),
     /// A 2-bit level at `(byte, shift)`: 0 is off, 3 is full, and 1 or 2 is dim.
     Step((usize, u32)),
-    /// HOT CUE pad, A = 0, from [`PADS_AT`].
+    /// A hot cue pad by index, with A at 0, counted from [`PADS_AT`].
     Pad(usize),
     Rgb(usize),
     Level(usize),
@@ -313,7 +313,7 @@ pub const SPEC: ModelSpec = ModelSpec {
     title: "CDJ-1500X",
     slug: "cdj1500x",
     aliases: &["1500x", "1k5x"],
-    // The CDJ-3000X's 10.1-inch panel.
+    // The CDJ-1500X uses the CDJ-3000X's 10.1-inch panel.
     main_lcd: (1280, 800),
     touch: TouchSpace::ScreenPixels,
     // The product UUID.

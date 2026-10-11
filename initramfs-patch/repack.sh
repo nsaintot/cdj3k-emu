@@ -11,8 +11,8 @@ set -eu
 #   UID, so dropbear sees the wrong owner on /etc/shadow and the host keys and
 #   falls back to password authentication.
 #
-# Always repack through Docker, where OrbStack or Rosetta maps the macOS user
-# to UID 0:
+# Repack in Docker. The Python step below sets every UID and GID to 0,
+# because the virtiofs mount can expose the macOS UID. Run it with:
 #   docker run --rm -v "$(pwd)/build/initramfs-work":/work arm64v8/alpine:3.19 sh /work/repack.sh
 if command -v apk >/dev/null 2>&1; then
     apk add -q --no-cache cpio python3 2>/dev/null || true

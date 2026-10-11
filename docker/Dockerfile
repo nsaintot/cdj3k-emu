@@ -66,7 +66,7 @@ RUN cd /kernel && make ARCH=arm64 olddefconfig 2>&1 | tail -3
 
 RUN cd /kernel && make ARCH=arm64 -j$(nproc) Image 2>&1 | tail -5
 
-# Prepare kernel headers for out-of-tree module builds
+# Prepare the kernel headers for the out-of-tree module builds.
 RUN cd /kernel && make ARCH=arm64 -j$(nproc) modules_prepare 2>&1 | tail -3
 
 # The kernel config has many =m drivers, and building them all only to get

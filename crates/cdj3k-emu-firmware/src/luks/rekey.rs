@@ -120,7 +120,9 @@ impl Luks1Layout {
         };
         let payload_start = sector_offset(be32(image, 104), "payload offset")?;
         if payload_start < HEADER_BYTES {
-            return Err(RekeyError::Malformed("payload offset inside the header"));
+            return Err(RekeyError::Malformed(
+                "the payload offset is inside the header",
+            ));
         }
         if payload_start > image.len() {
             return Err(RekeyError::Truncated);
@@ -210,7 +212,9 @@ impl Keyslot {
         }
         let km_start = sector_offset(be32(image, entry + 40), "key material offset")?;
         if km_start < HEADER_BYTES {
-            return Err(RekeyError::Malformed("key material inside the header"));
+            return Err(RekeyError::Malformed(
+                "the key material is inside the header",
+            ));
         }
         let km_end = km_start
             .checked_add(key_bytes * stripes as usize)

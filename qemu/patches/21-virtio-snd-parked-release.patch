@@ -2,7 +2,7 @@ diff --git a/hw/audio/virtio-snd.c b/hw/audio/virtio-snd.c
 index 70f4d85..a3fb2c3 100644
 --- a/hw/audio/virtio-snd.c
 +++ b/hw/audio/virtio-snd.c
-@@ -765,14 +765,13 @@
+@@ -701,14 +701,13 @@
                  return;
              }
              if (!stream->active) {
@@ -10,10 +10,10 @@ index 70f4d85..a3fb2c3 100644
 -                 * release to the main thread by punting through the
 -                 * pending list with end_head=current; main thread sees
 -                 * it immediately reapable. */
-+                /* Not started, or torn down since the enqueue: the main
-+                 * thread releases it on its next drain. end_head 0, since
-+                 * the reader takes whole periods and can stop short of the
-+                 * head. */
++                /* The stream has not started, or it was torn down after
++                 * the enqueue: the main thread releases the buffer on its
++                 * next drain. end_head is 0 because the reader takes whole
++                 * periods and can stop short of the head. */
                  QSIMPLEQ_REMOVE(&stream->queue, buffer,
                                  VirtIOSoundPCMBuffer, entry);
 -                vsnd_bypass_pending_push(stream, buffer,
@@ -22,7 +22,7 @@ index 70f4d85..a3fb2c3 100644
                  continue;
              }
              if (!buffer->populated) {
-@@ -1734,7 +1733,12 @@
+@@ -1640,7 +1639,12 @@
          return;
      }
  

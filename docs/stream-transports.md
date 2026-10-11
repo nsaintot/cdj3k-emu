@@ -78,7 +78,7 @@ consistent.
 | 0x08   | u32  | width        | 1280 in steady state                        |
 | 0x0C   | u32  | height       | 720                                         |
 | 0x10   | u32  | stride       | bytes per row                               |
-| 0x14   | u32  | format       | 1 = RGBA8888 (QEMU swaps XRGB→RGBA host-side) |
+| 0x14   | u32  | format       | `1`, RGBA8888; QEMU converts XRGB to RGBA on the host |
 | 0x18   | u32  | dirty_x      | bounding box of last update                 |
 | 0x1C   | u32  | dirty_y      |                                             |
 | 0x20   | u32  | dirty_w      |                                             |
@@ -134,7 +134,7 @@ QEMU arguments:
 | Offset  | Size | Field   | Notes                                                  |
 |---------|------|---------|--------------------------------------------------------|
 | 0x0000  | u32  | magic   | `0x3147_4F4A` (`JOG1`)                                 |
-| 0x0004  | u32  | seq     | seqlock counter - odd = write in progress              |
+| 0x0004  | u32  | seq     | seqlock counter; an odd value means a write is in progress |
 | 0x0008  | u16  | width   | 320                                                    |
 | 0x000A  | u16  | height  | 240                                                    |
 | 0x000C  | u32  | format  | 1 = XRGB8888 (B, G, R, X byte order)                   |
@@ -202,7 +202,8 @@ QEMU arguments:
 ### Cadence
 
 MOSI is paced by EP122's SPI loop (~100 Hz). MISO is event-driven: the
-UI sends a frame on every input change plus an idle keep-alive.
+UI sends a frame on every input change, and `subucom_virt` repeats the last
+one to the app.
 
 ### Error recovery
 
@@ -309,7 +310,7 @@ The figures are for one instance.
 |-----------|-------------------------------------------|-------------------------------------------|-----------------------------------------------|
 | Main LCD  | Dirty-rect deltas, typically a few MB/s   | ~221 MB/s if the whole 1280×720×4 surface flips every 60 Hz | Zero-copy mmap - no QEMU UI ring traffic       |
 | Jog LCD   | Seqlock-gated; host reads at 60 Hz        | 320×240×4 × 60 Hz = ~17.6 MB/s read       | Read-only mmap on host; guest writes ~100 Hz raw |
-| ctrl.sock | 64 B × ~100 Hz each direction = ~13 KB/s  | Same - bounded by 100 Hz SPI loop         | virtio-serial, negligible                      |
+| ctrl.sock | MOSI: 64 B × ~100 Hz = ~6.4 KB/s; MISO: one 64-byte frame per input change | ~6.4 KB/s MOSI; MISO bounded by the pointer event rate | virtio-serial, negligible |
 | cfg.sock  | A handful of ASCII lines per second       | Same                                      | Negligible                                     |
 
 The shm and ivshmem paths do not go through QEMU's UI or virtqueues, so their

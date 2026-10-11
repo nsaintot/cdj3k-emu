@@ -1,5 +1,5 @@
-//! Static labels and chrome for the left (transport) section. Cached and
-//! rebuilt only when the window scale or layout changes.
+//! Static labels and chrome for the left (transport) section. They are cached
+//! and rebuilt only when the window scale or layout changes.
 
 use egui::{Align2, FontId, Pos2, Rect, Shape, Stroke, Vec2};
 
@@ -80,7 +80,7 @@ fn collect_usb_stop_legend(list: &mut ShapeList, ctx: &egui::Context, layout: &U
     );
 }
 
-/// USB trident logo (left of the USB STOP button).
+/// Collects the USB trident logo, left of the USB STOP button.
 fn collect_usb_sign(list: &mut ShapeList, layout: &UiScale) {
     let col = PERF_TRANSPORT_COL_REF;
     collect_usb_trident(
@@ -141,7 +141,7 @@ fn collect_usb_rating(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScal
     }
 }
 
-/// SD legend under its casing: card glyph, then "SD".
+/// Collects the SD legend under its casing: a card glyph, then the label "SD".
 fn collect_sd_legend(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let col = PERF_TRANSPORT_COL_REF;
     let cy_ref = col.top() + col.height() * PERF_V_SD_LEGEND;
@@ -184,7 +184,7 @@ fn collect_sd_legend(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale
     );
 }
 
-/// TIME MODE / AUTO CUE, BEAT JUMP and TRACK SEARCH legends.
+/// Collects the TIME MODE, AUTO CUE, BEAT JUMP and TRACK SEARCH legends.
 fn collect_column_labels(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     list.text(
         ctx,
@@ -276,7 +276,7 @@ fn collect_call_delete_chrome(list: &mut ShapeList, layout: &UiScale) {
     );
 }
 
-/// "▪ CALL/" label, the "DELETE" pill and the segment right of it.
+/// Collects the "▪ CALL/" label, the "DELETE" pill and the line to its right.
 fn collect_call_delete_labels(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let col = PERF_TRANSPORT_COL_REF;
     let cy_ref = col.top() + col.height() * PERF_V_CALL_DELETE;
@@ -514,7 +514,7 @@ fn collect_direction_chrome(list: &mut ShapeList, ctx: &egui::Context, layout: &
     );
 }
 
-/// PLAY / PAUSE label (above the play button).
+/// Collects the PLAY / PAUSE label above the PLAY button.
 fn collect_play_label(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let play_c = layout.sp_in_rect(PERF_TRANSPORT_COL_REF, 0.5, PERF_V_PLAY);
     list.text(

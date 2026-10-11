@@ -58,7 +58,7 @@ pub enum LedPart {
 pub struct LedProfile {
     /// The red, green and blue dies at full drive, in linear sRGB.
     pub dies: [[f32; 3]; 3],
-    /// Light out per unit of PWM duty is `duty^gamma`.
+    /// The light output for a PWM duty is `duty^gamma`.
     pub gamma: f32,
     /// The drive the deck uses for white. Per-die gains make it neutral.
     pub white: [u8; 3],

@@ -47,9 +47,9 @@ pub(crate) const MIN_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
 /// means stopped.
 const JOG_VEL_INIT: u16 = 0xffff;
 
-/// `rotary` at rest. Must equal the value the guest reads while nothing turns
-/// ([`cdj3k_emu_panel::miso_frame::ROTARY_IDLE`]), or the first injected
-/// frame reads as one detent.
+/// The `rotary` value at rest. It must equal the value the guest reads while
+/// nothing turns ([`cdj3k_emu_panel::miso_frame::ROTARY_IDLE`]), or the first
+/// injected frame reads as one detent.
 const ROTARY_NEUTRAL: u16 = cdj3k_emu_panel::miso_frame::ROTARY_IDLE;
 
 /// Initial tempo slider position: 0.0 is full minus, 0.5 is centre and 1.0 is
@@ -65,10 +65,12 @@ pub struct CdjApp {
     model: Model,
 
     jog_pos: u16,
-    /// Inverted: `0xffff` is stopped and `0x0000` is maximum speed.
+    /// The encoding is inverted: `0xffff` is stopped and `0x0000` is maximum
+    /// speed.
     jog_vel: u16,
     jog_touch: u8,
-    /// Visual rotation of the platter (radians). Wraps freely; rendering uses `.rem_euclid(TAU)`.
+    /// The drawn rotation of the platter, in radians. It is not wrapped;
+    /// rendering applies `.rem_euclid(TAU)`.
     jog_angle: f32,
     /// Fractional jog ticks not yet sent to the device.
     jog_accum: f32,
@@ -83,7 +85,8 @@ pub struct CdjApp {
     /// `jog_accum` because a haptic detent is far coarser than a device tick
     /// (3240 per turn).
     jog_haptic_accum: f32,
-    /// Current angular velocity of the platter, rad/s. Decays toward 0 when not dragged.
+    /// The platter's angular velocity in rad/s. It decays toward 0 while the
+    /// platter is not dragged.
     jog_omega: f32,
     /// While the user drags, the last pointer angle around the wheel center, in
     /// radians with the atan2 convention. `None` when idle.
@@ -116,8 +119,8 @@ pub struct CdjApp {
     main_screen_popped: bool,
     debug_screen_popped: bool,
     rotary: u16,
-    /// Fader travel `0.0..=1.0`; the player's encoder maps it to its own
-    /// slider value (the CDJ-3000's: `cdj3k::tempo_raw`).
+    /// The fader travel, in `0.0..=1.0`. Each player's encoder maps it to its
+    /// own slider value; the CDJ-3000 uses `cdj3k::tempo_raw`.
     tempo: f32,
     vinyl_speed: u8,
     direction: cdj3k_emu_panel::Direction,
@@ -193,8 +196,9 @@ pub struct CdjApp {
     bloom_keeps: Vec<bloom::BloomKeep>,
     status: String,
 
-    /// Cached static jog wheel geometry (outer rings + inner disk/knob).
-    /// Rebuilt only when the window scale or `jog_adjust` changes.
+    /// The cached static jog wheel geometry: the outer rings, the inner disk and
+    /// the knob. It is rebuilt only when the window scale or `jog_adjust`
+    /// changes.
     jog_static_cache: Option<ui::draw_cache::JogStaticCache>,
 
     caches: ui::draw_cache::ShapeCaches,
@@ -290,7 +294,7 @@ fn prepare_panel(egui_ctx: &egui::Context) -> cdj3k_emu_storage::PanelSettings {
     // the private macOS struct layout has changed.
     cdj3k_emu_platform::haptic::init();
 
-    // Prevent resizing the window with the keyboard.
+    // Disable egui's keyboard zoom and keep the zoom factor at 1.
     egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
     egui_ctx.set_zoom_factor(1.0);
     let instance_id = cdj3k_emu_platform::menu_state::lock().current_instance_id;
@@ -475,8 +479,8 @@ impl CdjApp {
         if let (Some(gl), Some(bloom)) = (gl, &self.bloom) {
             bloom.lock().unwrap().destroy(gl);
         }
-        // One borrow of the menu state: taking it twice in one expression
-        // would deadlock on its own mutex.
+        // Lock the menu state once; locking it twice in one expression
+        // deadlocks on its mutex.
         let (screen_extended, instance_id) = {
             let s = cdj3k_emu_platform::menu_state::lock();
             (s.screen_extended, s.current_instance_id)

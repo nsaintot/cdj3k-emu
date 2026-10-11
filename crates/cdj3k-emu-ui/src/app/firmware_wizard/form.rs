@@ -175,8 +175,9 @@ impl FirmwareWizard {
             let pal = theme::palette(ui.ctx());
             if theme::secondary(ui, [BROWSE_W * k, theme::FIELD_H * k], "Browse…", pal).clicked()
             {
-                // Opened on its own thread; the answer is collected by the
-                // poll below, so the frame loop keeps running while it is up.
+                // The dialog runs on its own thread. The check at the top of
+                // this function collects its answer on a later frame, so the
+                // frame loop keeps running while the dialog is up.
                 self.pending_pick = Some((
                     is_upd,
                     if is_upd {

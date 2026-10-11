@@ -1,4 +1,4 @@
-// No console window on Windows.
+// Build a GUI app on Windows, so that no console window opens.
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod cli;
@@ -218,7 +218,7 @@ fn seed_menu_from_settings(instance: u32, service_mode: bool) {
 /// `--provision`: install `upd` into the slot for `model`, then exit.
 fn provision_and_exit(upd: PathBuf, key: Option<&Path>, instance: u32, model: Option<Model>) -> ! {
     let Some(model) = model else {
-        eprintln!("cdj3k-emu: --provision needs --model cdj3k or --model cdj3kx");
+        eprintln!("cdj3k-emu: --provision needs --model, such as --model cdj3k.");
         std::process::exit(2);
     };
     if let Err(e) = cdj3k_emu_ui::provision_blocking(upd, key, instance, model) {
@@ -228,7 +228,7 @@ fn provision_and_exit(upd: PathBuf, key: Option<&Path>, instance: u32, model: Op
     // When the slot's window is open, that window swaps the install in.
     match SLOT_CLAIM.get().map(cdj3k_emu_storage::apply_staged) {
         Some(Ok(_)) => {
-            eprintln!("cdj3k-emu: {model} firmware installed in slot {instance}");
+            eprintln!("cdj3k-emu: the {model} firmware is installed in slot {instance}.");
             std::process::exit(0);
         }
         Some(Err(e)) => {
@@ -238,8 +238,8 @@ fn provision_and_exit(upd: PathBuf, key: Option<&Path>, instance: u32, model: Op
         None => {
             let when = notify_install_ready(instance);
             eprintln!(
-                "cdj3k-emu: {model} firmware installed for slot {instance}; its open \
-                 window swaps it in {when}"
+                "cdj3k-emu: the {model} firmware is installed for slot {instance}. \
+                 The slot's open window swaps it in {when}."
             );
             std::process::exit(0);
         }

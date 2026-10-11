@@ -42,7 +42,8 @@ pub struct CtrlStream {
 
 impl CtrlStream {
     /// Spawn the reader and writer thread and return a handle.
-    /// `socket_dir` is a directory such as `/tmp/cdj3k-0`; the socket is
+    /// `socket_dir` is the slot's runtime directory, such as
+    /// `/tmp/cdj3k-emu-501/instance-1`, and the socket is
     /// `{socket_dir}/ctrl.sock`.
     pub fn new(socket_dir: &str, gate: crate::RepaintGate) -> Self {
         let sock_path = PathBuf::from(socket_dir.trim_end_matches('/')).join("ctrl.sock");
@@ -58,7 +59,7 @@ impl CtrlStream {
         thread::Builder::new()
             .name("ctrl-stream".into())
             .spawn(move || stream_loop(path, state_clone, writer_clone, latest_clone, gate))
-            .expect("spawn ctrl-stream thread");
+            .expect("the ctrl-stream thread could not be started");
 
         Self {
             state,

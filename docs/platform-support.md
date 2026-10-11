@@ -24,7 +24,7 @@ passthrough or native window integration.
 | Bridged network | vmnet-bridged on a NIC; a `tap*` through `tapbridge` | macvtap on a NIC, a tap of ours on a bridge, or an existing tap | a TAP-Windows6 adapter per slot, joined to a NIC with `netsh bridge` (Windows 11 22H2 + KB5030310); by hand on older builds | — |
 | Physical USB | DiskArbitration unmount; QEMU opens `/dev/diskN` after a one-time `chmod` prompt | udisks unmount; the app opens the disk `O_EXCL` (udisks `OpenDevice` under polkit when refused) and hands QEMU the fd with QMP `add-fd` | volumes locked and dismounted by the app; a one-time elevated ACL grant, then QEMU opens `\\.\PhysicalDriveN` | — |
 | Virtual USB format | `hdiutil` + `diskutil` | `sfdisk` + `mkfs.exfat` on the file | VHDX: `CreateVirtualDisk`, then an elevated `Mount-DiskImage` + `Format-Volume` | — |
-| Elevation | `osascript` admin prompt | `pkexec` | UAC (`ShellExecuteExW` `runas`) | refused |
+| Elevation | Authorization Services (`AuthorizationExecuteWithPrivileges`); an `osascript` admin prompt for the USB `chmod` | `pkexec` | UAC (`ShellExecuteExW` `runas`) | refused |
 | Menu | native menu bar (`muda`) | in-window strip (egui) | in-window strip (egui), also the title bar: an undecorated window, caption answered in `WM_NCHITTEST` | in-window strip |
 | Window aspect | `contentAspectRatio` | Wayland: patched winit fit; X11: `WM_NORMAL_HINTS` | `WM_SIZING` on a subclassed HWND | settle snap only |
 | Panel frame kept | AppKit autosave: size and position | `window-frames.txt`: size, and position where the window system reports one (not Wayland) | `window-frames.txt`: size and position | — |

@@ -17,8 +17,8 @@ pub(super) struct Shared {
     pub(super) prepared: Mutex<Option<Prepared>>,
     /// A Sparkle step for the UI thread, which owns Sparkle.
     pub(super) native_go: Mutex<Option<Finish>>,
-    /// A Sparkle install that could not proceed; retried from the menu or
-    /// "Try Again".
+    /// A Sparkle install that could not proceed. The menu or "Try Again"
+    /// retries it.
     pub(super) native_waiting: Mutex<Option<Finish>>,
     /// Whether a check, download or restart thread is running.
     pub(super) busy: AtomicBool,

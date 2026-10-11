@@ -120,12 +120,12 @@ impl Host {
 
         match QemuInstance::spawn(config.clone()) {
             Ok(inst) => {
-                eprintln!("cdj3k-emu: QEMU subprocess started ({model})");
+                eprintln!("cdj3k-emu: the QEMU subprocess started for the {model}.");
                 cdj3k_emu_storage::mods::set_current_boot(boot);
                 runtime_worker::spawn(Some(inst), config, prebuilt_net, mods);
             }
             Err(e) => {
-                eprintln!("cdj3k-emu: QEMU start failed: {e:?}");
+                eprintln!("cdj3k-emu: starting QEMU failed: {e:?}");
                 runtime_worker::spawn(None, config, prebuilt_net, mods);
             }
         }

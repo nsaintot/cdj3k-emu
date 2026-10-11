@@ -153,9 +153,9 @@ impl EguiProvider {
 
     // ── The model, as the strip reads it ──────────────────────────────────────
 
-    /// A pill or icon opens one menu, so it shows that menu without the Quit
-    /// the native app menu needs at the end of the first one, and without the
-    /// update row, which the sandwich lists first.
+    /// A pill or icon opens one menu. It shows that menu without the Quit row,
+    /// which the native app menu needs at the end of the first menu, and
+    /// without the update row, which the sandwich lists first.
     fn menu_rows(children: &[MenuNode]) -> Vec<MenuNode> {
         let mut rows: Vec<MenuNode> = children
             .iter()

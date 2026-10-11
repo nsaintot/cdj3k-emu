@@ -248,15 +248,15 @@ static void run_miso_list(int fd, int one_shot, int refresh_us) {
  * LED frame layout (64 bytes):
  *
  *  [00-01]  0x0000        frame type / header (always zero)
- *  [02-11]  bitfield      monochromatic LEDs: direct GPIO + shift registers
- *             byte 05 bits 7:6 = 0xc0 always set (IC6003 dim nav LEDs)
- *             byte 10 bits 5:4 = 0x30 always set (IC6003 dim nav LEDs)
+ *  [02-11]  bitfield      monochromatic LEDs on direct GPIO and shift registers
+ *             byte 05 bits 7:6 (0xc0) are always set (IC6003 dim nav LEDs)
+ *             byte 10 bits 5:4 (0x30) are always set (IC6003 dim nav LEDs)
  *  [12-35]  8 × {R,G,B}  HOT CUE A-H pad LEDs  (full white = 44 78 7f)
- *  [36-38]  {R,G,B}       SOURCE indicator      (full = 88 f0 ff)
- *  [39-41]  {R,G,B}       SD indicator
- *  [42-44]  {R,G,B}       USB indicator
+ *  [36-38]  {R,G,B}       slot 1 (SD) indicator (full = 88 f0 ff)
+ *  [39-41]  {R,G,B}       slot 2 (USB) indicator
+ *  [42-44]  {R,G,B}       ON AIR
  *  [45-61]  zeros         unused / padding
- *  [62-63]  CRC-16        over bytes 0-61 (algorithm TBD)
+ *  [62-63]  CRC-16/X-25   over bytes 0-61, little-endian
  */
 
 static void render_led_decoded(const uint8_t *f, const uint8_t *prev,
@@ -309,7 +309,7 @@ static void render_led_decoded(const uint8_t *f, const uint8_t *prev,
     fprintf(stdout, "\033[%d;1H\033[K", row++);
     fprintf(stdout, "  ");
     struct { int base; const char *name; } inds[] = {
-        {36, "SOURCE"}, {39, "SD"}, {42, "USB"}
+        {36, "SD"}, {39, "USB"}, {42, "ON AIR"}
     };
     for (int i = 0; i < 3; i++) {
         int b = inds[i].base;
@@ -449,7 +449,7 @@ int main(int argc, char **argv) {
             char *end = NULL;
             long v = strtol(argv[++i], &end, 10);
             if (end == argv[i] || *end != '\0' || v <= 0 || v > 10000) {
-                fprintf(stderr, "-miso-freq must be an integer in range 1-10000\n");
+                fprintf(stderr, "-miso-freq must be an integer in the range 1-10000\n");
                 return 1;
             }
             miso_hz = (int)v;

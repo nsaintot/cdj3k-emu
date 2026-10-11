@@ -52,12 +52,12 @@ impl Edge {
     }
 }
 
-/// `rect` reshaped to the ratio. `chrome` is the window's non-client
-/// `(width, height)`: the aspect holds for the client area, below the strip.
+/// Reshape `rect` to the ratio. `chrome` is the window's non-client
+/// `(width, height)`, and the ratio applies to the client area below the strip.
 ///
-/// A horizontal drag or a corner gives the width priority and moves the
-/// vertical edge opposite the anchored one; a vertical drag gives the height
-/// priority and moves the right edge.
+/// A side or corner drag keeps the width and moves the bottom edge, or the top
+/// edge for a top corner. A top or bottom drag keeps the height and moves the
+/// right edge.
 pub fn fit(edge: Edge, rect: Rect, chrome: (i32, i32), ratio: Ratio) -> Rect {
     if ratio.width == 0 || ratio.height == 0 {
         return rect;

@@ -4,7 +4,7 @@
 #   subucom_virt.ko, virtio_snd.ko, udev_usb1.ko
 #
 # Usage:
-#   make docker       - run docker/Dockerfile, outputs to build/docker-out/modules/
+#   make docker       - runs docker/Dockerfile and writes the modules to build/docker-out/modules/
 
 REPO_ROOT := $(shell git -C $(CURDIR) rev-parse --show-toplevel)
 

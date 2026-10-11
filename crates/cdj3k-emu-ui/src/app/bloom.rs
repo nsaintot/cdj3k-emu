@@ -26,7 +26,7 @@ use shaders::{BLUR_FRAG, COMPOSITE_FRAG, THRESHOLD_FRAG, VERT};
 // ── Tuning constants ───────────────────────────────────────────────────────────
 
 /// Minimum brightness, the largest of R, G and B, for a pixel to enter the
-/// bloom. It must stay below the dimmest lit LED in the palette, COL_BTN_GREEN
+/// bloom. It must stay below the dimmest lit LED in the palette, COL_GREEN
 /// (200/255 = 0.784).
 pub const BLOOM_THRESHOLD: f32 = 0.55;
 
@@ -382,7 +382,8 @@ unsafe fn set_mask(
     }
 }
 
-/// A rect in points as (x0, y0, x1, y1) in UV space, Y flipped for GL.
+/// Converts a rect in points to (x0, y0, x1, y1) in UV space, with Y flipped
+/// for GL.
 fn uv_rect(rect: &Rect, ppp: f32, w: i32, h: i32) -> [f32; 4] {
     [
         rect.min.x * ppp / w as f32,

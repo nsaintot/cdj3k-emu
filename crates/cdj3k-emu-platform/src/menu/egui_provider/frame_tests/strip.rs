@@ -127,8 +127,8 @@ fn every_strip_button_lights() {
     });
     let _ = run(&ctx, Default::default(), |ui| p.draw(ui));
 
-    // Sweep the strip rather than guess where each button landed: what
-    // matters is that every one of them lights, wherever it is.
+    // Hover every point along the strip, so each button is found wherever it
+    // is laid out.
     let mut lit_rects: Vec<Rect> = Vec::new();
     let mut x = 18.0;
     while x < 890.0 {
@@ -145,8 +145,9 @@ fn every_strip_button_lights() {
         }
         x += 2.0;
     }
-    // Sandwich, the Emulation pill, Restart, View; where the strip is the
-    // title bar, minimise and maximise too (close lights red).
+    // The sandwich, the Emulation pill, Restart and View light up. Where the
+    // strip is the title bar, minimise and maximise light up too; close
+    // lights red, so it is not counted.
     let caption_buttons = if CAPTION_IN_STRIP { 2 } else { 0 };
     assert_eq!(
         lit_rects.len(),

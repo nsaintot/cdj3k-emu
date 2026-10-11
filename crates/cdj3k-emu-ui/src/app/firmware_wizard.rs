@@ -75,8 +75,8 @@ pub struct FirmwareWizard {
     finished: bool,
     /// Where the shell put the finished run: applied or staged.
     installed: Option<Installed>,
-    /// `(slot, model)` the user asked to boot, or open, from the Done banner;
-    /// taken by the shell.
+    /// The `(slot, model)` that the user asked to boot or open from the Done
+    /// banner. The shell takes it.
     boot_request: Option<(u32, Model)>,
     /// The shared log buffer. The provision thread appends lines and the UI
     /// reads it every frame.
@@ -139,7 +139,8 @@ impl FirmwareWizard {
         self.installed = Some(installed);
     }
 
-    /// The Done banner's boot request (`(slot, model)`), once.
+    /// Takes the Done banner's boot request, `(slot, model)`. Later calls return
+    /// `None` until the user asks again.
     pub fn take_boot_request(&mut self) -> Option<(u32, Model)> {
         self.boot_request.take()
     }

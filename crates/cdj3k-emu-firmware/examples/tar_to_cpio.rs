@@ -21,15 +21,16 @@ fn main() {
         std::process::exit(2);
     };
 
-    let mut archive = tar::Archive::new(std::fs::File::open(tar_path).expect("open tar"));
+    let mut archive =
+        tar::Archive::new(std::fs::File::open(tar_path).expect("the tar file should open"));
     let mut entries: Vec<Entry> = Vec::new();
     let mut skipped = 0usize;
     // The content of every regular file seen so far. A hard link becomes a
     // full copy, because the cpio codec has no inode or link count.
     let mut seen: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
-    for e in archive.entries().expect("tar entries") {
-        let mut e = e.expect("tar entry");
+    for e in archive.entries().expect("the tar entries should be listed") {
+        let mut e = e.expect("the tar entry should be readable");
         let header = e.header().clone();
         let path = format!("/{}", e.path().expect("path").to_string_lossy());
         let path = path.replace("/./", "/");

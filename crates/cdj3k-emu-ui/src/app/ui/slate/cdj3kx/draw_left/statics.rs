@@ -1,5 +1,5 @@
-//! Static labels and chrome for the left (transport) section. Cached and
-//! rebuilt only when the window scale or layout changes.
+//! Static labels and chrome for the left (transport) section. They are cached
+//! and rebuilt only when the window scale or layout changes.
 
 use egui::{Align2, FontId, Pos2, Rect, Stroke, Vec2};
 
@@ -39,8 +39,8 @@ pub(super) fn collect_left_statics(list: &mut ShapeList, ctx: &egui::Context, la
     collect_direction_chrome(list, layout);
 }
 
-/// One USB slot's legends: name and rating above the casing, then a notch
-/// tab and "STOP" below its light band. The CDJ-3000X has no trident logo here;
+/// Collects one USB slot's legends: its name and rating above the casing, and
+/// a notch tab and "STOP" below its light band. The CDJ-3000X has no trident logo here;
 /// the host-link glyph sits beside USB 1's legend.
 fn collect_usb_slot_legend(
     list: &mut ShapeList,
@@ -141,7 +141,7 @@ fn collect_usb_rating(
     }
 }
 
-/// BEAT JUMP and TRACK SEARCH legends.
+/// Collects the BEAT JUMP and TRACK SEARCH legends.
 fn collect_column_labels(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     list.text(
         ctx,
@@ -221,7 +221,7 @@ fn collect_call_delete_chrome(list: &mut ShapeList, layout: &UiScale) {
     );
 }
 
-/// "▪ CALL/" label, the "DELETE" pill and the segment right of it.
+/// Collects the "▪ CALL/" label, the "DELETE" pill and the line to its right.
 fn collect_call_delete_labels(list: &mut ShapeList, ctx: &egui::Context, layout: &UiScale) {
     let col = PERF_TRANSPORT_COL_REF;
     let cy_ref = col.top() + col.height() * PERF_V_CALL_DELETE;

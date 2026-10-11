@@ -112,7 +112,8 @@ pub(in crate::app) enum ButtonType {
 }
 
 /// An open USB tray, folded up against its casing's top wall: a thin panel
-/// with the handle's dome standing on its top edge. Screen space.
+/// with the handle's dome standing on its top edge. Its coordinates are in
+/// screen space.
 pub(in crate::app) struct UsbTraySpec {
     pub centre_x: f32,
     pub top: f32,
@@ -242,8 +243,8 @@ pub(in crate::app) struct RotaryGearSpec {
     /// The rotation of the whole gear in radians, measured with `(cos, sin)`
     /// in screen space, where y points down. Use
     /// `indicator_angle_cw_from_top - FRAC_PI_2` to keep the gear in phase with
-    /// the indicator. With `0.0` the gear is not rotated, and tooth 0 starts at
-    /// 3 o'clock.
+    /// the indicator. With `0.0` the gear is not rotated, and tooth 0 is centered
+    /// half a slot clockwise of 3 o'clock.
     pub rotation_rad: f32,
     /// Fill color of the gear body inside the outline. Use
     /// [`Color32::TRANSPARENT`] for no fill.
@@ -305,15 +306,15 @@ pub(in crate::app) struct RotaryControlSpec {
     pub ticks: RotaryTickSpec,
     /// Color of the tick dots; strokes use their own [`StrokeSpec::color`].
     pub color: Color32,
-    /// Whether to draw the indicator pill. It is `false` for a bare gear, such as
-    /// the nav rotary.
+    /// Whether to draw the indicator. It is `false` for a bare gear, such as the
+    /// nav rotary.
     pub draw_indicator: bool,
     /// Whether to draw the tick ring. It is `false` for a bare gear.
     pub draw_ticks: bool,
 }
 
 impl RotaryControlSpec {
-    /// A bare gear in `color`: no indicator, no tick ring.
+    /// Returns a bare gear in `color`, with no indicator and no tick ring.
     pub(in crate::app) fn gear_only(gear: RotaryGearSpec, color: Color32) -> Self {
         let none = StrokeSpec { width: 0.0, color };
         Self {
@@ -341,7 +342,7 @@ impl RotaryControlSpec {
     }
 }
 
-/// Paints a rotary control, with its gear knob, outlined indicator pill and tick
+/// Paints a rotary control, with its gear knob, outlined indicator and tick
 /// ring, centered on `center`.
 pub(in crate::app) fn draw_rotary_control(
     painter: &egui::Painter,
@@ -531,11 +532,6 @@ fn collect_rotary_indicator(out: &mut ShapeList, center: Pos2, indicator: &Rotar
         indicator.stroke.stroke(),
     ));
 }
-
-// ── Buttons that collect into a ShapeList ────────────────────────────────────
-// The button functions write into a ShapeList for caching and handle no
-// interaction. The caller, such as `CdjApp::btn`, calls ui.interact() and
-// computes `is_pressed = response.is_pointer_button_down_on() || latched`.
 
 fn collect_double_rect_border(
     out: &mut ShapeList,

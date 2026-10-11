@@ -237,7 +237,9 @@ static ENV_RELEASE: std::sync::Mutex<std::collections::BTreeMap<u32, Option<Stri
 /// Forget the release that [`slot_release`] cached for the slot that `paths`
 /// belongs to, after its eMMC is replaced or removed.
 fn forget_release(paths: &FirmwarePaths) {
-    let mut cache = ENV_RELEASE.lock().expect("release cache");
+    let mut cache = ENV_RELEASE
+        .lock()
+        .expect("the release cache lock is poisoned");
     cache.retain(|&slot, _| FirmwarePaths::new(slot).emmc != paths.emmc);
 }
 
@@ -251,7 +253,9 @@ pub fn slot_release(instance_id: u32) -> Option<String> {
     if let Some(release) = settings::InstanceSettings::saved_firmware_release(instance_id) {
         return Some(release);
     }
-    let mut cache = ENV_RELEASE.lock().expect("release cache");
+    let mut cache = ENV_RELEASE
+        .lock()
+        .expect("the release cache lock is poisoned");
     if let Some(remembered) = cache.get(&instance_id) {
         return remembered.clone();
     }
@@ -290,8 +294,9 @@ impl TestHome {
         let path = std::env::temp_dir().join(format!("cdj3k-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
-        // Each host's app_data_dir() root: macOS $HOME, Linux $XDG_DATA_HOME
-        // (else $HOME), Windows %LOCALAPPDATA%.
+        // Point every variable that app_data_dir() reads at the test root:
+        // HOME on macOS, XDG_DATA_HOME (or HOME) on Linux, and LOCALAPPDATA on
+        // Windows.
         for var in ["HOME", "XDG_DATA_HOME", "LOCALAPPDATA"] {
             std::env::set_var(var, &path);
         }

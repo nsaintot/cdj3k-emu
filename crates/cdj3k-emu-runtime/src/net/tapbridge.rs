@@ -48,8 +48,9 @@ pub struct TapBridge {
     /// The TAP interface name, such as "tap1". QEMU uses `qemu_tap_fd`, not
     /// this name.
     pub qemu_tap: String,
-    /// Open fd for `/dev/<qemu_tap>`.  Passed to QEMU as `tap,fd=N` so the
-    /// interface is never DOWN between bridge setup and QEMU's first packet.
+    /// The open fd for `/dev/<qemu_tap>`. QEMU receives it as `tap,fd=N`, so
+    /// the interface is never DOWN between bridge setup and QEMU's first
+    /// packet.
     pub qemu_tap_fd: RawFd,
     /// Keeps the tap interface RUNNING until this struct is dropped.
     _tap_file: fs::File,
@@ -131,7 +132,7 @@ impl TapBridge {
         unsafe { libc::fcntl(qemu_tap_fd, libc::F_SETFD, 0) };
 
         eprintln!(
-            "cdj3k-emu: tapbridge up  bridge={}  qemu_tap={}  fd={}  host_tap={}",
+            "cdj3k-emu: the TAP bridge is up: bridge {}, QEMU tap {} (fd {}), host tap {}.",
             bridge_iface, qemu_tap, qemu_tap_fd, host_tap
         );
 
@@ -149,7 +150,7 @@ impl Drop for TapBridge {
     /// Runs before the lease drops, which waits for the watcher's answer.
     fn drop(&mut self) {
         eprintln!(
-            "cdj3k-emu: tapbridge torn down  bridge={}  qemu_tap={}",
+            "cdj3k-emu: the TAP bridge is down: bridge {}, QEMU tap {}.",
             self.bridge_iface, self.qemu_tap
         );
     }
@@ -215,12 +216,12 @@ for n in $(seq 0 15); do
         break
     fi
 done
-[ -z "$TAP_QEMU" ] && { echo "tapbridge: no free tap device found" >&2; exit 1; }
+[ -z "$TAP_QEMU" ] && { echo "tapbridge: no tap device is free." >&2; exit 1; }
 
 # Create the fixed bridge shared with djx-emu, or reuse it if another emulator
 # already made it.
 ifconfig "$BRIDGE" >/dev/null 2>&1 || ifconfig "$BRIDGE" create >/dev/null 2>&1 \
-    || { echo "tapbridge: cannot create $BRIDGE" >&2; exit 1; }
+    || { echo "tapbridge: the bridge $BRIDGE cannot be created." >&2; exit 1; }
 
 # Add the host tap to the shared bridge once (skip if already a member).
 if ! ifconfig "$BRIDGE" 2>/dev/null | grep -q "member: $HOST_TAP"; then
@@ -287,7 +288,7 @@ fn wait_for_names(names_file: &Path, timeout: Duration) -> io::Result<(String, S
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
-                    "tapbridge watcher did not report interface names within {}s",
+                    "the tapbridge watcher did not report the interface names within {} s",
                     timeout.as_secs(),
                 ),
             ));

@@ -19,7 +19,7 @@ pub const TRANSPORT_REF_BOT: f32 = TRANSPORT_REF_TOP + TRANSPORT_REF_SIZE_H;
 pub const TRANSPORT_REF_LEFT: f32 = 10.0;
 pub const TRANSPORT_REF_RIGHT: f32 = TRANSPORT_REF_LEFT + TRANSPORT_REF_SIZE_W;
 
-// TOP CENTER (MENU, LCD)
+// Top centre: the menu row and the LCD
 pub const TOP_CENTRAL_AFTER_TRANSPORT_GAP: f32 = -108.0;
 pub const TOP_CENTRAL_REF_SIZE_H: f32 = 1773.0;
 pub const TOP_CENTRAL_REF_SIZE_W: f32 = 2508.0;
@@ -28,7 +28,7 @@ pub const TOP_CENTRAL_REF_BOT: f32 = TOP_CENTRAL_REF_TOP + TOP_CENTRAL_REF_SIZE_
 pub const TOP_CENTRAL_REF_LEFT: f32 = TRANSPORT_REF_RIGHT + TOP_CENTRAL_AFTER_TRANSPORT_GAP;
 pub const TOP_CENTRAL_REF_RIGHT: f32 = TOP_CENTRAL_REF_LEFT + TOP_CENTRAL_REF_SIZE_W;
 
-// MID CENTER (HOT CUE + HELPER ROW)
+// Mid centre: the hot cue row and the helper row
 pub const MID_CENTRAL_AFTER_TOP_CENTRAL_GAP: f32 = 5.0;
 pub const MID_CENTRAL_AFTER_TRANSPORT_GAP: f32 = 20.0;
 pub const MID_CENTRAL_REF_SIZE_H: f32 = 460.0;
@@ -39,7 +39,7 @@ pub const MID_CENTRAL_REF_BOT: f32 = MID_CENTRAL_REF_TOP + MID_CENTRAL_REF_SIZE_
 pub const MID_CENTRAL_REF_LEFT: f32 = TOP_CENTRAL_REF_LEFT - MID_CENTRAL_AFTER_TRANSPORT_GAP;
 pub const MID_CENTRAL_REF_RIGHT: f32 = MID_CENTRAL_REF_LEFT + MID_CENTRAL_REF_SIZE_W;
 
-// JOG
+// Jog
 // The jog is centred on ref (1666, 3280), which lies on the panel's centre
 // line and is the centre of the drawing's outer ring.
 pub const JOG_AFTER_MID_CENTRAL_GAP: f32 = -47.0;
@@ -51,13 +51,13 @@ pub const JOG_REF_BOT: f32 = JOG_REF_TOP + JOG_REF_SIZE_H;
 pub const JOG_REF_LEFT: f32 = TRANSPORT_REF_RIGHT + JOG_AFTER_TRANSPORT_GAP;
 pub const JOG_REF_RIGHT: f32 = JOG_REF_LEFT + JOG_REF_SIZE_W;
 
-// NAVIGATION
+// Navigation
 /// Centre of the nav pod (the rotary and its four buttons) within the modes
 /// column. The decorative line that runs around the pod uses it too.
 pub const NAV_POD_U: f32 = 0.444;
 pub const NAV_POD_V: f32 = 0.135;
 
-// MODES
+// Modes column
 pub const MODE_AFTER_CENTRAL_GAP: f32 = 0.0;
 pub const MODE_AFTER_JOG_GAP: f32 = 69.0;
 pub const MODES_REF_SIZE_H: f32 = TRANSPORT_REF_SIZE_H;
@@ -66,5 +66,3 @@ pub const MODES_REF_TOP: f32 = TRANSPORT_REF_TOP + MODE_AFTER_CENTRAL_GAP;
 pub const MODES_REF_BOT: f32 = MODES_REF_TOP + MODES_REF_SIZE_H;
 pub const MODES_REF_LEFT: f32 = JOG_REF_RIGHT + MODE_AFTER_JOG_GAP;
 pub const MODES_REF_RIGHT: f32 = MODES_REF_LEFT + MODES_REF_SIZE_W;
-
-// BOTTOM DECORATIVE

@@ -98,7 +98,7 @@ new file mode 100644
 index 0000000..493a804
 --- /dev/null
 +++ b/audio/wasapiaudio.c
-@@ -0,0 +1,929 @@
+@@ -0,0 +1,931 @@
 +/*
 + * QEMU WASAPI audio driver
 + *
@@ -153,8 +153,8 @@ index 0000000..493a804
 +uint32_t wasapi_get_static_latency_frames(void);
 +int wasapi_bypass_ready(void);
 +
-+/* The stream's rate. The ring is written at this rate, so it matching the
-+ * guest's is what keeps virtio-snd on its passthrough path. */
++/* The stream's rate. The ring is written at this rate; when it matches the
++ * guest's rate, virtio-snd stays on its passthrough path. */
 +unsigned wasapi_get_active_samplerate(void)
 +{
 +    return atomic_load_explicit(&wasapi_bypass_rate, memory_order_relaxed);
@@ -246,7 +246,7 @@ index 0000000..493a804
 +    HWVoiceOut hw;
 +
 +    /* Set before the thread starts. */
-+    WCHAR *dev_id;              /* endpoint ID; NULL = default render endpoint */
++    WCHAR *dev_id;              /* endpoint ID; NULL means the default render endpoint */
 +    bool bypass_capable;        /* counted in wasapi_bypass_streams */
 +    HANDLE thread;
 +    HANDLE stop_event;
@@ -427,8 +427,9 @@ index 0000000..493a804
 +                                    (void **)&client);
 +        }
 +        if (FAILED(hr) && !v->on_fallback) {
-+            error_report("wasapi: preferred endpoint not usable (0x%08lx), "
-+                         "using the default render endpoint", (long)hr);
++            error_report("wasapi: the preferred endpoint is not usable "
++                         "(0x%08lx); using the default render endpoint",
++                         (long)hr);
 +        }
 +        v->on_fallback = FAILED(hr);
 +        if (FAILED(hr) && dev) {
@@ -738,9 +739,10 @@ index 0000000..493a804
 +
 +lost:
 +    if (hr == AUDCLNT_E_DEVICE_INVALIDATED) {
-+        error_report("wasapi: endpoint invalidated, reopening");
++        error_report("wasapi: the endpoint was invalidated; reopening it");
 +    } else {
-+        error_report("wasapi: render failed (0x%08lx), reopening", (long)hr);
++        error_report("wasapi: rendering failed (0x%08lx); reopening the "
++                     "endpoint", (long)hr);
 +    }
 +    return false;
 +}
@@ -1032,15 +1034,17 @@ diff --git a/hw/audio/virtio-snd.c b/hw/audio/virtio-snd.c
 index 0b7cc10..70f4d85 100644
 --- a/hw/audio/virtio-snd.c
 +++ b/hw/audio/virtio-snd.c
-@@ -41,7 +41,7 @@ static void virtio_snd_pcm_buffer_free(VirtIOSoundPCMBuffer *buffer);
+@@ -40,8 +40,8 @@ static void virtio_snd_pcm_buffer_free(VirtIOSoundPCMBuffer *buffer);
+ 
  /* ============= Host audio bypass ring =============
-  * SPSC ring: virtio-snd writes (main loop), the host backend's real-time
-  * callback reads: CoreAudio's IOProc on macOS, PipeWire's process callback
-- * on Linux.
-+ * on Linux, WASAPI's render thread on Windows.
-  * Bypasses QEMU's hw->buf_emul, eliminating ~15-20ms of mixer latency.
-  * Stereo, F32 or S32 (S32→F32 inline); the writer resamples when the
-  * guest and device rates differ. Output only.
+  * An SPSC ring. virtio-snd's writer thread fills it, and the host backend's
+- * real-time callback drains it: CoreAudio's IOProc on macOS and PipeWire's
+- * process callback on Linux.
++ * real-time callback drains it: CoreAudio's IOProc on macOS, PipeWire's
++ * process callback on Linux and WASAPI's render thread on Windows.
+  * The ring skips QEMU's hw->buf_emul and the mixer, which add about
+  * 15-20 ms. It holds stereo F32: S32 input is converted on the way in, and
+  * the writer resamples when the guest and device rates differ. The ring
 @@ -54,7 +54,8 @@ static VirtIOSound *vsnd_drain_target_dev;
  
  /* The ring needs a backend that drains it from its own real-time callback;
@@ -1060,7 +1064,7 @@ index 0b7cc10..70f4d85 100644
  #else
  #include <sched.h>
  #endif
-@@ -115,6 +118,19 @@ static void vsnd_writer_thread_set_rt(void)
+@@ -110,6 +113,19 @@ static void vsnd_writer_thread_set_rt(void)
          fprintf(stderr,
                  "virtio-snd: writer thread bound to Mach RT (0.5 ms / 2 ms)\n");
      }
@@ -1080,7 +1084,7 @@ index 0b7cc10..70f4d85 100644
  #else
      /* Linux has no time-constraint class. SCHED_FIFO works where the
       * process is allowed it (an rtkit grant, CAP_SYS_NICE, an rtprio
-@@ -321,6 +337,13 @@ extern unsigned coreaudio_get_active_samplerate(void);
+@@ -277,6 +293,13 @@ extern unsigned coreaudio_get_active_samplerate(void);
  #define host_audio_pipeline_depth_us     coreaudio_get_pipeline_depth_us
  #define host_audio_static_latency_frames coreaudio_get_static_latency_frames
  #define host_audio_active_samplerate     coreaudio_get_active_samplerate
@@ -1094,7 +1098,7 @@ index 0b7cc10..70f4d85 100644
  #else
  extern uint32_t pwaudio_get_pipeline_depth_us(void);
  extern uint32_t pwaudio_get_static_latency_frames(void);
-@@ -783,9 +806,32 @@ static void *vsnd_writer_thread_fn(void *arg)
+@@ -718,9 +741,32 @@ static void *vsnd_writer_thread_fn(void *arg)
  {
      (void)arg;
      vsnd_writer_thread_set_rt();
@@ -1127,7 +1131,7 @@ index 0b7cc10..70f4d85 100644
          if (!atomic_load_explicit(&vsnd_bypass_active, memory_order_acquire)) {
              continue;
          }
-@@ -801,6 +847,11 @@ static void *vsnd_writer_thread_fn(void *arg)
+@@ -736,6 +782,11 @@ static void *vsnd_writer_thread_fn(void *arg)
              }
          }
      }
@@ -1139,7 +1143,7 @@ index 0b7cc10..70f4d85 100644
      return NULL;
  }
  
-@@ -1020,10 +1071,13 @@ static void virtio_snd_bypass_set_active(int on, int src_fmt, uint32_t guest_rat
+@@ -927,10 +978,13 @@ static void virtio_snd_bypass_set_active(int on, int src_fmt, uint32_t guest_rat
      }
  }
  /* Whether a host consumer exists to drain the ring. CoreAudio's IOProc
@@ -1247,7 +1251,7 @@ diff --git a/qapi/audio.json b/qapi/audio.json
 index 38eb796..3f22007 100644
 --- a/qapi/audio.json
 +++ b/qapi/audio.json
-@@ -206,6 +206,39 @@
+@@ -207,6 +207,39 @@
      '*out':     'AudiodevPerDirectionOptions',
      '*latency': 'uint32' } }
  
@@ -1257,9 +1261,9 @@ index 38eb796..3f22007 100644
 +# Options of the WASAPI backend that are used for both playback and
 +# recording.
 +#
-+# @dev: endpoint ID of the audio device (IMMDevice::GetId).  Unset =
-+#     default render endpoint.  Output only.
-+#     cdj3k-emu extension.
++# @dev: the endpoint ID of the audio device (IMMDevice::GetId).  When
++#     it is unset, the default render endpoint is used.  Only output
++#     uses it.  This is a cdj3k-emu extension.
 +#
 +# Since: 11.1
 +##
@@ -1287,7 +1291,7 @@ index 38eb796..3f22007 100644
  ##
  # @AudiodevJackPerDirectionOptions:
  #
-@@ -489,6 +522,7 @@
+@@ -490,6 +523,7 @@
              { 'name': 'sdl', 'if': 'CONFIG_AUDIO_SDL' },
              { 'name': 'sndio', 'if': 'CONFIG_AUDIO_SNDIO' },
              { 'name': 'spice', 'if': 'CONFIG_SPICE' },
@@ -1295,7 +1299,7 @@ index 38eb796..3f22007 100644
              'wav' ] }
  
  ##
-@@ -535,6 +569,8 @@
+@@ -536,6 +570,8 @@
                     'if': 'CONFIG_AUDIO_SNDIO' },
      'spice':     { 'type': 'AudiodevGenericOptions',
                     'if': 'CONFIG_SPICE' },

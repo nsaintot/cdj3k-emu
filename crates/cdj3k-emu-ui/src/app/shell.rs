@@ -12,9 +12,9 @@
 //!
 //! An install never touches a running emulation. It is written beside the
 //! slot's live installation, and the process that owns the slot swaps it in
-//! whenever the slot's emulation is not running: at once when nothing runs,
-//! otherwise on its next start: a restart from the menu, the guest
-//! rebooting, or Restart on the finished install. When Restart is pressed in
+//! whenever the slot's emulation is not running. It does so at once when
+//! nothing runs, and otherwise on the next start, such as a restart from the
+//! menu, a guest reboot, or Restart on the finished install. When Restart is pressed in
 //! another window, that window sends `restart-install` on the slot's window
 //! socket ([`cdj3k_emu_platform::window_socket`]), and the owner restarts its
 //! own emulation. No window stops another window's emulation.
@@ -137,9 +137,9 @@ pub struct CdjShell {
     /// `logic`. `logic` compares it with the current state to detect that the
     /// emulation stopped.
     worker_was_finished: bool,
-    /// The last probe of another slot: slot, when, whether a window holds it
-    /// ([`cdj3k_emu_storage::slot_in_use`]) and whether its emulation runs
-    /// ([`cdj3k_emu_storage::slot_running`]). The picker asks every frame;
+    /// The last probe of another slot: the slot, the time of the probe,
+    /// whether a window holds it ([`cdj3k_emu_storage::slot_in_use`]) and
+    /// whether its emulation runs ([`cdj3k_emu_storage::slot_running`]). The picker asks every frame;
     /// each probe takes locks.
     busy_probe: Cell<Option<(u32, Instant, bool, bool)>>,
     /// When this window asks another window to empty a slot, this field holds
@@ -265,8 +265,8 @@ impl CdjShell {
         }
     }
 
-    /// Boot `model` (no worker alive) and show its panel; with no firmware,
-    /// open the install wizard for it instead. A finished install waiting for
+    /// Boot `model` and show its panel. Call it only when no worker is alive.
+    /// With no firmware, open the install wizard for it instead. A finished install waiting for
     /// the slot is swapped in first, and boots whatever model it holds.
     fn launch(&mut self, ctx: &egui::Context, frame: &eframe::Frame, mut model: Model) {
         self.model = model;
@@ -282,9 +282,8 @@ impl CdjShell {
         if let Some(installed) = self.apply_staged() {
             model = installed;
         } else if let Some(installed) = self.host.installed_model() {
-            // The requested model is no longer in the slot, because its install
-            // was replaced before it was applied. Boot the installed model
-            // instead of opening an install over a stopped deck.
+            // Boot the model the slot holds. It differs from the requested
+            // model when that install was replaced before it was applied.
             model = installed;
         }
         self.model = model;

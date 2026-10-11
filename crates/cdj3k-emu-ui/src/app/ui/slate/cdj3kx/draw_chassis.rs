@@ -47,10 +47,9 @@ const COSBOT_JOINT_ANGLE: f32 = 18.0;
 // inner corner. The runs are straight except for the detour around the pod,
 // which follows the pod's outline pushed out: an arc concentric with the
 // buttons' outer edge, and a straight side that clears the bezel's cut face.
-/// Clear distance between the two runs. It matches the gap in the drawing,
-/// whose pen is much heavier than ours. The pair continues the chassis line's
-/// width down from its inner corner: the outer edges of the runs line up with
-/// the edges of that line, so the stroke widths are taken out of the gap.
+/// The clear distance between the two runs. The pair continues the chassis
+/// line's width down from its inner corner: the outer edges of the runs line up
+/// with the edges of that line, so the stroke widths are taken out of the gap.
 const DECOR_GAP: f32 = CHASSIS_STROKE - (DECOR_OUTER_STROKE + DECOR_INNER_STROKE) * 0.5;
 const DECOR_X_LEFT: f32 =
     layout::TOP_CENTRAL_REF_LEFT - (CHASSIS_STROKE - DECOR_OUTER_STROKE) * 0.5;

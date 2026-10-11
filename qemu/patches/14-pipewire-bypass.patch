@@ -31,8 +31,8 @@ index a59c22e..9547b65 100644
 +uint32_t pwaudio_get_static_latency_frames(void);
 +int pwaudio_bypass_ready(void);
 +
-+/* The stream's rate. The ring is written at this rate, so it matching the
-+ * guest's is what keeps virtio-snd on its passthrough path. */
++/* The stream's rate. The ring is written at this rate; when it matches the
++ * guest's rate, virtio-snd stays on its passthrough path. */
 +unsigned pwaudio_get_active_samplerate(void)
 +{
 +    return atomic_load_explicit(&pw_bypass_rate, memory_order_relaxed);
@@ -152,10 +152,10 @@ index a59c22e..9547b65 100644
      qpw_set_position(as->nchannels, v->info.position);
      v->info.rate = as->freq;
  
-+    /* The bypass ring holds interleaved stereo F32, so the stream runs in
-+     * it and the callback can pass the ring's bytes through untouched. The
-+     * mixer path converts to whatever format the voice reports, so it is
-+     * unaffected. */
++    /* The bypass ring holds interleaved stereo F32, so the stream uses that
++     * format and the callback copies the ring's bytes unchanged. The mixer
++     * path converts to whatever format the voice reports, so this does not
++     * affect it. */
 +    v->bypass_capable = virtio_snd_bypass_is_active && virtio_snd_bypass_avail &&
 +                        virtio_snd_bypass_read && virtio_snd_bypass_note_underrun &&
 +                        as->nchannels == 2;

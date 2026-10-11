@@ -5,37 +5,38 @@ use std::path::PathBuf;
 use cdj3k_emu_panel::Model;
 
 pub struct Cli {
-    /// Slot 1 is the default for a fresh launch. `--instance N` selects slots
-    /// 2 to 4; the Instances menu launches the app with `open -n` and this option.
+    /// `--instance N` selects slot N, from 1 to 4. The default is slot 1. The
+    /// Instances menu launches the app again with this option.
     pub instance: u32,
-    /// `--model <slug>` / `CDJ3K_MODEL`: skip the picker and boot this model
+    /// `--model <slug>` or `CDJ3K_MODEL` skips the picker and boots this model
     /// at once. Headless captures, development loops and launch scripts use it.
     pub initial_model: Option<Model>,
     pub kernel: Option<PathBuf>,
     pub initramfs: Option<PathBuf>,
     pub no_emmc: bool,
-    /// Off by default, because the serial log grows without limit and only helps
-    /// to debug boot failures and kernel panics. `--serial-log` or
+    /// The serial log is off by default, because it grows without limit and
+    /// only helps to debug boot failures and kernel panics. `--serial-log` or
     /// `CDJ3K_SERIAL_LOG=1` turns it on.
     pub serial_log: bool,
-    /// Off by default. `--profile` or `CDJ3K_PROFILE=1` enables the puffin
-    /// scopes and binds a localhost TCP listener for puffin_viewer.
+    /// Profiling is off by default. `--profile` or `CDJ3K_PROFILE=1` enables
+    /// the puffin scopes and binds a localhost TCP listener for puffin_viewer.
     pub profile: bool,
     /// `--service-mode` boots straight into the sub-CPU test mode. The
     /// Service Mode menu item does the same through a restart.
     pub service_mode: bool,
-    /// `--provision <.UPD|.iso> [--key <file>]`: run the Install Firmware
-    /// pipeline for `--instance` / `--model` without a window, then exit.
+    /// `--provision <file>` runs the Install Firmware pipeline on a .UPD or
+    /// .iso file for `--instance` and `--model` without a window, then exits.
+    /// `--key <file>` gives it the key file.
     pub provision_path: Option<PathBuf>,
     pub key_path: Option<PathBuf>,
-    /// `--no-spawn` / `CDJ3K_NO_SPAWN=1`: show the chassis without the runtime
-    /// worker, QEMU or the boot shade. It is meant for layout work and
+    /// `--no-spawn` or `CDJ3K_NO_SPAWN=1` shows the chassis without the
+    /// runtime worker, QEMU or the boot shade. It is meant for layout work and
     /// `CDJ3K_SCREENSHOT` captures.
     pub no_spawn: bool,
-    /// `--after-update`: the updater passes this flag while the replaced build
-    /// is still exiting, so the app waits for the slot to be released.
+    /// The updater passes `--after-update` while the replaced build is still
+    /// exiting, so the app waits for the slot to be released.
     pub after_update: bool,
-    /// `--mod <folder>` (repeatable) adds a mod folder for this launch only.
+    /// Each `--mod <folder>` adds a mod folder for this launch only.
     pub extra_mods: Vec<PathBuf>,
     /// `--no-mods` boots without the slot's mods.
     pub no_mods: bool,
@@ -109,9 +110,10 @@ impl Cli {
         match Model::parse(slug) {
             Some(m) => self.initial_model = Some(m),
             None => eprintln!(
-                "cdj3k-emu: unknown --model {:?}; the known models are {}; showing the picker",
+                "cdj3k-emu: the model {:?} is unknown, so the app shows the picker. \
+                 The known models are {}.",
                 slug,
-                Model::ALL.map(|m| m.spec().slug).join(" | ")
+                Model::ALL.map(|m| m.spec().slug).join(", ")
             ),
         }
     }

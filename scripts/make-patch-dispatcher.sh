@@ -24,8 +24,9 @@ mkdir -p "$(dirname "$OUT")"
 {
     cat <<'HDR'
 #!/usr/bin/env bash
-# patch-rootfs.sh - auto-generated bundle dispatcher.
-# It concatenates every initramfs-patch/patch-rootfs.d/*.sh in numeric order.
+# patch-rootfs.sh is the bundle's generated dispatcher.
+# It holds every initramfs-patch/patch-rootfs.d/*.sh step in numeric order,
+# each in its own subshell.
 # The separate step scripts live in initramfs-patch/patch-rootfs.d/ in the
 # repository.
 set -euo pipefail

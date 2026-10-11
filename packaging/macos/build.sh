@@ -188,7 +188,8 @@ ENT
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
     echo "==> Codesigning bundle (identity: $SIGN_IDENTITY)"
-    # Nested code in Resources is sealed as data by --deep, not re-signed.
+    # --deep seals code in Resources as data and does not sign it, so the MIDI
+    # plug-in is signed first.
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
         "$RESOURCES_DIR/CDJ3KEmuMIDI.plugin"
     # Sign Sparkle from the inside out: its helpers first, then the framework.
@@ -275,8 +276,8 @@ if [[ "$MAKE_DMG" -eq 1 ]]; then
 
     echo "==> Creating DMG: $DMG_PATH"
     cp -R "$APP_DIR" "$DMG_STAGING/"
-    # Convenience symlink so drag-to-install works without the user navigating
-    # to /Applications by hand.
+    # A symlink to /Applications lets the user install the app by dragging it
+    # onto the link.
     ln -s /Applications "$DMG_STAGING/Applications"
 
     rm -f "$DMG_PATH"

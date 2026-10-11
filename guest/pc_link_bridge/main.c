@@ -93,7 +93,7 @@ int main(void)
          * from its UDC causes such a hang-up. */
         for (int i = 1; i <= 2; i++) {
             if (pfds[i].fd >= 0 && (pfds[i].revents & (POLLERR | POLLHUP | POLLNVAL))) {
-                fprintf(stderr, "pc-link-bridge: %s endpoint hung up; dropping it\n",
+                fprintf(stderr, "pc-link-bridge: the %s endpoint hung up; dropping it\n",
                         i == 1 ? "hidraw" : "MIDI");
                 close(pfds[i].fd);
                 pfds[i].fd = -1;
@@ -101,7 +101,7 @@ int main(void)
             }
         }
         if (pfds[1].fd < 0 && pfds[2].fd < 0) {
-            fprintf(stderr, "pc-link-bridge: no endpoints left; exiting\n");
+            fprintf(stderr, "pc-link-bridge: no endpoint is left; exiting\n");
             break;
         }
 

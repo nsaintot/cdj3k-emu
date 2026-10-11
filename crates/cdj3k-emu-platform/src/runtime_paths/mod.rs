@@ -84,9 +84,8 @@ pub fn ensure_runtime_base_dir() -> io::Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// The longest socket basename any host writes into an instance directory,
-    /// with the widest instance id, is the longest path the layout can
-    /// produce.
+    /// The longest path the layout can produce, `midi-driver.sock` in the
+    /// directory of the widest instance id, fits under `SUN_PATH_LIMIT`.
     #[test]
     fn a_socket_path_leaves_headroom_under_the_host_limit() {
         let longest = instance_dir(u32::MAX).join("midi-driver.sock");

@@ -46,8 +46,9 @@ pub struct ModelSpec {
     pub title: &'static str,
     /// The stable identifier (slug) for directory names and settings.
     pub slug: &'static str,
-    /// User spellings [`Model::parse`](crate::Model::parse) accepts besides
-    /// the number and the slug, lowercase and without an `ep`/`cdj` prefix.
+    /// User spellings that [`Model::parse`](crate::Model::parse) accepts
+    /// besides the slug, such as `3000` or `3k`. They are lowercase and have
+    /// no `cdj` prefix, because `parse` strips it.
     pub aliases: &'static [&'static str],
     /// Main LCD framebuffer `(width, height)` in pixels. The guest's X server
     /// runs at this mode, so it is also the size of the virtio-gpu scanout and

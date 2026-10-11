@@ -17,19 +17,20 @@
 //!
 //! # Jog wheel split
 //! The pitchbend grip sits between the outer body fill and the inner LCD disk,
-//! so the static geometry is split into two lists:
+//! so the static geometry is split into three lists:
 //!
 //! ```text
 //! painter.extend(outer)           - jog outer rings
 //! paint_pitchbend_grip(…)         - always recomputed (dynamic rotation)
-//! painter.extend(inner_mid)       - platter + inner LCD background disk
+//! painter.extend(inner_mid)       - platter and inner LCD background disk
 //! paint_jog_lcd_stream_texture(…) - jog framebuffer, clipped to the inner LCD silhouette
 //! painter.extend(inner_over)      - LCD chrome (stroke, MODE, BEAT SYNC, separators), JOG ADJUST
 //! paint_jog_inner_lcd_corner_labels - SLIP, VINYL, SYNC, MASTER in the stream's corner colors
 //! ```
 //!
-//! The `inner_over` list is keyed on `jog_adjust` because the gear and indicator
-//! rotate with it. Every other section is keyed on the `UiScale` triple alone.
+//! All three lists share one key, [`JogCacheKey`]: the layout, the
+//! pixels-per-point and the JOG ADJUST step. The step is in the key because the
+//! gear and indicator in `inner_over` rotate with it.
 
 use std::collections::HashMap;
 

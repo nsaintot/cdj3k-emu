@@ -120,8 +120,9 @@ fn provisioning_argv(
         .into(),
         "-m".into(),
         "2G".into(),
-        // Six, to match the topology the player boots with: a patch step can
-        // branch on the core count, and this rootfs is the one that will run.
+        // Use six cores to match the topology the player boots with. A patch
+        // step can branch on the core count, and this rootfs is the one that
+        // will run.
         "-smp".into(),
         "6".into(),
         "-nographic".into(),
@@ -166,7 +167,7 @@ fn provisioning_argv(
 /// full pipe would stop QEMU mid-boot.
 fn spawn_qemu(argv: &[String]) -> Result<String, String> {
     let mut cmd = crate::qemu_exec::qemu_command(None)
-        .map_err(|e| format!("locating QEMU: {e}"))?
+        .map_err(|e| format!("could not locate QEMU: {e}"))?
         .with_argv(argv);
 
     let mut child = cmd
@@ -187,13 +188,13 @@ fn spawn_qemu(argv: &[String]) -> Result<String, String> {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!(
-                        "the provisioning guest did not finish within {}s",
+                        "the provisioning guest did not finish within {} s",
                         TIMEOUT.as_secs()
                     ));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            Err(e) => return Err(format!("waiting for the provisioning guest: {e}")),
+            Err(e) => return Err(format!("waiting for the provisioning guest failed: {e}")),
         }
     }
     Ok(format!(

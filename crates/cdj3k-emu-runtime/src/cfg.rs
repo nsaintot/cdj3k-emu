@@ -115,13 +115,13 @@ impl CfgClient {
         thread::Builder::new()
             .name("cfg-stream".into())
             .spawn(move || reader_loop(path, weak))
-            .expect("spawn cfg-stream thread");
+            .expect("the cfg-stream thread should start");
 
         let weak = Arc::downgrade(&shared);
         thread::Builder::new()
             .name("cfg-ping".into())
             .spawn(move || ping_loop(weak))
-            .expect("spawn cfg-ping thread");
+            .expect("the cfg-ping thread should start");
 
         Self { shared }
     }
@@ -231,8 +231,8 @@ impl CfgClient {
         self.send_line("usb attach\n")
     }
 
-    /// Send `usb detach\n`. The guest ignores it, because EP122 handles the
-    /// unmount.
+    /// Send `usb detach\n`. cfgd tells EP122 through `/proc/udev_usb1` to
+    /// close its files, then lazily unmounts the drive.
     pub fn usb_detach(&self) -> std::io::Result<()> {
         self.send_line("usb detach\n")
     }

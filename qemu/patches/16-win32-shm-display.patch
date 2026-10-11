@@ -11,8 +11,8 @@ diff --git a/ui/shm-display.c b/ui/shm-display.c
 +#endif
  
  /* ------------------------------------------------------------------ */
- /* constants & types                                                    */
-@@ -73,38 +75,79 @@
+ /* constants and types                                                  */
+@@ -73,38 +75,80 @@
  /* shm file management                                                  */
  /* ------------------------------------------------------------------ */
  
@@ -34,7 +34,8 @@ diff --git a/ui/shm-display.c b/ui/shm-display.c
 + * Map the first @sz bytes of the file at @path read/write and shared, creating
 + * the file and growing it to @sz when it is smaller. Returns NULL on error.
 + *
-+ * The file is never shrunk: readers (cdj-ui) may hold a live shared mapping.
++ * The file is never shrunk: a reader (the emulator) may hold a live shared
++ * mapping.
 + * Grown pages are zero-filled and existing mappings stay valid.
 + */
 +static void *shm_map(const char *path, size_t sz)
@@ -54,12 +55,12 @@ diff --git a/ui/shm-display.c b/ui/shm-display.c
      }
 -
 -    /*
--     * Open without O_TRUNC - never shrink the file.
--     * Readers (cdj-ui) may have a live MAP_SHARED mmap; truncating to 0
--     * would give them SIGBUS on the next access.  Growing with ftruncate
--     * is safe because the new pages are zero-filled and the old mapping
--     * remains valid.  The header is zeroed explicitly below, so readers
--     * always see a consistent state guarded by the generation counter.
+-     * Open without O_TRUNC, so the file never shrinks. A reader (the
+-     * emulator) may hold a live MAP_SHARED mapping, and truncating the file
+-     * to 0 would give it SIGBUS on its next access. Growing the file with
+-     * ftruncate is safe: the new pages are zero-filled and the old mapping
+-     * stays valid. The header is zeroed below, so readers always see a
+-     * consistent state, guarded by the generation counter.
 -     */
 -    int fd = open(s->path, O_RDWR | O_CREAT, 0600);
 +    file = CreateFileW((LPCWSTR)path_w, GENERIC_READ | GENERIC_WRITE,
@@ -113,7 +114,7 @@ diff --git a/ui/shm-display.c b/ui/shm-display.c
          }
      }
  
-@@ -112,6 +155,27 @@
+@@ -112,6 +156,27 @@
      close(fd);
      if (m == MAP_FAILED) {
          error_report("shm-display: mmap: %s", strerror(errno));

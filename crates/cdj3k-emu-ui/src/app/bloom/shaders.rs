@@ -81,8 +81,9 @@ uniform float u_sat_knee;
 "#
 );
 
-// 9-tap separable Gaussian kernel (σ ≈ 1.0, taps at offsets 0..4).
-// Weights are analytically derived and sum to 1.0.
+// A 9-tap separable blur at offsets 0 to ±4. The weights are binomial (row 12
+// of Pascal's triangle, truncated), close to a Gaussian with σ ≈ 1.7, and sum
+// to 1.0.
 pub(super) const BLUR_FRAG: &str = r#"
 #version 330 core
 in vec2 v_uv;

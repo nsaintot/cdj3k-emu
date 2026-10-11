@@ -49,7 +49,10 @@ pub fn run_helper_if_asked(args: &[String]) {
         return;
     }
     let Some(request) = Request::parse(&args[2..]) else {
-        eprintln!("cdj3k-emu: {}: malformed request", flag.unwrap_or_default());
+        eprintln!(
+            "cdj3k-emu: {}: the request is malformed.",
+            flag.unwrap_or_default()
+        );
         std::process::exit(2);
     };
     if flag == Some(WATCH_FLAG) {

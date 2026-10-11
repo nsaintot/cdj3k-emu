@@ -71,7 +71,7 @@ pub(super) const JOG_INPUT_RESPONSE_TIME_SEC: f32 = 0.03;
 /// flicker.
 pub(super) const JOG_SCROLL_HOLD_SEC: f32 = 0.08;
 
-/// Duration, in seconds, of the touch pulse after a slingshot released from
+/// Duration, in seconds, of the touch pulse after a slingshot is released from
 /// the scratch zone.
 pub(super) const JOG_RELEASE_TOUCH_PULSE_SEC: f32 = 0.5;
 
@@ -135,7 +135,8 @@ impl CdjApp {
             (self.jog_release_touch_pulse_remaining_sec - dt).max(0.0);
         let touch_active = ((dragging || scroll_active) && !grip) || release_pulse;
 
-        // Fixed brake, or the knob's, interpolated between its 13 detents.
+        // Use the model's fixed stop time, or interpolate the knob's stop time
+        // between its 13 detents.
         let stop_time = match self.model.spec().jog_brake {
             JogBrake::Fixed { stop_secs } => stop_secs,
             JogBrake::Adjustable => {

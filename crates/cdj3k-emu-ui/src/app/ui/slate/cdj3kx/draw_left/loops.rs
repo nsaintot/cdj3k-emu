@@ -31,10 +31,11 @@ pub(super) const PERF_BEAT_LOOP_LINE_LENGTH: f32 = 112.0;
 pub(super) const PERF_BEAT_LOOP_PAIR_R: f32 = 50.0;
 pub(super) const PERF_BEAT_LOOP_INNER_STROKE: f32 = 8.0;
 pub(super) const PERF_BEAT_LOOP_OUTER_STROKE: f32 = 4.0;
-/// IN/CUE and OUT lamp ring, straddling the black face's edge. The gap closes
-/// by the same amount the ring widens, so the button's outer edge stays put.
-/// Narrower than the CUE and PLAY rims: the ring is the whole lit surface and
-/// the bloom scales with it, and the labels sit close above these two.
+/// The stroke width of the IN/CUE and OUT lamp ring, which straddles the black
+/// face's edge. The gap closes by the same amount the ring widens, so the
+/// button's outer edge stays put. The ring is narrower than the CUE and PLAY
+/// rims, because it is the whole lit surface and the bloom scales with it, and
+/// because the labels sit close above these two buttons.
 pub(super) const PERF_LOOP_LAMP_STROKE: f32 = 10.0;
 pub(super) const PERF_LOOP_LAMP_GAP: f32 = 5.0;
 pub(super) const PERF_BEAT_LOOP_U_OFF_FRAC: f32 = 0.241;
@@ -43,7 +44,7 @@ pub(super) const PERF_BEAT_LOOP_SUBLABEL_W: f32 = 70.0;
 pub(super) const PERF_BEAT_LOOP_SUBLABEL_H: f32 = 40.0;
 pub(super) const PERF_BEAT_LOOP_SUBLABEL_ROUNDING: f32 = 8.0;
 
-/// Vertical placement within [`PERF_TRANSPORT_COL_REF`] (0 = top, 1 = bottom).
+/// Vertical placement within [`PERF_TRANSPORT_COL_REF`], from 0 at the top to 1 at the bottom.
 pub(super) const PERF_V_LOOP_IN_OUT_LABEL: f32 = 0.36;
 pub(super) const PERF_V_LOOP_LINE: f32 = 0.386;
 pub(super) const PERF_V_LOOP_LABEL: f32 = 0.387;
@@ -162,7 +163,8 @@ fn draw_reloop(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     );
 }
 
-/// BEAT LOOP 1/2X and 2X.
+/// Draws the two BEAT LOOP buttons, labeled 4 and 8 (`Btn::BeatloopHalf` and
+/// `Btn::Beatloop2x`).
 pub(super) fn draw_beat_loop(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let beat_loop_half = layout.sp_in_rect(
         PERF_TRANSPORT_COL_REF,

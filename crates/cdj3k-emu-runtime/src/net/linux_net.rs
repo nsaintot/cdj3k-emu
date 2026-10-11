@@ -140,7 +140,7 @@ impl LinuxBridge {
         let mut bridge = Self::open(shape, &ours, &node)?;
         bridge.lease = Some(lease);
         eprintln!(
-            "cdj3k-emu: {shape:?} up on {iface}  iface={ours}  fd={}",
+            "cdj3k-emu: the {shape:?} link {ours} is up on {iface} (fd {}).",
             bridge.fd
         );
         Ok(bridge)
@@ -187,7 +187,7 @@ impl LinuxBridge {
         attach_tun(file.as_raw_fd(), iface)?;
         let fd = file.as_raw_fd();
         unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
-        eprintln!("cdj3k-emu: attached to existing tap {iface}  fd={fd}");
+        eprintln!("cdj3k-emu: the guest is attached to the existing tap {iface} (fd {fd}).");
         Ok(Self {
             iface: iface.to_string(),
             shape: Shape::ExistingTap,
@@ -209,7 +209,7 @@ fn attach_tun(fd: RawFd, iface: &str) -> io::Result<()> {
     if name.len() >= 16 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "interface name too long",
+            "the interface name is too long",
         ));
     }
     req[..name.len()].copy_from_slice(name);
@@ -227,8 +227,9 @@ fn attach_tun(fd: RawFd, iface: &str) -> io::Result<()> {
 
 /// The name of the interface we create for an instance.
 ///
-/// Kept inside IFNAMSIZ (15 usable characters) and stamped with the slot, so
-/// two slots on one machine cannot collide and a leftover is identifiable.
+/// The name fits in IFNAMSIZ (15 usable characters) and carries the slot
+/// number, so two slots on one machine cannot collide and a leftover
+/// interface shows which slot made it.
 fn our_iface_name(instance_id: u32) -> String {
     format!("cdj3k{instance_id}")
 }

@@ -23,7 +23,7 @@ pub(super) const JOG_SLINGSHOT_MODIFIER: egui::Modifiers = egui::Modifiers::CTRL
 /// 200 px tangential pull spins the platter at about 3 rev/s.
 pub(super) const JOG_SLINGSHOT_GAIN: f32 = 0.094;
 /// The largest impulse in rad/s, so that a long pull cannot spin the platter
-/// too fast. It is about 4.8 rev/s, above any musically useful speed.
+/// too fast. It is about 9.5 rev/s, above any musically useful speed.
 pub(super) const JOG_SLINGSHOT_MAX_OMEGA: f32 = 60.0;
 /// Stroke width of the slingshot indicator line (reference units).
 pub(super) const JOG_SLINGSHOT_LINE_STROKE_REF: f32 = 6.0;

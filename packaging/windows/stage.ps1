@@ -127,7 +127,7 @@ Copy-File $dummy (Join-Path $Share 'patch\dummy_drv.so')
 
 foreach ($tool in 'subucom_live', 'subucom_forwarder') {
     $src = Join-Path $RepoRoot "guest\out\${tool}_aarch64"
-    Need-File $src 'Run ./build.sh --modules-only.'
+    Need-File $src 'Run ./build.sh --artifacts-only.'
     Copy-File $src (Join-Path $Share "tools\$tool")
 }
 $shim = Join-Path $RepoRoot 'guest\out\deck_shim.so'

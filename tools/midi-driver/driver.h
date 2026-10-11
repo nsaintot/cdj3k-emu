@@ -50,8 +50,8 @@ struct slot {
      * carries. */
     uint32_t        location;
     uint32_t        usb_vp;   /* (vid << 16) | pid */
-    CFStringRef     name;     /* product, released in destroy_slot */
-    CFStringRef     maker;    /* manufacturer, released in destroy_slot */
+    CFStringRef     name;     /* product, released in slot_detach */
+    CFStringRef     maker;    /* manufacturer, released in slot_detach */
     /* State for assembling guest-to-host bytes into whole messages.  The bytes
      * arrive as an unframed stream, and a MIDIPacket must carry whole
      * messages. */

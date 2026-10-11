@@ -64,7 +64,7 @@ static int subucom_major;
 #define MINOR_CTRL      1
 #define NDEVS           2
 
-/* The MISO frame size and polling interval. */
+/* Frame sizes and the polling interval. */
 #define MISO_SIZE       64
 #define MOSI_CMD_SIZE   16  /* ioctl arg: {uint32 magic, uint32 size, uint64 data_ptr} */
 #define LED_FRAME_SIZE  64  /* the LED payload that data_ptr points to */
@@ -90,7 +90,7 @@ struct mosi_cmd {
 
 /* The CDJ-3000 idle MISO frame. */
 static const u8 miso_idle[MISO_SIZE] = {
-    /* b00-b04: header */
+    /* b00-b03: header; b04: direction rocker (0x03 is forward) */
     0x00, 0x00, 0x01, 0x04, 0x03,
     /* b05-b11: button bitmasks */
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -207,7 +207,7 @@ MODULE_PARM_DESC(inject_testmode, "Hold the testmode buttons for about 5 s after
 
 #define TESTMODE_INJECT_MS  5000
 
-/* Combo bytes and masks for the loaded model; set at init. */
+/* The combo bytes and masks of the loaded model, which init sets. */
 static u8 testmode_byte[2];
 static u8 testmode_mask[2];
 static int testmode_held;   /* 1 while the combo is ORed into every frame */
@@ -527,7 +527,7 @@ static int __init subucom_virt_init(void)
     if (inject_testmode) {
         unsigned long flags;
         if (model_is_1500x) {
-            /* ServiceMode in pre-setting.sh: SHIFT + HOT CUE B */
+            /* pre-setting.sh enters ServiceMode on SHIFT and HOT CUE B. */
             testmode_byte[0] = 17; testmode_mask[0] = 0x01;
             testmode_byte[1] = 18; testmode_mask[1] = 0x40;
         } else if (model_is_x) {

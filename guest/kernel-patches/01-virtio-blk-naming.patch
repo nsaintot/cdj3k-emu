@@ -7,8 +7,8 @@ index 65a1f15..de659cc 100644
  MODULE_PARM_DESC(poll_queues, "The number of dedicated virtqueues for polling I/O");
  
 +/*
-+ * cdj3k-emu: the MMC device number the eMMC (virtio-blk index 0) takes:
-+ * mmcblk1 on the CDJ-3000 and CDJ-3000X, mmcblk0 on the CDJ-1500X.
++ * cdj3k-emu: the N in the eMMC's name mmcblkN (virtio-blk index 0). It is
++ * mmcblk1 on the CDJ-3000 and CDJ-3000X, and mmcblk0 on the CDJ-1500X.
 + */
 +static unsigned int emmc_index = 1;
 +module_param(emmc_index, uint, 0444);

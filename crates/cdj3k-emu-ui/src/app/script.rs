@@ -6,7 +6,7 @@
 //! [args]`. Blank lines and `#` comments are skipped:
 //!
 //! ```text
-//! 60   press PLAY            # a miso_frame BTN_* name, held 200 ms
+//! 60   press PLAY            # a button name (Btn::name), held 200 ms
 //! 61   press 12:0x01 500     # a raw (byte, mask) frame bit, held 500 ms
 //! 61.5 clear 12:0x80 500     # force a frame bit low (one the idle frame sets)
 //! 62   touch 0.5 0.5 300     # LCD tap at fractions of the display, 300 ms

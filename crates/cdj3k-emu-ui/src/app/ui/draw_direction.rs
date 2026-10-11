@@ -242,8 +242,8 @@ impl Lever {
 /// The fill color of the paddle face.
 const FACE_COLOR: egui::Color32 = egui::Color32::from_rgb(64, 64, 72);
 
-/// Draws the FWD face as a flat rectangle without perspective, at half the
-/// height.
+/// Draws the FWD face as a flat rectangle without perspective, centered on the
+/// lever.
 fn paint_fwd_face(p: &egui::Painter, layout: &UiScale, lever: &Lever) {
     let border_stroke = egui::Stroke::new(layout.sc(2.0), COL_SILVER);
     let face_top = lever.h_top + lever.h_inset;

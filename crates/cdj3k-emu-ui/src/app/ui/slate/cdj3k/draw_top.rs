@@ -1,5 +1,5 @@
-//! Draws the upper deck: the rekordbox bar, the nav buttons, the LCD and the
-//! hot cues. The horizontal band that holds the LCD and the hot cues comes
+//! Draws the upper deck: the ON AIR bar, the nav buttons, the LCD and the hot
+//! cues. The horizontal band that holds the LCD and the hot cues comes
 //! from [`super::layout`].
 
 use crate::app::ui::{
@@ -25,7 +25,7 @@ const MID_CENTRAL_PANEL_REF: Rect = Rect::from_min_max(
 
 const BROWSER_UTILITY_LABEL_FONT_SIZE: f32 = 34.0;
 
-/// Vertical placement within [`MENUBAR_COL_REF`] (0 = top, 1 = bottom).
+/// Vertical placement within [`MENUBAR_COL_REF`], from 0 at the top to 1 at the bottom.
 const BROWSER_V_UTILITY_LABEL: f32 = 0.06;
 
 // --- Nav button row ---
@@ -35,9 +35,9 @@ const NAV_BTN_WIDTH_REF: f32 = 270.0;
 const NAV_BTN_ASPECT: f32 = 4.1;
 /// Horizontal gap between consecutive nav buttons (reference units).
 const NAV_BTN_GAP_REF: f32 = 75.0;
-/// Vertical center of the nav row within [`MENUBAR_COL_REF`] (0 = top, 1 = bottom).
-/// Puts the row's centre at ref y 223, where the drawing prints the outer edges
-/// of all six buttons (184..262).
+/// Vertical center of the nav row within [`MENUBAR_COL_REF`], from 0 at the top to 1 at the bottom.
+/// It puts the row's centre at ref y 223, midway between the buttons' outer
+/// edges at 184 and 262.
 const BROWSER_V_NAV_BTNS: f32 = 0.10214;
 /// Font size for nav button labels.
 const NAV_BTN_FONT_SIZE: f32 = 32.0;
@@ -61,7 +61,7 @@ pub(in crate::app) const HOT_CUE_BTN_WIDTH_REF: f32 = 180.0;
 pub(in crate::app) const HOT_CUE_BTN_ASPECT: f32 = 1.8;
 /// Horizontal gap between consecutive hot cue buttons (reference units).
 pub(in crate::app) const HOT_CUE_BTN_GAP_REF: f32 = 107.0;
-/// Vertical center within [`MID_CENTRAL_PANEL_REF`] (0 = top, 1 = bottom).
+/// Vertical center within [`MID_CENTRAL_PANEL_REF`], from 0 at the top to 1 at the bottom.
 pub(in crate::app) const HOT_CUE_BTN_V_CENTER: f32 = 0.3;
 /// Font size for hot cue labels.
 const HOT_CUE_BTN_FONT_SIZE: f32 = 34.0;
@@ -80,7 +80,7 @@ const HOT_CUE_LABEL_SEG_GAP_CENTER: f32 = 100.0;
 const HOT_CUE_LABEL_SEG_GAP_EDGE: f32 = 20.0;
 const HOT_CUE_LABEL_SEG_STROKE: f32 = 6.0;
 
-/// Cue control row.
+/// Vertical position of the cue-control row within [`MID_CENTRAL_PANEL_REF`].
 const CUE_CONTROL_V: f32 = 0.81;
 const CUE_CONTROL_LABEL_FONT_SIZE: f32 = 32.0;
 const CUE_CONTROL_LINE_1_LENGTH: f32 = 50.0;
@@ -108,9 +108,10 @@ const ON_AIR_BAR_TOP_WIDTH_FRAC: f32 = 0.2;
 /// Bottom width as a fraction of the top width (0..1), which sets the taper of
 /// the inverted trapezoid.
 const ON_AIR_BAR_TAPER: f32 = 0.80;
-/// V position of the bar's top edge within MENUBAR_COL_REF (0=panel top, 1=bottom).
+/// Vertical position of the bar's top edge within MENUBAR_COL_REF, from 0 at
+/// the panel top to 1 at the bottom.
 const ON_AIR_BAR_V_TOP: f32 = 0.005;
-/// V position of the bar's bottom edge within MENUBAR_COL_REF.
+/// Vertical position of the bar's bottom edge within MENUBAR_COL_REF.
 const ON_AIR_BAR_V_BOT: f32 = 0.02;
 /// Radial glow spread (ref units).
 const ON_AIR_BAR_GLOW_SPREAD_REF: f32 = 15.0;
@@ -308,7 +309,7 @@ fn draw_on_air_bar(app: &CdjApp, p: &egui::Painter, layout: &UiScale) {
     }
 }
 
-/// Nav button row, centered on the midpoint of MENUBAR_COL_REF.
+/// Draws the nav button row, centered on the midpoint of MENUBAR_COL_REF.
 fn draw_browser_buttons(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let n = BROWSER_BTNS.len() as f32;
     let btn_w = NAV_BTN_WIDTH_REF;
@@ -359,11 +360,11 @@ fn draw_browser_buttons(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     }
 }
 
-/// LCD screen, centered on MENUBAR_COL_REF.
+/// Draws the LCD screen, centered on MENUBAR_COL_REF.
 fn draw_lcd(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, layout: &UiScale) {
     // View > Extend Screen grows the panel until it fills the band between
     // the horizontal decoration lines that frame it, taken from the chassis
-    // so the two cannot drift apart. Width follows from the aspect.
+    // so the two cannot drift apart. The width follows from the aspect ratio.
     let extended = cdj3k_emu_platform::menu_state::lock().screen_extended;
     let (lcd_w, lcd_h, lcd_top) = if extended {
         let (band_top, band_bot) = super::draw_chassis::lcd_decor_band();
@@ -384,7 +385,7 @@ fn draw_lcd(app: &mut CdjApp, ui: &mut egui::Ui, p: &egui::Painter, layout: &UiS
     crate::app::ui::draw_lcd::draw_main_lcd(app, ui, p, layout, bezel);
 }
 
-/// Hot cue row, centered on MID_CENTRAL_PANEL_REF.
+/// Draws the hot cue row, centered on MID_CENTRAL_PANEL_REF.
 fn draw_hot_cues(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let n = HOT_CUE_BTNS.len() as f32;
     let btn_w = HOT_CUE_BTN_WIDTH_REF;
@@ -437,7 +438,7 @@ fn draw_hot_cues(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     }
 }
 
-/// CUE/LOOP CALL ◀ and ▶.
+/// Draws the CUE/LOOP CALL ◀ and ▶ buttons.
 fn draw_cue_call(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let call_prev_btn = layout.sp_in_rect(
         MID_CENTRAL_PANEL_REF,
@@ -474,7 +475,7 @@ fn draw_cue_call(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     }
 }
 
-/// DELETE and MEMORY.
+/// Draws the DELETE and MEMORY buttons.
 fn draw_delete_memory(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     let call_border = cue_call_border(layout);
     let delete_btn = layout.sp_in_rect(
@@ -535,7 +536,7 @@ fn draw_delete_memory(app: &mut CdjApp, ui: &mut egui::Ui, layout: &UiScale) {
     );
 }
 
-/// Border of the CUE/LOOP CALL buttons, and of MEMORY.
+/// Returns the border of the CUE/LOOP CALL buttons and of MEMORY.
 fn cue_call_border(layout: &UiScale) -> DoubleBorderSpec {
     DoubleBorderSpec::from_strokes_with_gap(
         StrokeSpec {

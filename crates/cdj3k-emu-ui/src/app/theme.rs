@@ -345,8 +345,8 @@ pub(in crate::app) fn apply_setup_style(ui: &mut egui::Ui, pal: &Palette) {
     n.fg_stroke = Stroke::new(HAIRLINE, pal.off_text);
     n.corner_radius = CornerRadius::from(ROUND);
 
-    // On hover and press the plate lightens and the edge darkens, as on the
-    // cards. Widgets do not expand or cast a shadow.
+    // On hover and press, the plate lightens and the edge takes the ink
+    // colour, as on the cards. Widgets do not expand or cast a shadow.
     for (w, fill, edge, fg) in [
         (&mut v.widgets.inactive, pal.plate, pal.line_strong, pal.ink),
         (&mut v.widgets.hovered, pal.plate_hover, pal.ink, pal.ink),

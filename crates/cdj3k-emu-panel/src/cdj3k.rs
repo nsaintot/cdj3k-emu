@@ -18,7 +18,7 @@ use crate::spec::{JogBrake, ModelSpec, TouchSpace, TOUCH_FRAME_RANGE};
 /// Idle frame payload (bytes 0..62, before the CRC).
 pub const IDLE: [u8; 62] = {
     let mut f = [0u8; 62];
-    // b02-b04: header constant
+    // b02-b03: header constant. b04: direction rocker, 0x03 (FWD).
     f[2] = 0x01;
     f[3] = 0x04;
     f[4] = 0x03;
@@ -30,7 +30,7 @@ pub const IDLE: [u8; 62] = {
     // b16-b19: LCD touch, LE; 0x0000 means no touch.
     // b20-b21: unknown
     f[21] = 0x7f;
-    // b22-b23: tempo slider idle, 0x0000 BE (0%)
+    // b22-b23: tempo slider idle, 0x0000 LE (0%)
     // b24: vinyl speed rotary idle, 0x00
     // b26-b27: jog position idle (0xffff LE)
     f[fields::JOG] = 0xff;
