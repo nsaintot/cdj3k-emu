@@ -354,10 +354,9 @@ impl UsbManager {
     /// run usb-external-attach.sh. The script mounts the device and writes to
     /// /proc/udev_usb1, which EP122 watches for the USB state.
     fn guest_usb_attach(&self) -> std::io::Result<()> {
-        // Give the guest driver time to run virtblk_config_changed_work.
-        // virtio-blk rereads the partition table by itself when the config
-        // changes. Do not run `blockdev --rereadpt`: it corrupts the FAT32
-        // device state.
+        // Give the guest driver time to run virtblk_config_changed_work. The
+        // driver only updates the disk size; usb-external-attach.sh rereads
+        // the partition table so that the partition appears.
         std::thread::sleep(Duration::from_millis(600));
         self.cfg.usb_attach()
     }

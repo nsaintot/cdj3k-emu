@@ -97,8 +97,7 @@ mod tests {
         );
     }
 
-    /// `instance_dir` keeps the leaf name that `boot.sh` and the MIDI driver
-    /// build expect.
+    /// `instance_dir` keeps the leaf name that the MIDI driver build expects.
     #[test]
     fn the_instance_dir_is_named_by_slot() {
         assert_eq!(

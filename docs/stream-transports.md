@@ -19,8 +19,8 @@ format in `docs/subucom.md`.
 `sock_dir` follows the multi-instance convention
 `/tmp/cdj3k-emu-{uid}/instance-{id}/` (`%TEMP%\cdj3k-emu\instance-{id}\` on
 Windows). `crates/cdj3k-emu-platform/src/runtime_paths/`
-is the source of truth for the layout and the length limit on it; the copies in
-`boot.sh` and `tools/midi-driver/link.c` must agree with it. The QEMU
+is the source of truth for the layout and the length limit on it; the copy in
+`tools/midi-driver/link.c` must agree with it. The QEMU
 arguments are built by `QemuConfig::build_argv` in
 `crates/cdj3k-emu-runtime/src/config.rs`.
 
