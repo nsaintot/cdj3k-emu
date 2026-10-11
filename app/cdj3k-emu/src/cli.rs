@@ -40,7 +40,37 @@ pub struct Cli {
     pub extra_mods: Vec<PathBuf>,
     /// `--no-mods` boots without the slot's mods.
     pub no_mods: bool,
+    /// `-h` or `--help` prints [`USAGE`] and exits.
+    pub help: bool,
 }
+
+/// The text `--help` prints.
+pub const USAGE: &str = "\
+Usage: cdj3k-emu [options]
+
+Options:
+  --instance <N>          Open slot N (1 to 4). The default is slot 1.
+  --model <slug>          Boot this model without the picker: cdj3k, cdj3kx
+                          or cdj1500x. CDJ3K_MODEL=<slug> does the same.
+  --service-mode          Boot into the sub-CPU test mode.
+  --no-mods               Boot without the slot's mods.
+  --mod <folder>          Add a mod folder for this launch only. Repeat the
+                          option to add more folders.
+  --no-spawn              Show the chassis without starting QEMU.
+                          CDJ3K_NO_SPAWN=1 does the same.
+  --serial-log            Write the guest serial console to a log file.
+                          CDJ3K_SERIAL_LOG=1 does the same.
+  --profile               Enable the puffin profiler. CDJ3K_PROFILE=1 does
+                          the same.
+  --provision <file>      Install a firmware (.UPD or .iso) into the slot
+                          without a window, then exit. This option requires
+                          --model.
+  --key <file>            The key file for --provision.
+  --kernel <file>         Boot this kernel instead of the slot's own.
+  --initramfs <file>      Boot this initramfs instead of the slot's own.
+  --no-emmc               Boot without the eMMC disk.
+  -h, --help              Print this help and exit.
+";
 
 type FlagSetter = fn(&mut Cli);
 type ValueSetter = fn(&mut Cli, &str);
@@ -53,6 +83,8 @@ const FLAGS: &[(&str, FlagSetter)] = &[
     ("--no-spawn", |c| c.no_spawn = true),
     ("--after-update", |c| c.after_update = true),
     ("--no-mods", |c| c.no_mods = true),
+    ("-h", |c| c.help = true),
+    ("--help", |c| c.help = true),
 ];
 
 const VALUE_OPTIONS: &[(&str, ValueSetter)] = &[
@@ -103,6 +135,7 @@ impl Cli {
             after_update: false,
             extra_mods: Vec::new(),
             no_mods: false,
+            help: false,
         }
     }
 
@@ -160,6 +193,13 @@ mod tests {
         let cli = parse(&["--mod", "a", "--no-mods", "--mod", "b"]);
         assert_eq!(cli.extra_mods, [PathBuf::from("a"), PathBuf::from("b")]);
         assert!(cli.no_mods);
+    }
+
+    #[test]
+    fn help_is_a_flag() {
+        assert!(parse(&["--help"]).help);
+        assert!(parse(&["--instance", "2", "-h"]).help);
+        assert!(!parse(&["--instance", "2"]).help);
     }
 
     #[test]

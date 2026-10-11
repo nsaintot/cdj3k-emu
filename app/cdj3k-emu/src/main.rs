@@ -71,9 +71,14 @@ fn main() {
     // the helper's work and exits.
     cdj3k_emu_runtime::net::run_helper_if_asked(&args);
 
+    let mut cli = Cli::parse(&args);
+    if cli.help {
+        print!("{}", cli::USAGE);
+        return;
+    }
+
     cdj3k_emu_platform::desktop::announce_running();
 
-    let mut cli = Cli::parse(&args);
     let instance = cli.instance;
 
     {
