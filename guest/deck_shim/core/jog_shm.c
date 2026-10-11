@@ -16,22 +16,36 @@
 #include <dirent.h>
 
 
-/* Register a jog framebuffer handle, so that the shim can match the app's
- * later MAP_DUMB and mmap() calls for it. */
-static void jog_register_fb(uint32_t fb_id, uint32_t gem_handle)
+/* Register a jog framebuffer so that the shim can match the app's later
+ * MAP_DUMB and mmap() calls for it. Returns its entry, or NULL when the
+ * registry is full. A repeat of an fb_id with the same handle returns the
+ * existing entry; a repeat with a new handle, after the kernel reuses an
+ * fb_id, resets the entry. */
+static jog_fb_entry_t *jog_register_fb(uint32_t fb_id, uint32_t gem_handle)
 {
-    /* ADDFB2 can run several times for one framebuffer; register it once. */
+    jog_fb_entry_t *e = NULL;
     for (int i = 0; i < g_jog_fb_count; i++) {
-        if (g_jog_fbs[i].fb_id == fb_id) return;
+        if (g_jog_fbs[i].fb_id == fb_id) {
+            e = &g_jog_fbs[i];
+            break;
+        }
     }
-    if (g_jog_fb_count >= JOG_MAX_FBS) return;
-    g_jog_fbs[g_jog_fb_count].fb_id       = fb_id;
-    g_jog_fbs[g_jog_fb_count].handle      = gem_handle;
-    g_jog_fbs[g_jog_fb_count].mmap_offset = 0;
-    g_jog_fbs[g_jog_fb_count].dma_ptr     = NULL;
-    g_jog_fb_count++;
+    if (e && e->handle == gem_handle) return e;
+    if (!e) {
+        if (g_jog_fb_count >= JOG_MAX_FBS) {
+            fprintf(stderr, "[deck_shim] the jog framebuffer registry is full; fb_id=%u is not mapped\n",
+                    fb_id);
+            return NULL;
+        }
+        e = &g_jog_fbs[g_jog_fb_count++];
+    }
+    e->fb_id       = fb_id;
+    e->handle      = gem_handle;
+    e->mmap_offset = 0;
+    e->dma_ptr     = NULL;
     fprintf(stderr, "[deck_shim] jog fb_id=%u handle=%u registered (waiting for the app mmap)\n",
             fb_id, gem_handle);
+    return e;
 }
 
 /* Extract the visible 320×240 pixels from the stretched 1280×240 DRM buffer and
@@ -173,19 +187,19 @@ void export_jog_prime(int drm_fd, uint32_t gem_handle, uint32_t fb_id)
 
     /* Register this handle, then map it with MAP_DUMB and mmap on the app's own
      * DRM fd, inside the app process. */
-    jog_register_fb(fb_id, gem_handle);
-    {
+    jog_fb_entry_t *e = jog_register_fb(fb_id, gem_handle);
+    if (e && !e->dma_ptr) {
         fake_mode_map_dumb_t md;
         __builtin_memset(&md, 0, sizeof(md));
         md.handle = gem_handle;
         if (sys_ioctl(drm_fd, 0xC01064B3u /* DRM_IOCTL_MODE_MAP_DUMB = _IOWR('d',0xB3,16) */, &md) == 0) {
-            g_jog_fbs[g_jog_fb_count - 1].mmap_offset = md.offset;
+            e->mmap_offset = md.offset;
             fprintf(stderr, "[deck_shim] MAP_DUMB handle=%u returned offset=0x%llx\n",
                     gem_handle, (unsigned long long)md.offset);
             void *ptr = sys_mmap(NULL, JOG_DMA_SIZE, PROT_READ | PROT_WRITE,
                                  MAP_SHARED, drm_fd, (off_t)md.offset);
             if (ptr != MAP_FAILED) {
-                g_jog_fbs[g_jog_fb_count - 1].dma_ptr = ptr;
+                e->dma_ptr = ptr;
                 fprintf(stderr, "[deck_shim] mmap mapped jog handle=%u at %p\n", gem_handle, ptr);
             } else {
                 fprintf(stderr, "[deck_shim] mmap of jog handle=%u failed: %s\n", gem_handle, strerror(errno));
