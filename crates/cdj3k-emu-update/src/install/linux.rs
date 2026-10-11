@@ -43,6 +43,12 @@ pub(super) fn prepare(package: &Path, kind: Kind) -> Result<Staged, Error> {
         let _ = std::fs::remove_file(&staged);
         return Err(denied(dir, e));
     }
+    // `apply` needs only the staged copy, so remove the download now, and its
+    // folder if it is empty.
+    let _ = std::fs::remove_file(package);
+    if let Some(download) = package.parent() {
+        let _ = std::fs::remove_dir(download);
+    }
     Ok(Staged { image, staged })
 }
 

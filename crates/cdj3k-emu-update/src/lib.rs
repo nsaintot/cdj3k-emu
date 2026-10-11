@@ -86,8 +86,10 @@ pub struct Offer {
     pub package: Package,
 }
 
-/// Ask the latest release what it offers this installation.
+/// Ask the latest release what it offers this installation. It also removes
+/// the downloads that this build no longer needs.
 pub fn check() -> Result<Status, Error> {
+    prune_downloads(cdj3k_emu_platform::app_meta::VERSION);
     let Some(kind) = installed_kind() else {
         return Ok(Status::Unmanaged);
     };
@@ -186,6 +188,31 @@ pub fn discard_download(version: &str) {
     let _ = std::fs::remove_dir_all(download_dir(version));
 }
 
+/// Remove the download folders of releases that are not newer than the
+/// `running` build, such as the Windows Setup that installed it.
+fn prune_downloads(running: &str) {
+    let Some(running) = Version::parse(running) else {
+        return;
+    };
+    let base = cdj3k_emu_platform::runtime_paths::runtime_base_dir();
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if is_stale_download(&entry.file_name().to_string_lossy(), &running) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Whether `name` is the [`download_dir`] of a release that is not newer than
+/// `running`.
+fn is_stale_download(name: &str, running: &Version) -> bool {
+    name.strip_prefix("update-")
+        .and_then(Version::parse)
+        .is_some_and(|v| v <= *running)
+}
+
 /// Why an update step did not go through, in words for the update window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
@@ -267,6 +294,23 @@ mod tests {
                 ),
                 "{running}"
             );
+        }
+    }
+
+    #[test]
+    fn only_downloads_up_to_this_build_are_stale() {
+        let running = Version::parse("0.4.0").unwrap();
+        for name in ["update-0.3.9", "update-0.4.0", "update-0.4.0-rc1"] {
+            assert!(is_stale_download(name, &running), "{name}");
+        }
+        for name in [
+            "update-0.4.1",
+            "update-0.5.0-rc1",
+            "update-x",
+            "instance-1",
+            "0.3.0",
+        ] {
+            assert!(!is_stale_download(name, &running), "{name}");
         }
     }
 
