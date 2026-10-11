@@ -52,20 +52,25 @@ impl Worker {
                 "host-only".to_string(),
                 cdj3k_emu_runtime::net_attach_host_only(),
             )),
-            idx => menu_state::lock()
-                .net_ifaces
-                .get(idx as usize)
-                .map(|i| i.name.clone())
-                .map(|name| {
-                    // `launch.rs` makes the same call, so a selection made
-                    // while QEMU runs behaves like one made at boot.
+            idx => {
+                // Release the menu lock before net_attach, because net_attach
+                // can wait on an elevation prompt and the UI locks the menu
+                // state every frame.
+                let name = menu_state::lock()
+                    .net_ifaces
+                    .get(idx as usize)
+                    .map(|i| i.name.clone());
+                // `launch.rs` makes the same call, so a selection made while
+                // QEMU runs behaves like one made at boot.
+                name.map(|name| {
                     let r = cdj3k_emu_runtime::net_attach(
                         &name,
                         &self.config.mac.clone().unwrap_or_default(),
                         self.config.instance_id,
                     );
                     (name, r)
-                }),
+                })
+            }
         }
     }
 
