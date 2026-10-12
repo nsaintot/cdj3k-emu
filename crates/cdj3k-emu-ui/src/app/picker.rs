@@ -20,6 +20,7 @@ use super::theme::{self, Palette};
 pub(in crate::app) use dialogs::draw_delete_confirm;
 pub(in crate::app) use header::{
     button_size, draw_busy, draw_footer, draw_header, footer_rule, footer_split, k_of, Header,
+    SubTone,
 };
 pub(in crate::app) use paint::{hairline, text_width, tracked, trash_glyph};
 
@@ -57,6 +58,8 @@ pub(in crate::app) struct PickerView<'a> {
     pub release: Option<&'a str>,
     /// The slot shown needs a reinstall.
     pub outdated: bool,
+    /// The slot shown cannot boot until it is reinstalled.
+    pub broken: bool,
     /// The slot's mods, for the bar under the cards.
     pub mods: Option<&'a super::mods_view::ModsBar>,
     /// The slot's mods the confirmed model would not run.
@@ -93,6 +96,11 @@ pub(in crate::app) enum PickerAction {
 /// The subtitle of a slot that needs a reinstall
 /// ([`cdj3k_emu_storage::slot_outdated`]).
 const OUTDATED: &str = "The slot installation is outdated. Reinstall to update it.";
+/// The subtitle of a slot that cannot boot
+/// ([`cdj3k_emu_storage::slot_broken`]), which the deck window's shade also
+/// shows.
+pub(in crate::app) const BROKEN: &str =
+    "The slot configuration is invalid or corrupted. Reinstall the slot.";
 
 /// Draw the picker into `ui`; returns what the user asked for.
 pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<PickerAction> {
@@ -103,13 +111,13 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
         return dialogs::draw_confirm(ui, view, model, k, pal);
     }
 
-    let warn = view.status.is_none() && view.outdated;
-    let sub = view.status.unwrap_or(if warn {
-        OUTDATED
-    } else {
-        "emulation model for the current slot"
-    });
-    let out = draw_header(ui, &picker_header(view, sub, warn));
+    let (sub, tone) = match view.status {
+        Some(status) => (status, SubTone::Plain),
+        None if view.broken => (BROKEN, SubTone::Error),
+        None if view.outdated => (OUTDATED, SubTone::Warn),
+        None => ("emulation model for the current slot", SubTone::Plain),
+    };
+    let out = draw_header(ui, &picker_header(view, sub, tone));
     let (mut space, bar) = footer_split(out.body, k);
     let switched = out.switch_to.map(PickerAction::View);
     let mods = draw_mods_strip(ui, view, &mut space, pal, k);
@@ -119,7 +127,7 @@ pub(super) fn draw_picker(ui: &mut egui::Ui, view: &PickerView<'_>) -> Option<Pi
     bar_action.or(chosen).or(mods).or(switched)
 }
 
-fn picker_header<'a>(view: &PickerView<'a>, sub: &'a str, warn: bool) -> Header<'a> {
+fn picker_header<'a>(view: &PickerView<'a>, sub: &'a str, tone: SubTone) -> Header<'a> {
     Header {
         slot: Some(view.slot),
         // Show the deck the slot holds, running or not, so the strip names
@@ -139,7 +147,7 @@ fn picker_header<'a>(view: &PickerView<'a>, sub: &'a str, warn: bool) -> Header<
         },
         sub,
         switchable: true,
-        warn,
+        tone,
     }
 }
 

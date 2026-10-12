@@ -195,7 +195,7 @@ impl CdjApp {
 
         if self.shade_alpha > 0.0 {
             puffin::profile_scope!("shade_draw");
-            boot_overlay::paint_boot_shade(ctx, self.shade_alpha, booting);
+            boot_overlay::paint_boot_shade(ctx, self.shade_alpha, booting, self.broken);
         }
     }
 

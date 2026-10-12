@@ -224,6 +224,9 @@ pub struct CdjApp {
     /// linearly toward the target each frame, so the overlay fades in or out
     /// over 1 s.
     shade_alpha: f32,
+    /// The slot cannot boot until it is reinstalled, so the shade says so in
+    /// place of the spinner and QEMU is not started.
+    pub(super) broken: bool,
     /// `true` until the boot guard clears, while `target_alpha` is above zero.
     /// The main LCD and jog LCD textures are blank while it is set.
     lcds_blanked: bool,
@@ -315,8 +318,7 @@ impl CdjApp {
         }
         let panel = prepare_panel(&egui_ctx);
         let repaint_gate = RepaintGate::new(egui_ctx.clone(), MIN_FRAME_INTERVAL);
-        // `--no-spawn` never shows the boot shade, so the shade must not fade
-        // from opaque either; chassis captures then match from frame to frame.
+        // `--no-spawn` shows no shade, so it starts transparent instead of opaque.
         let ui_only = menu_state::lock().ui_only;
         Self {
             model,
@@ -385,6 +387,7 @@ impl CdjApp {
             qemu_running_since: None,
             qemu_was_running: false,
             shade_alpha: if ui_only { 0.0 } else { 1.0 },
+            broken: false,
             lcds_blanked: !ui_only,
             lcd_textures_need_blank: false,
         }

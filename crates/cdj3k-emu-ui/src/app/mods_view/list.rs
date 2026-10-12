@@ -31,7 +31,7 @@ pub(super) fn draw_list(ui: &mut egui::Ui, page: &mut ModsPage) -> Option<ModsAc
         title: "Mods",
         sub: if empty { EMPTY_SUB } else { LIST_SUB },
         switchable: false,
-        warn: false,
+        tone: SubTone::Plain,
     };
     let body = draw_header(ui, &head).body;
     let (space, bar) = footer_split(body, k);

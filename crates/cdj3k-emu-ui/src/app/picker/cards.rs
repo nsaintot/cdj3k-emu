@@ -72,12 +72,13 @@ impl Pill {
     fn of(model: Model, view: &PickerView<'_>) -> Self {
         let installed = view.installed == Some(model);
         // Another slot's deck launches in its own window; while that window
-        // is open, its card offers a reinstall instead.
+        // is open, its card offers a reinstall instead. A deck that cannot
+        // boot offers only a reinstall.
         let (reinstall, launch) = if view.foreign {
-            (installed && view.busy, installed)
+            (installed && (view.busy || view.broken), installed)
         } else {
             (
-                view.running == Some(model),
+                view.running == Some(model) || installed && view.broken,
                 view.all_launchable || installed,
             )
         };

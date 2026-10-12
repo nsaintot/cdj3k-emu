@@ -190,7 +190,7 @@ mod tests {
         // populated one also proves the value survives the filter.
         InstanceSettings {
             mac: "02:11:22:33:44:55".into(),
-            soc_serial: "0123456789abcd05".into(),
+            soc_serial: Some("0123456789abcd05".into()),
             audio_enabled: true,
             audio_device_uid: Some("uid".into()),
             alc_enabled: true,
@@ -230,7 +230,7 @@ mod tests {
         // Nothing was lost to the other struct's save.
         let s = InstanceSettings::load_or_init(slot);
         assert_eq!(s.mac, "02:11:22:33:44:55");
-        assert_eq!(s.soc_serial, "0123456789abcd05");
+        assert_eq!(s.soc_serial.as_deref(), Some("0123456789abcd05"));
         assert_eq!(s.firmware_release.as_deref(), Some("3.20"));
         assert_eq!(PanelSettings::load(slot).jog_adjust, 0.75);
     }

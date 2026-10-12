@@ -6,8 +6,8 @@ use cdj3k_emu_panel::Model;
 use egui::{Align2, FontId, Pos2, Rect, Stroke, Vec2};
 
 use super::header::{
-    button_size, draw_footer, draw_header, footer_split, k_of, Header, STRIP_GAP, STRIP_MARK_GAP,
-    STRIP_SWATCH,
+    button_size, draw_footer, draw_header, footer_split, k_of, Header, SubTone, STRIP_GAP,
+    STRIP_MARK_GAP, STRIP_SWATCH,
 };
 use super::paint::{hairline, text_width, tracked};
 use super::{PickerAction, PickerView};
@@ -138,7 +138,7 @@ fn confirm_header<'a>(view: &PickerView<'a>, title: &'a str, sub: &'a str) -> He
         title,
         sub,
         switchable: false,
-        warn: false,
+        tone: SubTone::Plain,
     }
 }
 

@@ -393,7 +393,7 @@ settings.
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `mac` | `xx:xx:xx:xx:xx:xx` | generated LAA | The first byte has the locally administered bit set and the multicast bit clear. Generated on first load if absent or invalid. |
-| `soc_serial` | 16 hex digits | generated | The guest's `/proc/cpuinfo` `Serial` line. Minted on first load, replaced by an applied install, fixed otherwise - see below. |
+| `soc_serial` | 16 hex digits | none | The guest's `/proc/cpuinfo` `Serial` line. Written by an install and fixed otherwise - see below. |
 | `audio_enabled` | `0` / `1` | `0` | "Enable Audio": adds `virtio-snd` to argv |
 | `audio_device_uid` | the host's device id or empty | empty | Output device: CoreAudio UID (`out.device-uid=`), PipeWire node (`out.name=`), WASAPI endpoint id (`out.dev=`) |
 | `alc_enabled` | `0` / `1` | `1` | "Enable ALC (Experimental)": pushes `audio_sync_enabled` to guest sysfs at boot |
@@ -424,9 +424,9 @@ The deck's `genkey_pr` derives the `cabinet.img` LUKS passphrase from the model
 and that serial, repeating the pair `strtol(last two digits, 16) + 1` times,
 so a serial ending in `00` repeats it once. Nothing re-keys the container at
 boot, so it opens only for the serial that the install keyed it for; changing
-the serial after an install locks `cabinet.img`. The serial is set once per install:
+the serial after an install locks `cabinet.img`. The serial is set once per
+install:
 
-- On first load, a missing or malformed serial is minted.
 - When the wizard creates a new eMMC, `InstanceSettings::mint_soc_serial`
   mints one and the install records it.
 - `CDJ3K_SOC_SERIAL` pins it to a real deck's serial instead.
@@ -438,6 +438,14 @@ keys and leaves the rest of the file to `InstanceSettings`.
 
 A slot carrying none of these three takes the defaults and writes them on its
 next save.
+
+### Slots that cannot boot
+
+An installed slot does not boot when its `settings.txt` cannot be read, or
+lacks a valid `model` or `soc_serial` (`slot_broken`). The deck window keeps
+its shade up with an error, and Manage Emulation offers REINSTALL on the
+slot's card. A reinstall moves an unreadable file to `settings.txt.unreadable`
+and writes a new one.
 
 The app-wide `~/Library/Application Support/com.cdj3k.emu/settings.txt` holds
 the updater's settings (`update_auto_check`, `update_auto_install`,

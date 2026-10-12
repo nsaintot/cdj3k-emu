@@ -54,6 +54,9 @@ pub enum LaunchOutcome {
     Started,
     /// No firmware is provisioned for the model in this slot.
     NotProvisioned,
+    /// The slot holds an installation that cannot boot until it is
+    /// reinstalled ([`cdj3k_emu_storage::slot_broken`]).
+    Broken,
     /// `--no-spawn`: there is nothing to boot, so the panel shows anyway.
     UiOnly,
 }
@@ -300,7 +303,12 @@ impl CdjShell {
                 );
                 self.open_wizard(model, self.instance);
             }
+            LaunchOutcome::Broken => {
+                self.app.broken = true;
+                self.enter_panel(ctx, frame);
+            }
             LaunchOutcome::Started | LaunchOutcome::UiOnly => {
+                self.app.broken = false;
                 self.last_launched = Some(model);
                 self.enter_panel(ctx, frame);
             }

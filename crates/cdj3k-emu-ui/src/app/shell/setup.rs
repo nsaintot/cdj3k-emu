@@ -10,7 +10,7 @@ use cdj3k_emu_platform::desktop;
 use super::{CdjShell, Screen, SetupStep};
 use crate::app::mods_view;
 use crate::app::picker::{
-    draw_busy, draw_delete_confirm, draw_header, draw_picker, Header, PickerAction,
+    draw_busy, draw_delete_confirm, draw_header, draw_picker, Header, PickerAction, SubTone,
 };
 use crate::app::theme;
 
@@ -179,7 +179,7 @@ impl CdjShell {
                 title: "Install firmware",
                 sub: &sub,
                 switchable: false,
-                warn: false,
+                tone: SubTone::Plain,
             },
         )
         .body;
@@ -217,7 +217,7 @@ impl CdjShell {
                 title: "Emulation",
                 sub: "The emulation must stop before its installation can be changed.",
                 switchable: false,
-                warn: false,
+                tone: SubTone::Plain,
             },
             &format!("Stopping the {} emulation…", going.title()),
             "The slot is emptied once the emulation has stopped.",

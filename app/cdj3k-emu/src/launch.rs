@@ -91,6 +91,13 @@ impl RuntimeHost for Host {
         if self.ui_only {
             return LaunchOutcome::UiOnly;
         }
+        if let Some(problem) = cdj3k_emu_storage::slot_broken(self.instance) {
+            eprintln!(
+                "cdj3k-emu: Slot {} cannot boot: {problem}. Reinstall it from Manage Emulation.",
+                self.instance
+            );
+            return LaunchOutcome::Broken;
+        }
         if self.installed_model() != Some(model) {
             return LaunchOutcome::NotProvisioned;
         }
@@ -150,7 +157,7 @@ impl Host {
         config.audio_device_uid = inst_settings.audio_device_uid.clone();
         config.service_mode = menu_state::lock().service_mode;
         config.mac = Some(inst_settings.mac.clone());
-        config.soc_serial = Some(inst_settings.soc_serial.clone());
+        config.soc_serial = inst_settings.soc_serial.clone();
         config.serial_log = self.serial_log;
         config
     }

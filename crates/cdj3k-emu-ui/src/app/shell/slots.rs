@@ -241,6 +241,7 @@ impl CdjShell {
             every_slot_empty: self.every_slot_empty(),
             release: self.viewed_release.as_deref(),
             outdated: cdj3k_emu_storage::slot_outdated(self.viewed_slot),
+            broken: cdj3k_emu_storage::slot_broken(self.viewed_slot).is_some(),
             mods: self
                 .mods_bar
                 .as_ref()

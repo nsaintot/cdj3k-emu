@@ -53,8 +53,19 @@ pub(in crate::app) struct Header<'a> {
     /// Whether the slot chip opens its menu. A step in the middle of a job
     /// turns it off so that the window stays on its slot.
     pub switchable: bool,
-    /// Whether `sub` is a warning.
-    pub warn: bool,
+    /// How `sub` reads: plain, a warning or an error.
+    pub tone: SubTone,
+}
+
+/// The colour of a header's subtitle.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum SubTone {
+    Plain,
+    /// Something to fix that does not stop the slot, such as an outdated
+    /// install.
+    Warn,
+    /// A problem that keeps the slot from booting, such as unreadable settings.
+    Error,
 }
 
 /// What a header drew, and what the user asked of it.
@@ -207,7 +218,11 @@ fn draw_title(
         pal.ink,
     );
     y += theme::TITLE_FONT * k * 1.12 + TITLE_SUB_GAP * k;
-    let sub_col = if head.warn { pal.warn } else { pal.muted };
+    let sub_col = match head.tone {
+        SubTone::Plain => pal.muted,
+        SubTone::Warn => pal.warn,
+        SubTone::Error => pal.danger,
+    };
     let galley = p.layout(
         head.sub.to_owned(),
         FontId::proportional(theme::SUB_FONT * k),

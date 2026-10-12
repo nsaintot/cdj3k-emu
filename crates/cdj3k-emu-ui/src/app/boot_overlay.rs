@@ -24,6 +24,12 @@ const SPOKE_INNER_RATIO: f32 = 0.55;
 /// Stroke width as a fraction of the outer radius (with a 1.5 px floor).
 const SPOKE_STROKE_FRAC: f32 = 0.13;
 const SPOKE_STROKE_MIN: f32 = 1.5;
+/// The shade is dark in either system theme, so its error colours come from
+/// the dark palette.
+const BROKEN_ICON: egui::Color32 = super::theme::DARK.danger;
+const BROKEN_TEXT: egui::Color32 = super::theme::DARK.ink;
+const BROKEN_DETAIL: egui::Color32 = super::theme::DARK.muted;
+const BROKEN_TITLE: &str = "This emulation cannot boot";
 /// Repaint interval while the spinner animates, capped at 60 Hz.
 const REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
@@ -31,8 +37,8 @@ const REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1
 ///
 /// `alpha` is the current ramp value in `[0, 1]`. `booting` shows the spinner;
 /// with it off during the fade-out, the chassis appears without a spinner over
-/// it.
-pub(super) fn paint_boot_shade(ctx: &egui::Context, alpha: f32, booting: bool) {
+/// it. `broken` shows a warning that the slot needs a reinstall instead.
+pub(super) fn paint_boot_shade(ctx: &egui::Context, alpha: f32, booting: bool, broken: bool) {
     // The deck is what is booting, so the shade covers the deck and stops at
     // the in-window menu strip: those controls work throughout.
     let mut screen = ctx.content_rect();
@@ -55,7 +61,9 @@ pub(super) fn paint_boot_shade(ctx: &egui::Context, alpha: f32, booting: bool) {
                 ),
             );
 
-            if booting {
+            if broken {
+                paint_broken(painter, screen, alpha);
+            } else if booting {
                 let center = screen.center();
                 let outer = (screen.width().min(screen.height()) * SPOKE_OUTER_RADIUS_FRAC)
                     .clamp(SPOKE_OUTER_RADIUS_MIN, SPOKE_OUTER_RADIUS_MAX);
@@ -66,6 +74,51 @@ pub(super) fn paint_boot_shade(ctx: &egui::Context, alpha: f32, booting: bool) {
                 ctx.request_repaint_after(REPAINT_INTERVAL);
             }
         });
+}
+
+/// Draw an error triangle above the title and the reinstall hint.
+fn paint_broken(painter: &egui::Painter, screen: egui::Rect, alpha: f32) {
+    let size = (screen.width().min(screen.height()) * SPOKE_OUTER_RADIUS_FRAC)
+        .clamp(SPOKE_OUTER_RADIUS_MIN, SPOKE_OUTER_RADIUS_MAX);
+    let center = screen.center() - egui::vec2(0.0, size);
+    let icon = BROKEN_ICON.gamma_multiply(alpha);
+    let top = center - egui::vec2(0.0, size * 0.8);
+    let left = center + egui::vec2(-size * 0.92, size * 0.8);
+    let right = center + egui::vec2(size * 0.92, size * 0.8);
+    let stroke = egui::Stroke::new((size * SPOKE_STROKE_FRAC).max(SPOKE_STROKE_MIN), icon);
+    painter.add(egui::Shape::closed_line(vec![top, right, left], stroke));
+    // The exclamation mark: a bar and a dot.
+    painter.line_segment(
+        [
+            center - egui::vec2(0.0, size * 0.3),
+            center + egui::vec2(0.0, size * 0.25),
+        ],
+        stroke,
+    );
+    painter.circle_filled(
+        center + egui::vec2(0.0, size * 0.52),
+        stroke.width * 0.6,
+        icon,
+    );
+
+    let title = egui::FontId::proportional((size * 0.5).max(15.0));
+    let hint = egui::FontId::proportional((size * 0.34).max(12.0));
+    let mut y = center.y + size * 1.4;
+    let title_rect = painter.text(
+        egui::pos2(center.x, y),
+        egui::Align2::CENTER_TOP,
+        BROKEN_TITLE,
+        title,
+        BROKEN_TEXT.gamma_multiply(alpha),
+    );
+    y = title_rect.bottom() + size * 0.25;
+    painter.text(
+        egui::pos2(center.x, y),
+        egui::Align2::CENTER_TOP,
+        super::picker::BROKEN,
+        hint,
+        BROKEN_DETAIL.gamma_multiply(alpha),
+    );
 }
 
 /// Each spoke is one convex polygon: a rectangle joined to a semicircular outer

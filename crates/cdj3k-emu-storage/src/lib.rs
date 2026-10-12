@@ -215,6 +215,16 @@ pub fn slot_outdated(instance_id: u32) -> bool {
         && settings::InstanceSettings::saved_fs(instance_id) < FEATURE_SET
 }
 
+/// Why slot `instance_id` holds an installation that cannot boot, or `None`
+/// when it boots or holds nothing. A reinstall repairs it
+/// ([`settings::InstanceSettings::install_problem`]).
+pub fn slot_broken(instance_id: u32) -> Option<String> {
+    if !FirmwarePaths::new(instance_id).provisioned() {
+        return None;
+    }
+    settings::InstanceSettings::install_problem(instance_id)
+}
+
 /// What slot `instance_id` holds: the deck installed in it and the firmware
 /// release that installation came from.
 ///

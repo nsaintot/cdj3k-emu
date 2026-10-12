@@ -28,7 +28,11 @@ pub struct InstanceSettings {
     /// the container with it and nothing re-keys the container, so the serial
     /// has to be the one the staged cabinet was keyed for. Changing it
     /// afterwards locks `cabinet.img` out.
-    pub soc_serial: String,
+    ///
+    /// Only an install sets it, so it is `None` for a slot with nothing
+    /// installed. An installed slot without one cannot boot
+    /// ([`Self::install_problem`]).
+    pub soc_serial: Option<String>,
     /// Whether QEMU is launched with the audio backend. When true, virtio-sound
     /// is added and routed to the host's audio output; when false, the guest
     /// has no ALSA card.
@@ -89,18 +93,18 @@ pub struct InstanceSettings {
 }
 
 impl InstanceSettings {
-    /// Load the slot's settings, generating and saving a MAC and a SoC serial
-    /// when either is missing or invalid.
+    /// Load the slot's settings, generating and saving a MAC when it is
+    /// missing or invalid.
     ///
     /// When the file exists but cannot be read, it is left as it is, the
-    /// error is logged, and the slot gets the defaults with a MAC and a SoC
-    /// serial that last only for this launch.
+    /// error is logged, and the defaults are returned. An installed slot in
+    /// that state does not boot ([`Self::install_problem`]).
     pub fn load_or_init(instance_id: u32) -> Self {
         let _g = locked();
         Self::load_or_init_unlocked(instance_id).unwrap_or_else(|e| {
             eprintln!(
-                "cdj3k-emu-storage: could not read the settings of instance {instance_id}, so \
-                 the file is left unchanged and this launch uses a temporary identity: {e}"
+                "cdj3k-emu-storage: could not read the settings of slot {instance_id}; the file \
+                 is left unchanged: {e}"
             );
             Self::from_map(&mut BTreeMap::new()).0
         })
@@ -135,12 +139,14 @@ impl InstanceSettings {
         Ok(settings)
     }
 
-    /// The settings `map` holds. A missing or invalid MAC or SoC serial is
-    /// minted and stored back into `map`; the flag says whether one was.
+    /// The settings `map` holds. A missing or invalid MAC is minted and
+    /// stored back into `map`; the flag says whether it was.
     fn from_map(map: &mut BTreeMap<String, String>) -> (Self, bool) {
-        let (mac, minted_mac) = kept_or_minted(map, "mac", is_valid_mac, generate_mac);
-        let (soc_serial, minted_serial) =
-            kept_or_minted(map, "soc_serial", is_valid_soc_serial, generate_soc_serial);
+        let (mac, minted) = kept_or_minted(map, "mac", is_valid_mac, generate_mac);
+        let soc_serial = map
+            .get("soc_serial")
+            .filter(|v| is_valid_soc_serial(v))
+            .cloned();
         let settings = Self {
             mac,
             soc_serial,
@@ -157,7 +163,46 @@ impl InstanceSettings {
             usb_virtual_path: text(map, "usb_virtual_path").map(PathBuf::from),
             usb_physical_bsd: text(map, "usb_physical_bsd"),
         };
-        (settings, minted_mac || minted_serial)
+        (settings, minted)
+    }
+
+    /// Why installed slot `instance_id` cannot boot: its settings file cannot
+    /// be read, or it lacks a key that only an install writes. A reinstall
+    /// repairs either. `None` when the settings are complete.
+    pub fn install_problem(instance_id: u32) -> Option<String> {
+        let path = instance_path(instance_id);
+        let map = match try_read_kv(&path) {
+            Ok(map) => map,
+            Err(e) => return Some(format!("{} cannot be read: {e}", path.display())),
+        };
+        if map.get("model").and_then(|v| Model::parse(v)).is_none() {
+            return Some(format!("{} has no model", path.display()));
+        }
+        if !map
+            .get("soc_serial")
+            .is_some_and(|v| is_valid_soc_serial(v))
+        {
+            return Some(format!("{} has no valid soc_serial", path.display()));
+        }
+        None
+    }
+
+    /// Move a settings file that cannot be read to `settings.txt.unreadable`,
+    /// so that an install can write a new one. A readable or missing file is
+    /// left alone.
+    pub fn set_aside_unreadable(instance_id: u32) -> io::Result<()> {
+        let _g = locked();
+        let path = instance_path(instance_id);
+        if let Err(e) = try_read_kv(&path) {
+            let aside = path.with_extension("txt.unreadable");
+            std::fs::rename(&path, &aside)?;
+            eprintln!(
+                "cdj3k-emu-storage: moved the unreadable {} to {}: {e}",
+                path.display(),
+                aside.display()
+            );
+        }
+        Ok(())
     }
 
     /// The slot's saved model, read without creating or writing anything
@@ -214,7 +259,7 @@ impl InstanceSettings {
         let serial = Self::parse_soc_serial(serial)?;
         Self::update(instance_id, {
             let serial = serial.clone();
-            move |s| s.soc_serial = serial
+            move |s| s.soc_serial = Some(serial)
         })?;
         Ok(serial)
     }
@@ -228,7 +273,10 @@ impl InstanceSettings {
         let path = instance_path(instance_id);
         let mut map = try_read_kv(&path)?;
         map.insert("mac".into(), self.mac.clone());
-        map.insert("soc_serial".into(), self.soc_serial.clone());
+        // A slot without a serial keeps whatever the file holds.
+        if let Some(serial) = &self.soc_serial {
+            map.insert("soc_serial".into(), serial.clone());
+        }
         map.insert("audio_enabled".into(), flag_value(self.audio_enabled));
         map.insert(
             "audio_device_uid".into(),
@@ -289,15 +337,15 @@ fn kept_or_minted(
 mod tests {
     use super::*;
 
-    /// A fresh slot mints and persists its identity; the toggles take their
-    /// defaults.
+    /// A fresh slot mints and persists its MAC and has no SoC serial; the
+    /// toggles take their defaults.
     #[test]
     fn a_fresh_slot_takes_the_defaults() {
         let _home = crate::TestHome::new("fresh");
 
         let s = InstanceSettings::load_or_init(2);
         assert!(is_valid_mac(&s.mac), "{}", s.mac);
-        assert!(is_valid_soc_serial(&s.soc_serial), "{}", s.soc_serial);
+        assert_eq!(s.soc_serial, None);
         assert!(!s.audio_enabled);
         assert!(s.alc_enabled);
         assert!(s.haptic_enabled);
@@ -318,19 +366,23 @@ mod tests {
 
         let slot = 7;
         assert_eq!(InstanceSettings::saved_model(slot), None);
-        let first = InstanceSettings::load_or_init(slot);
-        let (mac, serial) = (first.mac, first.soc_serial);
+        let serial = InstanceSettings::set_soc_serial(slot, "0123456789abcd05").unwrap();
+        let mac = InstanceSettings::load_or_init(slot).mac;
         InstanceSettings::update(slot, |s| s.model = Some(Model::Cdj3kx)).unwrap();
         InstanceSettings::update(slot, |s| s.audio_enabled = true).unwrap();
 
         let s = InstanceSettings::load_or_init(slot);
         assert_eq!(s.mac, mac, "the MAC survives updates");
-        assert_eq!(s.soc_serial, serial, "the SoC serial survives updates");
+        assert_eq!(
+            s.soc_serial.as_deref(),
+            Some(serial.as_str()),
+            "the SoC serial survives updates"
+        );
         // Only a firmware install mints a new one, and it sticks.
         let fresh = InstanceSettings::mint_soc_serial();
         assert!(is_valid_soc_serial(&fresh), "{fresh}");
-        InstanceSettings::update(slot, |s| s.soc_serial = fresh.clone()).unwrap();
-        assert_eq!(InstanceSettings::load_or_init(slot).soc_serial, fresh);
+        InstanceSettings::update(slot, |s| s.soc_serial = Some(fresh.clone())).unwrap();
+        assert_eq!(InstanceSettings::load_or_init(slot).soc_serial, Some(fresh));
         assert_eq!(s.model, Some(Model::Cdj3kx));
         assert!(s.audio_enabled);
         assert_eq!(InstanceSettings::saved_model(slot), Some(Model::Cdj3kx));
@@ -348,11 +400,45 @@ mod tests {
         assert_eq!(pinned, "0123456789abcd05", "trimmed and lower-cased");
         assert!(InstanceSettings::set_soc_serial(slot, "0123456789abcd0g").is_err());
         assert!(InstanceSettings::set_soc_serial(slot, "deadbeef").is_err());
-        assert_eq!(InstanceSettings::load_or_init(slot).soc_serial, pinned);
+        assert_eq!(
+            InstanceSettings::load_or_init(slot).soc_serial,
+            Some(pinned)
+        );
+    }
+
+    /// A slot whose file lacks the serial or the model, or cannot be read,
+    /// reports why; a load does not mint a serial to cover the gap.
+    #[test]
+    fn a_missing_install_key_is_reported() {
+        let _home = crate::TestHome::new("install-keys");
+
+        let slot = 6;
+        let path = instance_path(slot);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "model=cdj3k\nsoc_serial=0123456789abcd05\n").unwrap();
+        assert_eq!(InstanceSettings::install_problem(slot), None);
+
+        std::fs::write(&path, "model=cdj3k\n").unwrap();
+        assert_eq!(InstanceSettings::load_or_init(slot).soc_serial, None);
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("soc_serial"));
+        assert!(InstanceSettings::install_problem(slot).is_some());
+
+        std::fs::write(&path, "soc_serial=0123456789abcd05\n").unwrap();
+        assert!(InstanceSettings::install_problem(slot).is_some());
+
+        std::fs::write(
+            &path,
+            b"model=cdj3k\nsoc_serial=0123456789abcd05\nnet_iface=caf\xe9\n",
+        )
+        .unwrap();
+        assert!(InstanceSettings::install_problem(slot).is_some());
     }
 
     /// A settings file that cannot be read is never replaced: the load falls
-    /// back to a temporary identity and every save fails.
+    /// back to the defaults and every save fails. Only an install moves it
+    /// aside.
     #[test]
     fn an_unreadable_file_is_left_alone() {
         let _home = crate::TestHome::new("unreadable");
@@ -360,15 +446,23 @@ mod tests {
         let slot = 5;
         let path = instance_path(slot);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        // A byte that is not UTF-8, as a Latin-1 hand edit leaves.
+        // A byte that is not UTF-8, such as one that a Latin-1 editor writes.
         let original = b"model=cdj3kx\nsoc_serial=0123456789abcd05\nnet_iface=caf\xe9\n".to_vec();
         std::fs::write(&path, &original).unwrap();
 
         let s = InstanceSettings::load_or_init(slot);
-        assert!(is_valid_soc_serial(&s.soc_serial), "{}", s.soc_serial);
+        assert_eq!(s.soc_serial, None);
         assert!(InstanceSettings::update(slot, |s| s.audio_enabled = true).is_err());
         assert!(s.save(slot).is_err());
         assert!(crate::PanelSettings::default().save(slot).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        InstanceSettings::set_aside_unreadable(slot).unwrap();
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(path.with_extension("txt.unreadable")).unwrap(),
+            original
+        );
+        assert!(InstanceSettings::update(slot, |s| s.audio_enabled = true).is_ok());
     }
 }

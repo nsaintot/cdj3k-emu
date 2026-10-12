@@ -244,12 +244,14 @@ pub fn apply_staged(claim: &SlotClaim) -> io::Result<Option<StagedRecord>> {
     let live = FirmwarePaths::new(instance_id);
     let _emmc = lock_exclusive_retry(&live.emmc).map_err(|_| emulation_running())?;
     // The settings go first: a failure here leaves the slot as it was, and a
-    // failed rename below is picked up again on the next try.
+    // failed rename below is picked up again on the next try. A reinstall
+    // moves an unreadable settings file aside so that it can write a new one.
+    InstanceSettings::set_aside_unreadable(instance_id)?;
     InstanceSettings::update(instance_id, |s| {
         s.model = Some(record.model);
         s.firmware_release = record.firmware_release.clone();
         s.fs = record.fs;
-        s.soc_serial = record.soc_serial.clone();
+        s.soc_serial = Some(record.soc_serial.clone());
     })?;
     let staged = staged_paths(&dir);
     for (from, to) in [
@@ -329,7 +331,7 @@ mod tests {
         assert_eq!(read_all(&live), ["new", "new", "new"]);
         let s = InstanceSettings::load_or_init(1);
         assert_eq!(s.model, Some(Model::Cdj3kx));
-        assert_eq!(s.soc_serial, SERIAL);
+        assert_eq!(s.soc_serial.as_deref(), Some(SERIAL));
         assert!(pending_install(1).is_none());
         assert!(apply_staged(&claim).unwrap().is_none(), "applied once");
     }

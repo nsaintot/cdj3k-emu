@@ -20,7 +20,7 @@ use cdj3k_emu_panel::Model;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 
 use super::picker::{
-    draw_header, footer_split, hairline, k_of, text_width, tracked, trash_glyph, Header,
+    draw_header, footer_split, hairline, k_of, text_width, tracked, trash_glyph, Header, SubTone,
 };
 use super::theme::{self, Palette};
 

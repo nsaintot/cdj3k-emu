@@ -8,7 +8,9 @@ use cdj3k_emu_platform::app_meta::VERSION;
 use cdj3k_emu_update::{Kind, Offer};
 use egui::{Pos2, Rect, RichText, Stroke, Vec2};
 
-use super::super::picker::{button_size, draw_footer, draw_header, footer_split, k_of, Header};
+use super::super::picker::{
+    button_size, draw_footer, draw_header, footer_split, k_of, Header, SubTone,
+};
 use super::super::theme::{self, Palette};
 use super::notes::notes_box;
 use super::{Action, Phase, Step};
@@ -200,7 +202,7 @@ pub(super) fn draw(
             title: &p.title,
             sub: &p.sub,
             switchable: false,
-            warn: false,
+            tone: SubTone::Plain,
         },
     )
     .body;
