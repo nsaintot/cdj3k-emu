@@ -412,19 +412,19 @@ settings.
 
 ### SoC serial
 
-`soc_serial` is 16 lowercase hex digits with a non-zero last byte, the form an
-RK3399 prints for `Serial`. aarch64 prints no such line and QEMU has no SoC
-serial to expose, so the emulator supplies one. It is passed on the kernel
-command line as `cdj3k.serial=<hex>`, and guest patch 12
+`soc_serial` is 16 lowercase hex digits, the form an RK3399 prints for
+`Serial`. aarch64 prints no such line and QEMU has no SoC serial to expose, so
+the emulator supplies one. It is passed on the kernel command line as
+`cdj3k.serial=<hex>`, and guest patch 12
 (`initramfs-patch/patch-rootfs.d/12-cpuinfo-serial.sh`) appends the `Serial`
 line to a copy of `/proc/cpuinfo` under `/run` and bind-mounts it over the
 original, so every process reads the same value. Every model gets it.
 
 The deck's `genkey_pr` derives the `cabinet.img` LUKS passphrase from the model
 and that serial, repeating the pair `strtol(last two digits, 16) + 1` times,
-so the last byte must be non-zero. Nothing re-keys the container at boot, so it
-opens only for the serial that the install keyed it for; changing the serial
-after an install locks `cabinet.img`. The serial is set once per install:
+so a serial ending in `00` repeats it once. Nothing re-keys the container at
+boot, so it opens only for the serial that the install keyed it for; changing
+the serial after an install locks `cabinet.img`. The serial is set once per install:
 
 - On first load, a missing or malformed serial is minted.
 - When the wizard creates a new eMMC, `InstanceSettings::mint_soc_serial`

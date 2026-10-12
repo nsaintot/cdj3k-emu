@@ -2,31 +2,19 @@
 //! serial the deck's `genkey_pr` keys `cabinet.img` with. This module only
 //! mints and validates them; [`super::InstanceSettings`] stores them.
 
-/// Whether `s` has 16 lowercase hex digits and a non-zero last byte.
-/// `genkey_pr` hashes its input N + 1 times, where N is the last byte, so it
-/// also accepts a zero last byte.
+/// Whether `s` has 16 lowercase hex digits. Any last byte works:
+/// `genkey_pr` hashes its input N + 1 times, where N is the last byte, so a
+/// serial such as `0123456789abcd00` hashes its input once.
 pub(super) fn is_valid_soc_serial(s: &str) -> bool {
     s.len() == 16
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        && matches!(u8::from_str_radix(&s[14..], 16), Ok(n) if n != 0)
 }
 
-/// Mint a SoC serial from a v4 UUID's first 8 bytes, with the last byte forced
-/// non-zero so that the serial passes [`is_valid_soc_serial`].
+/// Mint a SoC serial from a v4 UUID's first 8 bytes.
 pub(super) fn generate_soc_serial() -> String {
     let b = uuid::Uuid::new_v4().into_bytes();
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0],
-        b[1],
-        b[2],
-        b[3],
-        b[4],
-        b[5],
-        b[6],
-        b[7].max(1)
-    )
+    b[..8].iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Generate a random locally administered unicast MAC.
@@ -51,7 +39,7 @@ mod tests {
     #[test]
     fn a_mint_always_passes_its_own_validator() {
         assert!(is_valid_soc_serial("0123456789abcd05"));
-        assert!(!is_valid_soc_serial("0123456789abcd00"));
+        assert!(is_valid_soc_serial("0123456789abcd00"), "a zero last byte");
         assert!(!is_valid_soc_serial("deadbeef"), "too short");
         assert!(!is_valid_soc_serial("zzzzzzzzzzzzzzzz"), "not hex");
         assert!(!is_valid_soc_serial("0123456789ABCD05"), "upper case");

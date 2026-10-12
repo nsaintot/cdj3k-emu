@@ -20,7 +20,7 @@ pub struct InstanceSettings {
     pub mac: String,
     /// The SoC serial that the guest publishes as the `Serial` line of
     /// `/proc/cpuinfo`, such as "0123456789abcd05". It has 16 lowercase hex
-    /// digits and a non-zero last byte.
+    /// digits.
     ///
     /// `genkey_pr` derives the `cabinet.img` LUKS passphrase as
     /// `sha512hex((model + serial) repeated N + 1 times)`, where `N` is
@@ -194,13 +194,12 @@ impl InstanceSettings {
     }
 
     /// Return `serial` trimmed and lower-cased, or an error if it is not 16 hex
-    /// digits with a non-zero last byte.
+    /// digits.
     pub fn parse_soc_serial(serial: &str) -> io::Result<String> {
         let serial = serial.trim().to_ascii_lowercase();
         if !is_valid_soc_serial(&serial) {
             return Err(io::Error::other(format!(
-                "{serial:?} is not a usable SoC serial; it needs 16 hex digits with a non-zero \
-                 last byte"
+                "{serial:?} is not a usable SoC serial; it needs 16 hex digits"
             )));
         }
         Ok(serial)
@@ -347,7 +346,7 @@ mod tests {
         // value is refused and leaves the stored serial unchanged.
         let pinned = InstanceSettings::set_soc_serial(slot, " 0123456789ABCD05 ").unwrap();
         assert_eq!(pinned, "0123456789abcd05", "trimmed and lower-cased");
-        assert!(InstanceSettings::set_soc_serial(slot, "0123456789abcd00").is_err());
+        assert!(InstanceSettings::set_soc_serial(slot, "0123456789abcd0g").is_err());
         assert!(InstanceSettings::set_soc_serial(slot, "deadbeef").is_err());
         assert_eq!(InstanceSettings::load_or_init(slot).soc_serial, pinned);
     }
