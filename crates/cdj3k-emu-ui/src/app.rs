@@ -470,8 +470,8 @@ impl CdjApp {
 
         // Mark shutdown so the runtime worker sees it at the top of its next
         // loop iteration and runs `instance.stop()`. That sends
-        // POWER_OFF_STIMULI, then ACPI system_powerdown, then QMP quit, each
-        // step with its own watchdog.
+        // POWER_OFF_STIMULI and then QMP quit, each step with its own
+        // watchdog.
         cdj3k_emu_platform::menu_state::APP_SHUTDOWN
             .store(true, std::sync::atomic::Ordering::Relaxed);
 
@@ -493,8 +493,8 @@ impl CdjApp {
         .save(instance_id);
 
         // Wait for the worker to finish its graceful QEMU stop. The budget
-        // covers `instance.stop()`: 8 s for the EP122 cleanup, 20 s for the
-        // ACPI shutdown and 5 s for QMP quit, plus a small margin.
+        // covers `instance.stop()`: 8 s for the EP122 cleanup and 2 s for
+        // QMP quit, plus a small margin.
         let joined = cdj3k_emu_runtime::wait_for_worker(SHUTDOWN_WATCHDOG);
         if !joined {
             // The watchdog elapsed, so fall back to SIGTERM and SIGKILL on the
@@ -511,9 +511,9 @@ impl CdjApp {
 }
 
 /// The longest time the runtime worker gets for the graceful QEMU stop before
-/// the app falls back to SIGTERM and SIGKILL. It covers the 8, 20 and 5 s steps
-/// of `instance.stop()` plus loop overhead.
-const SHUTDOWN_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(35);
+/// the app falls back to SIGTERM and SIGKILL. It covers the 8 and 2 s steps of
+/// `instance.stop()` plus loop overhead.
+const SHUTDOWN_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(12);
 
 impl CdjApp {
     /// The reference canvas of the active slate. The window keeps its aspect

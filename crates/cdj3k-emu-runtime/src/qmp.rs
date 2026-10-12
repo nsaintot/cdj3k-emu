@@ -169,21 +169,11 @@ impl QmpClient {
         Ok(())
     }
 
-    /// Send an ACPI power-button event, so that systemd in the guest shuts
-    /// down gracefully. Errors are ignored: if QMP is already gone, the
-    /// caller's next `wait_or_kill` sends SIGKILL to the child anyway, and
-    /// the error would only race with QEMU closing the socket during
-    /// shutdown.
-    pub fn system_powerdown(&mut self) -> Result<(), QmpError> {
-        let _ = self.execute("system_powerdown", &serde_json::json!({}));
-        Ok(())
-    }
-
-    /// Send QMP "quit", which shuts QEMU down cleanly.
+    /// Send QMP "quit", which flushes the disks and shuts QEMU down. The reply
+    /// is not read: a QEMU that has stopped answering is killed by the caller,
+    /// and one that quits closes the socket.
     pub fn quit(&mut self) -> Result<(), QmpError> {
-        // Ignore errors, because QEMU may close the socket before the reply is
-        // read.
-        let _ = self.execute("quit", &serde_json::json!({}));
+        self.stream.write_all(b"{\"execute\": \"quit\"}\n")?;
         Ok(())
     }
 

@@ -13,13 +13,12 @@ pub static QEMU_CHILD_PID: AtomicI32 = AtomicI32::new(-1);
 /// cuts power, which gives EP122 time to unmount USB. This matches the
 /// countdown on the real player.
 const APP_CLEANUP_WAIT: Duration = Duration::from_secs(8);
-/// How long systemd needs to stop its units after an ACPI shutdown request.
-const ACPI_SHUTDOWN_WAIT: Duration = Duration::from_secs(20);
-/// How long to wait after QMP `quit` before sending SIGKILL to the QEMU child.
-const QMP_QUIT_WAIT: Duration = Duration::from_secs(5);
+/// How long to wait after QMP `quit` before killing the QEMU child.
+/// QEMU flushes its disks and exits well within it.
+const QMP_QUIT_WAIT: Duration = Duration::from_secs(2);
 /// How long `kill_qemu_child` waits after SIGTERM before it sends SIGKILL.
 const SIGTERM_GRACE: Duration = Duration::from_secs(3);
-/// The poll interval of `wait_or_kill` while it waits for the QEMU child to
+/// The poll interval of `wait_for_exit` while it waits for the QEMU child to
 /// exit. It is short enough to keep a clean shutdown responsive, and long
 /// enough not to busy-loop on a stuck guest.
 const PROCESS_WAIT_POLL: Duration = Duration::from_millis(100);
@@ -138,10 +137,8 @@ impl QemuInstance {
         self.running.load(Ordering::Acquire)
     }
 
-    /// Stop the guest. Send the SPI power-off stimuli and give EP122 8 s to
-    /// unmount USB, then send SIGKILL, as the player's sub-CPU cuts power.
-    /// The ACPI powerdown and QMP `quit` steps run only if the monitor thread
-    /// has not yet seen QEMU exit.
+    /// Stop the guest through the steps of [`Self::shutdown_sequence`] and
+    /// return QEMU's exit code.
     pub fn stop(&mut self) -> i32 {
         self.shutdown_sequence();
         let code = self
@@ -154,26 +151,29 @@ impl QemuInstance {
         code
     }
 
-    /// Send the power-off stimuli, wait [`APP_CLEANUP_WAIT`] and send SIGKILL
-    /// if QEMU is still running. The ACPI powerdown and QMP `quit` steps
-    /// follow only if the monitor thread has not yet seen QEMU exit. The
-    /// caller joins the thread and resets the global PID. `stop()` and `Drop`
-    /// share this.
+    /// Stop QEMU in steps, each one only while QEMU still runs:
+    ///
+    /// 1. Send the power-off stimuli and wait [`APP_CLEANUP_WAIT`], so that
+    ///    EP122 can unmount USB.
+    /// 2. Send QMP `quit` and wait [`QMP_QUIT_WAIT`].
+    /// 3. Kill QEMU.
+    ///
+    /// The caller joins the monitor thread and resets the global PID.
+    /// `stop()` and `Drop` share this.
     fn shutdown_sequence(&mut self) {
         if self.inner.thread.is_none() {
             return;
         }
         menu_state::lock().power_off_stimuli_requested = true;
-        // Give EP122 8 s to unmount USB, then kill QEMU, as the sub-CPU does.
-        wait_or_kill(&self.running, self.inner.pid, APP_CLEANUP_WAIT);
-        if self.running.load(Ordering::Acquire) {
-            let _ = self.inner.qmp.system_powerdown();
-            wait_or_kill(&self.running, self.inner.pid, ACPI_SHUTDOWN_WAIT);
+        if wait_for_exit(&self.running, APP_CLEANUP_WAIT) {
+            return;
         }
-        if self.running.load(Ordering::Acquire) {
-            let _ = self.inner.qmp.quit();
-            wait_or_kill(&self.running, self.inner.pid, QMP_QUIT_WAIT);
+        let _ = self.inner.qmp.quit();
+        if wait_for_exit(&self.running, QMP_QUIT_WAIT) {
+            return;
         }
+        eprintln!("cdj3k-emu: QEMU did not stop after the power-off and quit; killing it.");
+        crate::process::kill(self.inner.pid as i32);
     }
 
     /// Stop and restart with a new config.
@@ -313,20 +313,13 @@ fn start_qemu(
     Ok((pid, thread, running))
 }
 
-/// Wait for the process to exit, and send SIGKILL if it is still running after
-/// `timeout`.
-fn wait_or_kill(running: &Arc<AtomicBool>, pid: u32, timeout: Duration) {
+/// Wait up to `timeout` for the QEMU child to exit. Returns whether it exited.
+fn wait_for_exit(running: &Arc<AtomicBool>, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while running.load(Ordering::Acquire) && Instant::now() < deadline {
         std::thread::sleep(PROCESS_WAIT_POLL);
     }
-    if running.load(Ordering::Acquire) {
-        eprintln!(
-            "cdj3k-emu: QEMU did not exit within {} s; sending SIGKILL.",
-            timeout.as_secs()
-        );
-        crate::process::kill(pid as i32);
-    }
+    !running.load(Ordering::Acquire)
 }
 
 /// Create or truncate `path` as a sparse file of exactly `len` bytes, so that
