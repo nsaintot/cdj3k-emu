@@ -4,10 +4,12 @@
 #   pull request into main           the same, when it touches the build
 #   workflow_dispatch                the same; `notarize` notarizes the macOS build
 #   push of a v<version> tag         a release: the tag must be on main and is the
-#                                    version every artefact carries; macOS is
-#                                    notarized and every artefact lands in a draft
-#                                    GitHub release, published by hand. A version
-#                                    with a hyphen (0.3.0-rc1) is a pre-release.
+#                                    version every artefact carries; an annotated
+#                                    tag's message holds the release notes. macOS
+#                                    is notarized and every artefact lands in a
+#                                    draft GitHub release, published by hand. A
+#                                    version with a hyphen (0.3.0-rc1) is a
+#                                    pre-release.
 #
 # Other builds carry Cargo.toml's version, which nothing bumps.
 #
@@ -467,36 +469,17 @@ jobs:
           path: dist
           merge-multiple: true
       # The release is a draft, so nothing is public until someone publishes
-      # it by hand. Its notes go into both update feeds, with LF line endings
-      # and without the Downloads section (feed-notes.sh). A rerun reuses the
-      # draft and replaces its files.
-      - name: Draft release
-        run: |
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-              args=(--draft --verify-tag --title "$GITHUB_REF_NAME" --generate-notes)
-              if [[ "$VERSION" == *-* ]]; then args+=(--prerelease); fi
-              gh release create "$GITHUB_REF_NAME" "${args[@]}"
-          fi
-          gh release view "$GITHUB_REF_NAME" --json body -q .body \
-              | .github/scripts/feed-notes.sh > "$RUNNER_TEMP/notes.md"
-          gh api markdown -f text="$(cat "$RUNNER_TEMP/notes.md")" -f mode=gfm \
-              -f context="$GH_REPO" > "$RUNNER_TEMP/notes.html"
-      # Write the index that Windows and Linux read and the Sparkle appcast
-      # that macOS reads. The update key (sign.sh) signs the index itself and
-      # the .dmg the appcast points to. The public key is
+      # it by hand. The tag's message holds the release notes, which go into
+      # the release text and both update feeds; GitHub's generated notes stand
+      # in for an empty one. The update key (sign.sh) signs
+      # the index and the .dmg that the appcast points to; its public half is
       # packaging/update-ed25519.pub, which the app and Info.plist carry. The
-      # CD run number is the bundle's CFBundleVersion.
-      - name: Update feeds
+      # CD run number is the bundle's CFBundleVersion. A rerun replaces the
+      # draft's text and files.
+      - name: Draft release
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: |
-          .github/scripts/update-index.sh "$VERSION" "$GITHUB_REF_NAME" dist "$RUNNER_TEMP/notes.md"
-          .github/scripts/sign.sh dist/cdj3k-emu-update.json > dist/cdj3k-emu-update.json.sig
-          .github/scripts/appcast.sh "$VERSION" "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" dist "$RUNNER_TEMP/notes.html"
-      - name: Upload
-        run: |
-          cd dist
-          sha256sum -- * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-          gh release upload "$GITHUB_REF_NAME" --clobber -- *
+          .github/scripts/tag-notes.sh "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
+          .github/scripts/release-draft.sh "$VERSION" "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" dist "$RUNNER_TEMP/notes.md"
           echo "Draft: $(gh release view "$GITHUB_REF_NAME" --json url -q .url)" >> "$GITHUB_STEP_SUMMARY"

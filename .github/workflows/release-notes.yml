@@ -1,0 +1,60 @@
+# Replace the release notes of a draft release: its text and both update
+# feeds, signed again. CD takes the notes from the tag's message; this
+# workflow corrects them without a new build:
+#
+#   gh workflow run release-notes.yml -f tag=v0.4.1 -F notes=@notes.md
+#
+# Empty notes give GitHub's generated notes, as in CD.
+name: Release notes
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The draft release's tag, such as v0.4.1
+        required: true
+        type: string
+      notes:
+        description: The release notes, in Markdown
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  notes:
+    name: Release notes
+    # UPDATE_SIGNING_KEY lives in the release environment.
+    environment: release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      NOTES: ${{ inputs.notes }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            .github/scripts
+            packaging/update-ed25519.pub
+          sparse-checkout-cone-mode: false
+      # The appcast keeps the bundle's CFBundleVersion, which is the number of
+      # the CD run that built the release.
+      - name: Update the draft
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          version="${TAG#v}"
+          gh release download "$TAG" --dir dist --pattern "CDJ3K-Emulator-$version-*" --pattern appcast.xml
+          build=$(sed -n 's|.*<sparkle:version>\(.*\)</sparkle:version>.*|\1|p' dist/appcast.xml)
+          if [[ -z "$build" ]]; then
+              echo "::error::the appcast of $TAG holds no sparkle:version"
+              exit 1
+          fi
+          printf '%s\n' "$NOTES" | tr -d '\r' > "$RUNNER_TEMP/notes.md"
+          .github/scripts/release-draft.sh "$version" "$TAG" "$build" dist "$RUNNER_TEMP/notes.md"
+          echo "Draft: $(gh release view "$TAG" --json url -q .url)" >> "$GITHUB_STEP_SUMMARY"

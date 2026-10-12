@@ -6,6 +6,7 @@
 |---|---|---|
 | `.github/workflows/ci.yml` | pull requests into `main` | rustfmt; clippy `-D warnings` for Linux and Windows, `cargo check` at the MSRV, actionlint; `sentrux check` and `sentrux gate`; `cargo test` on Linux, macOS (with clippy) and Windows (gnullvm) |
 | `.github/workflows/cd.yml` | pushes to `main`, `v*` tags, manual runs, pull requests into `main` touching the build | the guest payload (`build.sh --artifacts-only`, no Pioneer firmware), QEMU for every target, the universal `.dmg`, `.deb`/`.rpm`/AppImage for x86_64 and aarch64, the Windows x64 and arm64 installers; each smoke-tested, all kept on the run |
+| `.github/workflows/release-notes.yml` | manual runs | replaces a draft release's notes in its text and in both update feeds, without a new build |
 
 `main` takes changes through pull requests only. The Lint job and the three
 Test jobs must pass, and every review thread must be resolved; an admin can
@@ -13,14 +14,34 @@ bypass both. Only an admin creates `v*` tags.
 
 A release is a `v<major>.<minor>.<patch>[-<pre>]` tag on `main`. The tag sets
 the version that every artefact and the app carry (`CDJ3K_VERSION` at build
-time), so no version needs bumping first. The tag's CD run notarizes the macOS
+time), so no version needs bumping first. The message of an annotated tag holds
+the release notes for users, in Markdown. The tag's CD run notarizes the macOS
 build and puts every artefact, `SHA256SUMS.txt` and the update feeds
 (`cdj3k-emu-update.json`, its `.sig`, `appcast.xml`) in a draft release, which
 is published by hand. A version with a hyphen is a pre-release. To release:
 
 ```bash
-git tag v0.2.0 origin/main && git push origin v0.2.0
+git tag -a --cleanup=whitespace -F notes.md v0.4.1 origin/main
+git push origin v0.4.1
 ```
+
+`--cleanup=whitespace` keeps the Markdown headings: the default cleanup drops
+every line that starts with `#`.
+
+| Part of the draft | Content |
+|---|---|
+| Text | the notes, a Downloads table with a link per package, and GitHub's generated list of pull requests in a collapsed block |
+| Update feeds | the notes |
+
+A lightweight tag or an empty message gives GitHub's generated list as the
+notes, in the text and in the feeds. To correct the notes of a draft, run
+`release-notes.yml`, which also signs the feeds again:
+
+```bash
+gh workflow run release-notes.yml -f tag=v0.4.1 -F notes=@notes.md
+```
+
+Neither CD nor `release-notes.yml` changes a published release.
 
 The macOS build is signed with the Developer ID held in the `release`
 environment's secrets; pull requests do not get that environment and are signed
@@ -40,10 +61,10 @@ ad hoc, and a release refuses to run without it.
 
 Every release carries two feeds, both read from `releases/latest/download/`,
 which names the newest published release that is not a pre-release, so drafts
-and pre-releases are never offered. Both carry the release's notes as they
-stand when the release job runs (an edit to the draft reaches the feeds by
-re-running that job), and both are signed with one Ed25519 key (`.github/scripts/sign.sh`), whose public half
-is `packaging/update-ed25519.pub`.
+and pre-releases are never offered. Both carry the release notes
+(`.github/scripts/release-draft.sh`), and both are signed with one Ed25519 key
+(`.github/scripts/sign.sh`), whose public half is
+`packaging/update-ed25519.pub`.
 
 - `appcast.xml` (`.github/scripts/appcast.sh`) is Sparkle's, for macOS. Sparkle
   2 (`Contents/Frameworks/Sparkle.framework`, loaded at runtime, release
@@ -65,7 +86,7 @@ is `packaging/update-ed25519.pub`.
   "schema": 1,
   "version": "0.4.0",
   "notes": "https://github.com/nsaintot/cdj3k-emu/releases/tag/v0.4.0",
-  "release_notes": "## What's Changed\n* …",
+  "release_notes": "## Automatic updates\n* …",
   "packages": [
     { "os": "windows", "arch": "aarch64", "kind": "inno",
       "url": "https://github.com/…/v0.4.0/CDJ3K-Emulator-0.4.0-windows-arm64.exe",
