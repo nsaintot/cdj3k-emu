@@ -11,6 +11,14 @@ pub const VSYNC: bool = true;
 
 pub fn announce_running() {}
 
+pub fn quit_pending() -> bool {
+    false
+}
+
+pub fn answer_quit_request(_quit: bool) -> bool {
+    false
+}
+
 pub const CAPTION_IN_STRIP: bool = false;
 
 pub const OWN_WINDOW_ICON: bool = true;

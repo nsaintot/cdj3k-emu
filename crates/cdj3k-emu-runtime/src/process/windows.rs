@@ -126,6 +126,10 @@ pub fn kill(pid: i32) {
     }
 }
 
+/// Do nothing: the app is a GUI process, so no console Ctrl+C reaches it or
+/// its children.
+pub fn own_group(_command: &mut std::process::Command) {}
+
 /// Do nothing: a Windows child does not inherit descriptors by number.
 pub fn keep_across_exec(_fd: i32) {}
 

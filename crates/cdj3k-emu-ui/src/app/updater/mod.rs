@@ -309,13 +309,15 @@ impl Updater {
     /// keep running the old build.
     ///
     /// Returns true when Sparkle took over and ends the process itself; the
-    /// window must stay open.
-    pub(in crate::app) fn apply_on_quit(&mut self) -> bool {
+    /// window must stay open. `host_quits` says that AppKit is ending the app,
+    /// as on Cmd+Q: Sparkle then installs its update as the app terminates,
+    /// and it cannot end the app itself while AppKit waits for an answer.
+    pub(in crate::app) fn apply_on_quit(&mut self, host_quits: bool) -> bool {
         if !cdj3k_emu_update::other_slots_open(self.instance).is_empty() {
             return false;
         }
         if self.native {
-            return cdj3k_emu_update::native::install_now(false);
+            return !host_quits && cdj3k_emu_update::native::install_now(false);
         }
         if self.shared.declined.load(Ordering::Acquire) {
             return false;

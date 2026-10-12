@@ -26,6 +26,16 @@ pub fn on_creation_context(cc: &eframe::CreationContext<'_>) {
     let _ = cc;
 }
 
+/// This host never has a quit waiting for an answer.
+pub fn quit_pending() -> bool {
+    false
+}
+
+/// This host never has a quit waiting for an answer.
+pub fn answer_quit_request(_quit: bool) -> bool {
+    false
+}
+
 /// Turn the main window into the panel of `model`: user-resizable, restored
 /// to slot `instance_id`'s last saved panel frame for that model (or the
 /// default size fitted to the monitor, centred where the picker was), then

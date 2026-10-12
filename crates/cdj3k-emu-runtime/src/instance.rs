@@ -290,6 +290,7 @@ fn start_qemu(
     let mut cmd = crate::qemu_exec::qemu_command(config.net_tap_fd)
         .map_err(InstanceError::SockDir)?
         .with_argv(&qemu_argv);
+    crate::process::own_group(&mut cmd);
     let child = cmd.spawn().map_err(InstanceError::SockDir)?;
 
     let pid = child.id();

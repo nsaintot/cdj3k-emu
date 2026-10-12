@@ -37,10 +37,40 @@ pub mod aspect_fit;
 pub mod first_frame;
 
 pub use imp::{
-    activate_process, announce_running, apply_resize_constraints, enter_panel_window,
-    enter_picker_window, on_creation_context, open_file_picker, open_url, reveal_in_file_manager,
-    set_caption_area, CAPTION_IN_STRIP, OWN_WINDOW_ICON, PLACES_WINDOWS,
+    activate_process, announce_running, answer_quit_request, apply_resize_constraints,
+    enter_panel_window, enter_picker_window, open_file_picker, open_url, quit_pending,
+    reveal_in_file_manager, set_caption_area, CAPTION_IN_STRIP, OWN_WINDOW_ICON, PLACES_WINDOWS,
 };
+
+/// Set when the app is asked to quit other than through the window's close
+/// button, and taken by [`take_quit_request`].
+static QUIT_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The context to wake when the app is asked to quit.
+static QUIT_WAKE: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+
+/// Apply this host's window settings from [`eframe::CreationContext`], and
+/// let [`request_quit`] reach the window.
+pub fn on_creation_context(cc: &eframe::CreationContext<'_>) {
+    let _ = QUIT_WAKE.set(cc.egui_ctx.clone());
+    imp::on_creation_context(cc);
+}
+
+/// Ask the window to quit through the same close sequence as its close
+/// button. Returns `false` when no window is up to take the request. The host
+/// calls it for Cmd+Q on macOS, and for SIGINT and SIGTERM.
+pub fn request_quit() -> bool {
+    let Some(ctx) = QUIT_WAKE.get() else {
+        return false;
+    };
+    QUIT_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    ctx.request_repaint();
+    true
+}
+
+/// Whether the app was asked to quit since the last call.
+pub fn take_quit_request() -> bool {
+    QUIT_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The in-window strip that stands in for the title bar on hosts where
 /// [`CAPTION_IN_STRIP`] is true: its rectangle and the widgets on it, in

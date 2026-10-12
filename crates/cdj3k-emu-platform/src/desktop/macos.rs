@@ -286,6 +286,147 @@ pub fn on_creation_context(cc: &eframe::CreationContext<'_>) {
     // Remove eframe's placeholder icon so that the Dock shows the bundle's
     // CFBundleIconFile.
     let _ = reset_dock_icon_to_bundle();
+    let _ = defer_terminate();
+}
+
+/// AppKit's `NSTerminateLater`.
+const TERMINATE_LATER: usize = 2;
+/// Set while AppKit waits for [`answer_quit_request`].
+static QUIT_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Make AppKit's quit (Cmd+Q, the Quit menu item, the Dock and logout) wait
+/// for the shell, so that it runs the same close sequence as the close
+/// button while the window keeps drawing. winit's application delegate does
+/// not implement `applicationShouldTerminate:`, so this adds it to the
+/// delegate's class, along with the two methods that answer it.
+fn defer_terminate() -> Result<(), String> {
+    use objc2::runtime::{AnyClass, AnyObject, Sel};
+    use objc2::{ffi, sel};
+
+    extern "C" fn should_terminate(
+        _this: *mut AnyObject,
+        _cmd: Sel,
+        _sender: *mut AnyObject,
+    ) -> usize {
+        QUIT_PENDING.store(true, std::sync::atomic::Ordering::Relaxed);
+        super::request_quit();
+        TERMINATE_LATER
+    }
+    extern "C" fn confirm(_this: *mut AnyObject, _cmd: Sel, _arg: *mut AnyObject) {
+        reply_to_terminate(true);
+    }
+    extern "C" fn cancel(_this: *mut AnyObject, _cmd: Sel, _arg: *mut AnyObject) {
+        reply_to_terminate(false);
+    }
+
+    let delegate = app_delegate()?;
+    // SAFETY: `delegate` is a live object, so its class pointer is valid.
+    let class: *const AnyClass = unsafe { (*delegate).class() };
+    let methods: [(Sel, ffi::IMP, &std::ffi::CStr); 3] = [
+        // SAFETY (all three): the function signatures match the type
+        // encodings, which AppKit uses to call them.
+        (
+            sel!(applicationShouldTerminate:),
+            unsafe {
+                std::mem::transmute::<extern "C" fn(_, _, _) -> usize, ffi::IMP>(should_terminate)
+            },
+            c"Q@:@",
+        ),
+        (
+            sel!(cdj3kConfirmTerminate:),
+            unsafe { std::mem::transmute::<extern "C" fn(_, _, _), ffi::IMP>(confirm) },
+            c"v@:@",
+        ),
+        (
+            sel!(cdj3kCancelTerminate:),
+            unsafe { std::mem::transmute::<extern "C" fn(_, _, _), ffi::IMP>(cancel) },
+            c"v@:@",
+        ),
+    ];
+    for (name, imp, types) in methods {
+        // SAFETY: the class, selector and type encoding are valid, and the
+        // functions live for the whole process.
+        let added = unsafe {
+            ffi::class_addMethod(
+                class as *mut ffi::objc_class,
+                name.as_ptr(),
+                imp,
+                types.as_ptr(),
+            )
+        };
+        if added == ffi::NO {
+            return Err(format!("the application delegate already has {name:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// The application delegate that winit installs.
+fn app_delegate() -> Result<*mut objc2::runtime::AnyObject, String> {
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    let cls = AnyClass::get("NSApplication").ok_or("the NSApplication class was not found")?;
+    // SAFETY: `sharedApplication` and `delegate` take no arguments and
+    // return objects.
+    unsafe {
+        let app: *mut AnyObject = objc2::msg_send![cls, sharedApplication];
+        let delegate: *mut AnyObject = objc2::msg_send![app, delegate];
+        if delegate.is_null() {
+            return Err("the application has no delegate".into());
+        }
+        Ok(delegate)
+    }
+}
+
+fn reply_to_terminate(quit: bool) {
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    let Some(cls) = AnyClass::get("NSApplication") else {
+        return;
+    };
+    // SAFETY: `sharedApplication` returns the app object, and
+    // `replyToApplicationShouldTerminate:` takes a BOOL.
+    unsafe {
+        let app: *mut AnyObject = objc2::msg_send![cls, sharedApplication];
+        let _: () = objc2::msg_send![app, replyToApplicationShouldTerminate: quit];
+    }
+}
+
+/// Whether AppKit is waiting for [`answer_quit_request`].
+pub fn quit_pending() -> bool {
+    QUIT_PENDING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Let AppKit go on with a quit it asked for (`quit`), or cancel it. Returns
+/// whether a quit was waiting for the answer. The answer is posted to the
+/// main run loop, because AppKit ends the event loop from inside the reply,
+/// and winit cannot take that event while it is handling a frame.
+pub fn answer_quit_request(quit: bool) -> bool {
+    use objc2::runtime::AnyObject;
+    use objc2::sel;
+
+    if !QUIT_PENDING.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    let Ok(delegate) = app_delegate() else {
+        return false;
+    };
+    let name = if quit {
+        sel!(cdj3kConfirmTerminate:)
+    } else {
+        sel!(cdj3kCancelTerminate:)
+    };
+    // SAFETY: the delegate's class has the method `name` (see
+    // `defer_terminate`), and `waitUntilDone:` takes a BOOL.
+    unsafe {
+        let _: () = objc2::msg_send![
+            delegate,
+            performSelectorOnMainThread: name,
+            withObject: std::ptr::null_mut::<AnyObject>(),
+            waitUntilDone: false
+        ];
+    }
+    true
 }
 
 /// Turn the main window into the panel of `model`: user-resizable, restored

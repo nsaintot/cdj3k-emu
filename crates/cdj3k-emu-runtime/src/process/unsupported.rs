@@ -4,6 +4,8 @@ pub fn install_exit_hooks() {}
 
 pub fn adopt(_pid: u32) {}
 
+pub fn own_group(_command: &mut std::process::Command) {}
+
 pub fn set_quit_channel(_monitor: &std::net::TcpStream) {}
 
 pub fn terminate(_pid: i32) {}

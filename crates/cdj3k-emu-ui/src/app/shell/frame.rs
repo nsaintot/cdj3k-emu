@@ -106,22 +106,32 @@ impl eframe::App for CdjShell {
 }
 
 impl CdjShell {
-    /// Defer the actual close until the worker has finished. Blocking inside
-    /// `on_exit` for the full runtime-stop budget would freeze the window for
-    /// 1-2 s.
+    /// Defer the actual close until the worker has finished, so the window
+    /// keeps drawing the shade while QEMU stops. A quit from the host, such
+    /// as Cmd+Q on macOS, takes the same path as the close button.
     fn hold_close_request(&mut self, ctx: &egui::Context) {
-        if !ctx.input(|i| i.viewport().close_requested()) {
+        let close = ctx.input(|i| i.viewport().close_requested());
+        let quit = desktop::take_quit_request();
+        if !close && !quit {
             return;
         }
         if self.wizard.is_running() && !self.shutdown_in_progress {
             // An install under way finishes first, and its window says so.
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            desktop::answer_quit_request(false);
+            if close {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
         } else if !self.shutdown_in_progress {
             self.shutdown_in_progress = true;
             menu_state::APP_SHUTDOWN.store(true, std::sync::atomic::Ordering::Relaxed);
             menu_state::lock().shade_forced = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        } else if !cdj3k_emu_runtime::worker_is_finished() {
+            if close {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            }
+        } else if quit && self.quit_handed_off.is_some() {
+            // Sparkle ends the app once its installer runs.
+            desktop::answer_quit_request(true);
+        } else if close && !cdj3k_emu_runtime::worker_is_finished() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
     }
@@ -130,19 +140,26 @@ impl CdjShell {
     /// prepared update installs now; Sparkle ends the process itself, and
     /// after [`QUIT_HAND_OFF_WAIT`] the window closes anyway.
     fn finish_shutdown(&mut self, ctx: &egui::Context) {
-        if !self.shutdown_in_progress {
+        if !self.shutdown_in_progress || self.shutdown_finished {
             return;
         }
         if !cdj3k_emu_runtime::worker_is_finished() {
             ctx.request_repaint();
             return;
         }
-        if self.quit_handed_off.is_none() && self.updater.apply_on_quit() {
+        if self.quit_handed_off.is_none() && self.updater.apply_on_quit(desktop::quit_pending()) {
             self.quit_handed_off = Some(Instant::now());
         }
         match self.quit_handed_off {
             Some(at) if at.elapsed() < QUIT_HAND_OFF_WAIT => ctx.request_repaint(),
-            _ => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            _ => {
+                // AppKit acts on the answer a frame or more later, after the
+                // pending quit is cleared, so this runs only once.
+                self.shutdown_finished = true;
+                if !desktop::answer_quit_request(true) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
         }
     }
 

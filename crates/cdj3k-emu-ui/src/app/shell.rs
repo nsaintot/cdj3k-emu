@@ -205,6 +205,9 @@ pub struct CdjShell {
     /// When the quit was left to Sparkle, which installs the update waiting
     /// for it and ends the process itself.
     quit_handed_off: Option<Instant>,
+    /// The shutdown has asked for the window to close or for AppKit to end
+    /// the app, so it does nothing more.
+    shutdown_finished: bool,
     /// See [`ShellConfig::window_socket`].
     window_socket: Option<WindowSocket>,
     /// The threads that send commands to other windows use this egui context
@@ -251,6 +254,7 @@ impl CdjShell {
             script: ScriptDriver::from_env(),
             updater: Updater::new(cfg.instance),
             quit_handed_off: None,
+            shutdown_finished: false,
             window_socket: cfg.window_socket,
             ctx: cc.egui_ctx.clone(),
         }

@@ -10,7 +10,7 @@ mod imp;
 #[path = "unsupported.rs"]
 mod imp;
 
-pub use imp::{adopt, is_alive, keep_across_exec, kill, set_quit_channel, terminate};
+pub use imp::{adopt, is_alive, keep_across_exec, kill, own_group, set_quit_channel, terminate};
 
 /// Remove this instance's runtime files on every way out of the process that
 /// eframe's `on_exit` does not see, taking the QEMU child with it.
