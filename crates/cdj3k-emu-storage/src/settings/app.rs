@@ -2,7 +2,9 @@
 
 use std::io;
 
-use super::kv::{app_path, flag, flag_value, locked, read_kv, text, write_kv, APP_KEYS};
+use super::kv::{
+    app_path, flag, flag_value, locked, read_kv, text, try_read_kv, write_kv, APP_KEYS,
+};
 
 /// What the updater remembers between launches. Stored in the app-wide
 /// `settings.txt`.
@@ -57,10 +59,10 @@ impl AppSettings {
     /// Load, mutate and save under the settings lock.
     pub fn update(mutate: impl FnOnce(&mut Self)) -> io::Result<()> {
         let _g = locked();
+        let path = app_path();
+        let mut map = try_read_kv(&path)?;
         let mut s = Self::load_unlocked();
         mutate(&mut s);
-        let path = app_path();
-        let mut map = read_kv(&path);
         map.insert("update_auto_check".into(), flag_value(s.update_auto_check));
         map.insert(
             "update_skip_version".into(),

@@ -8,7 +8,8 @@ use cdj3k_emu_panel::Model;
 
 use super::identity::{generate_mac, generate_soc_serial, is_valid_soc_serial};
 use super::kv::{
-    flag, flag_value, instance_path, locked, number, read_kv, text, write_kv, SLOT_KEYS,
+    flag, flag_value, instance_path, locked, number, read_kv, text, try_read_kv, write_kv,
+    SLOT_KEYS,
 };
 use cdj3k_emu_platform::net::is_valid_mac;
 
@@ -90,31 +91,36 @@ pub struct InstanceSettings {
 impl InstanceSettings {
     /// Load the slot's settings, generating and saving a MAC and a SoC serial
     /// when either is missing or invalid.
+    ///
+    /// When the file exists but cannot be read, it is left as it is, the
+    /// error is logged, and the slot gets the defaults with a MAC and a SoC
+    /// serial that last only for this launch.
     pub fn load_or_init(instance_id: u32) -> Self {
         let _g = locked();
-        Self::load_or_init_unlocked(instance_id)
+        Self::load_or_init_unlocked(instance_id).unwrap_or_else(|e| {
+            eprintln!(
+                "cdj3k-emu-storage: could not read the settings of instance {instance_id}, so \
+                 the file is left unchanged and this launch uses a temporary identity: {e}"
+            );
+            Self::from_map(&mut BTreeMap::new()).0
+        })
     }
 
     /// Load, mutate and save under the process-wide settings lock, so two
     /// threads persisting different fields cannot lose each other's write.
+    /// Fails without writing anything when the file cannot be read.
     pub fn update(instance_id: u32, mutate: impl FnOnce(&mut Self)) -> io::Result<()> {
         let _g = locked();
-        let mut s = Self::load_or_init_unlocked(instance_id);
+        let mut s = Self::load_or_init_unlocked(instance_id)?;
         mutate(&mut s);
         s.save_unlocked(instance_id)
     }
 
-    fn load_or_init_unlocked(instance_id: u32) -> Self {
+    fn load_or_init_unlocked(instance_id: u32) -> io::Result<Self> {
         let path = instance_path(instance_id);
-        let mut map = read_kv(&path);
-        let (mac, minted_mac) = kept_or_minted(&mut map, "mac", is_valid_mac, generate_mac);
-        let (soc_serial, minted_serial) = kept_or_minted(
-            &mut map,
-            "soc_serial",
-            is_valid_soc_serial,
-            generate_soc_serial,
-        );
-        if minted_mac || minted_serial {
+        let mut map = try_read_kv(&path)?;
+        let (settings, minted) = Self::from_map(&mut map);
+        if minted {
             if let Err(e) = write_kv(&path, &map, SLOT_KEYS) {
                 // The minted MAC and SoC serial will not survive a restart,
                 // but the slot still launches with them. The failure is
@@ -126,22 +132,32 @@ impl InstanceSettings {
                 );
             }
         }
-        Self {
+        Ok(settings)
+    }
+
+    /// The settings `map` holds. A missing or invalid MAC or SoC serial is
+    /// minted and stored back into `map`; the flag says whether one was.
+    fn from_map(map: &mut BTreeMap<String, String>) -> (Self, bool) {
+        let (mac, minted_mac) = kept_or_minted(map, "mac", is_valid_mac, generate_mac);
+        let (soc_serial, minted_serial) =
+            kept_or_minted(map, "soc_serial", is_valid_soc_serial, generate_soc_serial);
+        let settings = Self {
             mac,
             soc_serial,
-            audio_enabled: flag(&map, "audio_enabled", false),
-            audio_device_uid: text(&map, "audio_device_uid"),
-            alc_enabled: flag(&map, "alc_enabled", true),
-            haptic_enabled: flag(&map, "haptic_enabled", true),
-            pc_link_enabled: flag(&map, "pc_link_enabled", false),
+            audio_enabled: flag(map, "audio_enabled", false),
+            audio_device_uid: text(map, "audio_device_uid"),
+            alc_enabled: flag(map, "alc_enabled", true),
+            haptic_enabled: flag(map, "haptic_enabled", true),
+            pc_link_enabled: flag(map, "pc_link_enabled", false),
             model: map.get("model").and_then(|v| Model::parse(v)),
-            firmware_release: text(&map, "firmware_release"),
-            fs: number(&map, "fs"),
-            mods_enabled: flag(&map, "mods_enabled", true),
-            net_iface: text(&map, "net_iface"),
-            usb_virtual_path: text(&map, "usb_virtual_path").map(PathBuf::from),
-            usb_physical_bsd: text(&map, "usb_physical_bsd"),
-        }
+            firmware_release: text(map, "firmware_release"),
+            fs: number(map, "fs"),
+            mods_enabled: flag(map, "mods_enabled", true),
+            net_iface: text(map, "net_iface"),
+            usb_virtual_path: text(map, "usb_virtual_path").map(PathBuf::from),
+            usb_physical_bsd: text(map, "usb_physical_bsd"),
+        };
+        (settings, minted_mac || minted_serial)
     }
 
     /// The slot's saved model, read without creating or writing anything
@@ -211,7 +227,7 @@ impl InstanceSettings {
 
     fn save_unlocked(&self, instance_id: u32) -> io::Result<()> {
         let path = instance_path(instance_id);
-        let mut map = read_kv(&path);
+        let mut map = try_read_kv(&path)?;
         map.insert("mac".into(), self.mac.clone());
         map.insert("soc_serial".into(), self.soc_serial.clone());
         map.insert("audio_enabled".into(), flag_value(self.audio_enabled));
@@ -334,5 +350,26 @@ mod tests {
         assert!(InstanceSettings::set_soc_serial(slot, "0123456789abcd00").is_err());
         assert!(InstanceSettings::set_soc_serial(slot, "deadbeef").is_err());
         assert_eq!(InstanceSettings::load_or_init(slot).soc_serial, pinned);
+    }
+
+    /// A settings file that cannot be read is never replaced: the load falls
+    /// back to a temporary identity and every save fails.
+    #[test]
+    fn an_unreadable_file_is_left_alone() {
+        let _home = crate::TestHome::new("unreadable");
+
+        let slot = 5;
+        let path = instance_path(slot);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // A byte that is not UTF-8, as a Latin-1 hand edit leaves.
+        let original = b"model=cdj3kx\nsoc_serial=0123456789abcd05\nnet_iface=caf\xe9\n".to_vec();
+        std::fs::write(&path, &original).unwrap();
+
+        let s = InstanceSettings::load_or_init(slot);
+        assert!(is_valid_soc_serial(&s.soc_serial), "{}", s.soc_serial);
+        assert!(InstanceSettings::update(slot, |s| s.audio_enabled = true).is_err());
+        assert!(s.save(slot).is_err());
+        assert!(crate::PanelSettings::default().save(slot).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
     }
 }
