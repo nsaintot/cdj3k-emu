@@ -118,10 +118,18 @@ fn the_ram_file_is_handed_to_qemu_as_the_machine_memory() {
     assert!(joined.contains("memory-backend=ram0"), "{joined}");
 }
 
-/// `argv` with `{sock}` replaced by the instance's socket directory.
+/// `argv` with `{sock}` replaced by the instance's socket directory and
+/// `{sep}` by the host's path separator. `{sep}` marks the paths that the
+/// config builds with `Path::join`, such as `ctrl.sock`, which use `\` on
+/// Windows.
 fn expand(c: &QemuConfig, argv: &[&str]) -> Vec<String> {
     let sock = c.sock_dir().display().to_string();
-    argv.iter().map(|a| a.replace("{sock}", &sock)).collect()
+    argv.iter()
+        .map(|a| {
+            a.replace("{sock}", &sock)
+                .replace("{sep}", std::path::MAIN_SEPARATOR_STR)
+        })
+        .collect()
 }
 
 /// The display, the monitors and the entropy source.
@@ -131,7 +139,7 @@ fn display_qmp_and_rng(c: &QemuConfig) -> Vec<String> {
     if cdj3k_emu_runtime::disk::PASSES_FDS {
         v.extend(expand(
             c,
-            &["-qmp", "unix:{sock}/qmp-fd.sock,server=on,wait=off"],
+            &["-qmp", "unix:{sock}{sep}qmp-fd.sock,server=on,wait=off"],
         ));
     }
     v.extend(expand(
@@ -154,23 +162,23 @@ fn channels_jog_and_usb(c: &QemuConfig) -> Vec<String> {
             "-device",
             "virtio-serial-device,max_ports=8",
             "-chardev",
-            "socket,id=vserial_ctrl,path={sock}/ctrl.sock,server=on,wait=off",
+            "socket,id=vserial_ctrl,path={sock}{sep}ctrl.sock,server=on,wait=off",
             "-device",
             "virtserialport,chardev=vserial_ctrl,name=cdj3k.ctrl",
             "-chardev",
-            "socket,id=vserial_cfg,path={sock}/cfg.sock,server=on,wait=off",
+            "socket,id=vserial_cfg,path={sock}{sep}cfg.sock,server=on,wait=off",
             "-device",
             "virtserialport,chardev=vserial_cfg,name=cdj3k.cfg",
             "-chardev",
-            "socket,id=vserial_usb-link,path={sock}/usb-link.sock,server=on,wait=off",
+            "socket,id=vserial_usb-link,path={sock}{sep}usb-link.sock,server=on,wait=off",
             "-device",
             "virtserialport,chardev=vserial_usb-link,name=cdj3k.usb-link",
             "-object",
-            "memory-backend-file,id=jogshm,mem-path={sock}/jog.shm,size=1M,share=on",
+            "memory-backend-file,id=jogshm,mem-path={sock}{sep}jog.shm,size=1M,share=on",
             "-device",
             "ivshmem-plain,memdev=jogshm,master=on",
             "-drive",
-            "file={sock}/usb.placeholder,if=none,id=usb0,format=raw,cache=writeback,\
+            "file={sock}{sep}usb.placeholder,if=none,id=usb0,format=raw,cache=writeback,\
              file.locking=off",
             "-device",
             "virtio-blk-device,drive=usb0,id=usb0",
@@ -301,9 +309,9 @@ fn a_full_config_builds_this_exact_argv() {
              systemd.journald.forward_to_console=1 virtio_gpu.modeset=1 subucom_testmode \
              virtio_blk.emmc_index=0 dummy.numdummies=0 cdj3k.serial=c0ffee snd-dummy.enable=0",
             "-serial",
-            "file:{sock}/serial.log",
+            "file:{sock}{sep}serial.log",
             "-object",
-            "memory-backend-file,id=ram0,size=3221225472B,mem-path={sock}/ram.shm,share=on",
+            "memory-backend-file,id=ram0,size=3221225472B,mem-path={sock}{sep}ram.shm,share=on",
             "-machine",
             "virt,gic-version=3,kernel-irqchip=on,memory-backend=ram0",
         ],
