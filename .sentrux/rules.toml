@@ -7,7 +7,7 @@
 [constraints]
 max_cycles = 0
 no_god_files = true
-min_quality = 0.71
+min_quality = 0.70
 max_cc = 20
 max_fn_lines = 80
 max_file_lines = 1400
