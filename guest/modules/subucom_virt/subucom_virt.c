@@ -51,7 +51,6 @@
 #include <linux/delay.h>
 #include <linux/sched.h>   /* schedule_timeout_interruptible */
 #include <linux/poll.h>    /* poll_table, POLLIN, POLLRDNORM */
-#include <linux/workqueue.h> /* delayed_work */
 #include <linux/version.h>
 #include <linux/reboot.h>  /* orderly_reboot */
 
@@ -196,37 +195,38 @@ static u8 miso_idle_model[MISO_SIZE];
 /* ------------------------------------------------------------------ */
 /* Testmode boot injection                                            */
 /*                                                                    */
-/* inject_testmode=1 holds the service-mode combo for about 5 s, so   */
+/* inject_testmode=1 holds the service-mode combo from load, so       */
 /* subucom_read sees it during boot. The combo is BTN_TEMPO_RANGE and */
 /* BTN_CALL_PREV on the CDJ-3000 (byte 6 0x04, byte 8 0x08), byte 10  */
 /* 0x04 and byte 12 0x01 on the CDJ-3000X, and SHIFT and HOT CUE B on */
 /* the CDJ-1500X (byte 17 0x01, byte 18 0x40). subucom_read compares  */
 /* whole bytes. The combo is ORed into every frame that spi_read      */
-/* delivers, idle or injected, so host writes do not cancel it. A     */
-/* delayed_work releases it before the app starts its 850 Hz loop.    */
+/* delivers, idle or injected, so host writes do not cancel it. The   */
+/* app's first MOSI_TRANSFER releases it: pre-setting.sh runs         */
+/* subucom_read, which sends no MOSI, before the app starts.          */
 /* ------------------------------------------------------------------ */
 
 static int inject_testmode;
 module_param(inject_testmode, int, 0444);
-MODULE_PARM_DESC(inject_testmode, "Hold the testmode buttons for about 5 s after loading (0 off, 1 on)");
-
-#define TESTMODE_INJECT_MS  5000
+MODULE_PARM_DESC(inject_testmode, "Hold the testmode buttons from loading until the first LED frame (0 off, 1 on)");
 
 /* The combo bytes and masks of the loaded model, which init sets. */
 static u8 testmode_byte[2];
 static u8 testmode_mask[2];
 static int testmode_held;   /* 1 while the combo is ORed into every frame */
 
-static void testmode_clear_work_fn(struct work_struct *work);
-static DECLARE_DELAYED_WORK(testmode_clear_work, testmode_clear_work_fn);
-
-static void testmode_clear_work_fn(struct work_struct *work)
+/* Stop ORing the combo into the MISO frames. */
+static void testmode_release(void)
 {
     unsigned long flags;
+    int was_held;
+
     spin_lock_irqsave(&miso_lock, flags);
+    was_held = testmode_held;
     testmode_held = 0;
     spin_unlock_irqrestore(&miso_lock, flags);
-    pr_info("%s: released the testmode combo after %d ms\n", DRV_NAME, TESTMODE_INJECT_MS);
+    if (was_held)
+        pr_info("%s: released the testmode combo on the first LED frame\n", DRV_NAME);
 }
 
 /* Copy to or from user space; return -EFAULT when the copy fails. */
@@ -369,6 +369,7 @@ static long spi_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
         mosi_fresh = 1;
         spin_unlock_irqrestore(&mosi_lock, flags);
         wake_up_interruptible(&mosi_wq);
+        testmode_release();
         return 0;
     }
 
@@ -576,10 +577,8 @@ static int __init subucom_virt_init(void)
         spin_lock_irqsave(&miso_lock, flags);
         testmode_held = 1;
         spin_unlock_irqrestore(&miso_lock, flags);
-        schedule_delayed_work(&testmode_clear_work,
-                              msecs_to_jiffies(TESTMODE_INJECT_MS));
-        pr_info("%s: holding the testmode combo for %d ms\n",
-                DRV_NAME, TESTMODE_INJECT_MS);
+        pr_info("%s: holding the testmode combo until the first LED frame\n",
+                DRV_NAME);
     }
 
     pr_info("%s: /dev/%s (major %d minor %d) and /dev/%s (minor %d) are ready\n",
@@ -597,7 +596,6 @@ err_unreg: unregister_chrdev_region(devno, NDEVS);
 
 static void __exit subucom_virt_exit(void)
 {
-    cancel_delayed_work_sync(&testmode_clear_work);
     device_destroy(subucom_class, MKDEV(subucom_major, MINOR_CTRL));
     device_destroy(subucom_class, MKDEV(subucom_major, MINOR_SPI));
     cdev_del(&subucom_cdev[1]);

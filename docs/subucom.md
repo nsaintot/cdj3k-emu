@@ -203,10 +203,8 @@ Writing zero bytes clears the injection, and the module falls back to idle.
 blocking `read()`.
 
 The module parameter `inject_testmode=1` holds the model's service-mode button
-combination (`BTN_CALL_PREV` and `BTN_TEMPO_RANGE` on the CDJ-3000) for 5 s
-after insmod, and a `delayed_work` releases it, so the boot enters service
-mode without host input. The combination is ORed into every delivered frame,
-idle or injected, so a host write during those 5 s does not cancel it.
+combination from insmod until the app's first `MOSI_TRANSFER`, so the boot
+enters service mode without host input.
 
 ### 2. Guest user-space forwarder
 
