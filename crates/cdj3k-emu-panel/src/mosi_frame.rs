@@ -38,6 +38,32 @@ pub fn led_drive_factor(r: u8, g: u8, b: u8) -> Option<f32> {
     Some(duty.min(1.0).powf(LED_DIM_LIFT / LED_GAMMA))
 }
 
+/// The drive of a fully lit hot cue pad. The deck dims a pad by lowering all
+/// three channels, so a pad's level is its brightest channel divided by this
+/// value.
+pub const PAD_FULL_DRIVE: u8 = 0x7f;
+
+/// Exponent applied to a pad's level. A value below 1 lifts dim pads: the dim
+/// drive `0x0c` keeps about 45 % of its colour.
+pub const PAD_LEVEL_CURVE: f32 = 0.34;
+
+/// The grey a pad's colour fades to as its level drops, so a dim pad shows a
+/// muted tint of its colour.
+pub const PAD_DIM_GREY: f32 = 80.0;
+
+/// How much of its colour a hot cue pad shows, from 0 to 1. A drive of
+/// [`PAD_FULL_DRIVE`] gives 1; lower drives follow [`PAD_LEVEL_CURVE`].
+/// Returns `None` when the pad is off.
+#[inline]
+pub fn pad_level(r: u8, g: u8, b: u8) -> Option<f32> {
+    let peak = r.max(g).max(b);
+    if peak == 0 {
+        return None;
+    }
+    let level = (peak as f32 / PAD_FULL_DRIVE as f32).min(1.0);
+    Some(level.powf(PAD_LEVEL_CURVE))
+}
+
 /// Which LED part a lamp is built from. A model's [`LedProfiles`] gives each
 /// its [`LedProfile`].
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -202,10 +228,27 @@ pub fn led_linear(profile: &LedProfile, r: u8, g: u8, b: u8) -> Option<[f32; 3]>
 #[cfg(feature = "egui-color")]
 #[inline]
 pub fn led_color(profile: &LedProfile, r: u8, g: u8, b: u8) -> Option<egui::Color32> {
+    led_color_at(profile, r, g, b, 1.0)
+}
+
+/// [`led_color`] mixed with [`PAD_DIM_GREY`]. A `level` of 1 gives the full
+/// colour, and lower levels move it toward the grey.
+#[cfg(feature = "egui-color")]
+#[inline]
+pub fn led_color_at(
+    profile: &LedProfile,
+    r: u8,
+    g: u8,
+    b: u8,
+    level: f32,
+) -> Option<egui::Color32> {
     let c = led_linear(profile, r, g, b)?;
     let whiteness = c[0].min(c[1]).min(c[2]);
     let peak = LED_PEAK + (255.0 - LED_PEAK) * whiteness;
-    let [r, g, b] = c.map(|v| (v.powf(1.0 / LED_GAMMA) * peak).round().min(255.0) as u8);
+    let [r, g, b] = c.map(|v| {
+        let full = (v.powf(1.0 / LED_GAMMA) * peak).min(255.0);
+        (PAD_DIM_GREY + (full - PAD_DIM_GREY) * level).round() as u8
+    });
     Some(egui::Color32::from_rgb(r, g, b))
 }
 
@@ -373,10 +416,21 @@ impl MosiFrame {
         self.leds.get(part)
     }
 
-    /// [`led_color`] through this player's `part`.
+    /// How much of its colour `part` shows for `(R, G, B)`, from 0 to 1. Only
+    /// the pads show their drive level; the other parts show full colour.
+    #[cfg(feature = "egui-color")]
+    fn level(part: LedPart, r: u8, g: u8, b: u8) -> f32 {
+        match part {
+            LedPart::Pad => pad_level(r, g, b).unwrap_or(0.0),
+            _ => 1.0,
+        }
+    }
+
+    /// [`led_color`] through this player's `part`, at the part's level.
     #[cfg(feature = "egui-color")]
     pub fn led_color(&self, part: LedPart, r: u8, g: u8, b: u8) -> Option<egui::Color32> {
-        led_color(self.led_profile(part), r, g, b)
+        let level = Self::level(part, r, g, b);
+        led_color_at(self.led_profile(part), r, g, b, level)
     }
 
     /// [`led_color_hot`] through this player's `part`.
@@ -452,5 +506,27 @@ mod tests {
             }
         }
         assert_eq!(Lamp::ALL.len(), 44);
+    }
+
+    /// A dim pad shows a muted tint of a fully lit pad's colour, and an off
+    /// pad has no colour. The other parts ignore the level.
+    #[cfg(feature = "egui-color")]
+    #[test]
+    fn pads_show_their_drive_level() {
+        let mosi = crate::Model::Cdj3k.mosi_frame([0; MOSI_SIZE]);
+        let pad = |r, g, b| mosi.led_color(LedPart::Pad, r, g, b);
+        let full = pad(0x7f, 0, 0).unwrap();
+        let dim = pad(0x0c, 0, 0).unwrap();
+        assert!(dim.r() < full.r(), "dim {dim:?} full {full:?}");
+        assert!(dim.r() >= dim.g() + 0x30, "dim {dim:?} has lost its hue");
+        assert_eq!(dim.g(), dim.b());
+        assert!(dim.g() > full.g(), "dim {dim:?} is not desaturated");
+        let white = pad(0x44, 0x78, 0x7f).unwrap();
+        let dim_white = pad(0x06, 0x0c, 0x0c).unwrap();
+        assert!(dim_white.r() < white.r());
+        assert!(dim_white.r().abs_diff(dim_white.b()) < 8, "{dim_white:?}");
+        assert!(pad(0, 0, 0).is_none());
+        let slot = |r, g, b| mosi.led_color(LedPart::Slot, r, g, b);
+        assert_eq!(slot(0x0c, 0, 0), slot(0x7f, 0, 0));
     }
 }
