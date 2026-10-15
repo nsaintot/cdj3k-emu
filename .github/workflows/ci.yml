@@ -209,13 +209,15 @@ jobs:
         with:
           name: linux-tree-${{ matrix.arch }}
       # The libraries the packages depend on (packaging/linux/nfpm.yaml.in),
-      # the display and the tools the USB fixture needs.
+      # the X11 libraries and the software GL that the window loads under
+      # Xvfb, and the tools the USB fixture needs.
       - name: Install
         run: |
           tar -xf linux-tree.tar -C "$RUNNER_TEMP" && rm linux-tree.tar
           sudo apt-get update -qq
           sudo apt-get install -y -qq libgl1 libegl1 libwayland-client0 libxkbcommon0 \
-              libx11-6 libpipewire-0.3-0 xvfb mtools dosfstools >/dev/null
+              libx11-6 libpipewire-0.3-0 libxkbcommon-x11-0 libxcursor1 libxrandr2 \
+              libxi6 libx11-xcb1 libgl1-mesa-dri xvfb mtools dosfstools fdisk >/dev/null
           echo "APP=$RUNNER_TEMP/opt/cdj3k-emu/bin/cdj3k-emu" >> "$GITHUB_ENV"
       - uses: actions/cache@v6
         with:
