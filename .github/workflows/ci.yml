@@ -1,10 +1,19 @@
-# Lint and test on every host. cd.yml builds the packages.
+# Lint, build and test on every host. cd.yml packages and releases.
+#
+#   pull request into main           everything; the E2E scenarios wait for a
+#                                    reviewer's approval
+#   push to main                     only the builds (build.yml), whose caches
+#                                    pull requests reuse; the pull request
+#                                    already tested the merged code
+#   workflow_dispatch                like a pull request
 name: CI
 
-# Lint, Quality, Test (Linux), Test (macOS) and Test (Windows) are the checks
-# the "Main" ruleset requires before a merge.
+# Lint, Quality, Test (Linux), Test (macOS), Test (Windows) and the two E2E
+# jobs are the checks the "Main" ruleset requires before a merge.
 on:
   pull_request:
+    branches: [main]
+  push:
     branches: [main]
   workflow_dispatch:
 
@@ -25,6 +34,7 @@ jobs:
   # checks.
   lint:
     name: Lint
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -54,6 +64,7 @@ jobs:
   # .sentrux/baseline.json.
   quality:
     name: Quality
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     env:
       SENTRUX: v0.5.7
@@ -88,6 +99,7 @@ jobs:
 
   test-linux:
     name: Test (Linux)
+    if: github.event_name != 'push'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -105,6 +117,7 @@ jobs:
 
   test-macos:
     name: Test (macOS)
+    if: github.event_name != 'push'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -127,6 +140,7 @@ jobs:
 
   test-windows:
     name: Test (Windows)
+    if: github.event_name != 'push'
     runs-on: windows-2025
     defaults:
       run:
@@ -154,3 +168,77 @@ jobs:
           CC_x86_64_pc_windows_gnullvm: x86_64-w64-mingw32-clang
           AR_x86_64_pc_windows_gnullvm: llvm-ar
         run: cargo test --workspace --locked
+
+  build:
+    name: Build
+    uses: ./.github/workflows/build.yml
+
+  # The E2E scenarios (docs/e2e.md) on the staged Linux tree. GitHub's runners
+  # do not accelerate an aarch64 guest, so the guest runs under TCG and the
+  # scenarios marked `#@ needs hw-accel` are skipped. Both runner types run it,
+  # to compare their TCG speed.
+  #
+  # The tests environment holds CDJ3K_LUKS_CDJ3K, the CDJ-3000 update key file
+  # in base64, and its required reviewers hold the job until one approves it.
+  # A pull request from a fork gets no secrets and skips the job.
+  e2e:
+    name: E2E (Linux ${{ matrix.arch }})
+    needs: [build]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    environment: tests
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      # The slot the scenarios run on, and its firmware. The references in
+      # tests/e2e/scenarios/refs are named after the model and release.
+      SLOT: "1"
+      MODEL: cdj3k
+      RELEASE: "3.20"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: linux-tree-${{ matrix.arch }}
+      # The libraries the packages depend on (packaging/linux/nfpm.yaml.in),
+      # the display and the tools the USB fixture needs.
+      - name: Install
+        run: |
+          tar -xf linux-tree.tar -C "$RUNNER_TEMP" && rm linux-tree.tar
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgl1 libegl1 libwayland-client0 libxkbcommon0 \
+              libx11-6 libpipewire-0.3-0 xvfb mtools dosfstools >/dev/null
+          echo "APP=$RUNNER_TEMP/opt/cdj3k-emu/bin/cdj3k-emu" >> "$GITHUB_ENV"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/cdj3k-emu/firmware
+          key: firmware-${{ env.MODEL }}-${{ env.RELEASE }}-${{ hashFiles('tests/e2e/firmware.sha256') }}
+      - name: Firmware
+        env:
+          CDJ3K_LUKS_CDJ3K: ${{ secrets.CDJ3K_LUKS_CDJ3K }}
+        run: |
+          key="$RUNNER_TEMP/cdj3k.key"
+          trap 'rm -f "$key"' EXIT
+          umask 077
+          printf '%s' "$CDJ3K_LUKS_CDJ3K" | base64 --decode > "$key"
+          upd=$(tests/e2e/fetch-firmware.sh "$MODEL" "$RELEASE")
+          "$APP" --instance "$SLOT" --model "$MODEL" --provision "$upd" --key "$key"
+      - name: Fixtures
+        run: tests/e2e/fixtures/make-usb.sh
+      - name: Scenarios
+        working-directory: tests/e2e/scenarios
+        run: xvfb-run -a "$APP" ctl e2e --slot "$SLOT" --launch --report "$RUNNER_TEMP/e2e-report" .
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-report-${{ matrix.arch }}
+          path: ${{ runner.temp }}/e2e-report
+          if-no-files-found: ignore

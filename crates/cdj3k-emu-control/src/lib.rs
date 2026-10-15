@@ -14,11 +14,13 @@
 //! | `diff` | The pixel comparison of two captures |
 //! | `cli` | The `cdj3k-emu ctl` subcommand |
 //! | `steps` | The commands `ctl` and scenarios run, over one session |
+//! | `e2e` | `ctl e2e`, the scenario runner |
 
 pub mod cli;
 pub mod client;
 pub mod command;
 pub mod diff;
+mod e2e;
 pub mod image;
 pub mod server;
 mod steps;

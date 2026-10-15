@@ -1,8 +1,7 @@
-# Build, package and smoke-test every platform's artefacts.
+# Package and release every platform's build. ci.yml builds and tests; this
+# workflow turns the same builds (build.yml) into the dmg, the deb, the rpm, the
+# AppImage and the Windows installers, and smoke-tests them.
 #
-#   push to main                     build everything; artefacts on the run
-#   pull request into main           the same, when it touches the build
-#   workflow_dispatch                the same; `notarize` notarizes the macOS build
 #   push of a v<version> tag         a release: the tag must be on main and is the
 #                                    version every artefact carries; an annotated
 #                                    tag's message holds the release notes. macOS
@@ -10,6 +9,9 @@
 #                                    draft GitHub release, published by hand. A
 #                                    version with a hyphen (0.3.0-rc1) is a
 #                                    pre-release.
+#   pull request into main           the packages, when it touches the packaging
+#   workflow_dispatch                the packages; `notarize` notarizes the macOS
+#                                    build
 #
 # Other builds carry Cargo.toml's version, which nothing bumps.
 #
@@ -20,22 +22,16 @@ name: CD
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   pull_request:
     branches: [main]
     paths:
-      - ".github/**"
-      - build.sh
-      - dropbear/build.sh
-      - Cargo.lock
-      - docker/**
-      - guest/**
+      - .github/scripts/**
+      - .github/workflows/build.yml
+      - .github/workflows/cd.yml
+      - docker/Dockerfile.linux-pkg
       - packaging/**
-      - qemu/**
       - scripts/**
-      - tools/midi-driver/**
-      - winit/**
   workflow_dispatch:
     inputs:
       notarize:
@@ -120,140 +116,16 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "version $version, sign $HAVE_CERT, notarize $notarize, release $release" >> "$GITHUB_STEP_SUMMARY"
 
-  # This job builds the kernel, the out-of-tree modules, the shim and the guest
-  # tools with the Docker stage of build.sh, natively on arm64. No Pioneer
-  # firmware is involved. The cache key covers every input of the finished
-  # payload. On a miss, the Docker layer cache rebuilds only the stages whose
-  # inputs changed, so the kernel recompiles only for a new LINUX_TAG, patch
-  # or config.
-  guest:
-    name: Guest payload
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v7
-      - name: Cache
-        id: cache
-        uses: actions/cache@v6
-        with:
-          path: guest-payload.tar
-          key: guest-${{ hashFiles('build.sh', 'docker/Dockerfile', '.dockerignore', 'guest/**', 'dropbear/build.sh') }}
-      # Give buildx the runtime token that the gha cache backend needs.
-      - if: steps.cache.outputs.cache-hit != 'true'
-        uses: crazy-max/ghaction-github-runtime@v4
-      - name: Build
-        if: steps.cache.outputs.cache-hit != 'true'
-        env:
-          CDJ3K_DOCKER_CACHE: gha
-        run: |
-          ./build.sh --artifacts-only
-          tar -cf guest-payload.tar build/Image build/docker-out guest/out
-      - uses: actions/upload-artifact@v7
-        with:
-          name: guest-payload
-          path: guest-payload.tar
-          retention-days: 7
-
-  qemu-linux:
-    name: QEMU (Linux ${{ matrix.arch }})
-    strategy:
-      matrix:
-        include:
-          - { arch: x86_64, runner: ubuntu-24.04 }
-          - { arch: aarch64, runner: ubuntu-24.04-arm }
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v7
-      - name: Cache
-        id: cache
-        uses: actions/cache@v6
-        with:
-          path: qemu-linux
-          key: qemu-linux-${{ matrix.arch }}-${{ hashFiles('qemu/build.sh', 'qemu/patches/**', 'qemu/shim/**', 'docker/Dockerfile.linux-host*') }}
-      - name: Build
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          docker buildx build -f docker/Dockerfile.linux-host --target qemu-artifacts \
-              --output type=local,dest=qemu-linux/bin .
-      - run: tar -cf qemu-linux.tar qemu-linux
-      - uses: actions/upload-artifact@v7
-        with:
-          name: qemu-linux-${{ matrix.arch }}
-          path: qemu-linux.tar
-          retention-days: 7
-
-  # This job cross-builds QEMU and the app for Windows with llvm-mingw in
-  # docker/Dockerfile.windows-qemu.
-  windows-cross:
-    name: Cross-build (Windows ${{ matrix.arch }})
+  build:
+    name: Build
     needs: plan
-    strategy:
-      matrix:
-        include:
-          - { arch: x64, qemu: x86_64 }
-          - { arch: arm64, qemu: aarch64 }
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - name: Toolchain image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/Dockerfile.windows-qemu
-          tags: cdj3k-emu-windows-qemu
-          load: true
-          cache-from: type=gha,scope=windows-qemu
-          cache-to: type=gha,scope=windows-qemu,mode=max
-      - name: Cache QEMU
-        id: cache
-        uses: actions/cache@v6
-        with:
-          path: qemu/install-windows-${{ matrix.qemu }}
-          key: qemu-windows-${{ matrix.qemu }}-${{ hashFiles('qemu/build.sh', 'qemu/patches/**', 'docker/Dockerfile.windows-qemu', 'docker/windows-qemu-deps.sh', 'scripts/bundle-dlls.sh') }}
-      # qemu/build.sh uses the image that is already loaded.
-      - name: QEMU
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: ./qemu/build.sh --windows ${{ matrix.qemu }}
-      # Run only the inner half of cross-build.sh, in the image loaded above;
-      # its outer half would rebuild the image with the local builder.
-      - name: App
-        env:
-          CDJ3K_VERSION: ${{ needs.plan.outputs.version }}
-        run: |
-          ./winit/fetch.sh
-          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-              -e CDJ3K_WINDOWS_CROSS_INNER=1 -e CDJ3K_VERSION -v "$PWD:/work" \
-              cdj3k-emu-windows-qemu bash packaging/windows/cross-build.sh ${{ matrix.arch }}
-      - run: tar -cf windows-cross.tar qemu/install-windows-${{ matrix.qemu }} dist/windows-bin-${{ matrix.arch }}
-      - uses: actions/upload-artifact@v7
-        with:
-          name: windows-cross-${{ matrix.arch }}
-          path: windows-cross.tar
-          retention-days: 7
-
-  # Build one QEMU per slice of the universal .app, each linked against static
-  # libraries.
-  qemu-macos:
-    name: QEMU (macOS ${{ matrix.arch }})
-    strategy:
-      matrix:
-        arch: [arm64, x86_64]
-    runs-on: macos-15
-    steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/qemu-macos
-        with:
-          arch: ${{ matrix.arch }}
-      - run: tar -cf qemu-macos.tar qemu/install-macos-${{ matrix.arch }}
-      - uses: actions/upload-artifact@v7
-        with:
-          name: qemu-macos-${{ matrix.arch }}
-          path: qemu-macos.tar
-          retention-days: 7
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
 
   package-macos:
     name: Package (macOS universal)
-    needs: [plan, guest, qemu-macos]
+    needs: [plan, build]
     environment: ${{ github.event_name != 'pull_request' && 'release' || '' }}
     runs-on: macos-15
     steps:
@@ -330,7 +202,7 @@ jobs:
 
   package-linux:
     name: Package (Linux ${{ matrix.arch }})
-    needs: [plan, guest, qemu-linux]
+    needs: [plan, build]
     strategy:
       fail-fast: false
       matrix:
@@ -390,7 +262,7 @@ jobs:
 
   package-windows:
     name: Package (Windows ${{ matrix.arch }})
-    needs: [plan, guest, windows-cross]
+    needs: [plan, build]
     strategy:
       fail-fast: false
       matrix:

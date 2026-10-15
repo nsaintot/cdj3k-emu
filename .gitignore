@@ -44,3 +44,6 @@ winit/src/
 qemu-linux-arm64/
 # cdj3k-mods checkout (its own repository)
 guest/ep122_shim/cdj3k-mods/
+
+# The default report folder of `cdj3k-emu ctl e2e`.
+e2e-report/

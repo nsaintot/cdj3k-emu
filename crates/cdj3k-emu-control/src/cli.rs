@@ -11,6 +11,7 @@
 //! cdj3k-emu ctl still main|jog <region> [--for MS]       fail if a region changes
 //! cdj3k-emu ctl sh <command>                            run a guest command, print its output
 //! cdj3k-emu ctl run <file>                              run one command per line
+//! cdj3k-emu ctl e2e [options] <file|dir>...             run scenarios and report
 //! cdj3k-emu ctl watch <topic> [filters] [--for MS] [--count N]
 //!                                                       print events
 //! ```
@@ -40,6 +41,7 @@ usage: cdj3k-emu ctl [--slot N] [--host HOST] <command>
   still main|jog <x0,y0,x1,y1> [--for MS]
   sh <command>                      run a guest command and print its output
   run <file>                        run one command per line
+  e2e [options] <file|dir>...       run scenarios; see docs/e2e.md
   watch <topic> [filters] [--for MS] [--count N]
   sleep <ms>
 diff options: --threshold N  --max N  --mask x0,y0,x1,y1  --region x0,y0,x1,y1
@@ -61,6 +63,10 @@ pub fn run(args: &[String]) -> i32 {
     };
     match words.first().map(String::as_str) {
         None | Some("help" | "--help" | "-h") => usage(""),
+        Some("e2e") => match crate::e2e::run(&session.host, &words[1..]) {
+            Ok(status) => status,
+            Err(e) => usage(&e),
+        },
         Some("run") => match words.get(1) {
             Some(file) => run_file(&mut session, Path::new(file)),
             None => usage("run needs a file"),

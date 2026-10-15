@@ -1,0 +1,5 @@
+[mod]
+name = "e2e-hello"
+version = "1"
+description = "Test mod for the E2E scenarios: marks its boot and sets a variable for the player app"
+env = { E2E_HELLO = "1" }
