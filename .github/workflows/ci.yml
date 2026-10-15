@@ -178,7 +178,7 @@ jobs:
   # scenarios marked `#@ needs hw-accel` are skipped. Both runner types run it,
   # to compare their TCG speed.
   #
-  # The tests environment holds CDJ3K_LUKS_CDJ3K, the CDJ-3000 update key file
+  # The e2e environment holds CDJ3K_LUKS_CDJ3K, the CDJ-3000 update key file
   # in base64, and its required reviewers hold the job until one approves it.
   # A pull request from a fork gets no secrets and skips the job.
   e2e:
@@ -188,7 +188,7 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository)
-    environment: tests
+    environment: e2e
     strategy:
       fail-fast: false
       matrix:
