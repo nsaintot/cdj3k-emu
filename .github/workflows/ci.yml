@@ -8,8 +8,8 @@
 #   workflow_dispatch                like a pull request
 name: CI
 
-# Lint, Quality, Test (Linux), Test (macOS), Test (Windows) and the two E2E
-# jobs are the checks the "Main" ruleset requires before a merge.
+# Lint, Quality, Test (Linux), Test (macOS), Test (Windows) and E2E are the
+# checks the "Main" ruleset requires before a merge.
 on:
   pull_request:
     branches: [main]
@@ -173,6 +173,36 @@ jobs:
     name: Build
     uses: ./.github/workflows/build.yml
 
+  # Whether the pull request changes a file that the E2E run builds or runs:
+  # the emulator, the guest, QEMU, the Linux packaging, the scenarios and
+  # this workflow. A pull request that changes only other files, such as the
+  # docs or the macOS and Windows packaging, skips E2E.
+  changes:
+    name: Changes
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    outputs:
+      e2e: ${{ steps.diff.outputs.e2e }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      # HEAD is the merge of the pull request into main, and HEAD^1 is main.
+      - id: diff
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+              echo e2e=true >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          git diff --name-only HEAD^1 HEAD | grep -v '\.md$' | grep -qE \
+              -e '^(app|crates|winit|guest|initramfs-patch|dropbear|qemu|packaging/linux|tests/e2e|\.github/actions)/' \
+              -e '^(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|build\.sh|\.dockerignore)$' \
+              -e '^docker/Dockerfile(\.linux-(host|pkg).*)?$' \
+              -e '^scripts/(make-patch-dispatcher|bundle-sos)\.sh$' \
+              -e '^\.github/workflows/(ci|build)\.yml$' \
+              && e2e=true || e2e=false
+          echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
+
   # The E2E scenarios (docs/e2e.md) on the staged Linux tree. GitHub's runners
   # do not accelerate an aarch64 guest, so the guest runs under TCG and the
   # scenarios marked `#@ needs hw-accel` are skipped. Both runner types run it,
@@ -180,13 +210,13 @@ jobs:
   #
   # The e2e environment holds CDJ3K_LUKS_CDJ3K, the CDJ-3000 update key file
   # in base64, and its required reviewers hold the job until one approves it.
-  # A pull request from a fork gets no secrets and skips the job.
+  # A pull request from a fork gets no secrets, so the job does not run on it.
   e2e:
     name: E2E (Linux ${{ matrix.arch }})
-    needs: [build]
+    needs: [build, changes]
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
+      needs.changes.outputs.e2e == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
        github.event.pull_request.head.repo.full_name == github.repository)
     environment: e2e
     strategy:
@@ -244,3 +274,29 @@ jobs:
           name: e2e-report-${{ matrix.arch }}
           path: ${{ runner.temp }}/e2e-report
           if-no-files-found: ignore
+
+  # The check that the "Main" ruleset requires. It passes when both E2E jobs
+  # pass, or when the pull request needs no E2E run. The ruleset cannot
+  # require the matrix jobs: a skipped matrix job reports its name with
+  # ${{ matrix.arch }} unexpanded.
+  e2e-result:
+    name: E2E
+    needs: [changes, e2e]
+    if: always() && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          NEEDED: ${{ needs.changes.outputs.e2e }}
+          RESULT: ${{ needs.e2e.result }}
+          FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          case "$NEEDED/$RESULT" in
+              true/success | false/skipped) ;;
+              true/skipped) if [ "$FORK" = true ]; then
+                      echo "::error::E2E does not run on a fork; push the branch to this repository"
+                  else
+                      echo "::error::E2E was skipped: a job it needs failed"
+                  fi
+                  exit 1 ;;
+              *) echo "::error::E2E: needed=$NEEDED, result=$RESULT"; exit 1 ;;
+          esac
