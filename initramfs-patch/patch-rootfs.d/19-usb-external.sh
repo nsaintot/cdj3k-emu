@@ -25,11 +25,19 @@ cat > "$ROOTFS/usr/sbin/usb-external-attach.sh" << 'SCRIPTEOF'
 DEV=/dev/sdb
 
 # /dev/sdb always exists: without a drive, the slot holds a one-sector
-# placeholder. Rescan the partition table so that sdb1 appears for the new
-# medium, then wait up to 3 s for it.
-/sbin/blockdev --rereadpt "$DEV" 2>/dev/null || true
+# placeholder. The attach can arrive before the guest sees the new
+# medium's size, and a partition table read at the old size drops sdb1. Wait
+# up to 3 s for the size, then rescan the partition table until sdb1 appears,
+# for up to 3 s more.
 i=0
-while [ $i -lt 30 ] && [ ! -b "${DEV}1" ]; do sleep 0.1; i=$((i+1)); done
+while [ $i -lt 30 ] && [ "$(cat /sys/block/sdb/size 2>/dev/null || echo 0)" -le 1 ]; do
+    sleep 0.1; i=$((i+1))
+done
+i=0
+while [ $i -lt 30 ] && [ ! -b "${DEV}1" ]; do
+    /sbin/blockdev --rereadpt "$DEV" 2>/dev/null || true
+    sleep 0.1; i=$((i+1))
+done
 
 if [ -b "${DEV}1" ]; then
     PART="${DEV}1"; DEVBASE=sdb1
