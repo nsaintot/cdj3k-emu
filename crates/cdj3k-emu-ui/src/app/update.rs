@@ -10,7 +10,7 @@ use cdj3k_emu_platform::menu_state;
 use cdj3k_emu_streams::ctrl_stream::LedState;
 
 use super::jog_physics::JOG_OMEGA_MOVING_THRESHOLD;
-use super::{bloom, boot_overlay, ui, CdjApp};
+use super::{bloom, boot_overlay, ui, CdjApp, ROTARY_NEUTRAL};
 
 /// The panel frame is all zeroes until the guest drives it. If the guest
 /// never does, drop the shade this long after QEMU starts.
@@ -125,14 +125,7 @@ impl CdjApp {
     /// Send the model's frame on the control channel's rising edge, and take
     /// the guest's latest LED state.
     fn sync_ctrl_stream(&mut self) {
-        // The guest's sub-CPU module serves its own idle frame until the
-        // host's first one arrives: send the model's frame as soon as the
-        // control channel is up.
-        let ctrl_ready = self.ctrl_stream.is_ready();
-        if ctrl_ready && !self.ctrl_was_ready {
-            self.inject(self.build_current_frame());
-        }
-        self.ctrl_was_ready = ctrl_ready;
+        self.on_ctrl_connect();
 
         if let Some(ls) = {
             puffin::profile_scope!("ctrl_take");
@@ -140,6 +133,22 @@ impl CdjApp {
         } {
             self.led_state = ls;
         }
+    }
+
+    /// On the control channel's rising edge, at each start of the guest, put
+    /// the encoder counters back at rest and send the model's frame. The
+    /// guest's sub-CPU module serves its idle frame until the host's first one
+    /// arrives, and the player app counts any counter change between the two
+    /// as detents. `logic` calls it too, because `update` does not run while
+    /// the window is headless.
+    pub(crate) fn on_ctrl_connect(&mut self) {
+        let ctrl_ready = self.ctrl_stream.is_ready();
+        if ctrl_ready && !self.ctrl_was_ready {
+            self.rotary = ROTARY_NEUTRAL;
+            self.beat_loop = 0;
+            self.inject(self.build_current_frame());
+        }
+        self.ctrl_was_ready = ctrl_ready;
     }
 
     /// Step the frame clock and the jog physics, and drop Ctrl-latched
