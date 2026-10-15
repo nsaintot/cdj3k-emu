@@ -25,10 +25,14 @@
 //! | `setup` | The setup window and the step it shows |
 //! | `slots` | Installs, deletes and what is known of other slots |
 //! | `commands` | Commands to and from other windows on the window sockets |
+//! | `control` | The control API, while Developer Mode is on |
+//! | `guest_monitor` | The debug window's guest samples |
 //! | `mods` | The Mods view's reads, edits and downloads |
 
 mod commands;
+mod control;
 mod frame;
+mod guest_monitor;
 mod mods;
 mod setup;
 mod slots;
@@ -44,7 +48,6 @@ use super::firmware_wizard::FirmwareWizard;
 use super::mods_view::{ModsBar, ModsPage};
 use super::picker::PickerAction;
 use super::screenshot::ScreenshotDriver;
-use super::script::ScriptDriver;
 use super::updater::Updater;
 use super::CdjApp;
 
@@ -202,7 +205,10 @@ pub struct CdjShell {
     /// so `on_exit` runs without a multi-second freeze.
     shutdown_in_progress: bool,
     shot: ScreenshotDriver,
-    script: ScriptDriver,
+    /// The control API, while Developer Mode is on.
+    control: control::ControlHost,
+    /// Samples the guest for the debug window.
+    guest_monitor: guest_monitor::GuestMonitor,
     /// The update window and the check, download and install behind it.
     updater: Updater,
     /// When the quit was left to Sparkle, which installs the update waiting
@@ -254,7 +260,8 @@ impl CdjShell {
             worker_stopping: false,
             shutdown_in_progress: false,
             shot: ScreenshotDriver::from_env(),
-            script: ScriptDriver::from_env(),
+            control: Default::default(),
+            guest_monitor: Default::default(),
             updater: Updater::new(cfg.instance),
             quit_handed_off: None,
             shutdown_finished: false,
@@ -296,6 +303,13 @@ impl CdjShell {
         self.model = model;
         self.app.switch_model(model);
         match self.host.launch(model) {
+            LaunchOutcome::NotProvisioned if desktop::is_headless() => {
+                eprintln!(
+                    "cdj3k-emu: Slot {} has no {} firmware, so the headless slot closes.",
+                    self.instance, model
+                );
+                self.close_window = true;
+            }
             LaunchOutcome::NotProvisioned => {
                 eprintln!(
                     "cdj3k-emu: Slot {} has no {} firmware; opening Install Firmware.",
@@ -320,9 +334,12 @@ impl CdjShell {
         // The setup window may have closed onto a stopped emulation and asked
         // for the picker; the window shows this deck instead.
         self.reveal_picker = false;
+        menu_state::lock().model = Some(self.model);
+        if desktop::is_headless() {
+            return;
+        }
         // The setup window was in front; bring the deck out from behind it.
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        menu_state::lock().model = Some(self.model);
         desktop::enter_panel_window(ctx, frame, self.instance, self.model, self.app.ref_canvas());
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.window_title(true)));
     }
@@ -342,6 +359,11 @@ impl CdjShell {
         self.app.on_leave_panel();
         self.screen = Screen::Picker;
         menu_state::lock().model = None;
+        if desktop::is_headless() {
+            // A headless slot has nothing to show without an emulation.
+            self.close_window = true;
+            return;
+        }
         desktop::enter_picker_window(ctx, frame);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.window_title(false)));
     }

@@ -160,6 +160,19 @@ pub struct AppState {
     /// InstanceSettings.
     pub haptic_toggle_requested: bool,
 
+    /// "Developer Mode": the window serves the control API, and QEMU starts
+    /// with its gdb stub. `--dev` turns it on for one launch without saving it.
+    pub dev_mode: bool,
+    /// A one-shot request, set when the user toggles the menu item; the shell
+    /// consumes it and saves `dev_mode` to InstanceSettings.
+    pub dev_mode_toggle_requested: bool,
+    /// `--ephemeral`: the slot boots from an overlay over its eMMC, so the
+    /// guest's writes never reach the eMMC.
+    pub ephemeral: bool,
+    /// A one-shot request to replace the overlay with an empty one at the
+    /// next start. It is set at launch and by the control API's `reset`.
+    pub ephemeral_reset_requested: bool,
+
     /// "Enable Mods": whether the slot boots with its mods. Toggling it
     /// restarts a running emulation; the list stays editable either way.
     pub mods_enabled: bool,
@@ -275,6 +288,10 @@ impl AppState {
             alc_toggle_requested: false,
             haptic_enabled: true,
             haptic_toggle_requested: false,
+            dev_mode: false,
+            dev_mode_toggle_requested: false,
+            ephemeral: false,
+            ephemeral_reset_requested: false,
             mods_enabled: true,
             mods_toggle_requested: false,
             pc_link_supported: false,

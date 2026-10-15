@@ -61,6 +61,18 @@ pub struct QemuConfig {
     /// that several instances can run at once.
     pub qmp_port: u16,
 
+    /// Developer Mode. QEMU opens its gdb stub on [`Self::gdb_port`], on
+    /// every interface, and the `cdj3k.dev` port for the guest's devd on
+    /// `{sock_dir}/dev.sock` ([`crate::dev`]).
+    pub dev: bool,
+
+    /// Boot from [`EMMC_OVERLAY`], a qcow2 overlay over the eMMC, so the
+    /// guest's writes never reach the eMMC. The overlay lasts across
+    /// restarts until [`Self::fresh_overlay`] replaces it.
+    pub ephemeral: bool,
+    /// Replace the overlay with an empty one before this start.
+    pub fresh_overlay: bool,
+
     /// The GDB TCP port. The launcher uses 1235 plus the instance index.
     pub gdb_port: u16,
 
@@ -125,6 +137,9 @@ impl QemuConfig {
             net_tap_iface: None,
             net_tap_fd: None,
             qmp_port: 4445,
+            dev: false,
+            ephemeral: false,
+            fresh_overlay: false,
             gdb_port: 1235,
             ssh_port: 2222,
             mac: None,
@@ -136,6 +151,11 @@ impl QemuConfig {
     /// The socket directory, from [`cdj3k_emu_platform::runtime_paths::instance_dir`].
     pub fn sock_dir(&self) -> PathBuf {
         cdj3k_emu_platform::runtime_paths::instance_dir(self.instance_id)
+    }
+
+    /// The overlay an ephemeral slot boots from.
+    pub fn emmc_overlay_path(&self) -> PathBuf {
+        self.sock_dir().join(EMMC_OVERLAY)
     }
 
     /// The second QMP monitor, on a Unix socket: the only transport that can
@@ -180,9 +200,17 @@ impl QemuConfig {
             self.disk_args(),
             self.gpu_args(),
             vec!["-no-reboot".into()],
-            opt("-gdb", format!("tcp::{}", self.gdb_port)),
+            self.gdb_args(),
         ]
         .concat()
+    }
+
+    /// The gdb stub's arguments, which are empty outside Developer Mode.
+    fn gdb_args(&self) -> Vec<String> {
+        if !self.dev {
+            return Vec::new();
+        }
+        opt("-gdb", format!("tcp::{}", self.gdb_port))
     }
 
     /// The `-machine` value before any memory backend is named.
@@ -408,11 +436,13 @@ impl QemuConfig {
         [opt("-netdev", netdev), opt("-device", device)].concat()
     }
 
-    /// The virtio-serial ports in [`CHANNELS`], each on `{sock_dir}/<name>.sock`.
+    /// The virtio-serial ports in [`CHANNELS`], and [`DEV_CHANNEL`] in
+    /// Developer Mode, each on `{sock_dir}/<name>.sock`.
     fn channel_args(&self) -> Vec<String> {
         let sock = self.sock_dir();
         let mut args = opt("-device", "virtio-serial-device,max_ports=8");
-        for name in CHANNELS {
+        let dev = self.dev.then_some(DEV_CHANNEL);
+        for name in CHANNELS.into_iter().chain(dev) {
             let sock_path = sock.join(format!("{}.sock", name));
             args.extend(opt(
                 "-chardev",
@@ -485,11 +515,18 @@ impl QemuConfig {
         ]
         .concat();
         if let Some(img) = &self.emmc_img {
+            // The overlay's backing file is the eMMC, which needs its own
+            // `locking=off`.
+            let (file, backing) = if self.ephemeral {
+                (self.emmc_overlay_path(), ",backing.file.locking=off")
+            } else {
+                (img.clone(), "")
+            };
             args.extend(opt(
                 "-drive",
                 format!(
-                    "file={},if=none,id=emmc0,format=qcow2,cache=writeback,file.locking=off",
-                    img.display()
+                    "file={},if=none,id=emmc0,format=qcow2,cache=writeback,file.locking=off{backing}",
+                    file.display()
                 ),
             ));
             args.extend(opt("-device", "virtio-blk-device,drive=emmc0,id=emmc0"));
@@ -522,6 +559,13 @@ const CHANNELS: [&str; 3] = [
     // the pc_link toggle turns on.
     "usb-link",
 ];
+
+/// The file name of an ephemeral slot's eMMC overlay, in the sock dir.
+pub const EMMC_OVERLAY: &str = "emmc-overlay.qcow2";
+
+/// The channel of the guest's devd, which runs commands for the control
+/// API. It exists only in Developer Mode.
+const DEV_CHANNEL: &str = "dev";
 
 /// The host's entropy source behind a virtio-rng device.
 fn rng_args() -> Vec<String> {

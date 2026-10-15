@@ -37,6 +37,27 @@ fn the_emmc_is_named_after_the_decks_own() {
     }
 }
 
+/// An ephemeral slot boots from its overlay; a normal slot from its eMMC.
+#[test]
+fn an_ephemeral_slot_boots_from_its_overlay() {
+    for ephemeral in [false, true] {
+        let mut c = config();
+        c.emmc_img = Some(PathBuf::from("/e/emmc.qcow2"));
+        c.ephemeral = ephemeral;
+        let a = c.build_argv().join(" ");
+        let file = if ephemeral {
+            c.emmc_overlay_path()
+        } else {
+            PathBuf::from("/e/emmc.qcow2")
+        };
+        assert!(
+            a.contains(&format!("file={},if=none,id=emmc0,", file.display())),
+            "{a}"
+        );
+        assert_eq!(a.contains(",backing.file.locking=off"), ephemeral, "{a}");
+    }
+}
+
 const KVM: Accelerator = Accelerator {
     name: "kvm",
     in_kernel_gic: true,
@@ -154,9 +175,10 @@ fn display_qmp_and_rng(c: &QemuConfig) -> Vec<String> {
     v
 }
 
-/// The guest's channels, the jog buffer and the USB slot.
+/// The guest's channels (with devd's in Developer Mode), the jog buffer
+/// and the USB slot.
 fn channels_jog_and_usb(c: &QemuConfig) -> Vec<String> {
-    expand(
+    let mut args = expand(
         c,
         &[
             "-device",
@@ -173,6 +195,22 @@ fn channels_jog_and_usb(c: &QemuConfig) -> Vec<String> {
             "socket,id=vserial_usb-link,path={sock}{sep}usb-link.sock,server=on,wait=off",
             "-device",
             "virtserialport,chardev=vserial_usb-link,name=cdj3k.usb-link",
+        ],
+    );
+    if c.dev {
+        args.extend(expand(
+            c,
+            &[
+                "-chardev",
+                "socket,id=vserial_dev,path={sock}{sep}dev.sock,server=on,wait=off",
+                "-device",
+                "virtserialport,chardev=vserial_dev,name=cdj3k.dev",
+            ],
+        ));
+    }
+    args.extend(expand(
+        c,
+        &[
             "-object",
             "memory-backend-file,id=jogshm,mem-path={sock}{sep}jog.shm,size=1M,share=on",
             "-device",
@@ -183,7 +221,8 @@ fn channels_jog_and_usb(c: &QemuConfig) -> Vec<String> {
             "-device",
             "virtio-blk-device,drive=usb0,id=usb0",
         ],
-    )
+    ));
+    args
 }
 
 /// The `-audiodev` and sound device for this host's backend, if it has
@@ -259,8 +298,6 @@ fn a_minimal_config_builds_this_exact_argv() {
             "-device",
             "virtio-gpu-device,id=virtio-gpu0,xres=1280,yres=720,max_outputs=1",
             "-no-reboot",
-            "-gdb",
-            "tcp::1235",
         ],
     ));
     assert_eq!(c.build_argv(), want);
@@ -280,6 +317,7 @@ fn a_full_config_builds_this_exact_argv() {
     c.emmc_img = Some(PathBuf::from("/e/emmc.qcow2"));
     c.net_vmnet = Some(VmnetMode::Bridged("en0".into()));
     c.qmp_port = 4448;
+    c.dev = true;
     c.gdb_port = 1238;
     c.ssh_port = 2225;
     c.mac = Some("02:11:22:33:44:55".into());
@@ -358,6 +396,7 @@ fn a_tap_config_builds_this_exact_argv() {
     c.net_tap_iface = Some("tap0".into());
     c.net_tap_fd = Some(7);
     c.net_vmnet = Some(VmnetMode::Host);
+    c.dev = true;
     c.gdb_port = 1237;
     let mut want = expand(
         &c,

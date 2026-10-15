@@ -15,7 +15,7 @@
 #   dummy_drv.so       - the Xorg dummy video driver (headless mode)
 #   deck_shim.so       - the LD_PRELOAD shim (core/ and per-model code)
 #   subucom_forwarder_aarch64, subucom_live_aarch64, cfgd_aarch64,
-#   pc_link_bridge_aarch64
+#   pc_link_bridge_aarch64, devd_aarch64
 #   dropbear_aarch64   - built by dropbear/build.sh
 #
 # Outputs:
@@ -119,7 +119,7 @@ mkdir -p "$REPO_ROOT/guest/out"
 # when a tool they install is missing. Copying them here makes an incomplete
 # build fail at once.
 for bin in deck_shim.so subucom_forwarder_aarch64 subucom_live_aarch64 cfgd_aarch64 \
-           pc_link_bridge_aarch64; do
+           pc_link_bridge_aarch64 devd_aarch64; do
     cp "$DOCKER_OUT/$bin" "$REPO_ROOT/guest/out/$bin"
 done
 

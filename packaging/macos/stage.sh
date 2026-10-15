@@ -285,7 +285,7 @@ fi
 # /home/root).
 RES_TOOLS="$RES_DIR/tools"
 mkdir -p "$RES_TOOLS"
-for tool in subucom_live subucom_forwarder; do
+for tool in subucom_live subucom_forwarder devd; do
     src="$REPO_ROOT/guest/out/${tool}_aarch64"
     if [[ -f "$src" ]]; then
         cp "$src" "$RES_TOOLS/$tool"

@@ -8,7 +8,7 @@
 #   modules/           - the out-of-tree kernel modules (.ko)
 #   deck_shim.so       - the LD_PRELOAD shim (compatible with glibc 2.17)
 #   subucom_forwarder_aarch64, subucom_live_aarch64, cfgd_aarch64,
-#   pc_link_bridge_aarch64 - the static guest tools
+#   pc_link_bridge_aarch64, devd_aarch64 - the static guest tools
 #   dummy_drv.so       - the Xorg dummy video driver (ABI 24.0) for headless mode
 #
 # `guest/Makefile` holds the build flags for the guest user-space code. Two
@@ -125,6 +125,7 @@ RUN mkdir -p /out/modules && \
     cp /tmp/guest/out/subucom_live_aarch64                           /out/ && \
     cp /tmp/guest/out/cfgd_aarch64                                   /out/ && \
     cp /tmp/guest/out/pc_link_bridge_aarch64                         /out/ && \
+    cp /tmp/guest/out/devd_aarch64                                   /out/ && \
     echo "=== /out/ ===" && ls -la /out/ && echo "=== /out/modules/ ===" && ls -la /out/modules/
 
 # Build deck_shim.so against glibc 2.27 (Ubuntu 18.04) so that it can be

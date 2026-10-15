@@ -1,4 +1,5 @@
-//! Captures one frame of the window for layout work and regression diffs.
+//! Captures one frame of the window for layout work and regression diffs,
+//! and for the control API's `shot`.
 //!
 //! When `CDJ3K_SCREENSHOT=<path.png>` is set, the app lets the UI settle for
 //! `CDJ3K_SCREENSHOT_FRAME` frames (default 30) and, when
@@ -11,20 +12,21 @@ use std::sync::Arc;
 use std::time::Instant;
 
 const DEFAULT_SETTLE_FRAMES: u64 = 30;
-/// Frames to wait for a scripted capture before asking for it again.
-const SCRIPTED_RETRY_FRAMES: u32 = 8;
+/// Frames to wait for an API capture before asking for it again.
+const API_RETRY_FRAMES: u32 = 8;
 
 pub(super) struct ScreenshotDriver {
     path: Option<String>,
     frame: u64,
     started: Instant,
     requested: bool,
-    /// A capture requested by the input script. Writing it does not close
-    /// the window.
-    scripted: Option<String>,
-    /// Frames since the scripted capture was requested without an image
+    /// Whether the control API asked for a capture that has not arrived.
+    api_wanted: bool,
+    /// Frames since the API capture was requested without an image
     /// arriving.
-    scripted_wait: u32,
+    api_wait: u32,
+    /// The API capture, until the control host takes it.
+    api_image: Option<Arc<egui::ColorImage>>,
 }
 
 impl ScreenshotDriver {
@@ -36,16 +38,23 @@ impl ScreenshotDriver {
             frame: 0,
             started: Instant::now(),
             requested: false,
-            scripted: None,
-            scripted_wait: 0,
+            api_wanted: false,
+            api_wait: 0,
+            api_image: None,
         }
     }
 
-    /// Capture the window to `path` on the next frame and keep running.
-    pub(super) fn request_capture(&mut self, ctx: &egui::Context, path: String) {
-        self.scripted = Some(path);
-        self.scripted_wait = 0;
+    /// Capture the window on the next frame for the control API; see
+    /// [`Self::take_image`].
+    pub(super) fn request_image(&mut self, ctx: &egui::Context) {
+        self.api_wanted = true;
+        self.api_wait = 0;
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+    }
+
+    /// The capture that [`Self::request_image`] asked for, once it arrived.
+    pub(super) fn take_image(&mut self) -> Option<Arc<egui::ColorImage>> {
+        self.api_image.take()
     }
 
     /// Call once per frame after drawing. It drives the capture and the exit.
@@ -57,15 +66,19 @@ impl ScreenshotDriver {
             })
         });
         if let Some(img) = shot {
-            self.write_capture(ctx, &img);
+            if std::mem::take(&mut self.api_wanted) {
+                self.api_image = Some(img);
+            } else {
+                self.write_capture(ctx, &img);
+            }
             return;
         }
         // A request can go unanswered when no frame is rendered for it, so
         // ask again after a few frames.
-        if self.scripted.is_some() {
-            self.scripted_wait += 1;
-            if self.scripted_wait >= SCRIPTED_RETRY_FRAMES {
-                self.scripted_wait = 0;
+        if self.api_wanted {
+            self.api_wait += 1;
+            if self.api_wait >= API_RETRY_FRAMES {
+                self.api_wait = 0;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
             }
             ctx.request_repaint();
@@ -75,15 +88,11 @@ impl ScreenshotDriver {
         }
     }
 
-    /// Write a capture that arrived. A scripted capture comes first; the
-    /// capture requested by `CDJ3K_SCREENSHOT` closes the window.
+    /// Write the capture requested by `CDJ3K_SCREENSHOT`, then close the
+    /// window.
     fn write_capture(&mut self, ctx: &egui::Context, img: &egui::ColorImage) {
-        let (path, close) = match self.scripted.take() {
-            Some(p) => (p, false),
-            None => match self.path.clone() {
-                Some(p) => (p, true),
-                None => return,
-            },
+        let Some(path) = self.path.clone() else {
+            return;
         };
         match write_png(&path, img) {
             Ok(()) => eprintln!(
@@ -92,9 +101,7 @@ impl ScreenshotDriver {
             ),
             Err(e) => eprintln!("cdj3k-emu: Could not write the screenshot: {e}"),
         }
-        if close {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
     /// Count the env capture's settle frames and seconds, and request it once

@@ -77,6 +77,9 @@ pub struct InstanceSettings {
     /// ([`crate::mods`]). On by default; the list itself stays editable
     /// either way.
     pub mods_enabled: bool,
+    /// "Developer Mode": the slot's window serves the control API on TCP port
+    /// 4400 plus the slot number, and QEMU opens its gdb stub. Off by default.
+    pub dev_mode: bool,
     /// The network interface the user last selected (for example "en0"), the
     /// host-only token, or `None` for "Default (NAT)". It is restored on
     /// launch if the interface is still present; otherwise it stays on disk so
@@ -159,6 +162,7 @@ impl InstanceSettings {
             firmware_release: text(map, "firmware_release"),
             fs: number(map, "fs"),
             mods_enabled: flag(map, "mods_enabled", true),
+            dev_mode: flag(map, "dev_mode", false),
             net_iface: text(map, "net_iface"),
             usb_virtual_path: text(map, "usb_virtual_path").map(PathBuf::from),
             usb_physical_bsd: text(map, "usb_physical_bsd"),
@@ -295,6 +299,7 @@ impl InstanceSettings {
         );
         map.insert("fs".into(), self.fs.to_string());
         map.insert("mods_enabled".into(), flag_value(self.mods_enabled));
+        map.insert("dev_mode".into(), flag_value(self.dev_mode));
         map.insert(
             "net_iface".into(),
             self.net_iface.clone().unwrap_or_default(),

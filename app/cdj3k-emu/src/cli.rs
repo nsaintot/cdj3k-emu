@@ -42,6 +42,16 @@ pub struct Cli {
     pub no_mods: bool,
     /// `-h` or `--help` prints [`USAGE`] and exits.
     pub help: bool,
+    /// `--dev` or `CDJ3K_DEV=1` turns Developer Mode on for this launch
+    /// without saving it.
+    pub dev: bool,
+    /// `--headless` or `CDJ3K_HEADLESS=1` runs the slot without showing its
+    /// window. It boots the slot's model, or `--model`, and closes when the
+    /// slot has no firmware.
+    pub headless: bool,
+    /// `--ephemeral` or `CDJ3K_EPHEMERAL=1` runs a throwaway copy of the slot
+    /// as slot N+4 (`cdj3k_emu_storage::ephemeral`).
+    pub ephemeral: bool,
 }
 
 /// The text `--help` prints.
@@ -69,7 +79,19 @@ Options:
   --kernel <file>         Boot this kernel instead of the slot's own.
   --initramfs <file>      Boot this initramfs instead of the slot's own.
   --no-emmc               Boot without the eMMC disk.
+  --dev                   Turn Developer Mode on for this launch: the control
+                          API, QEMU's gdb stub and the guest's devd.
+                          CDJ3K_DEV=1 does the same.
+  --headless              Run the slot without a window. CDJ3K_HEADLESS=1
+                          does the same.
+  --ephemeral             Run a throwaway copy of the slot as slot N+4, which
+                          is deleted when the window closes; the slot itself
+                          does not change. CDJ3K_EPHEMERAL=1 does the same.
   -h, --help              Print this help and exit.
+
+Commands:
+  ctl [--slot N] <command>  Drive a running slot's control API. Run
+                            `cdj3k-emu ctl --help` for its commands.
 ";
 
 type FlagSetter = fn(&mut Cli);
@@ -85,6 +107,9 @@ const FLAGS: &[(&str, FlagSetter)] = &[
     ("--no-mods", |c| c.no_mods = true),
     ("-h", |c| c.help = true),
     ("--help", |c| c.help = true),
+    ("--dev", |c| c.dev = true),
+    ("--headless", |c| c.headless = true),
+    ("--ephemeral", |c| c.ephemeral = true),
 ];
 
 const VALUE_OPTIONS: &[(&str, ValueSetter)] = &[
@@ -136,6 +161,9 @@ impl Cli {
             extra_mods: Vec::new(),
             no_mods: false,
             help: false,
+            dev: env_flag("CDJ3K_DEV"),
+            headless: env_flag("CDJ3K_HEADLESS"),
+            ephemeral: env_flag("CDJ3K_EPHEMERAL"),
         }
     }
 

@@ -8,9 +8,12 @@
 //! - `/opt/cdj3k-mods/NN-<name>.mod`: what its `mod.toml` declares for the
 //!   app, as `preload <guest path>` and `env KEY=VALUE` lines
 //!
-//! A boot without mods uses the slot's initramfs unchanged. The combined
-//! file is kept in `mods/` and rebuilt only when the mods or the base
-//! initramfs change.
+//! In Developer Mode, a third archive adds `cdj3k-devd` and its service
+//! ([`devd_overlay`]).
+//!
+//! A boot without mods or Developer Mode uses the slot's initramfs unchanged.
+//! The combined file is kept in `mods/` and rebuilt only when an archive or
+//! the base initramfs changes.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -65,7 +68,8 @@ pub fn slot_mods_on(instance_id: u32) -> bool {
 /// The initramfs for `instance`'s next boot: `base`, with the slot's enabled
 /// and compatible mods appended when `enabled`, and `extra` (folders used for
 /// this launch only) appended in any case. An `extra` folder takes the place
-/// of a slot mod with the same name. At most [`MAX_MODS`] mods boot.
+/// of a slot mod with the same name. At most [`MAX_MODS`] mods boot. `devd`,
+/// the guest binary of Developer Mode, is added when given.
 pub fn prepare_boot(
     instance_id: u32,
     base: &Path,
@@ -73,6 +77,7 @@ pub fn prepare_boot(
     release: Option<&str>,
     enabled: bool,
     extra: &[PathBuf],
+    devd: Option<&Path>,
 ) -> io::Result<BootMods> {
     let slot = SlotMods::load(instance_id);
     slot.sweep();
@@ -115,11 +120,17 @@ pub fn prepare_boot(
         .filter(|(name, _)| !unreadable.iter().any(|(n, _)| n == name))
         .collect();
     incompatible.extend(unreadable);
-    let initramfs = if chosen.is_empty() {
+    let mut archives = Vec::new();
+    if !chosen.is_empty() {
+        archives = overlay(&packed, model, release)?;
+    }
+    if let Some(devd) = devd {
+        archives.extend(devd_overlay(devd)?);
+    }
+    let initramfs = if archives.is_empty() {
         base.to_path_buf()
     } else {
-        let overlay = overlay(&packed, model, release)?;
-        cached_combined(&mods_dir(instance_id), base, &overlay)?
+        cached_combined(&mods_dir(instance_id), base, &archives)?
     };
     let slot_run = ids(
         &slot,
@@ -266,6 +277,40 @@ pub fn overlay(mods: &[Packed], model: Model, release: Option<&str>) -> io::Resu
     gz.finish()
 }
 
+/// The guest paths of devd, its systemd unit and the link that enables it.
+const DEVD_GUEST: &str = "/usr/sbin/cdj3k-devd";
+const DEVD_UNIT: &str = "/etc/systemd/system/cdj3k-devd.service";
+const DEVD_WANTS: &str = "/etc/systemd/system/multi-user.target.wants/cdj3k-devd.service";
+const DEVD_SERVICE: &str = "\
+[Unit]
+Description=cdj3k Developer Mode daemon (cdj3k.dev virtio-serial port)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/cdj3k-devd
+Restart=always
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
+";
+
+/// The gzipped cpio archive that installs the host file `binary` as
+/// [`DEVD_GUEST`] and enables its service.
+pub fn devd_overlay(binary: &Path) -> io::Result<Vec<u8>> {
+    let data = std::fs::read(binary)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", binary.display())))?;
+    let entries = [
+        Entry::file(DEVD_GUEST, data, 0o755),
+        Entry::file(DEVD_UNIT, DEVD_SERVICE.as_bytes().to_vec(), 0o644),
+        Entry::symlink(DEVD_WANTS, DEVD_UNIT),
+    ];
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(&cpio::write(&entries))?;
+    gz.finish()
+}
+
 /// Add the files under `dir` to `entries` at the path `guest`, following
 /// symlinks and skipping `.git`. `seen` holds the folders above `dir`, to
 /// refuse a symlink that loops back to one of them.
@@ -370,6 +415,25 @@ mod tests {
         let mut raw = Vec::new();
         io::Read::read_to_end(&mut flate2::read::GzDecoder::new(gz), &mut raw).unwrap();
         cpio::read(&raw).unwrap()
+    }
+
+    #[test]
+    fn the_devd_overlay_installs_the_binary_and_enables_its_service() {
+        let root = scratch("devd");
+        let bin = root.join("devd");
+        std::fs::write(&bin, b"ELF").unwrap();
+        let entries = unpacked(&devd_overlay(&bin).unwrap());
+        let paths: Vec<_> = entries.iter().map(|e| e.path.clone()).collect();
+        assert_eq!(
+            paths,
+            [DEVD_GUEST, DEVD_UNIT, DEVD_WANTS]
+                .map(PathBuf::from)
+                .to_vec()
+        );
+        assert_eq!(entries[0].mode, 0o755);
+        assert!(matches!(&entries[0].kind, cpio::Kind::File(d) if d == b"ELF"));
+        assert!(matches!(&entries[2].kind, cpio::Kind::Symlink(t) if t == DEVD_UNIT));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

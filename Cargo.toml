@@ -4,6 +4,7 @@ members = [
   "crates/cdj3k-emu-panel",
   "crates/cdj3k-emu-streams",
   "crates/cdj3k-emu-platform",
+  "crates/cdj3k-emu-control",
   "crates/cdj3k-emu-ui",
   "crates/cdj3k-emu-runtime",
   "app/cdj3k-emu",

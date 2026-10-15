@@ -8,6 +8,7 @@
 use cdj3k_emu_platform::local_socket::LocalStream as UnixStream;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -38,6 +39,9 @@ pub struct CtrlStream {
     /// viewport read live wire bytes from it without depending on the main
     /// viewport's update cycle.
     latest_mosi: Arc<Mutex<[u8; 64]>>,
+    /// Whether the guest sent an LED frame with a lamp lit since the socket
+    /// last connected; see [`Self::panel_driven`].
+    driven: Arc<AtomicBool>,
 }
 
 impl CtrlStream {
@@ -50,15 +54,20 @@ impl CtrlStream {
         let state: Arc<Mutex<Option<LedState>>> = Arc::new(Mutex::new(None));
         let writer: Arc<Mutex<Option<UnixStream>>> = Arc::new(Mutex::new(None));
         let latest_mosi: Arc<Mutex<[u8; 64]>> = Arc::new(Mutex::new([0u8; 64]));
+        let driven = Arc::new(AtomicBool::new(false));
 
-        let state_clone = Arc::clone(&state);
-        let writer_clone = Arc::clone(&writer);
-        let latest_clone = Arc::clone(&latest_mosi);
+        let link = Link {
+            state: Arc::clone(&state),
+            writer: Arc::clone(&writer),
+            latest_mosi: Arc::clone(&latest_mosi),
+            driven: Arc::clone(&driven),
+            gate,
+        };
         let path = sock_path.clone();
 
         thread::Builder::new()
             .name("ctrl-stream".into())
-            .spawn(move || stream_loop(path, state_clone, writer_clone, latest_clone, gate))
+            .spawn(move || stream_loop(path, link))
             .expect("the ctrl-stream thread could not be started");
 
         Self {
@@ -66,7 +75,15 @@ impl CtrlStream {
             writer,
             sock_path,
             latest_mosi,
+            driven,
         }
+    }
+
+    /// Whether the player app drives the panel, that is, whether the guest has
+    /// sent an LED frame that is not all zero since the socket last connected.
+    /// A QEMU restart reconnects the socket.
+    pub fn panel_driven(&self) -> bool {
+        self.driven.load(Ordering::Relaxed)
     }
 
     /// Returns a copy of the most recently received MOSI frame. It does not
@@ -116,13 +133,16 @@ impl CtrlStream {
     }
 }
 
-fn stream_loop(
-    sock_path: PathBuf,
+/// What the stream thread shares with [`CtrlStream`].
+struct Link {
     state: Arc<Mutex<Option<LedState>>>,
     writer: Arc<Mutex<Option<UnixStream>>>,
     latest_mosi: Arc<Mutex<[u8; 64]>>,
+    driven: Arc<AtomicBool>,
     gate: crate::RepaintGate,
-) {
+}
+
+fn stream_loop(sock_path: PathBuf, link: Link) {
     // The thread connects only while QEMU runs. A connect can still fail
     // before QEMU has created the socket: log the first failure for each
     // guest, then every 10th.
@@ -136,9 +156,11 @@ fn stream_loop(
                 eprintln!("[ctrl] Connected to {}.", sock_path.display());
                 failed_attempts = 0;
                 if let Ok(write_half) = stream.try_clone() {
-                    *writer.lock().unwrap() = Some(write_half);
-                    read_loop(stream, &state, &latest_mosi, &gate);
-                    *writer.lock().unwrap() = None;
+                    link.driven.store(false, Ordering::Relaxed);
+                    *link.writer.lock().unwrap() = Some(write_half);
+                    read_loop(stream, &link);
+                    *link.writer.lock().unwrap() = None;
+                    link.driven.store(false, Ordering::Relaxed);
                 }
                 eprintln!("[ctrl] The control socket closed; reconnecting.");
             }
@@ -158,12 +180,14 @@ fn stream_loop(
     }
 }
 
-fn read_loop(
-    mut stream: UnixStream,
-    state: &Arc<Mutex<Option<LedState>>>,
-    latest_mosi: &Arc<Mutex<[u8; 64]>>,
-    gate: &crate::RepaintGate,
-) {
+fn read_loop(mut stream: UnixStream, link: &Link) {
+    let Link {
+        state,
+        latest_mosi,
+        driven,
+        gate,
+        ..
+    } = link;
     let mut buf = [0u8; 64];
     let mut frames: u64 = 0;
     // The last MOSI frame that requested a repaint. The guest sends about 100
@@ -208,6 +232,9 @@ fn read_loop(
         frames += 1;
         // Update the live peek for every frame.
         *latest_mosi.lock().unwrap() = buf;
+        if buf.iter().any(|&b| b != 0) {
+            driven.store(true, Ordering::Relaxed);
+        }
         // Request a repaint only when the bytes changed.
         let changed = last_repaint_mosi != Some(buf);
         if changed {

@@ -98,9 +98,6 @@ const TOUCH_FREE_BACKWARD: u8 = 0x08;
 const TOUCH_HELD_BACKWARD: u8 = 0x0b;
 const TOUCH_FREE_FORWARD: u8 = 0x0c;
 
-/// Width, in characters, of the centred debug lines drawn above the MISO dump.
-const DBG_LINE_WIDTH: usize = 56;
-
 #[inline]
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t.clamp(0.0, 1.0)
@@ -118,6 +115,7 @@ impl CdjApp {
     /// [`Self::inject_jog`] when any of them changed this frame.
     pub(super) fn tick_jog(&mut self, dt: f32) {
         puffin::profile_function!();
+        self.jog_ticked_at = std::time::Instant::now();
         let dragging = self.jog_drag_prev_angle.is_some();
         self.jog_scroll_hold_sec = (self.jog_scroll_hold_sec - dt).max(0.0);
         let scroll_active = self.jog_scroll_hold_sec > 0.0;
@@ -151,7 +149,6 @@ impl CdjApp {
             }
         };
         let brake = JOG_BRAKE_REF_OMEGA / stop_time.max(BRAKE_STOP_TIME_FLOOR_SEC);
-        let dec = brake * dt.max(DT_FLOOR);
 
         if self.jog_omega != 0.0 {
             if !dragging && !scroll_active {
@@ -166,42 +163,7 @@ impl CdjApp {
         self.jog_update_encoded_state(touch_active, dt);
         self.jog_touch_active = touch_active;
 
-        if self.debug_screen_popped {
-            self.refresh_jog_debug_lines(dragging, grip, brake, dec);
-        }
-    }
-
-    fn refresh_jog_debug_lines(&mut self, dragging: bool, grip: bool, brake: f32, dec: f32) {
-        puffin::profile_function!();
-        let w = DBG_LINE_WIDTH;
-        self.debug.jog_lines[0] = format!(
-            "{:^w$}",
-            format!(
-                "src={} drag={} touch={} grip={} jog_scroll_hold_sec={:.2}",
-                self.debug.jog_source,
-                dragging,
-                self.jog_touch_active,
-                grip,
-                self.jog_scroll_hold_sec
-            )
-        );
-        self.debug.jog_lines[1] = format!(
-            "{:^w$}",
-            format!(
-                "dθ={:+.4} dt={:.4} ωs={:+.2} ω={:+.2}",
-                self.debug.jog_delta_rad,
-                self.debug.jog_dt,
-                self.debug.jog_omega_sample,
-                self.jog_omega
-            )
-        );
-        self.debug.jog_lines[2] = format!(
-            "{:^w$}",
-            format!(
-                "adj={:.2} brake={:.2} dec={:.3} ω={:+.2}rad/s ωs={:+.2}",
-                self.jog_adjust, brake, dec, self.jog_omega, self.debug.jog_omega_sample
-            )
-        );
+        self.debug.jog_brake = brake;
     }
 
     /// Encodes `jog_pos`, `jog_vel` and `jog_touch` from the current motion.

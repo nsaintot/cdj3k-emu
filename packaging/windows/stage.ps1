@@ -125,7 +125,7 @@ $dummy = Join-Path $RepoRoot 'build\docker-out\dummy_drv.so'
 Need-File $dummy 'Run ./build.sh.'
 Copy-File $dummy (Join-Path $Share 'patch\dummy_drv.so')
 
-foreach ($tool in 'subucom_live', 'subucom_forwarder') {
+foreach ($tool in 'subucom_live', 'subucom_forwarder', 'devd') {
     $src = Join-Path $RepoRoot "guest\out\${tool}_aarch64"
     Need-File $src 'Run ./build.sh --artifacts-only.'
     Copy-File $src (Join-Path $Share "tools\$tool")
@@ -227,6 +227,7 @@ $required = @(
     'share\cdj3k-emu\patch\dropbear_aarch64',
     'share\cdj3k-emu\patch\dummy_drv.so',
     'share\cdj3k-emu\tools\subucom_live', 'share\cdj3k-emu\tools\subucom_forwarder',
+    'share\cdj3k-emu\tools\devd',
     'share\cdj3k-emu\tools\deck_shim.so',
     'share\cdj3k-emu\tap-windows6\OemVista.inf', 'share\cdj3k-emu\tap-windows6\tap0901.sys',
     'share\cdj3k-emu\tap-windows6\tap0901.cat', 'share\cdj3k-emu\package-kind',

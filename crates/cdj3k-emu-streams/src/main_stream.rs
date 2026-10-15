@@ -356,6 +356,45 @@ impl DirtyUnion {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// One copy of the main LCD as opaque RGBA rows: `(width, height, bytes)`,
+/// read from `{socket_dir}/main.shm`. A copy is taken while the generation is
+/// even, and taken again when an update overlapped it. An odd generation that
+/// lasts past [`CAPTURE_ODD_WAIT`] is accepted, for a QEMU that counts each
+/// update once.
+pub fn capture(socket_dir: &str) -> Result<(u32, u32, Vec<u8>), String> {
+    let path = format!("{}/main.shm", socket_dir.trim_end_matches('/'));
+    let mmap = open_shm(&path).ok_or("the main LCD is not up")?;
+    let shm = View::new(&mmap);
+    let mut out = Vec::new();
+    let odd_until = std::time::Instant::now() + CAPTURE_ODD_WAIT;
+    for _ in 0..CAPTURE_ATTEMPTS {
+        let gen = shm.u32_at(4, Ordering::Acquire);
+        if !gen.is_multiple_of(2) && std::time::Instant::now() < odd_until {
+            thread::sleep(Duration::from_millis(1));
+            continue;
+        }
+        let surface = Surface::read(shm).ok_or("the main LCD has no surface yet")?;
+        let row = surface.width * 4;
+        out.resize(row * surface.height, 0);
+        for (y, dst) in out.chunks_exact_mut(row).enumerate() {
+            shm.copy_to(SHM_PIXELS_OFFSET + y * surface.stride, dst);
+        }
+        let size = (surface.width as u32, surface.height as u32);
+        if shm.u32_at(4, Ordering::Relaxed) == gen {
+            for px in out.as_chunks_mut::<4>().0 {
+                px[3] = 0xff;
+            }
+            return Ok((size.0, size.1, out));
+        }
+    }
+    Err("the main LCD changed during every copy".into())
+}
+
+/// How many times [`capture`] tries for a copy no update overlapped.
+const CAPTURE_ATTEMPTS: usize = 64;
+/// How long [`capture`] waits for QEMU to finish an update in progress.
+const CAPTURE_ODD_WAIT: Duration = Duration::from_millis(40);
+
 fn open_shm(path: &str) -> Option<Arc<Mmap>> {
     let file = File::open(path).ok()?;
     let mmap = unsafe { Mmap::map(&file).ok()? };

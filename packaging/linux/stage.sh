@@ -122,7 +122,7 @@ else
 fi
 
 mkdir -p "$SHARE/tools"
-for tool in subucom_live subucom_forwarder; do
+for tool in subucom_live subucom_forwarder devd; do
     src="$REPO_ROOT/guest/out/${tool}_aarch64"
     if [[ ! -f "$src" ]]; then
         echo "ERROR: $src was not found. Run ./build.sh --artifacts-only." >&2

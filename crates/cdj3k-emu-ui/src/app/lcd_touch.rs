@@ -23,8 +23,9 @@ impl CdjApp {
     pub(crate) fn apply_lcd_touch(&mut self, cap: LcdTouchCapture) {
         use super::ui::{NAV_DETENT_COUNT, NAV_SCROLL_PX_PER_TICK};
 
-        // A scripted touch owns the coordinate until it is released.
-        if self.script_touch {
+        // A touch from the control API owns the coordinate until it is
+        // released.
+        if self.api.touch {
             return;
         }
 

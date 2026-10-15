@@ -12,7 +12,7 @@ use crate::cdj3k;
 use crate::frame::{FrameBit, JogBrightness, MosiMap, RgbLamps};
 use crate::miso_frame::{self, MisoCodec, PanelState, MISO_SIZE};
 use crate::mosi_frame::{LedProfile, LedProfiles, PRIMARY_DIES, TEAL_GREEN_DIES};
-use crate::spec::{JogBrake, ModelSpec, TouchSpace};
+use crate::spec::{Controls, JogBrake, ModelSpec, TouchSpace};
 
 /// Offset of the CDJ-3000's MISO frame inside this one.
 pub const MISO_SHIFT: usize = 4;
@@ -131,6 +131,11 @@ pub const SPEC: ModelSpec = ModelSpec {
         cue_rim: CDJ3000X_SLOT,
     },
     jog_brake: JogBrake::Adjustable,
+    controls: Controls {
+        beat_loop_encoder: false,
+        direction_lever: true,
+        vinyl_speed_knob: true,
+    },
 };
 
 /// The media slots' LEDs. The pads and the CUE rim use the same profile,

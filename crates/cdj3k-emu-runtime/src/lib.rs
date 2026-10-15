@@ -1,5 +1,6 @@
 pub mod cfg;
 pub mod config;
+pub mod dev;
 pub mod disk;
 pub mod elevate;
 pub mod instance;

@@ -561,6 +561,14 @@ pub const PLACES_WINDOWS: bool = true;
 /// Present on the display's refresh.
 pub const VSYNC: bool = true;
 
+/// Keep the process out of the Dock and the menu bar, as an accessory app.
+pub(super) fn keep_out_of_dock(options: &mut eframe::NativeOptions) {
+    use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+    options.event_loop_builder = Some(Box::new(|builder| {
+        builder.with_activation_policy(ActivationPolicy::Accessory);
+    }));
+}
+
 /// Nothing to do: no installer here looks for a running copy.
 pub fn announce_running() {}
 

@@ -47,7 +47,7 @@ use crate::frame::FrameBit;
 use crate::lamp::Lamp;
 use crate::miso_frame::{self, MisoCodec, PanelState, MISO_SIZE};
 use crate::mosi_frame::{LampState, MosiCodec, StepLed, MOSI_SIZE};
-use crate::spec::{JogBrake, ModelSpec, TouchSpace};
+use crate::spec::{Controls, JogBrake, ModelSpec, TouchSpace};
 
 /// The emulator's power flag. When it is clear, the guest forwarder powers the
 /// deck off.
@@ -330,6 +330,11 @@ pub const SPEC: ModelSpec = ModelSpec {
     // passes service mode's jog load check.
     jog_brake: JogBrake::Fixed {
         stop_secs: JOG_STOP_SECS,
+    },
+    controls: Controls {
+        beat_loop_encoder: true,
+        direction_lever: false,
+        vinyl_speed_knob: false,
     },
 };
 

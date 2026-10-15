@@ -340,6 +340,29 @@ impl Session {
     }
 }
 
+/// One copy of the jog LCD as opaque RGBA rows: `(width, height, bytes)`,
+/// read from `{socket_dir}/jog.shm` under its seqlock.
+pub fn capture(socket_dir: &str) -> Result<(u32, u32, Vec<u8>), String> {
+    let path = format!("{}/jog.shm", socket_dir.trim_end_matches('/'));
+    let file = std::fs::File::open(&path).map_err(|_| "the jog LCD is not up")?;
+    // SAFETY: the mapping is read-only, and every read goes through `View`.
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|e| format!("mapping {path} failed: {e}"))?;
+    if mmap.len() < SHM_PIXELS_OFF + FRAME_BYTES {
+        return Err("the jog LCD is not up".into());
+    }
+    let shm = View::new(&mmap);
+    if shm.u32_at(SHM_OFF_MAGIC, Ordering::Relaxed) != SHM_MAGIC || !header_is_xrgb_panel(shm) {
+        return Err("the guest has not drawn the jog LCD yet".into());
+    }
+    let mut out = vec![0u8; FRAME_BYTES];
+    copy_stable(shm, &mut out).ok_or("the jog LCD changed during every copy")?;
+    for px in out.as_chunks_mut::<4>().0 {
+        px.swap(0, 2);
+        px[3] = 0xff;
+    }
+    Ok((JOG_FB_W as u32, JOG_FB_H as u32, out))
+}
+
 /// Whether the header announces XRGB8888 at the panel's size; logs what it
 /// announces otherwise.
 fn header_is_xrgb_panel(shm: View<'_>) -> bool {

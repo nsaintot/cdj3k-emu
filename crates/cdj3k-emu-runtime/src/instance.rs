@@ -112,6 +112,7 @@ impl QemuInstance {
         kill_stale(config.qmp_port, &config.sock_dir());
 
         prepare_sock_dir(&config)?;
+        prepare_overlay(&config).map_err(InstanceError::SockDir)?;
         let (pid, thread, running) = start_qemu(&config)?;
 
         let qmp = QmpClient::connect_with_retry(config.qmp_port, Duration::from_secs(15))?;
@@ -235,6 +236,33 @@ fn lock_emmc(config: &QemuConfig) -> Result<Option<std::fs::File>, InstanceError
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     Ok(Some(f))
+}
+
+/// Create an ephemeral slot's eMMC overlay when it has none or the start
+/// asks for a fresh one.
+fn prepare_overlay(config: &QemuConfig) -> std::io::Result<()> {
+    let Some(emmc) = config.emmc_img.as_ref().filter(|_| config.ephemeral) else {
+        return Ok(());
+    };
+    let overlay = config.emmc_overlay_path();
+    if overlay.exists() && !config.fresh_overlay {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(&overlay);
+    let backing = std::path::absolute(emmc)?;
+    let status = cdj3k_emu_platform::child::command(cdj3k_emu_platform::bundled::tool("qemu-img"))
+        .args(["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"])
+        .arg(&backing)
+        .arg(&overlay)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "qemu-img could not create {}",
+            overlay.display()
+        )))
+    }
 }
 
 /// Create the instance directory and the files QEMU maps at boot.
@@ -403,6 +431,8 @@ pub fn cleanup_qemu_files(sock_dir: &Path) {
 ///   is on, and the CoreMIDI plugin dials it by name.
 /// * `window.sock` is bound by `WindowSocket` for as long as the window is
 ///   open, and other windows send it commands.
+/// * `emmc-overlay.qcow2` holds an ephemeral slot's eMMC writes until the
+///   slot is reset or closed.
 ///
 /// A new bridge back end must add its file names here.
 fn app_owned(name: &str) -> bool {
@@ -413,6 +443,7 @@ fn app_owned(name: &str) -> bool {
         || name.starts_with("winnet.")
         || name == "midi-driver.sock"
         || name == "window.sock"
+        || name == crate::config::EMMC_OVERLAY
 }
 
 /// Empty the sock dir for a restart, but keep the directory and the app's

@@ -216,6 +216,16 @@ Mods change what runs on the emulated deck. Each slot has its own, installed fro
 
 [cdj3k-mods](https://github.com/nsaintot/cdj3k-mods) (Smart/Gate/Preview cues, MOD SETTINGS, Themes, STEMS, X-PAD).
 
+## Developer Mode
+
+**Emulation › Developer Mode** (or `--dev`) opens the slot's control API on TCP
+port 4400 + slot and QEMU's gdb stub on port 1235 + slot. Scripts and
+`cdj3k-emu ctl` then press buttons, touch the screen, read the lamps, compare
+LCD captures with reference images, run shell commands in the guest and follow
+its journal. `--headless` runs a slot without a window. See
+[Control API](docs/control-api.md). `cdj3k-emu ctl e2e` runs the scenarios in
+`tests/e2e/` against ephemeral slots; see [E2E scenarios](docs/e2e.md).
+
 ## Building
 
 See [Building](docs/building.md) for building from source on each host, and
@@ -269,6 +279,8 @@ UAC asks, in three situations:
 - [Storage](docs/storage.md)
 - [PC-Link](docs/pc-link.md)
 - [Mods](docs/mods.md)
+- [Control API](docs/control-api.md)
+- [E2E scenarios](docs/e2e.md)
 - [Models and slates](docs/models.md)
 - [Host/guest stream transports](docs/stream-transports.md)
 - [subucom SPI protocol](docs/subucom.md)
@@ -278,7 +290,7 @@ UAC asks, in three situations:
 
 ```
 app/cdj3k-emu/       binary (eframe egui app and runtime worker)
-crates/cdj3k-emu-*   Rust workspace: panel, streams, platform, ui,
+crates/cdj3k-emu-*   Rust workspace: panel, streams, platform, control, ui,
                      runtime, storage, firmware
   ui/src/app/ui/       shared control toolkit and slate/<model>
 guest/               C sources built for the guest:

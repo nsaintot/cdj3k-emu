@@ -587,6 +587,7 @@ dependencies = [
 name = "cdj3k-emu"
 version = "0.2.0"
 dependencies = [
+ "cdj3k-emu-control",
  "cdj3k-emu-panel",
  "cdj3k-emu-platform",
  "cdj3k-emu-runtime",
@@ -595,6 +596,15 @@ dependencies = [
  "eframe",
  "egui",
  "libc",
+]
+
+[[package]]
+name = "cdj3k-emu-control"
+version = "0.2.0"
+dependencies = [
+ "base64 0.22.1",
+ "png 0.17.16",
+ "serde_json",
 ]
 
 [[package]]
@@ -691,6 +701,7 @@ name = "cdj3k-emu-ui"
 version = "0.2.0"
 dependencies = [
  "bytemuck",
+ "cdj3k-emu-control",
  "cdj3k-emu-firmware",
  "cdj3k-emu-panel",
  "cdj3k-emu-platform",
@@ -705,6 +716,7 @@ dependencies = [
  "png 0.17.16",
  "puffin",
  "puffin_http",
+ "serde_json",
 ]
 
 [[package]]

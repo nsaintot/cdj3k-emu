@@ -1,6 +1,8 @@
+mod api_input;
 mod bloom;
 mod boot_overlay;
 mod buttons;
+mod debug_view;
 pub(crate) mod firmware_wizard;
 mod frame_inject;
 mod jog_physics;
@@ -9,7 +11,6 @@ mod lcd_touch;
 mod mods_view;
 mod picker;
 mod screenshot;
-mod script;
 mod scroll;
 pub mod shell;
 mod table;
@@ -125,11 +126,13 @@ pub struct CdjApp {
     vinyl_speed: u8,
     direction: cdj3k_emu_panel::Direction,
 
+    /// When [`Self::tick_jog`] last ran. `logic` ticks the jog itself when
+    /// `ui` has not done so lately, as while the window is hidden.
+    jog_ticked_at: Instant,
+
     lcd_touch: Option<(u16, u16)>,
-    /// `true` while `CDJ3K_SCRIPT` holds a touch. The slate and the popout
-    /// report their pointer state every frame, which would otherwise overwrite
-    /// the scripted coordinate before the guest samples it.
-    script_touch: bool,
+    /// What the control API holds on the panel.
+    api: api_input::ApiInputs,
     /// `true` while a Ctrl+click latch is active; the touch coordinate stays
     /// fixed until Ctrl is released.
     lcd_touch_ctrl_latched: bool,
@@ -169,13 +172,9 @@ pub struct CdjApp {
 
     display_stream: MainLcdStream,
     textures: LcdTextures,
-    /// Frame bits the input script forces low (`clear`), applied last when a
+    /// Frame bits the control API forces low (`clear`), applied last when a
     /// frame is built.
     cleared_bits: Vec<(usize, u8)>,
-    /// Buttons the input script holds down (`press`), set in every frame
-    /// until the script releases them. Kept apart from `held_btn`, which the
-    /// slate's widgets clear on the next frame the pointer is not on them.
-    scripted_btns: Vec<(usize, u8)>,
     /// Whether the control channel was up on the previous frame; a rising
     /// edge injects the current frame.
     ctrl_was_ready: bool,
@@ -258,16 +257,21 @@ struct LcdTextures {
 
 /// What the debug viewport shows, and the handles it shares with the panel.
 struct DebugView {
+    /// The last jog input sample: its source, angle, time step and the
+    /// angular speed it implies.
     jog_source: &'static str,
     jog_delta_rad: f32,
     jog_dt: f32,
     jog_omega_sample: f32,
-    /// Three centred lines drawn above the MISO dump.
-    jog_lines: [String; 3],
+    /// The jog brake of the last tick, in rad/s².
+    jog_brake: f32,
     /// A snapshot of the state the debug viewport shows, refreshed on each
     /// main update. The deferred debug viewport reads it, because it runs its
     /// own update cycle and cannot borrow `&self`.
-    snapshot: Arc<Mutex<ui::DebugSnapshot>>,
+    snapshot: Arc<Mutex<debug_view::DebugSnapshot>>,
+    /// What the Guest tab shows; the shell samples it while the window is
+    /// open.
+    guest: Arc<Mutex<debug_view::GuestView>>,
     viewport_state: Arc<Mutex<DebugViewportState>>,
     /// Set by the deferred debug viewport when its window's × is clicked.
     wants_close: Arc<std::sync::atomic::AtomicBool>,
@@ -346,8 +350,9 @@ impl CdjApp {
             tempo: TEMPO_INIT,
             vinyl_speed: panel.vinyl_speed,
             direction: cdj3k_emu_panel::Direction::Forward,
+            jog_ticked_at: Instant::now(),
             lcd_touch: None,
-            script_touch: false,
+            api: Default::default(),
             lcd_touch_ctrl_latched: false,
             lcd_nav_mode: false,
             held_btn: None,
@@ -368,7 +373,6 @@ impl CdjApp {
             display_stream: MainLcdStream::new(&socket_dir, repaint_gate.clone()),
             textures: Default::default(),
             cleared_bits: Vec::new(),
-            scripted_btns: Vec::new(),
             ctrl_was_ready: false,
             jog_stream: JogLcdStream::new(&socket_dir, repaint_gate.clone()),
             jog_corner_label_colors: [ui::COL_BTN_TEXT; 4],
@@ -410,7 +414,7 @@ impl CdjApp {
         self.tilt_progress = 0.0;
         // Frame bits and LEDs are positions in the previous model's frames.
         self.cleared_bits.clear();
-        self.scripted_btns.clear();
+        self.api = Default::default();
         self.last_miso = [0u8; miso_frame::MISO_SIZE];
         self.led_state = LedState::default();
         self.jog_static_cache = None;
@@ -533,8 +537,9 @@ impl Default for DebugView {
             jog_delta_rad: 0.0,
             jog_dt: 0.0,
             jog_omega_sample: 0.0,
-            jog_lines: Default::default(),
+            jog_brake: 0.0,
             snapshot: Default::default(),
+            guest: Default::default(),
             viewport_state: Default::default(),
             wants_close: Default::default(),
         }

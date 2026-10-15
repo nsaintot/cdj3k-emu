@@ -34,4 +34,4 @@ pub use lamp::Lamp;
 pub use miso_frame::{JogState, MisoCodec, PanelState};
 pub use model::Model;
 pub use mosi_frame::{LampState, MosiCodec, MosiFrame, StepLed};
-pub use spec::{JogBrake, ModelSpec, TouchSpace, TOUCH_DOWN};
+pub use spec::{Controls, JogBrake, ModelSpec, TouchSpace, TOUCH_DOWN};

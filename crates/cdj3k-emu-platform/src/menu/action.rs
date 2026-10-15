@@ -30,6 +30,7 @@ pub fn apply(s: &mut menu_state::AppState, id: &MenuId) -> ActionEffect {
         | MenuId::ModsEnabled
         | MenuId::Restart
         | MenuId::ServiceMode
+        | MenuId::DevMode
         | MenuId::Haptic
         | MenuId::PcLink
         | MenuId::CheckForUpdate => emulation(s, id),
@@ -72,6 +73,13 @@ fn emulation(s: &mut menu_state::AppState, id: &MenuId) {
             s.service_mode = !s.service_mode;
             s.shade_forced = true;
             s.restart_requested = true;
+        }
+        MenuId::DevMode => {
+            // The shell starts or stops the control API at once and saves the
+            // setting. QEMU's gdb stub follows on the next start of the
+            // emulation, so nothing restarts here.
+            s.dev_mode = !s.dev_mode;
+            s.dev_mode_toggle_requested = true;
         }
         MenuId::Haptic => {
             // This toggle is host-side only. The jog physics reads the flag at

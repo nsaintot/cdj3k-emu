@@ -19,6 +19,7 @@
 #   subucom/         subucom_forwarder_aarch64 and subucom_live_aarch64.
 #   cfgd/            cfgd_aarch64, the virtio-serial bridge for cdj3k.cfg.
 #   pc_link_bridge/  pc_link_bridge_aarch64, the PC Link HID and MIDI bridge.
+#   devd/            devd_aarch64, the Developer Mode daemon for cdj3k.dev.
 #
 # All outputs go to guest/out/.
 
@@ -71,7 +72,8 @@ TOOL_CFLAGS := -O2 -Wall -Wextra -static
 TOOL_TARGETS := $(OUT)/subucom_forwarder_aarch64 \
                 $(OUT)/subucom_live_aarch64 \
                 $(OUT)/cfgd_aarch64 \
-                $(OUT)/pc_link_bridge_aarch64
+                $(OUT)/pc_link_bridge_aarch64 \
+                $(OUT)/devd_aarch64
 
 CDJ_IP ?= 10.10.50.246
 DEPLOY := /home/root/deck_shim.so
@@ -122,6 +124,9 @@ $(OUT)/subucom_live_aarch64: subucom/live.c | $(OUT)
 	$(CC) $(TOOL_CFLAGS) -o $@ $<
 
 $(OUT)/cfgd_aarch64: cfgd/cfgd.c | $(OUT)
+	$(CC) $(TOOL_CFLAGS) -o $@ $<
+
+$(OUT)/devd_aarch64: devd/devd.c | $(OUT)
 	$(CC) $(TOOL_CFLAGS) -o $@ $<
 
 
@@ -205,4 +210,5 @@ docker:
 	cp $(DOCKER_OUT)/subucom_live_aarch64      $(OUT)/
 	cp $(DOCKER_OUT)/cfgd_aarch64              $(OUT)/
 	cp $(DOCKER_OUT)/pc_link_bridge_aarch64    $(OUT)/
+	cp $(DOCKER_OUT)/devd_aarch64              $(OUT)/
 	@echo "Built via Docker: $(OUT)/"

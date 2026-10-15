@@ -197,6 +197,7 @@ fn emulation(snap: &Snapshot, deck: Option<String>) -> MenuNode {
         MenuNode::Separator,
         MenuNode::check(MenuId::ModsEnabled, "Enable Mods", snap.mods_enabled),
         MenuNode::check(MenuId::ServiceMode, "Service Mode", snap.service_mode),
+        MenuNode::check(MenuId::DevMode, "Developer Mode", snap.dev_mode),
     ];
     // Show the row only when an actuator opened at startup, which takes a Force
     // Touch trackpad.
@@ -462,6 +463,7 @@ struct Snapshot {
     main_screen_popped: bool,
     debug_screen_popped: bool,
     service_mode: bool,
+    dev_mode: bool,
     audio_enabled: bool,
     alc_enabled: bool,
     haptic_enabled: bool,
@@ -490,6 +492,7 @@ impl Snapshot {
             main_screen_popped: s.main_screen_popped,
             debug_screen_popped: s.debug_screen_popped,
             service_mode: s.service_mode,
+            dev_mode: s.dev_mode,
             audio_enabled: s.audio_enabled,
             alc_enabled: s.alc_enabled,
             haptic_enabled: s.haptic_enabled,

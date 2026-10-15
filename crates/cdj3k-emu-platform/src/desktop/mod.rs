@@ -36,6 +36,23 @@ mod portable;
 pub mod aspect_fit;
 pub mod first_frame;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static HEADLESS: AtomicBool = AtomicBool::new(false);
+
+/// Run without showing the window, for `--headless`. The window is created
+/// hidden and stays hidden, so eframe runs only `logic`. On macOS the process
+/// also stays out of the Dock and the menu bar. Call it before
+/// [`native_options`].
+pub fn set_headless() {
+    HEADLESS.store(true, Ordering::Relaxed);
+}
+
+/// Whether [`set_headless`] was called.
+pub fn is_headless() -> bool {
+    HEADLESS.load(Ordering::Relaxed)
+}
+
 pub use imp::{
     activate_process, announce_running, answer_quit_request, apply_resize_constraints,
     enter_panel_window, enter_picker_window, open_file_picker, open_url, quit_pending,
@@ -195,8 +212,10 @@ pub fn native_options(instance_id: u32) -> eframe::NativeOptions {
         .with_app_id(crate::app_meta::APP_ID)
         .with_inner_size(PICKER_SIZE)
         .with_min_inner_size(PICKER_SIZE)
-        .with_resizable(false);
-    eframe::NativeOptions {
+        .with_resizable(false)
+        .with_visible(!is_headless());
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions {
         viewport,
         centered: true,
         glow_options: eframe::egui_glow::GlowConfiguration {
@@ -204,7 +223,12 @@ pub fn native_options(instance_id: u32) -> eframe::NativeOptions {
             ..Default::default()
         },
         ..Default::default()
+    };
+    #[cfg(target_os = "macos")]
+    if is_headless() {
+        imp::keep_out_of_dock(&mut options);
     }
+    options
 }
 
 /// The file types the mod picker accepts: archives, and a folder's `mod.toml`

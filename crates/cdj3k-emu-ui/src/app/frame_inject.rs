@@ -25,7 +25,7 @@ impl CdjApp {
                 .held_btn
                 .iter()
                 .chain(&self.latched_btns)
-                .chain(&self.scripted_btns)
+                .chain(&self.api.btns)
                 .copied()
                 .collect(),
             cleared: self.cleared_bits.clone(),
@@ -86,24 +86,6 @@ impl CdjApp {
     /// [`Model::button_by_name`](cdj3k_emu_panel::Model::button_by_name)).
     pub(super) fn btn_by_name(&self, name: &str) -> Option<(usize, u8)> {
         self.model.button_by_name(name)
-    }
-
-    /// Force `bit` low in every frame (`on`) or stop doing so, and inject.
-    pub(super) fn set_bit_cleared(&mut self, bit: (usize, u8), on: bool) {
-        self.cleared_bits.retain(|b| *b != bit);
-        if on {
-            self.cleared_bits.push(bit);
-        }
-        self.inject(self.build_current_frame());
-    }
-
-    /// Hold `btn` down in every frame (`on`) or release it, and inject.
-    pub(super) fn set_btn_scripted(&mut self, btn: (usize, u8), on: bool) {
-        self.scripted_btns.retain(|b| *b != btn);
-        if on {
-            self.scripted_btns.push(btn);
-        }
-        self.inject(self.build_current_frame());
     }
 
     pub(super) fn inject_touch(&mut self, _x: u16, _y: u16) {

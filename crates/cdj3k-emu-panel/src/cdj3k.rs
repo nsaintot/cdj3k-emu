@@ -13,7 +13,7 @@ use crate::miso_frame::{self, fields, MisoCodec, PanelState, MISO_SIZE, ROTARY_I
 use crate::mosi_frame::{
     LampState, LedProfile, LedProfiles, MosiCodec, StepLed, AZURE_BLUE_DIES, MOSI_SIZE,
 };
-use crate::spec::{JogBrake, ModelSpec, TouchSpace, TOUCH_FRAME_RANGE};
+use crate::spec::{Controls, JogBrake, ModelSpec, TouchSpace, TOUCH_FRAME_RANGE};
 
 /// Idle frame payload (bytes 0..62, before the CRC).
 pub const IDLE: [u8; 62] = {
@@ -320,6 +320,11 @@ pub const SPEC: ModelSpec = ModelSpec {
         balance_whites_only: true,
     }),
     jog_brake: JogBrake::Adjustable,
+    controls: Controls {
+        beat_loop_encoder: false,
+        direction_lever: true,
+        vinyl_speed_knob: true,
+    },
 };
 
 #[cfg(test)]

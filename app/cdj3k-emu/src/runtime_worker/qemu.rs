@@ -129,8 +129,11 @@ impl Worker {
 /// Returns the boot's mods, for `set_current_boot` once QEMU has started.
 pub(super) fn apply_menu_to_config(config: &mut QemuConfig, mods: &ModsLaunch) -> BootMods {
     {
-        let s = menu_state::lock();
+        let mut s = menu_state::lock();
         config.service_mode = s.service_mode;
+        config.dev = s.dev_mode;
+        config.ephemeral = s.ephemeral;
+        config.fresh_overlay = std::mem::take(&mut s.ephemeral_reset_requested);
         config.audio = s.audio_enabled;
         config.audio_device_uid = s.audio_device_uid.clone();
     }

@@ -125,4 +125,86 @@ impl Lamp {
         Lamp::Standby,
         Lamp::Eject,
     ];
+
+    /// The name the control API uses, in the style of [`Btn::name`](crate::Btn::name).
+    pub const fn name(self) -> &'static str {
+        NAMES[self as usize]
+    }
+
+    /// Look up a lamp by [`name`](Self::name), case-insensitive.
+    pub fn from_name(name: &str) -> Option<Lamp> {
+        Lamp::ALL
+            .iter()
+            .copied()
+            .find(|l| l.name().eq_ignore_ascii_case(name))
+    }
+}
+
+/// [`Lamp::name`] of each lamp, in declaration order.
+const NAMES: [&str; Lamp::ALL.len()] = [
+    "KEY_SYNC",
+    "BEAT_SYNC",
+    "MASTER",
+    "SLIP",
+    "QUANTIZE",
+    "JOG_RING",
+    "JOG_RED",
+    "JOG_METER",
+    "SOURCE",
+    "BROWSE",
+    "TAG_LIST",
+    "PLAYLIST",
+    "SEARCH",
+    "MENU",
+    "PLAY",
+    "CUE",
+    "LOOP_IN",
+    "LOOP_OUT",
+    "RELOOP",
+    "BEATJUMP_4",
+    "BEATJUMP_8",
+    "BEATJUMP_NEXT",
+    "BEATJUMP_PREV",
+    "TEMPO_RESET",
+    "MASTER_TEMPO",
+    "JOG_MODE_CDJ",
+    "JOG_MODE_VINYL",
+    "ENCODER",
+    "TRACK_SEARCH",
+    "REV",
+    "HOT_A",
+    "HOT_B",
+    "HOT_C",
+    "HOT_D",
+    "HOT_E",
+    "HOT_F",
+    "HOT_G",
+    "HOT_H",
+    "SLOT_1",
+    "SLOT_2",
+    "ON_AIR",
+    "ROTARY",
+    "STANDBY",
+    "EJECT",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_lists_the_lamps_in_declaration_order() {
+        for (i, lamp) in Lamp::ALL.iter().enumerate() {
+            assert_eq!(*lamp as usize, i, "{lamp:?}");
+        }
+    }
+
+    #[test]
+    fn every_lamp_has_its_own_name() {
+        for lamp in Lamp::ALL {
+            assert_eq!(Lamp::from_name(lamp.name()), Some(*lamp));
+            assert_eq!(Lamp::from_name(&lamp.name().to_lowercase()), Some(*lamp));
+        }
+        assert_eq!(Lamp::from_name("NOPE"), None);
+    }
 }

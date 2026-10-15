@@ -1,4 +1,5 @@
 pub mod emmc;
+pub mod ephemeral;
 pub mod gpt;
 pub mod mods;
 mod qcow2;

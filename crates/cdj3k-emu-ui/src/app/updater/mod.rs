@@ -161,8 +161,10 @@ impl Updater {
     pub(in crate::app) fn new(instance: u32) -> Self {
         let settings = AppSettings::load();
         // Only release bundles check for updates; a developer build has no
-        // feed.
-        let native = cdj3k_emu_update::installed_kind() == Some(Kind::Dmg)
+        // feed. A headless slot shows no update UI.
+        let headless = cdj3k_emu_platform::desktop::is_headless();
+        let native = !headless
+            && cdj3k_emu_update::installed_kind() == Some(Kind::Dmg)
             && cdj3k_emu_update::native::start(instance);
         Self {
             instance,
@@ -177,7 +179,7 @@ impl Updater {
             ready_shown: false,
             dismissed: None,
             raise_until: None,
-            auto_check: settings.update_auto_check,
+            auto_check: settings.update_auto_check && !headless,
             auto_install: settings.update_auto_install,
             native,
             pos: None,

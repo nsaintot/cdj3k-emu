@@ -27,6 +27,18 @@ pub enum JogBrake {
     Fixed { stop_secs: f32 },
 }
 
+/// The panel controls a model has besides its buttons, the jog platter, the
+/// rotary selector and the tempo fader.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Controls {
+    /// The BEAT LOOP encoder.
+    pub beat_loop_encoder: bool,
+    /// The direction lever: forward, reverse and slip reverse.
+    pub direction_lever: bool,
+    /// The VINYL SPEED ADJUST knob.
+    pub vinyl_speed_knob: bool,
+}
+
 /// The coordinates a model's app expects touch in.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TouchSpace {
@@ -81,6 +93,8 @@ pub struct ModelSpec {
     pub leds: LedProfiles,
     /// How the jog platter's brake is set.
     pub jog_brake: JogBrake,
+    /// The optional controls the model has.
+    pub controls: Controls,
 }
 
 impl ModelSpec {

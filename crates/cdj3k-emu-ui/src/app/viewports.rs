@@ -8,18 +8,20 @@ use std::time::Instant;
 
 use cdj3k_emu_streams::jog_stream::{JOG_FB_H, JOG_FB_W};
 
+use super::debug_view::{self, DebugTab};
 use super::lcd_touch::LcdTouchCapture;
-use super::ui;
 use super::ui::draw_lcd::capture_lcd_touch;
 use super::CdjApp;
 use super::MIN_FRAME_INTERVAL;
 
 /// Mutable state owned by the deferred debug viewport. It is separate from
-/// the main viewport's state, so the debug pane measures its own frame rate.
-#[derive(Clone, Copy)]
+/// the main viewport's state, so the debug window measures its own frame
+/// rate.
 pub(crate) struct DebugViewportState {
     pub last_paint_at: Instant,
     pub fps_smooth: f32,
+    pub tab: DebugTab,
+    pub journal_filter: String,
 }
 
 const INITIAL_FPS_ESTIMATE: f32 = 60.0;
@@ -29,6 +31,8 @@ impl Default for DebugViewportState {
         Self {
             last_paint_at: Instant::now() - MIN_FRAME_INTERVAL,
             fps_smooth: INITIAL_FPS_ESTIMATE,
+            tab: DebugTab::default(),
+            journal_filter: String::new(),
         }
     }
 }
@@ -43,7 +47,7 @@ const JOG_LCD_ASPECT: f32 = JOG_FB_W as f32 / JOG_FB_H as f32;
 
 const JOG_LCD_INITIAL_SIZE: [f32; 2] = [320.0, 240.0];
 const JOG_LCD_MIN_SIZE: [f32; 2] = [160.0, 120.0];
-const DEBUG_INITIAL_SIZE: [f32; 2] = [500.0, 540.0];
+const DEBUG_INITIAL_SIZE: [f32; 2] = [960.0, 680.0];
 const DEBUG_BG: egui::Color32 = egui::Color32::from_rgb(20, 20, 22);
 const DEBUG_INNER_MARGIN: f32 = 8.0;
 const DISCONNECTED_TINT_ALPHA: u8 = 60;
@@ -91,6 +95,7 @@ impl CdjApp {
         // A deferred viewport has its own update cycle and cannot borrow
         // `&self`, so it reads from shared Arcs that each main update fills.
         let snapshot = Arc::clone(&self.debug.snapshot);
+        let guest = Arc::clone(&self.debug.guest);
         let vp_state = Arc::clone(&self.debug.viewport_state);
         let wants_close = Arc::clone(&self.debug.wants_close);
         // Read the live MOSI frame directly, bypassing the snapshot, so the
@@ -115,6 +120,7 @@ impl CdjApp {
                 if let Ok(g) = live_mosi.lock() {
                     snap.led_frame = *g;
                 }
+                let guest = guest.lock().map(|g| g.clone()).unwrap_or_default();
                 egui::CentralPanel::default()
                     .frame(
                         egui::Frame::NONE
@@ -122,9 +128,16 @@ impl CdjApp {
                             .inner_margin(egui::Margin::from(DEBUG_INNER_MARGIN)),
                     )
                     .show(root, |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            ui::draw_debug_content(ui, &snap, local_fps);
-                        });
+                        let mut state = vp_state.lock().unwrap();
+                        let state = &mut *state;
+                        debug_view::draw(
+                            ui,
+                            &mut state.tab,
+                            &snap,
+                            &guest,
+                            &mut state.journal_filter,
+                            local_fps,
+                        );
                     });
 
                 // Schedule the next frame at 60 Hz from inside the viewport.

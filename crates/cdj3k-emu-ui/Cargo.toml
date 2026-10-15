@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 cdj3k-emu-panel = { path = "../cdj3k-emu-panel" }
+cdj3k-emu-control = { path = "../cdj3k-emu-control" }
 cdj3k-emu-streams = { path = "../cdj3k-emu-streams" }
 cdj3k-emu-platform = { path = "../cdj3k-emu-platform" }
 cdj3k-emu-firmware = { path = "../cdj3k-emu-firmware" }
@@ -27,3 +28,4 @@ glow = "0.17"
 png = "0.17"
 puffin = "0.19"
 puffin_http = "0.16"
+serde_json = "1"

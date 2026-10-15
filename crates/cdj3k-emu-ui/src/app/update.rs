@@ -66,10 +66,7 @@ impl CdjApp {
 
         {
             puffin::profile_scope!("status_fmt");
-            self.status = format!(
-                "{}  {}  adj={:.2} ω={:+.2}rad/s",
-                disp_state, jog_state, self.jog_adjust, self.jog_omega
-            );
+            self.status = format!("{disp_state}  {jog_state}");
         }
 
         self.schedule_animation(ctx);

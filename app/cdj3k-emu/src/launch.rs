@@ -155,7 +155,13 @@ impl Host {
         config.emmc_img = (!self.no_emmc).then(|| r.emmc.clone());
         config.audio = inst_settings.audio_enabled;
         config.audio_device_uid = inst_settings.audio_device_uid.clone();
-        config.service_mode = menu_state::lock().service_mode;
+        {
+            let mut s = menu_state::lock();
+            config.service_mode = s.service_mode;
+            config.dev = s.dev_mode;
+            config.ephemeral = s.ephemeral;
+            config.fresh_overlay = std::mem::take(&mut s.ephemeral_reset_requested);
+        }
         config.mac = Some(inst_settings.mac.clone());
         config.soc_serial = inst_settings.soc_serial.clone();
         config.serial_log = self.serial_log;
@@ -208,6 +214,26 @@ fn prebuild_net(config: &mut QemuConfig, mac: &str, instance: u32) -> PrebuiltNe
     prebuilt_net
 }
 
+/// The path of the guest's devd binary, which a boot carries in Developer
+/// Mode. `None` outside Developer Mode or when the bundle has no devd.
+fn devd_binary() -> Option<PathBuf> {
+    if !menu_state::lock().dev_mode {
+        return None;
+    }
+    let path = cdj3k_emu_platform::bundled::resources()
+        .join("tools")
+        .join("devd");
+    if path.is_file() {
+        Some(path)
+    } else {
+        eprintln!(
+            "cdj3k-emu: {} was not found, so this boot has no guest commands",
+            path.display()
+        );
+        None
+    }
+}
+
 /// The inputs for adding mods to a boot. The runtime worker rebuilds the
 /// initramfs before every QEMU start, so a change to the slot's mods takes
 /// effect on the next restart.
@@ -236,6 +262,7 @@ impl ModsLaunch {
         // An outdated slot has no mods runner in its guest, so it boots
         // without mods.
         let outdated = cdj3k_emu_storage::slot_outdated(instance);
+        let devd = devd_binary();
         let boot = cdj3k_emu_storage::mods::prepare_boot(
             instance,
             &self.base,
@@ -243,6 +270,7 @@ impl ModsLaunch {
             settings.firmware_release.as_deref(),
             cdj3k_emu_storage::mods::slot_mods_on(instance) && !self.no_mods,
             if outdated { &[] } else { &self.extra },
+            devd.as_deref(),
         );
         match boot {
             Ok(mut boot) => {

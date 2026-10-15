@@ -71,6 +71,9 @@ fn main() {
     // the helper's work and exits.
     cdj3k_emu_runtime::net::run_helper_if_asked(&args);
 
+    // `cdj3k-emu ctl ...` drives a running slot's control API and exits.
+    cdj3k_emu_control::cli::run_if_asked(&args);
+
     let mut cli = Cli::parse(&args);
     if cli.help {
         print!("{}", cli::USAGE);
@@ -79,16 +82,17 @@ fn main() {
 
     cdj3k_emu_platform::desktop::announce_running();
 
-    let instance = cli.instance;
-
-    {
-        let mut s = menu_state::lock();
-        s.current_instance_id = instance;
-        s.ui_only = cli.no_spawn;
-        s.pc_link_supported = cdj3k_emu_runtime::pc_link::is_supported();
+    let instance = slot_to_run(&cli);
+    if cli.headless {
+        start_headless(cli.instance, cli.initial_model.is_some());
     }
 
+    seed_menu_from_cli(instance, &cli);
+
     claim_slot(instance, cli.after_update, cli.provision_path.is_some());
+    if cli.ephemeral {
+        prepare_ephemeral(cli.instance, instance);
+    }
 
     // Remove the keys that older releases kept in the app-wide settings file.
     cdj3k_emu_storage::prune_app_file();
@@ -131,6 +135,75 @@ fn main() {
     };
 
     run_ui(instance, socket_dir, cli.profile, cli.initial_model, host);
+    end_session(instance, cli.ephemeral);
+}
+
+/// Delete the ephemeral slot when its session ends.
+fn end_session(instance: u32, ephemeral: bool) {
+    if !ephemeral {
+        return;
+    }
+    if let Err(e) = cdj3k_emu_storage::ephemeral::remove(instance) {
+        eprintln!("cdj3k-emu: ephemeral slot {instance} was not deleted: {e}");
+    }
+}
+
+// The E2E runner finds an ephemeral session at slot N plus this offset.
+const _: () = assert!(cdj3k_emu_control::EPHEMERAL_SLOT_OFFSET == menu_state::MAX_INSTANCES);
+
+/// The slot this launch runs: `--instance`, or its ephemeral slot with
+/// `--ephemeral`. It first deletes the ephemeral slots that crashed sessions
+/// left, and exits on a slot number outside 1 to MAX_INSTANCES.
+fn slot_to_run(cli: &Cli) -> u32 {
+    use cdj3k_emu_storage::ephemeral;
+    for slot in ephemeral::remove_leftovers() {
+        eprintln!("cdj3k-emu: deleted ephemeral slot {slot}, which a crashed session left.");
+    }
+    if !(1..=menu_state::MAX_INSTANCES).contains(&cli.instance) {
+        eprintln!(
+            "cdj3k-emu: --instance takes a slot from 1 to {}.",
+            menu_state::MAX_INSTANCES
+        );
+        std::process::exit(2);
+    }
+    if cli.ephemeral {
+        ephemeral::slot_for(cli.instance)
+    } else {
+        cli.instance
+    }
+}
+
+/// Fill the ephemeral slot that this process has claimed from slot `base`, or
+/// exit when that fails.
+fn prepare_ephemeral(base: u32, instance: u32) {
+    if let Err(e) = cdj3k_emu_storage::ephemeral::prepare(base, instance) {
+        eprintln!("cdj3k-emu: slot {base} could not be copied to ephemeral slot {instance}: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// Give the menu state this launch's slot and options.
+fn seed_menu_from_cli(instance: u32, cli: &Cli) {
+    let mut s = menu_state::lock();
+    s.current_instance_id = instance;
+    s.ui_only = cli.no_spawn;
+    s.dev_mode = cli.dev;
+    s.ephemeral = cli.ephemeral;
+    s.ephemeral_reset_requested = cli.ephemeral;
+    s.pc_link_supported = cdj3k_emu_runtime::pc_link::is_supported();
+}
+
+/// Run without a window, or exit when the slot has no firmware and no
+/// `--model` was given. This runs before the slot is claimed, so a wrong slot
+/// number leaves no claim behind.
+fn start_headless(instance: u32, model_given: bool) {
+    if !model_given && cdj3k_emu_storage::InstanceSettings::saved_model(instance).is_none() {
+        eprintln!(
+            "cdj3k-emu: --headless needs a slot with firmware, or --model; slot {instance} has none."
+        );
+        std::process::exit(2);
+    }
+    cdj3k_emu_platform::desktop::set_headless();
 }
 
 /// Take this process's claim on `instance`, waiting for it after an update.
@@ -188,6 +261,7 @@ fn seed_menu_from_settings(instance: u32, service_mode: bool) {
         s.alc_enabled = inst_settings.alc_enabled;
         s.haptic_enabled = inst_settings.haptic_enabled;
         s.mods_enabled = inst_settings.mods_enabled;
+        s.dev_mode |= inst_settings.dev_mode;
         s.pc_link_enabled =
             inst_settings.pc_link_enabled && cdj3k_emu_runtime::pc_link::is_supported();
         s.service_mode = service_mode;

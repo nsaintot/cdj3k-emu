@@ -25,20 +25,32 @@ impl eframe::App for CdjShell {
     /// eframe calls this before every [`ui`](eframe::App::ui), and also while the
     /// window is minimized or covered, when it does not call `ui`. It closes
     /// the window, relaunches the emulation, sends the requested power-off
-    /// frame, serves the window socket and applies finished installs, so these
-    /// continue while the window is hidden.
+    /// frame, serves the window socket and the control API, and applies
+    /// finished installs, so these continue while the window is hidden.
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if desktop::is_headless() {
+            // eframe shows the window after the first frame it paints.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            // `ui` never runs, so the boot shade does not set `guest_booted`.
+            // A USB medium attaches only after it is set.
+            let driven = self.app.panel_driven();
+            let mut s = menu_state::lock();
+            s.guest_booted = s.qemu_running && driven;
+        }
         self.hold_close_request(ctx);
         self.finish_shutdown(ctx);
         if let Some(model) = self.initial_model.take() {
             self.launch(ctx, frame, model);
         }
         self.advance_worker(ctx, frame);
+        self.app.on_ctrl_connect();
         self.app.send_requested_power_off();
         // Settle a finished install before the socket and the install check
         // look at the wizard.
         self.settle_finished_install();
         self.serve_window_socket();
+        self.serve_control(ctx);
+        self.watch_guest(ctx);
         self.take_replies();
         self.watch_worker(ctx);
         if std::mem::take(&mut self.close_window) {
@@ -93,14 +105,12 @@ impl eframe::App for CdjShell {
         }
 
         cdj3k_emu_platform::menu::sync_menu();
-        if matches!(self.screen, Screen::Panel) {
-            self.script.tick(&mut self.app, ctx, &mut self.shot);
-        }
         self.shot.tick(ctx);
     }
 
     fn on_exit(&mut self, gl: Option<&glow::Context>) {
         self.window_socket = None;
+        self.control = Default::default();
         self.app.on_exit(gl);
     }
 }
@@ -224,6 +234,23 @@ impl CdjShell {
         self.check_for_install();
         if !finished {
             ctx.request_repaint_after(Duration::from_secs(1));
+        }
+    }
+
+    /// Fill the debug window's Guest tab while the window is open.
+    fn watch_guest(&mut self, ctx: &egui::Context) {
+        let open = self.app.debug_screen_popped;
+        let mut view = self.app.debug.guest.lock().unwrap();
+        {
+            let s = menu_state::lock();
+            view.running = s.qemu_running;
+            view.cfgd = s.guest_cfg_live;
+        }
+        view.booted = view.running && self.app.panel_driven();
+        self.guest_monitor.tick(open, self.control.dev(), &mut view);
+        if open {
+            // The journal arrives as it is written; take it at a steady pace.
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
 

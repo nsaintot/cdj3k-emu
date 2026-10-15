@@ -13,6 +13,7 @@ pub enum MenuId {
     ModsEnabled,
     Restart,
     ServiceMode,
+    DevMode,
     Haptic,
     PcLink,
     CheckForUpdate,
@@ -49,11 +50,12 @@ pub enum MenuId {
 }
 
 /// The wire form of every variant without a payload, read in both directions.
-const FIXED: [(MenuId, &str); 19] = [
+const FIXED: [(MenuId, &str); 20] = [
     (MenuId::ManageEmulation, "manage_emulation"),
     (MenuId::ModsEnabled, "mods_enabled"),
     (MenuId::Restart, "restart"),
     (MenuId::ServiceMode, "service_mode"),
+    (MenuId::DevMode, "dev_mode"),
     (MenuId::Haptic, "haptic"),
     (MenuId::PcLink, "pc_link"),
     (MenuId::CheckForUpdate, "check_for_update"),
@@ -150,6 +152,7 @@ mod tests {
             MenuId::ModsEnabled,
             MenuId::Restart,
             MenuId::ServiceMode,
+            MenuId::DevMode,
             MenuId::Haptic,
             MenuId::PcLink,
             MenuId::CheckForUpdate,
@@ -182,6 +185,7 @@ mod tests {
             (MenuId::ModsEnabled, "mods_enabled"),
             (MenuId::Restart, "restart"),
             (MenuId::ServiceMode, "service_mode"),
+            (MenuId::DevMode, "dev_mode"),
             (MenuId::Haptic, "haptic"),
             (MenuId::PcLink, "pc_link"),
             (MenuId::CheckForUpdate, "check_for_update"),
@@ -219,6 +223,7 @@ mod tests {
                 | MenuId::ModsEnabled
                 | MenuId::Restart
                 | MenuId::ServiceMode
+                | MenuId::DevMode
                 | MenuId::Haptic
                 | MenuId::PcLink
                 | MenuId::CheckForUpdate
@@ -240,7 +245,7 @@ mod tests {
                 | MenuId::Instance(_) => panic!("{id:?} carries a payload"),
             }
         }
-        assert_eq!(FIXED.len(), 19);
+        assert_eq!(FIXED.len(), 20);
     }
 
     #[test]
