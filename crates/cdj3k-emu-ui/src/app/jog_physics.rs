@@ -106,8 +106,9 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 impl CdjApp {
     /// Integrates the jog platter one frame.
     ///
-    /// The platter always decelerates at a constant rate, as the real jog
-    /// does: `ω -= brake · sign(ω) · dt`. `ω` reaches zero after `|ω₀| / brake`.
+    /// While it coasts, the platter decelerates at a constant rate, as the
+    /// real jog does: `ω -= brake · sign(ω) · dt`. `ω` reaches zero after
+    /// `|ω₀| / brake`.
     /// `brake`, in rad/s², comes from the player's fixed stop time or from the
     /// JOG ADJUST knob's stop time in [`JOG_BRAKE_STOP_TIMES_SEC`].
     ///
@@ -150,13 +151,11 @@ impl CdjApp {
         };
         let brake = JOG_BRAKE_REF_OMEGA / stop_time.max(BRAKE_STOP_TIME_FLOOR_SEC);
 
-        if self.jog_omega != 0.0 {
-            if !dragging && !scroll_active {
-                // Integrate omega into the angle only while coasting. During
-                // a drag or scroll, jog_apply_delta already moves jog_angle,
-                // so integrating here as well would count the motion twice.
-                self.jog_angle += self.jog_omega * dt;
-            }
+        // During a drag or scroll, jog_apply_delta moves jog_angle and the
+        // hand sets jog_omega. A brake there would zero the speed of any turn
+        // slower than about `brake · JOG_INPUT_RESPONSE_TIME_SEC`.
+        if self.jog_omega != 0.0 && !dragging && !scroll_active {
+            self.jog_angle += self.jog_omega * dt;
             self.jog_apply_friction(dt, brake);
         }
 
@@ -232,14 +231,14 @@ impl CdjApp {
         }
     }
 
-    /// Applies the linear brake to `jog_omega` for every input method.
+    /// Applies the linear brake to `jog_omega` while the platter coasts.
     fn jog_apply_friction(&mut self, dt: f32, brake: f32) {
         let dec = brake * dt;
         if self.jog_omega.abs() <= dec {
             self.jog_omega = 0.0;
-            // Do not reset `jog_haptic_accum` here. At very slow scroll input,
-            // the brake brings `jog_omega` to zero between events, so a reset
-            // at zero would discard the slow progress and no click would fire.
+            // Do not reset `jog_haptic_accum` here. A slow scroll comes to rest
+            // between events, so a reset at zero would discard the slow
+            // progress and no click would fire.
             // A partial accumulator kept across a long pause makes the next
             // click at most one detent early.
         } else {
