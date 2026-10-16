@@ -29,24 +29,33 @@ fn every_published_frame_reaches_the_ui() {
     let gate = RepaintGate::new(egui::Context::default(), Duration::from_millis(16));
     let stream = JogLcdStream::new(dir.to_str().unwrap(), gate);
 
-    // One frame every 33 ms, published under the seqlock as the guest does.
-    let (mut seq, mut published, mut received) = (0u32, 0, 0);
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_millis(1500) {
+    // The test publishes each frame under the seqlock.
+    // Waits up to 5 seconds for the UI to receive a frame before it publishes the next one
+    const FRAMES: u32 = 20;
+    let mut seq = 0u32;
+    for frame in 1..=FRAMES {
         seq += 1;
         shm[4..8].copy_from_slice(&seq.to_le_bytes());
-        shm[0x1000] = seq as u8;
+        shm[0x1000] = frame as u8;
         seq += 1;
         shm[4..8].copy_from_slice(&seq.to_le_bytes());
-        published += 1;
-        std::thread::sleep(Duration::from_millis(33));
-        if stream.take().is_some() {
-            received += 1;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let delivered = loop {
+            if let Some(f) = stream.take() {
+                if f.image.pixels[0].to_array()[0] == frame as u8 {
+                    break true;
+                }
+            }
+            if Instant::now() > deadline {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        if !delivered {
+            let _ = std::fs::remove_dir_all(&dir);
+            panic!("frame {frame} of {FRAMES} never reached the UI");
         }
     }
     let _ = std::fs::remove_dir_all(&dir);
-    assert!(
-        received * 4 >= published * 3,
-        "{received} of {published} frames"
-    );
 }
