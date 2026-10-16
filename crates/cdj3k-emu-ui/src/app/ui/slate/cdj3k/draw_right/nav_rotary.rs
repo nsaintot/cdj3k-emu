@@ -186,8 +186,8 @@ pub(super) fn draw_nav_rotary(
         centre: center,
         core_r: bezel_outer_r + pod_edge,
         outer_r: btn_outer_r + pod_edge,
-        half_w: 0.0,
-        tan_a: NAV_BTN_OUTER_ANGLE_RAD.tan(),
+        half_w: bezel_outer_r * NAV_BTN_OUTER_ANGLE_RAD.sin() + pod_edge * 0.5,
+        tan_a: 0.0,
     });
 
     draw_nav_buttons(app, ui, layout, center, bezel_outer_r, btn_outer_r);
