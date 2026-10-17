@@ -370,6 +370,7 @@ WANTED=(
     qemu-img qemu-io qemu-nbd storage-daemon/qemu-storage-daemon
     qemu-edid contrib/elf2dmp/elf2dmp
     contrib/ivshmem-client/ivshmem-client
+    contrib/vhost-user-gpu/vhost-user-gpu
     contrib/ivshmem-server/ivshmem-server
     qemu-bridge-helper qemu-pr-helper qemu-vmsr-helper
     qemu-keymap
