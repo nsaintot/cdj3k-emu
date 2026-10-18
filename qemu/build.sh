@@ -359,18 +359,20 @@ JOBS="${JOBS:-$(sysctl -n hw.logicalcpu 2>/dev/null || nproc)}"
 echo "==> Building with ${JOBS} jobs …"
 # `--enable-tools` configures a fleet of small helper tools (qemu-img,
 # qemu-io, qemu-nbd, qemu-storage-daemon, qemu-edid, elf2dmp,
-# ivshmem-client, ivshmem-server) for install; `meson install` aborts if any
-# of them is missing, so they are built even though only qemu-img ships.
+# ivshmem-client, ivshmem-server, vhost-user-gpu) for install; `meson install`
+# aborts if any of them is missing, so they are built even though only
+# qemu-img ships.
 #
 # Which of them exist depends on the host (elf2dmp is not a target on Linux,
-# qemu-bridge-helper is Linux-only, qemu-keymap needs xkbcommon), so the union
+# qemu-bridge-helper is Linux-only, qemu-keymap needs xkbcommon,
+# vhost-user-gpu needs Linux with virglrenderer, epoxy and gbm), so the union
 # is listed and intersected with the targets ninja knows.
 WANTED=(
     qemu-system-aarch64
     qemu-img qemu-io qemu-nbd storage-daemon/qemu-storage-daemon
     qemu-edid contrib/elf2dmp/elf2dmp
-    contrib/ivshmem-client/ivshmem-client
     contrib/vhost-user-gpu/vhost-user-gpu
+    contrib/ivshmem-client/ivshmem-client
     contrib/ivshmem-server/ivshmem-server
     qemu-bridge-helper qemu-pr-helper qemu-vmsr-helper
     qemu-keymap
