@@ -51,8 +51,10 @@ FS_TYPE="${ID_FS_TYPE:-vfat}"
 MNT="/media/usb/${DEVBASE}"
 mkdir -p "$MNT"
 
+# The vfat options are those of the deck's device-mount.sh. Without utf8, a
+# long name outside ASCII reads back as '?', and the app cannot open the file.
 case "$FS_TYPE" in
-  vfat)            mount -o "rw,noatime,shortname=mixed,dmask=000,fmask=000,flush" "$PART" "$MNT" ;;
+  vfat)            mount -o "rw,noatime,shortname=mixed,dmask=000,fmask=000,codepage=437,iocharset=iso8859-1,usefree,utf8,flush" "$PART" "$MNT" ;;
   exfat)           mount -t exfat -o rw,noatime "$PART" "$MNT" 2>/dev/null || \
                    mount -t exfat-fuse -o rw,noatime "$PART" "$MNT" ;;
   hfsplus)         mount -t hfsplus -o rw,noatime,force "$PART" "$MNT" ;;
