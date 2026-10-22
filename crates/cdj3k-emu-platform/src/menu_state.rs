@@ -30,8 +30,9 @@ pub const NET_SEL_NONE: u32 = u32::MAX;
 /// selects it opens a `vmnet-host` interface under one shared network UUID,
 /// and vmnet.framework creates a `bridgeN` interface for it on the host. The
 /// segment is plain layer 2, and Wireshark on the host sees its frames without
-/// encapsulation. The daemon runs with `--vmnet-network-identifier`, so the
-/// segment has no DHCP server: guests assign themselves a 169.254/16
+/// encapsulation. The network UUID (QEMU's `net-uuid`, or socket_vmnet's
+/// `--vmnet-network-identifier` on macOS 15) means the segment has no DHCP
+/// server: guests assign themselves a 169.254/16
 /// link-local address through avahi-autoipd, as real decks do.
 pub const NET_SEL_VMNET_HOST: u32 = u32::MAX - 1;
 

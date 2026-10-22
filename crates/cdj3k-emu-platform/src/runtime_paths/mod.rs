@@ -12,6 +12,8 @@
 //!   usb.placeholder                        always-present USB slot backing
 //!   serial.log | serial.sock               QEMU serial
 //!   tapbridge.* | linuxnet.*               bridge marker files
+//! <root>/vmnet.lock                        macOS vmnet helper start lock
+//! <root>/vmnet-{br-iface|host-uuid}.clients/  its leases, one per slot
 //! ```
 //!
 //! The root is per-user on every host, so no other user can create or replace

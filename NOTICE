@@ -69,6 +69,12 @@ identify the SPDX expression that governs the redistributed copy.
     pinned tag).  Our patches in guest/kernel-patches/ and the
     out-of-tree modules in guest/modules/ are GPL-2.0-or-later.
 
+  * socket_vmnet          https://github.com/lima-vm/socket_vmnet
+                                                                 Apache-2.0
+    Built from source by packaging/macos/stage.sh (pinned by version and
+    SHA-256).  Bundled inside Contents/MacOS/ of the distributed .app, with
+    its license as Contents/Resources/socket_vmnet.LICENSE.
+
   * BusyBox               https://busybox.net/                   GPL-2.0-only
     Present inside the guest rootfs.  Source available from the upstream
     project; the firmware wizard relies on the BusyBox already present in

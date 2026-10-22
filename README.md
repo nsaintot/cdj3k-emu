@@ -238,16 +238,19 @@ cdj3k-emu asks for elevation only when you ask it to do one of these.
 
 ### macOS
 
-macOS asks for the admin password in two situations:
+macOS asks for the admin password in three situations:
 
 | Action                                                   | Why it elevates                                                                                                                                                                                                               |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Selecting a TAP interface (OpenVPN-style) for Pro DJ Link | The app creates a macOS `bridge` and a `tap` for QEMU with `ifconfig`, which is root-only. Both are removed when the slot stops using them or the app exits. vmnet modes need no prompt: QEMU opens the interface itself under the app's `com.apple.developer.networking.vmnet` entitlement. |
+| Selecting a TAP interface (OpenVPN-style) for Pro DJ Link | The app creates a macOS `bridge` and a `tap` for QEMU with `ifconfig`, which is root-only. Both are removed when the slot stops using them or the app exits. |
+| Selecting a network interface or Host-only (link-local) on macOS 15 | On macOS 15 the `com.apple.developer.networking.vmnet` entitlement does not cover bridged mode and keeps host-only instances apart, so the app starts the bundled `socket_vmnet` as root. Slots on the same interface, or on Host-only, share one daemon, which stops when the last of them stops. On macOS 27 QEMU opens vmnet itself and no prompt appears. |
 | Attaching a physical USB drive in pass-through mode      | `chmod 660` on `/dev/diskN` so QEMU can open it `O_RDWR`. The app checks the device path against `/dev/disk[0-9]+(s[0-9]+)?` before elevation (see `crates/cdj3k-emu-runtime/src/disk/macos.rs::is_valid_bsd_disk_path`). |
 
-The TAP bridge asks through Authorization Services and the USB pass-through
-through an `osascript` admin prompt; both use the native macOS password
-dialog. Neither grants lasting privileges: each elevation covers one command.
+The TAP bridge and socket_vmnet ask through Authorization Services, and the
+USB pass-through through an `osascript` admin prompt. All three use the native
+macOS password dialog. No elevation gives the app lasting privileges. The root
+processes it starts (the TAP bridge watcher, and socket_vmnet with its
+watchdog) exit when the last slot using them stops.
 
 ### Linux
 

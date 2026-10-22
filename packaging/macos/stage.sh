@@ -30,7 +30,8 @@
 #   2. Stages each arch's cdj3k-emu, libcdj3k-emu-qemu.dylib and qemu-img,
 #      with its Homebrew dylib graph beside them (@loader_path) so the .app
 #      runs without Homebrew installed
-#   3. Fills Contents/MacOS with the one slice, or both merged by lipo
+#   3. Fills Contents/MacOS with the one slice, or both merged by lipo, and
+#      builds socket_vmnet from source for the same arches
 #   4. Populates Contents/Resources: patch/ (with vanilla-modules/*.ko), tools/,
 #      the kernel and the icon
 #   5. Writes Info.plist
@@ -191,6 +192,40 @@ else
     done
     echo "     merged ${ARCHS[*]}: $(lipo -archs "$MACOS_DIR/cdj3k-emu")"
 fi
+
+# ── socket_vmnet ─────────────────────────────────────────────────────────────
+# The root vmnet helper for Macs where the vmnet entitlement grants only part
+# of vmnet (net/vmnet_helper.rs). Built from source: the 1.2.2 release
+# binaries require macOS 26, and 1.2.1 lacks --vmnet-network-identifier.
+SOCKET_VMNET_VERSION="1.2.2"
+SOCKET_VMNET_SHA256="7341cab86654a171a427799f9e472696dad17215641c39c4b26de8d2181933a0"
+SOCKET_VMNET_DIR="$REPO_ROOT/build/socket_vmnet-$SOCKET_VMNET_VERSION"
+if [[ ! -f "$SOCKET_VMNET_DIR/main.c" ]]; then
+    echo "==> Fetching socket_vmnet $SOCKET_VMNET_VERSION"
+    mkdir -p "$SOCKET_VMNET_DIR"
+    archive="$SOCKET_VMNET_DIR.tar.gz"
+    curl -fsSL -o "$archive" \
+        "https://github.com/lima-vm/socket_vmnet/archive/refs/tags/v$SOCKET_VMNET_VERSION.tar.gz"
+    got=$(shasum -a 256 "$archive" | cut -d' ' -f1)
+    if [[ "$got" != "$SOCKET_VMNET_SHA256" ]]; then
+        echo "ERROR: socket_vmnet v$SOCKET_VMNET_VERSION has sha256 $got, but $SOCKET_VMNET_SHA256 was expected." >&2
+        rm -rf "$SOCKET_VMNET_DIR" "$archive"
+        exit 1
+    fi
+    tar -xzf "$archive" -C "$SOCKET_VMNET_DIR" --strip-components 1
+    rm "$archive"
+fi
+svm_flags=(-O2 -isysroot "$(xcrun --sdk macosx --show-sdk-path)")
+for arch in "${ARCHS[@]}"; do svm_flags+=(-arch "$arch"); done
+if [[ -n "${MACOSX_DEPLOYMENT_TARGET:-}" ]]; then
+    svm_flags+=("-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET")
+fi
+xcrun clang "${svm_flags[@]}" -DVERSION="\"v$SOCKET_VMNET_VERSION\"" \
+    -o "$MACOS_DIR/socket_vmnet" \
+    "$SOCKET_VMNET_DIR/cli.c" "$SOCKET_VMNET_DIR/main.c" -framework vmnet
+mkdir -p "$RESOURCES_DIR"
+cp "$SOCKET_VMNET_DIR/LICENSE" "$RESOURCES_DIR/socket_vmnet.LICENSE"
+echo "     built socket_vmnet $SOCKET_VMNET_VERSION: $(lipo -archs "$MACOS_DIR/socket_vmnet")"
 
 # Nothing in Contents/MacOS may still name a path outside the bundle or the
 # OS: a leftover /opt/homebrew reference makes the app crash on a machine

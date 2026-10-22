@@ -9,6 +9,10 @@
 #[cfg(target_os = "macos")]
 mod tapbridge;
 pub mod vmnet;
+/// macOS-only: vmnet through a root socket_vmnet, where the entitlement grants
+/// only part of vmnet.
+#[cfg(target_os = "macos")]
+mod vmnet_helper;
 
 /// The slot's hold on its bridged link, the same on every host.
 pub mod lease;

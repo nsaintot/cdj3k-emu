@@ -20,8 +20,8 @@ passthrough or native window integration.
 | Audio backend | `coreaudio`, device by UID | `pipewire`, sink by node name, `out.fixed-settings=off` | `wasapi`, endpoint by IMMDevice id (`out.dev=`) | no `-audiodev` |
 | Low-latency path | host bypass ring (patch 08), drained by the IOProc | the same ring, drained by the PipeWire process callback (patch 14) | the same ring, drained by the WASAPI event thread (patch 18) | — |
 | Output device list | CoreAudio HAL | `pw-dump` | IMMDeviceEnumerator | empty |
-| Host-only network | vmnet-host | — | — | — |
-| Bridged network | vmnet-bridged on a NIC; a `tap*` through `tapbridge` | macvtap on a NIC, a tap of ours on a bridge, or an existing tap | a TAP-Windows6 adapter per slot, joined to a NIC with `netsh bridge` (Windows 11 22H2 + KB5030310); by hand on older builds | — |
+| Host-only network | vmnet-host (through socket_vmnet on macOS 15) | — | — | — |
+| Bridged network | vmnet-bridged on a NIC (through socket_vmnet on macOS 15); a `tap*` through `tapbridge` | macvtap on a NIC, a tap of ours on a bridge, or an existing tap | a TAP-Windows6 adapter per slot, joined to a NIC with `netsh bridge` (Windows 11 22H2 + KB5030310); by hand on older builds | — |
 | Physical USB | DiskArbitration unmount; QEMU opens `/dev/diskN` after a one-time `chmod` prompt | udisks unmount; the app opens the disk `O_EXCL` (udisks `OpenDevice` under polkit when refused) and hands QEMU the fd with QMP `add-fd` | volumes locked and dismounted by the app; a one-time elevated ACL grant, then QEMU opens `\\.\PhysicalDriveN` | — |
 | Virtual USB format | `hdiutil` + `diskutil` | `sfdisk` + `mkfs.exfat` on the file | VHDX: `CreateVirtualDisk`, then an elevated `Mount-DiskImage` + `Format-Volume` | — |
 | Elevation | Authorization Services (`AuthorizationExecuteWithPrivileges`); an `osascript` admin prompt for the USB `chmod` | `pkexec` | UAC (`ShellExecuteExW` `runas`) | refused |

@@ -17,8 +17,8 @@ times do not survive NAT.
 QEMU's default `-netdev user` (SLIRP) is a userspace NAT stack and cannot
 carry DJPL discovery or beat broadcasts between hosts. For real LAN visibility:
 
-- macOS uses `vmnet.framework`, which QEMU opens in its own process, or a
-  kernel TAP bridge.
+- macOS uses `vmnet.framework`, which QEMU opens in its own process or
+  reaches through a root `socket_vmnet`, or a kernel TAP bridge.
 - Linux uses a macvtap or a tap on a bridge.
 - Windows uses a TAP-Windows6 adapter in the Network Bridge.
 
@@ -31,18 +31,30 @@ carry DJPL discovery or beat broadcasts between hosts. For real LAN visibility:
 | **User-mode**    | `user,id=net0,hostfwd=tcp::<2222+id>-:22`            | NAT only                 | no         | n/a                    |
 | **vmnet-bridged**| `vmnet-bridged,id=net0,ifname=<iface>`               | full L2 on iface         | no         | QEMU exit              |
 | **vmnet-host** (link-local) | `vmnet-host,id=net0,net-uuid=<UUID>`      | shared `bridgeN`, no NIC | no         | QEMU exit              |
+| **vmnet helper** | `stream,id=net0,server=off,addr.type=unix,addr.path=<sock>` | either vmnet mode | once per daemon | root watchdog |
 | **TAP bridge**   | `tap,id=net0,fd=<N>`                                 | full L2 via TAP          | once per start | lease watcher      |
 | **Linux link**   | `tap,id=net0,fd=<N>`                                 | full L2 on iface         | once per start | lease watcher      |
 | **Windows link** | `tap,id=net0,ifname=<adapter>`                       | full L2 on iface         | once per start | lease watcher      |
 
 vmnet and the TAP bridge exist only on macOS, the Linux link only on Linux,
-and the Windows link only on Windows. Both vmnet modes are unprivileged: vmnet
-requires root or the `com.apple.developer.networking.vmnet` entitlement, and
-the app carries that entitlement, authorised by
-`Contents/embedded.provisionprofile`. Entitlements apply to the whole process,
-so QEMU reaches vmnet from inside `libcdj3k-emu-qemu.dylib`, as HVF does. The
-TAP bridge is the only macOS mode that asks for the admin password, because
-`ifconfig bridge create` needs root and no entitlement covers it.
+and the Windows link only on Windows. vmnet requires root or the
+`com.apple.developer.networking.vmnet` entitlement, and the app carries that
+entitlement, authorised by `Contents/embedded.provisionprofile`. Entitlements
+apply to the whole process, so QEMU reaches vmnet from inside
+`libcdj3k-emu-qemu.dylib`, as HVF does. `ifconfig bridge create` needs root and
+no entitlement covers it, so the TAP bridge asks for the admin password.
+
+What the entitlement grants depends on the macOS release:
+
+| macOS | Bridged | Host-only                                                     | Route            |
+| ----- | ------- | ------------------------------------------------------------- | ---------------- |
+| 15    | refused | filtered (`hostfilter`, `PRIVATE`); instances cannot reach each other | vmnet helper |
+| 27    | works   | works                                                         | in-process vmnet |
+
+On macOS 15 the InternetSharing log shows `bridged mode not available to
+limited clients`. The app probes vmnet instead of checking the macOS release,
+so releases not listed here also take the right route; see
+[vmnet helper](#vmnet-helper).
 
 **vmnet-host** ("Host-only (link-local)") puts all instances on the same
 virtual `bridgeN`, isolated from physical interfaces, through a fixed network
@@ -54,9 +66,10 @@ and djx-emu must be given the same value.
   address, as real Pro DJ Link gear does on a network without a router.
 - With the UUID, a DHCP DISCOVER goes unanswered while other traffic still
   flows; without it, `bootpd` offers a 192.168.128.x lease.
-- Interfaces created under one UUID by separate processes see each other's
-  broadcasts, so several instances share one DJ-Link segment with no daemon
-  between them.
+- With in-process vmnet, interfaces created under one UUID by separate
+  processes see each other's broadcasts, so several instances share one
+  DJ-Link segment. On macOS 15 they cannot, and the
+  [vmnet helper](#vmnet-helper) joins the UUID instead.
 
 `QemuConfig::build_argv` picks a tap when there is one (an fd, or an adapter
 name on Windows; `net::tap_netdev` writes it for each host), otherwise a vmnet
@@ -101,15 +114,57 @@ directly. Host mode joins the isolated UUID segment described above.
 each guest off from the others on the same vmnet network, which is the
 opposite of what DJ-Link discovery needs.
 
-**Instances share a segment through its UUID.** Each QEMU process opens its
-own vmnet interface, and interfaces created under one `net-uuid` land on one L2
-segment. There is no socket, lease, watchdog or shared daemon: the interface is
-released when QEMU exits. Bridged instances need no coordination, since each
-one is on the real LAN.
+**Instances share a segment through its UUID.** With in-process vmnet, each
+QEMU process opens its own vmnet interface, and interfaces created under one
+`net-uuid` land on one L2 segment. The interface is released when QEMU exits.
+Bridged instances need no coordination, since each one is on the real LAN. The
+[vmnet helper](#vmnet-helper) adds a socket, leases and a watchdog.
 
 `VmnetMode` (`crates/cdj3k-emu-runtime/src/net/vmnet.rs`) carries the choice
 and renders the `-netdev` argument; interface names are checked
 (`platform::net::is_valid_iface`) before they reach a command line.
+
+#### vmnet helper
+
+Where vmnet treats the app as a limited client (macOS 15), both modes go
+through a root `socket_vmnet` daemon (`net/vmnet_helper.rs`). Release builds
+run only the copy in `Contents/MacOS`; debug builds fall back to Homebrew's:
+
+```
+-netdev stream,id=net0,server=off,reconnect-ms=1000,addr.type=unix,addr.path=/var/run/cdj3k-emu-<uid>/vmnet-br-en0.sock
+```
+
+- **Probe.** The first vmnet selection in a process starts QEMU paused with
+  only `-netdev vmnet-bridged,ifname=<iface>` and `-qmp stdio`. A QMP greeting
+  keeps in-process vmnet; `cannot create vmnet interface` selects the helper.
+  Host-only probes the default route's interface, or en0. When QEMU answers
+  `unsupported ifname ... expected one of [ ... ]`, the first listed interface
+  is probed once more. Any other outcome, such as a 10 s timeout, keeps
+  in-process vmnet, and the next selection probes again.
+- **Override.** `CDJ3K_VMNET=helper` or `CDJ3K_VMNET=inprocess` skips the probe.
+- **One daemon per interface or network UUID.** `vmnet-br-<iface>.sock` runs
+  bridged on `<iface>`. `vmnet-host-<uuid>.sock` runs host mode under the
+  host-only network UUID, which `DJPL_VMNET_UUID` overrides. The daemon
+  forwards frames between its clients, so `PRIVATE` does not apply. A slot
+  that finds the socket accepting connects without a prompt.
+- **One start at a time.** `acquire` holds an `flock` on
+  `<runtime root>/vmnet.lock` while it checks the socket and starts the
+  daemon, so two app processes never start two daemons on one socket.
+- **Start.** The elevated script creates `/var/run/cdj3k-emu-<uid>` root-owned
+  (0755), starts socket_vmnet with `--socket-group=wheel`, then gives the
+  socket to the user with mode 0600. The app waits up to 5 s for the socket to
+  accept, then checks it again 1 s later: socket_vmnet listens before vmnet
+  starts and exits when vmnet refuses.
+- **Lifetime.** Each slot writes a lease, `<runtime root>/<name>.clients/<pid>-<n>`,
+  before it connects or elevates, and removes leases of exited processes. A
+  root watchdog runs while the daemon lives and reads the leases once a
+  second. When none names a live process, it removes the socket and stops the
+  daemon. Root deletes nothing in the user's runtime root.
+- **Reconnect.** QEMU retries the socket every second (`reconnect-ms=1000`),
+  so a guest whose daemon stopped gets its link back when a new one starts.
+- **Build.** `packaging/macos/stage.sh` builds socket_vmnet 1.2.2 from source
+  for the bundle's arches and deployment target. The 1.2.2 release binaries
+  need macOS 26; 1.2.1 has no `--vmnet-network-identifier`.
 
 ### Mode 3 - TAP bridge
 
@@ -266,7 +321,7 @@ When no MAC is persisted, `QemuConfig::build_argv` uses
 ## Elevation flow
 
 `elevate::run_elevated` is the single elevation primitive; the TAP bridge,
-the Linux link and the Windows link are its callers. On macOS it is
+the vmnet helper, the Linux link and the Windows link are its callers. On macOS it is
 AuthorizationServices:
 
 ```
@@ -320,8 +375,9 @@ A host shutdown ends a watcher without its teardown. On macOS and Linux the
 kernel's interfaces disappear with it; on Windows the adapter and the bridge
 stay, and the next bridged start of the slot uses them.
 
-vmnet needs none of this: QEMU owns the interface and the kernel releases it
-when QEMU exits.
+In-process vmnet needs none of this: QEMU owns the interface and the kernel
+releases it when QEMU exits. The vmnet helper is shared by several slots, so
+it keeps its own PID leases instead ([vmnet helper](#vmnet-helper)).
 
 ---
 
@@ -382,7 +438,8 @@ elevated shell:
 
 - **`platform::net::is_valid_iface`** accepts 1 to 15 bytes of ASCII
   alphanumerics, `.`, `_` and `-`, except `.` and `..`. It is checked by
-  `VmnetMode::bridged`, `TapBridge::setup` and `LinuxBridge::setup`;
+  `VmnetMode::bridged`, `SocketVmnet::start_bridged`, `TapBridge::setup` and
+  `LinuxBridge::setup`;
   `LinuxBridge::setup` also checks the MAC (`is_valid_mac`).
 - **`windows_kind::is_valid_adapter_name`** applies on Windows, where
   connection names can hold spaces and letters from any script. It accepts 1
@@ -402,6 +459,13 @@ app process owns this directory; the elevated halves only read from it, except
 for the files they report through (the names, ready, verdict and answer
 files). The lease relies on that: only the app can change the claim.
 
+The vmnet helper keeps its socket in the root-owned `/var/run/cdj3k-emu-<uid>`
+and its leases in the runtime root. Its root watchdog only reads the leases
+and only deletes the socket. The socket is mode 0600 and owned by the user, so
+any process of that user can connect and send raw Ethernet frames on the
+daemon's network for as long as it runs; a lease named after a live PID, such
+as `1-0`, keeps it running.
+
 ---
 
 ## Files
@@ -411,6 +475,7 @@ files). The lease relies on that: only the app can change the claim.
 | `crates/cdj3k-emu-runtime/src/config.rs`                   | `-netdev` / `-device` selection                   |
 | `crates/cdj3k-emu-runtime/src/net/`                        | `attach` per host, `NetAttachment`                |
 | `crates/cdj3k-emu-runtime/src/net/vmnet.rs`                | `VmnetMode` and its `-netdev` argument, network UUID |
+| `crates/cdj3k-emu-runtime/src/net/vmnet_helper.rs`         | vmnet probe, root socket_vmnet and its watchdog (macOS) |
 | `crates/cdj3k-emu-runtime/src/net/lease.rs`                | the slot's lease on its link; every host          |
 | `crates/cdj3k-emu-runtime/src/net/tapbridge.rs`            | the bridgeN and tapM watcher, stale cleanup (macOS) |
 | `crates/cdj3k-emu-runtime/src/net/linux_net.rs`            | macvtap / tap-on-bridge / existing tap (Linux)    |
