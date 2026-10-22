@@ -9,11 +9,12 @@
  *
  * Node names vary per model; this module creates the nodes of every model.
  *
- * Each node holds its own message: the deck classifies media by the node an
- * event arrives on.
+ * Each node queues its own messages: the deck classifies media by the node an
+ * event arrives on. FuseFilsine writes one 'mount' per exported drive, faster
+ * than the deck polls, so a node keeps every message until it is read.
  *
  * The deck polls one node per pass (open, fcntl F_SETFL O_NONBLOCK, read,
- * close), so read() returns EAGAIN on an empty node.
+ * close). A read() returns the oldest message, or EAGAIN on an empty node.
  */
 
 #include <linux/module.h>
@@ -24,14 +25,23 @@
 #include <linux/poll.h>
 #include <linux/sched.h>
 #include <linux/moduleparam.h>
+#include <linux/slab.h>
+#include <linux/string.h>
+#include <linux/err.h>
 
-#define BUF_SIZE 512
+#define BUF_SIZE  512
+#define QUEUE_LEN 16
+
+struct udev_msg {
+	char	buf[BUF_SIZE];
+	size_t	len;
+};
 
 struct udev_chan {
 	const char		*name;
-	char			buf[BUF_SIZE];
-	size_t			len;
-	bool			pending;
+	struct udev_msg		queue[QUEUE_LEN];
+	unsigned int		head;	/* index of the oldest message */
+	unsigned int		count;
 	struct proc_dir_entry	*pde;
 };
 
@@ -58,18 +68,20 @@ static ssize_t udev_chan_read(struct file *f, char __user *buf,
 			      size_t len, loff_t *off)
 {
 	struct udev_chan *c = chan_of(f);
+	struct udev_msg *m;
 	ssize_t ret;
 
 	for (;;) {
 		mutex_lock(&udev_lock);
-		if (c->pending) {
-			ret = min(len, c->len);
-			if (copy_to_user(buf, c->buf, ret)) {
+		if (c->count) {
+			m = &c->queue[c->head];
+			ret = min(len, m->len);
+			if (copy_to_user(buf, m->buf, ret)) {
 				mutex_unlock(&udev_lock);
 				return -EFAULT;
 			}
-			c->pending = false;
-			c->len     = 0;
+			c->head = (c->head + 1) % QUEUE_LEN;
+			c->count--;
 			mutex_unlock(&udev_lock);
 			return ret;
 		}
@@ -78,7 +90,7 @@ static ssize_t udev_chan_read(struct file *f, char __user *buf,
 		if (f->f_flags & O_NONBLOCK)
 			return -EAGAIN;
 
-		if (wait_event_interruptible(udev_wq, READ_ONCE(c->pending)))
+		if (wait_event_interruptible(udev_wq, READ_ONCE(c->count)))
 			return -ERESTARTSYS;
 	}
 }
@@ -88,16 +100,30 @@ static ssize_t udev_chan_write(struct file *f, const char __user *buf,
 {
 	struct udev_chan *c = chan_of(f);
 	size_t n = min(len, (size_t)(BUF_SIZE - 1));
+	struct udev_msg *m;
+	char *msg;
+
+	msg = memdup_user_nul(buf, n);
+	if (IS_ERR(msg))
+		return PTR_ERR(msg);
 
 	mutex_lock(&udev_lock);
-	if (copy_from_user(c->buf, buf, n)) {
-		mutex_unlock(&udev_lock);
-		return -EFAULT;
+	if (c->count == QUEUE_LEN) {
+		/*
+		 * Writers do not retry, and a model leaves some nodes unread:
+		 * drop the oldest message rather than fail the write.
+		 */
+		pr_warn_ratelimited("udev_usb1: /proc/%s is full, dropping its oldest message\n",
+				    c->name);
+		c->head = (c->head + 1) % QUEUE_LEN;
+		c->count--;
 	}
-	c->buf[n] = '\0';
-	c->len    = n;
-	c->pending = true;
+	m = &c->queue[(c->head + c->count) % QUEUE_LEN];
+	memcpy(m->buf, msg, n + 1);
+	m->len = n;
+	c->count++;
 	mutex_unlock(&udev_lock);
+	kfree(msg);
 
 	wake_up_interruptible_all(&udev_wq);
 	return len;
@@ -110,7 +136,7 @@ static __poll_t udev_chan_poll(struct file *f, poll_table *wait)
 
 	poll_wait(f, &udev_wq, wait);
 	mutex_lock(&udev_lock);
-	mask = c->pending ? (EPOLLIN | EPOLLRDNORM) : 0;
+	mask = c->count ? (EPOLLIN | EPOLLRDNORM) : 0;
 	mutex_unlock(&udev_lock);
 	return mask;
 }
