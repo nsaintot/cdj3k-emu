@@ -3,15 +3,19 @@
  * udev_usb1 - Pioneer's media event channels.
  *
  * The deck reads media events from proc files:
- *   /proc/udev_usb1  'mount <mnt> <fs> protect:0'
+ *   /proc/udev_usb1  'mount <mnt> <fs> protect:0' for the deck's own USB,
+ *                    'mount /media/player<NN>/usb nfs' for another player's
  *   /proc/udev_sd1   the same for the SD card
- *   /proc/udev_nfs   'mount <mnt> nfs', written by FuseFilsine
+ *   /proc/udev_nfs   'mount /media/rekordbox<NN>/ nfs' for a rekordbox computer
+ *
+ * FuseFilsine writes the messages for remote media.
  *
  * Node names vary per model; this module creates the nodes of every model.
  *
  * Each node queues its own messages: the deck classifies media by the node an
- * event arrives on. FuseFilsine writes one 'mount' per exported drive, faster
- * than the deck polls, so a node keeps every message until it is read.
+ * event arrives on. When a deck joins a link with two players that have a USB
+ * drive, FuseFilsine writes both mounts to udev_usb1 about 0.25 s apart, and
+ * the deck reads a node about once a second.
  *
  * The deck polls one node per pass (open, fcntl F_SETFL O_NONBLOCK, read,
  * close). A read() returns the oldest message, or EAGAIN on an empty node.
