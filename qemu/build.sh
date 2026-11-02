@@ -293,7 +293,7 @@ case "${HOST_OS}" in
         fi
         ;;
     Linux)
-        HOST_FLAGS=(--enable-kvm --enable-pipewire)
+        HOST_FLAGS=(--enable-kvm --enable-pipewire --disable-virglrenderer --disable-opengl)
         ;;
     Windows|WindowsCross)
         EXE=".exe"
