@@ -48,23 +48,162 @@ fn ns_window_for_handle(
 /// moves a saved frame back on screen, for example after a monitor is
 /// unplugged. Each slot uses its own name, so instances keep separate frames.
 /// Returns whether a saved frame was applied.
+///
+/// `setFrameUsingName:` puts the frame on the screen that has the focus, so a
+/// slot launched from a window on another display would open there. The frame
+/// is then moved back to the screen saved with it, when that screen is still
+/// connected.
 fn set_window_autosave_name(
     handle: &impl raw_window_handle::HasWindowHandle,
     name: &str,
 ) -> Result<bool, String> {
-    use objc2_foundation::{MainThreadMarker, NSString};
+    use objc2_foundation::{MainThreadMarker, NSRect, NSString};
 
     MainThreadMarker::new().ok_or("AppKit: this call must run on the main thread")?;
 
     let window = ns_window_for_handle(handle)?;
     let ns_name = NSString::from_str(name);
+    // Read the saved string before AppKit rewrites it with the moved frame.
+    let saved = saved_frame(name);
     let restored: bool = unsafe {
         // Apply the saved frame first, if there is one, then turn on autosave.
         let restored: bool = objc2::msg_send![&*window, setFrameUsingName: &*ns_name];
         let _: bool = objc2::msg_send![&*window, setFrameAutosaveName: &*ns_name];
         restored
     };
+    if let Some(target) = saved.filter(|_| restored).and_then(frame_on_saved_screen) {
+        unsafe {
+            let current: NSRect = objc2::msg_send![&*window, frame];
+            if !rects_match(current, target) {
+                let _: () = objc2::msg_send![&*window, setFrame: target, display: true];
+            }
+        }
+    }
     Ok(restored)
+}
+
+/// A window frame that AppKit saved, and the screen the window was on: the
+/// screen's frame without the menu bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SavedFrame {
+    window: objc2_foundation::NSRect,
+    screen: objc2_foundation::NSRect,
+}
+
+/// The frame AppKit saved under `name` in the user defaults.
+fn saved_frame(name: &str) -> Option<SavedFrame> {
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_foundation::NSString;
+
+    let cls = AnyClass::get("NSUserDefaults")?;
+    let key = NSString::from_str(&format!("NSWindow Frame {name}"));
+    // SAFETY: `standardUserDefaults` returns the shared defaults object, and
+    // `stringForKey:` returns a string or nil.
+    let value = unsafe {
+        let defaults: *mut AnyObject = objc2::msg_send![cls, standardUserDefaults];
+        if defaults.is_null() {
+            return None;
+        }
+        let value: *mut NSString = objc2::msg_send![defaults, stringForKey: &*key];
+        Retained::retain(value)?
+    };
+    parse_saved_frame(&value.to_string())
+}
+
+/// Parse AppKit's saved frame string, `x y w h sx sy sw sh`: the window frame,
+/// then the screen's frame without the menu bar.
+fn parse_saved_frame(text: &str) -> Option<SavedFrame> {
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let n: Vec<f64> = text
+        .split_whitespace()
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    let &[x, y, w, h, sx, sy, sw, sh] = n.get(..8)? else {
+        return None;
+    };
+    let rect = |x, y, w, h| NSRect::new(NSPoint::new(x, y), NSSize::new(w, h));
+    Some(SavedFrame {
+        window: rect(x, y, w, h),
+        screen: rect(sx, sy, sw, sh),
+    })
+}
+
+/// The saved window frame, placed on the connected screen it was saved on.
+/// That screen is the one at the same origin and of the same size or, when
+/// the displays were rearranged, the only one of the same size. Returns `None`
+/// when no screen matches, which leaves AppKit's placement.
+fn frame_on_saved_screen(saved: SavedFrame) -> Option<objc2_foundation::NSRect> {
+    let screens = screen_frames();
+    let same_size = |s: &&objc2_foundation::NSRect| same_screen_size(**s, saved.screen);
+    let screen = screens
+        .iter()
+        .filter(same_size)
+        .find(|s| {
+            (s.origin.x - saved.screen.origin.x).abs() < 1.0
+                && (s.origin.y - saved.screen.origin.y).abs() < 1.0
+        })
+        .or_else(|| {
+            let mut candidates = screens.iter().filter(same_size);
+            match (candidates.next(), candidates.next()) {
+                (Some(s), None) => Some(s),
+                _ => None,
+            }
+        })?;
+    let mut frame = saved.window;
+    frame.origin.x += screen.origin.x - saved.screen.origin.x;
+    frame.origin.y += screen.origin.y - saved.screen.origin.y;
+    Some(frame)
+}
+
+/// Whether `screen`, a screen's full frame, has the size of `saved`, the same
+/// screen without its menu bar.
+fn same_screen_size(screen: objc2_foundation::NSRect, saved: objc2_foundation::NSRect) -> bool {
+    /// More than any menu bar, notch included.
+    const MENU_BAR_MAX: f64 = 80.0;
+    let menu_bar = screen.size.height - saved.size.height;
+    (screen.size.width - saved.size.width).abs() < 1.0 && (-1.0..MENU_BAR_MAX).contains(&menu_bar)
+}
+
+/// The frame of every connected screen.
+fn screen_frames() -> Vec<objc2_foundation::NSRect> {
+    use objc2::runtime::{AnyClass, AnyObject};
+    use objc2_foundation::NSRect;
+
+    let Some(cls) = AnyClass::get("NSScreen") else {
+        return Vec::new();
+    };
+    // SAFETY: `screens` returns an NSArray of NSScreen, read inside its
+    // bounds, and `frame` returns a rect.
+    unsafe {
+        let screens: *mut AnyObject = objc2::msg_send![cls, screens];
+        if screens.is_null() {
+            return Vec::new();
+        }
+        let count: usize = objc2::msg_send![screens, count];
+        (0..count)
+            .map(|i| {
+                let screen: *mut AnyObject = objc2::msg_send![screens, objectAtIndex: i];
+                let frame: NSRect = objc2::msg_send![screen, frame];
+                frame
+            })
+            .collect()
+    }
+}
+
+/// Whether two rects are equal to within a point, as AppKit rounds saved
+/// frames to whole points.
+fn rects_match(a: objc2_foundation::NSRect, b: objc2_foundation::NSRect) -> bool {
+    [
+        a.origin.x - b.origin.x,
+        a.origin.y - b.origin.y,
+        a.size.width - b.size.width,
+        a.size.height - b.size.height,
+    ]
+    .iter()
+    .all(|d| d.abs() < 1.0)
 }
 
 /// Stop AppKit frame persistence for this window (an empty autosave name).
@@ -579,3 +718,40 @@ pub const CAPTION_IN_STRIP: bool = false;
 pub const OWN_WINDOW_ICON: bool = false;
 
 pub fn set_caption_area(_ctx: &egui::Context, _area: Option<super::CaptionArea>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_saved_frame, same_screen_size};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
+        NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
+    }
+
+    #[test]
+    fn a_saved_screen_matches_its_screen_with_the_menu_bar() {
+        assert!(same_screen_size(
+            rect(0.0, 0.0, 1512.0, 982.0),
+            rect(0.0, 0.0, 1512.0, 948.0)
+        ));
+        assert!(!same_screen_size(
+            rect(0.0, 0.0, 5120.0, 1440.0),
+            rect(0.0, 0.0, 1512.0, 948.0)
+        ));
+    }
+
+    #[test]
+    fn a_saved_frame_string_gives_the_window_and_its_screen() {
+        let saved = parse_saved_frame("1615 1408 595 843 -1551 982 5120 1409 ").unwrap();
+        assert_eq!(saved.window.origin.x, 1615.0);
+        assert_eq!(saved.window.size.height, 843.0);
+        assert_eq!(saved.screen.origin.x, -1551.0);
+        assert_eq!(saved.screen.size.width, 5120.0);
+    }
+
+    #[test]
+    fn a_short_or_damaged_string_gives_nothing() {
+        assert!(parse_saved_frame("1615 1408 595 843").is_none());
+        assert!(parse_saved_frame("1615 1408 595 843 -1551 982 5120 x").is_none());
+    }
+}
